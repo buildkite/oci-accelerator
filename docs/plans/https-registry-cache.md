@@ -4,7 +4,7 @@
 
 Build a standalone Go binary that accelerates Docker Engine image pulls through an explicit HTTPS-intercepting forward proxy. Image names remain unchanged. Docker Engine hosts configure the proxy and trust its CA.
 
-The repository is currently empty. This document is the implementation plan, not authorization to begin implementation.
+No proxy implementation exists yet. Track completed groundwork and upcoming slices in the [implementation log](../implementation-log.md). This document is the implementation plan, not authorization to begin implementation.
 
 ## Agreed scope
 

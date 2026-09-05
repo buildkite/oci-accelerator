@@ -2,6 +2,7 @@
 
 A planned standalone Go HTTPS pull-through cache for Docker Engine images.
 Implementation has not started. See the [approved plan](docs/plans/https-registry-cache.md).
+Track completed and upcoming slices in the [implementation log](docs/implementation-log.md).
 
 ## Development in Amp orbs
 
