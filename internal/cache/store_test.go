@@ -13,10 +13,179 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 func testMeta(key, body string) Metadata {
 	return Metadata{Key: fmt.Sprintf("%x", sha256.Sum256([]byte(key))), Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))), Size: int64(len(body)), MediaType: "application/octet-stream"}
+}
+
+func TestEntrySlotsAndFillConcurrencyAreDistinctLimits(t *testing.T) {
+	t.Run("entry slots", func(t *testing.T) {
+		s, err := OpenWithLimits(filepath.Join(t.TempDir(), "cache"), Limits{MaxBytes: 1 << 20, MaxFills: 3, MaxEntries: 1, FillTimeout: time.Minute})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		f, err := s.Begin(testMeta("a", "a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Begin(testMeta("b", "b")); err != ErrBypass {
+			t.Fatalf("second slot = %v", err)
+		}
+		f.Abort()
+		a, b := testMeta("stored", "s"), testMeta("next", "n")
+		put(t, s, a, "s")
+		r, err := s.Get(context.Background(), a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Begin(b); err != ErrBypass || s.Stats().Evictions != 0 {
+			t.Fatal("pinned entry slot must refuse admission without eviction")
+		}
+		r.Close()
+		put(t, s, b, "n")
+		if st := s.Stats(); st.Entries != 1 || st.Evictions != 1 {
+			t.Fatalf("entry slot eviction failed: %+v", st)
+		}
+	})
+	t.Run("active fills", func(t *testing.T) {
+		s, err := OpenWithLimits(filepath.Join(t.TempDir(), "cache"), Limits{MaxBytes: 1 << 20, MaxFills: 1, MaxEntries: 3, FillTimeout: time.Minute})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		put(t, s, testMeta("stored", "s"), "s")
+		f, err := s.Begin(testMeta("a", "a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Begin(testMeta("b", "b")); err != ErrBypass {
+			t.Fatalf("second fill = %v", err)
+		}
+		read(t, s, testMeta("stored", "s"), "s")
+		f.Abort()
+	})
+}
+
+func TestPinnedEntryRefusalDoesNotEvictUsefulEntries(t *testing.T) {
+	const charge = metadataReservation + 1
+	s := openTest(t, 2*charge)
+	a, b := testMeta("a", "a"), testMeta("b", "b")
+	put(t, s, a, "a")
+	put(t, s, b, "b")
+	r, err := s.Get(context.Background(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	tooLarge := testMeta("large", strings.Repeat("x", int(charge)))
+	if _, err := s.Begin(tooLarge); err != ErrBypass {
+		t.Fatalf("admission = %v", err)
+	}
+	read(t, s, b, "b")
+	if got := s.Stats().Evictions; got != 0 {
+		t.Fatalf("evictions = %d", got)
+	}
+}
+
+func TestFillTimeoutAndTerminalPathsCompleteTimer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, err := OpenWithLimits(filepath.Join(t.TempDir(), "cache"), Limits{MaxBytes: 1 << 20, MaxFills: 4, MaxEntries: 4, FillTimeout: time.Minute})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+
+		expired, _ := s.Begin(testMeta("expired", "x"))
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if stats := s.Stats(); stats.Fills != 0 || stats.Reserved != 0 {
+			t.Fatalf("timeout retained reservation: %+v", stats)
+		}
+		select {
+		case <-expired.timerDone:
+		default:
+			t.Fatal("expiry timer did not complete")
+		}
+
+		aborted, _ := s.Begin(testMeta("abort", "x"))
+		if err := aborted.Abort(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-aborted.timerDone:
+		default:
+			t.Fatal("abort retained timer")
+		}
+
+		failed, _ := s.Begin(testMeta("failed", "x"))
+		if _, err := failed.Write([]byte("xx")); err == nil {
+			t.Fatal("oversized write succeeded")
+		}
+		select {
+		case <-failed.timerDone:
+		default:
+			t.Fatal("failed write retained timer")
+		}
+
+		committed, _ := s.Begin(testMeta("commit", "x"))
+		committed.Write([]byte("x"))
+		if err := committed.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-committed.timerDone:
+		default:
+			t.Fatal("commit retained timer")
+		}
+
+		shutdown, _ := s.Begin(testMeta("shutdown", "x"))
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-shutdown.timerDone:
+		default:
+			t.Fatal("shutdown retained timer")
+		}
+	})
+}
+
+func TestExpirationRacesNeverPublishOverdueFill(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		s, err := OpenWithLimits(filepath.Join(t.TempDir(), "cache"), Limits{MaxBytes: 1 << 20, MaxFills: 1, MaxEntries: 1, FillTimeout: time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := testMeta(fmt.Sprintf("race-%d", i), "x")
+		f, err := s.Begin(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Write([]byte("x"))
+		time.Sleep(time.Millisecond)
+		results := make(chan error, 3)
+		go func() { _, err := f.Write(nil); results <- err }()
+		go func() { results <- f.Commit() }()
+		go func() { results <- f.Abort() }()
+		for j := 0; j < 3; j++ {
+			<-results
+		}
+		select {
+		case <-f.timerDone:
+		case <-time.After(time.Second):
+			t.Fatal("terminal operation did not join timer")
+		}
+		if stats := s.Stats(); stats.Fills != 0 || stats.Reserved != 0 || stats.Entries != 0 {
+			t.Fatalf("overdue fill published or retained: %+v", stats)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 func openTest(t *testing.T, limit int64) *Store {
 	t.Helper()
@@ -162,6 +331,11 @@ func TestFillFailuresNeverPublish(t *testing.T) {
 				t.Fatal("invalid fill committed")
 			}
 			f.Abort()
+			select {
+			case <-f.timerDone:
+			default:
+				t.Fatal("terminal failure retained timer")
+			}
 			if stats := s.Stats(); stats.Entries != 0 || stats.Fills != 0 || stats.Reserved != 0 || stats.Bytes != 0 {
 				t.Fatalf("leaked %+v", stats)
 			}
@@ -416,6 +590,36 @@ func TestRestartKeepsNewestCandidateRegardlessOfInventoryOrder(t *testing.T) {
 	}
 }
 
+func TestRestartReducedMaxEntriesKeepsNewest(t *testing.T) {
+	s := openTest(t, 1<<20)
+	old, newest := testMeta("old", "abcd"), testMeta("newest", "abcd")
+	put(t, s, old, "abcd")
+	put(t, s, newest, "abcd")
+	s.Close()
+	for m, stamp := range map[Metadata]int64{old: 1, newest: 2} {
+		path := filepath.Join(s.dir, m.Key, "meta")
+		var dm diskMetadata
+		raw, _ := os.ReadFile(path)
+		if err := json.Unmarshal(raw, &dm); err != nil {
+			t.Fatal(err)
+		}
+		dm.Committed = stamp
+		raw, _ = json.Marshal(dm)
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s2, err := OpenWithLimits(s.dir, Limits{MaxBytes: 1 << 20, MaxFills: 1, MaxEntries: 1, FillTimeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	read(t, s2, newest, "abcd")
+	if _, err := s2.Get(context.Background(), old); err != ErrMiss {
+		t.Fatalf("old entry = %v", err)
+	}
+}
+
 func TestFailedAdmissionDoesNotEvictInsufficientVictims(t *testing.T) {
 	s := openTest(t, 3*metadataReservation)
 	a := testMeta("old", "a")
@@ -425,7 +629,7 @@ func TestFailedAdmissionDoesNotEvictInsufficientVictims(t *testing.T) {
 	put(t, s, b, body)
 	s.entries[a.Key].last = 1
 	s.entries[b.Key].last = 3
-	if s.evictLocked(2*metadataReservation, 2) {
+	if s.evictLocked(2*metadataReservation, 0, 2) {
 		t.Fatal("admitted without enough eligible space")
 	}
 	read(t, s, a, "a")

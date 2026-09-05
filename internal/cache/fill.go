@@ -21,6 +21,10 @@ type Fill struct {
 	hash            hash.Hash
 	written, charge int64
 	done            bool
+	deadline        time.Time
+	timer           *time.Timer
+	timerDone       chan struct{}
+	timerDoneOnce   sync.Once
 }
 
 func (s *Store) Begin(meta Metadata) (*Fill, error) {
@@ -42,7 +46,12 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	if _, ok := s.fills[meta.Key]; ok {
 		return nil, ErrBypass
 	}
-	if !s.evictLocked(charge, math.MaxInt64) {
+	// Fill concurrency cannot be solved by eviction, so reject before touching
+	// useful entries.
+	if len(s.fills) >= s.maxFills {
+		return nil, ErrBypass
+	}
+	if !s.evictLocked(charge, 1, math.MaxInt64) {
 		return nil, ErrBypass
 	}
 	d, err := os.MkdirTemp(s.dir, ".fill-")
@@ -63,16 +72,27 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		os.RemoveAll(d)
 		return nil, err
 	}
-	fill := &Fill{store: s, meta: meta, dir: d, file: f, hash: sha256.New(), charge: charge}
+	fill := &Fill{store: s, meta: meta, dir: d, file: f, hash: sha256.New(), charge: charge, deadline: time.Now().Add(s.fillTimeout), timerDone: make(chan struct{})}
 	s.fills[meta.Key] = fill
 	s.reserved += charge
+	fill.timer = time.AfterFunc(s.fillTimeout, func() {
+		fill.mu.Lock()
+		if !fill.done {
+			_ = fill.finish(errors.New("cache fill expired"))
+		}
+		fill.mu.Unlock()
+		fill.timerDoneOnce.Do(func() { close(fill.timerDone) })
+	})
 	return fill, nil
 }
 func (f *Fill) Write(p []byte) (int, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	defer f.unlockAndStopIfDone()
 	if f.done {
 		return 0, os.ErrClosed
+	}
+	if !time.Now().Before(f.deadline) {
+		return 0, f.finish(errors.New("cache fill expired"))
 	}
 	if int64(len(p)) > f.meta.Size-f.written {
 		return 0, f.finish(errors.New("cache fill exceeds declared size"))
@@ -89,9 +109,12 @@ func (f *Fill) Write(p []byte) (int, error) {
 }
 func (f *Fill) Commit() error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	defer f.unlockAndStopIfDone()
 	if f.done {
 		return os.ErrClosed
+	}
+	if !time.Now().Before(f.deadline) {
+		return f.finish(errors.New("cache fill expired"))
 	}
 	if f.written != f.meta.Size || "sha256:"+hex.EncodeToString(f.hash.Sum(nil)) != f.meta.Digest {
 		return f.finish(errors.New("cache fill verification failed"))
@@ -128,6 +151,9 @@ func (f *Fill) Commit() error {
 	if err = syncDirectory(f.dir); err != nil {
 		return f.finish(err)
 	}
+	if !time.Now().Before(f.deadline) {
+		return f.finish(errors.New("cache fill expired"))
+	}
 	dest := filepath.Join(f.store.dir, f.meta.Key)
 	if err = os.Rename(f.dir, dest); err != nil {
 		return f.finish(err)
@@ -136,7 +162,14 @@ func (f *Fill) Commit() error {
 	if err = syncDirectory(f.store.dir); err != nil {
 		return f.finish(err)
 	}
+	if !time.Now().Before(f.deadline) {
+		return f.finish(errors.New("cache fill expired"))
+	}
 	f.store.mu.Lock()
+	if !time.Now().Before(f.deadline) {
+		f.store.mu.Unlock()
+		return f.finish(errors.New("cache fill expired"))
+	}
 	delete(f.store.fills, f.meta.Key)
 	f.store.reserved -= f.charge
 	f.store.entries[f.meta.Key] = &entry{meta: f.meta, dir: dest, charge: f.charge, last: time.Now().UnixNano(), verified: true}
@@ -147,11 +180,26 @@ func (f *Fill) Commit() error {
 }
 func (f *Fill) Abort() error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	defer f.unlockAndStopIfDone()
 	if f.done {
 		return nil
 	}
 	return f.finish(nil)
+}
+
+func (f *Fill) unlockAndStopIfDone() {
+	done := f.done
+	f.mu.Unlock()
+	if done {
+		f.stopTimer()
+	}
+}
+
+func (f *Fill) stopTimer() {
+	if f.timer.Stop() {
+		f.timerDoneOnce.Do(func() { close(f.timerDone) })
+	}
+	<-f.timerDone
 }
 func (f *Fill) finish(cause error) error {
 	if f.file != nil {
@@ -170,6 +218,7 @@ func (f *Fill) finish(cause error) error {
 	// Failed cleanup must not allow the occupied space to be admitted again.
 	if removeErr != nil {
 		f.store.bytes += f.charge
+		f.store.failedSlots++
 	}
 	f.store.mu.Unlock()
 	f.done = true

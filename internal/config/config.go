@@ -19,6 +19,11 @@ import (
 var ErrInvalid = errors.New("invalid configuration")
 
 const DefaultCacheMaxBytes int64 = 32 << 30
+const (
+	DefaultCacheMaxFills    = 16
+	DefaultCacheMaxEntries  = 100000
+	DefaultCacheFillTimeout = 10 * time.Minute
+)
 
 type Config struct {
 	Listen                string
@@ -36,8 +41,11 @@ type Config struct {
 }
 
 type Cache struct {
-	Dir      string
-	MaxBytes int64
+	Dir         string
+	MaxBytes    int64
+	MaxFills    int
+	MaxEntries  int
+	FillTimeout time.Duration
 }
 
 type duration time.Duration
@@ -73,8 +81,11 @@ type rawConfig struct {
 }
 
 type rawCache struct {
-	Dir      string `yaml:"dir"`
-	MaxBytes int64  `yaml:"max_bytes"`
+	Dir         string   `yaml:"dir"`
+	MaxBytes    int64    `yaml:"max_bytes"`
+	MaxFills    int      `yaml:"max_fills"`
+	MaxEntries  int      `yaml:"max_entries"`
+	FillTimeout duration `yaml:"fill_timeout"`
 }
 
 // Load reads one strict YAML document from path and resolves relative directories
@@ -102,7 +113,7 @@ func Load(path string) (Config, error) {
 func defaults() rawConfig {
 	return rawConfig{
 		Listen:                "127.0.0.1:3128",
-		Cache:                 rawCache{MaxBytes: DefaultCacheMaxBytes},
+		Cache:                 rawCache{MaxBytes: DefaultCacheMaxBytes, MaxFills: DefaultCacheMaxFills, MaxEntries: DefaultCacheMaxEntries, FillTimeout: duration(DefaultCacheFillTimeout)},
 		DialTimeout:           duration(10 * time.Second),
 		TLSHandshakeTimeout:   duration(10 * time.Second),
 		ResponseHeaderTimeout: duration(30 * time.Second),
@@ -124,7 +135,7 @@ func validate(raw rawConfig, base string) (Config, error) {
 			return Config{}, ErrInvalid
 		}
 	}
-	if raw.Cache.MaxBytes <= 0 || raw.MaxConnections <= 0 || raw.MaxLeafCertificates <= 0 {
+	if raw.Cache.MaxBytes <= 0 || raw.Cache.MaxFills <= 0 || raw.Cache.MaxEntries <= 0 || raw.Cache.FillTimeout <= 0 || raw.MaxConnections <= 0 || raw.MaxLeafCertificates <= 0 {
 		return Config{}, ErrInvalid
 	}
 	registries, err := parseAuthorities(raw.Registries)
@@ -139,7 +150,7 @@ func validate(raw rawConfig, base string) (Config, error) {
 	return Config{
 		Listen: raw.Listen, Registries: registries, RedirectAllowlist: redirectAllowlist,
 		CADir:       resolve(base, raw.CADir),
-		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: raw.Cache.MaxBytes},
+		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: raw.Cache.MaxBytes, MaxFills: raw.Cache.MaxFills, MaxEntries: raw.Cache.MaxEntries, FillTimeout: time.Duration(raw.Cache.FillTimeout)},
 		DialTimeout: time.Duration(raw.DialTimeout), TLSHandshakeTimeout: time.Duration(raw.TLSHandshakeTimeout),
 		ResponseHeaderTimeout: time.Duration(raw.ResponseHeaderTimeout), IdleTimeout: time.Duration(raw.IdleTimeout),
 		ShutdownTimeout: time.Duration(raw.ShutdownTimeout), MaxConnections: raw.MaxConnections,

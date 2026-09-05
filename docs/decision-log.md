@@ -185,3 +185,14 @@
 - Require completed cache entry population to establish proxy use, but keep public
   smoke evidence separate from local authorization-count and byte-substitution proof.
   Omit raw pull failure output because registries may include signed redirect URLs.
+
+## 4a — cache resource bounds
+
+- Extend store admission and startup inventory with independent fill/entry limits;
+  reserve slots before creating files, preflight eviction capacity, and count failed
+  cleanup conservatively. Preserve existing byte reservations and reader pinning.
+- Each fill owns one deadline timer. Terminal writes, commits and aborts stop/join
+  it outside the fill lock; expiry aborts storage without touching upstream delivery.
+  Recheck deadlines before publication, including after filesystem operations.
+- Keep defaults at 16 fills, 100000 entry slots and 10m lifetime. Limits constrain
+  caching rather than successful authorized pulls, and do not preempt kernel I/O.

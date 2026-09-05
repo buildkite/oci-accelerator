@@ -7,8 +7,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
   2 — authorized digest-blob caching; 3 — digest manifests and compatibility.
-- **In progress:** 4a — explicit cache resource limits.
-- **Next:** 4a–4e. Combined autonomous implementation, checks, reviews,
+- **In progress:** 4b — bounded authorized fill waiting.
+- **Next:** 4b–4e. Combined autonomous implementation, checks, reviews,
   commits/pushes, and isolated acceptance/fault/load resources are authorized.
 
 ## Completed groundwork
@@ -164,12 +164,21 @@ layer bytes versus 8390075 cold). Paired reviews and follow-ups completed. Fixed
 namespace group expansion and asserted socket GID; supplementary root membership
 had masked the defect in this orb. All owned services cleaned up.
 
-3d complete: test/race/vet and repeated anonymous Hub/GHCR acceptance passed
+[3d complete](https://ampcode.com/@buildkite/docker-accelerator/commit/b9adb18): test/race/vet and repeated anonymous Hub/GHCR acceptance passed
 (final run 32.46s). Fresh Docker state preserved exact image identities across
 cold/warm/restart. Paired reviews and follow-ups completed. Replaced count-only
 population assertions with completed-key set comparison to tolerate eviction.
 Rejected adding warm-hit proof to public smoke: deterministic local fixtures own
 that evidence. The filtered code-only review has the same ambient-guidance limitation.
+
+4a complete: test/race/vet and example `--check` passed. Small-limit tests cover
+slot reservations, independent fill limits, pinned refusal/LRU eviction, reduced
+startup entry limits, timer cleanup and expiry races. Stream-wrapper checks prove
+exact upstream bytes after cap refusal and expiry. Paired snapshot reviews completed.
+Rejected code-only findings demanding preemption of kernel I/O and an atomic wall-clock
+deadline/publication transaction: the approved deadline is checked under the fill/store
+locks, not a real-time scheduling guarantee. Stalled filesystem operations remain an
+explicit limitation. Parent review fixed terminal-write timer retention before review.
 
 - **3a:** authorized, representation-aware digest-manifest caching using the
   existing store and redirect stack, preserving blob entries.

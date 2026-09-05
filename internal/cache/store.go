@@ -49,19 +49,37 @@ type entry struct {
 }
 
 type Store struct {
-	mu              sync.Mutex
-	dir             string
-	max             int64
-	bytes, reserved int64
-	evictions       int64
-	entries         map[string]*entry
-	fills           map[string]*Fill
-	lock            *os.File
-	closed          bool
+	mu                   sync.Mutex
+	dir                  string
+	max                  int64
+	maxFills, maxEntries int
+	fillTimeout          time.Duration
+	failedSlots          int
+	bytes, reserved      int64
+	evictions            int64
+	entries              map[string]*entry
+	fills                map[string]*Fill
+	lock                 *os.File
+	closed               bool
+}
+
+type Limits struct {
+	MaxBytes    int64
+	MaxFills    int
+	MaxEntries  int
+	FillTimeout time.Duration
+}
+
+func (l Limits) valid() bool {
+	return l.MaxBytes > 0 && l.MaxFills > 0 && l.MaxEntries > 0 && l.FillTimeout > 0
 }
 
 func Open(dir string, maxBytes int64) (*Store, error) {
-	if dir == "" || maxBytes <= 0 {
+	return OpenWithLimits(dir, Limits{MaxBytes: maxBytes, MaxFills: 16, MaxEntries: 100000, FillTimeout: 10 * time.Minute})
+}
+
+func OpenWithLimits(dir string, limits Limits) (*Store, error) {
+	if dir == "" || !limits.valid() {
 		return nil, errors.New("cache directory and capacity are required")
 	}
 	dir = filepath.Clean(dir)
@@ -88,7 +106,7 @@ func Open(dir string, maxBytes int64) (*Store, error) {
 		lf.Close()
 		return nil, err
 	}
-	s := &Store{dir: dir, max: maxBytes, entries: make(map[string]*entry), fills: make(map[string]*Fill), lock: lf}
+	s := &Store{dir: dir, max: limits.MaxBytes, maxFills: limits.MaxFills, maxEntries: limits.MaxEntries, fillTimeout: limits.FillTimeout, entries: make(map[string]*entry), fills: make(map[string]*Fill), lock: lf}
 	if err := s.inventory(); err != nil {
 		s.releaseLock()
 		return nil, err
@@ -215,7 +233,7 @@ func (s *Store) inventory() error {
 				return errors.New("cache entry size overflow")
 			}
 			// Keep the startup index bounded even when capacity was reduced.
-			if charge > s.max || !s.evictLocked(charge, dm.Committed) {
+			if charge > s.max || !s.evictLocked(charge, 1, dm.Committed) {
 				if err := os.RemoveAll(p); err != nil {
 					return err
 				}
@@ -238,20 +256,24 @@ func add(a, b int64) (int64, bool) {
 }
 
 // before prevents an older startup candidate from evicting newer entries.
-func (s *Store) evictLocked(need, before int64) bool {
-	fits := func() bool { return need <= s.max-s.bytes-s.reserved }
+func (s *Store) evictLocked(need int64, needSlots int, before int64) bool {
+	fits := func() bool {
+		return need <= s.max-s.bytes-s.reserved && len(s.entries)+len(s.fills)+s.failedSlots+needSlots <= s.maxEntries
+	}
 	if fits() {
 		return true
 	}
 	var es []*entry
 	available := s.max - s.bytes - s.reserved
+	availableSlots := s.maxEntries - len(s.entries) - len(s.fills) - s.failedSlots
 	for _, e := range s.entries {
 		if e.pins == 0 && e.last <= before {
 			es = append(es, e)
 			available += e.charge
+			availableSlots++
 		}
 	}
-	if available < need {
+	if available < need || availableSlots < needSlots {
 		return false
 	}
 	sort.Slice(es, func(i, j int) bool { return es[i].last < es[j].last })

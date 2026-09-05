@@ -117,6 +117,9 @@ See [the complete example](../config.example.yaml). Configuration is static unti
 | `redirect_allowlist` | Optional private HTTPS storage authorities; does not enable CONNECT interception |
 | `ca_dir` | Required; private persistent state |
 | `cache.dir`, `cache.max_bytes` | Optional cache directory; omission disables caching. Default maximum 32 GiB including fill/metadata reservations |
+| `cache.max_fills` | `16` active writers globally; excess misses stream uncached |
+| `cache.max_entries` | `100000` completed entries plus reserved fill slots; evict unused LRU entries or bypass |
+| `cache.fill_timeout` | `10m` per fill; expiry discards cache admission, not the upstream transfer |
 | `dial_timeout`, `tls_handshake_timeout` | `10s` each |
 | `response_header_timeout` | `30s`; also bounds incoming request headers |
 | `idle_timeout` | `2m`; idle tunnels, upstream I/O, downstream writes, and keepalive |
@@ -128,6 +131,12 @@ CONNECT headers and upstream response headers are bounded to 64 KiB. Upstream
 connections are capped at 16 per registry, with 32 idle globally and 8 idle per
 registry. Layers stream rather than accumulate in memory. Active transfers have
 idle-I/O bounds, not a fixed total download timeout.
+
+All cache limits are positive. Fill expiry releases cache reservations even when
+the upstream pauses; timer work is joined on terminal fill operations. Kernel file
+operations cannot be preempted, so expiry and shutdown are not hard deadlines for
+a stalled filesystem. Byte and entry caps both apply after restart. The entry cap
+bounds index growth, not RSS: 100000 entries can use hundreds of MiB; tune to capacity.
 
 Intercepted traffic uses TLS 1.2+ and HTTP/1.1. Only bodyless GET, HEAD, and OPTIONS
 are allowed; mutations, upgrades, conflicting TLS/HTTP authorities, and non-origin-form

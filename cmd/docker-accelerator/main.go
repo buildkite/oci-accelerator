@@ -59,7 +59,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	var store *cache.Store
 	if cfg.Cache.Dir != "" {
-		store, err = cache.Open(cfg.Cache.Dir, cfg.Cache.MaxBytes)
+		store, err = cache.OpenWithLimits(cfg.Cache.Dir, cache.Limits{MaxBytes: cfg.Cache.MaxBytes, MaxFills: cfg.Cache.MaxFills, MaxEntries: cfg.Cache.MaxEntries, FillTimeout: cfg.Cache.FillTimeout})
 		if err != nil {
 			return errors.New("cache startup failed")
 		}
