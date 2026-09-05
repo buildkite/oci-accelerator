@@ -62,3 +62,19 @@
 - Log only configured registry, status, duration, bytes, and completion outcome.
   Do not log raw upstream errors, paths, queries, request headers, or token bodies.
   Startup reports the public CA path and SHA-256 fingerprint; `--check` is side-effect-free.
+
+## 1e — Docker acceptance and operator handoff
+
+- Exercise the compiled CLI with a deterministic authenticated TLS registry and a
+  tiny valid single-layer image. Use a non-loopback registry address so Docker cannot
+  silently bypass the proxy via its loopback exception.
+- Use isolated supervised Docker daemons with fresh VFS stores for each phase,
+  process-local trust roots, and private fixture-only Docker credentials. Leave
+  existing Docker state and global trust untouched. Assert origin traffic and image
+  digests, not just successful pull output or log messages.
+- Keep privileged acceptance opt-in; default tests validate the image fixture and
+  local protocol tests. Report the exact Docker version and distinguish correctness
+  evidence from performance or public-registry compatibility claims.
+- Document startup, manual trust, unrestricted opaque relay risks, runtime bounds,
+  CA recovery/replacement, and no-cache limitations. Ignore example runtime state
+  and local config so generated CA keys are not accidentally staged.

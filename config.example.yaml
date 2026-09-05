@@ -4,6 +4,7 @@ registries:
   - registry-1.docker.io
   - ghcr.io
 ca_dir: ./data/ca
+# Reserved for later slices. No cache is read or written yet.
 cache:
   dir: ./data/cache
   max_bytes: 34359738368

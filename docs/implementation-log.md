@@ -5,10 +5,10 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 ## Current status
 
-- **Completed implementation slices:** none.
-- **In progress:** slice 1; 1a–1d complete.
-- **Next:** 1e — Docker acceptance and setup docs.
-- Autonomous implementation of 1a–1e is authorized; stop before caching.
+- **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle (1a–1e).
+- **In progress:** none.
+- **Next:** slice 2 — authorized digest-blob caching, awaiting authorization.
+- Stopped at the approved slice-1 boundary. No caching is implemented.
 
 ## Completed groundwork
 
@@ -24,24 +24,23 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 | Slice | Status | Outcome |
 | --- | --- | --- |
-| 1. Working explicit proxy and CA lifecycle | In progress | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
+| 1. Working explicit proxy and CA lifecycle | Complete | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
 | 2. Authorized digest-blob caching | Not started | Per-request upstream GET authorization, safe redirects, verified atomic disk fills, cache substitution, capacity limits, and basic eviction. |
 | 3. Digest manifests and generic protocol compatibility | Not started | Representation-aware digest-manifest caching and registry/auth compatibility; tags remain uncached. |
 | 4. Concurrency and operational hardening | Not started | Fill coalescing, cancellation, recovery, resource bounds, diagnostics, graceful shutdown, and measured cold/warm behavior. |
 
-## Slice 1: upcoming subslices
+## Slice 1: completed subslices
 
-Each row is a proposed self-contained commit. The sequence puts configuration
-and CA prerequisites before interception. Refine boundaries when implementation
-provides evidence, without silently changing the approved scope.
+Each row is a self-contained implementation commit. Configuration and CA
+prerequisites were completed before interception.
 
 | Subslice | Status | Outcome and validation |
 | --- | --- | --- |
 | 1a. Go module and configuration | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/763cd026ffa760d47929d53a103ec772dfb85a85) | Strict YAML/authority/CLI tests pass, including defaults, malformed/duplicate/unknown values, and redacted errors. |
 | 1b. Persistent CA lifecycle | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/0b3b6fc5c411f9b6b1340b18c2068876528e019a) | Atomic CA initialization/reuse and bounded leaf issuance; tests for trust, permissions, invalid state, renewal, concurrency, and stable CA identity. |
 | 1c. CONNECT routing and opaque tunnels | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/268e48b0c6eb7521db85581f31ca251afbe1f159) | Strict authority parsing, configured-host refusal, passthrough, buffered bytes, half-close, idle/cap/shutdown tests. CLI starts the listener and handles signals. |
-| 1d. Intercepted registry forwarding | Complete | TLS interception, authority binding, verified upstream TLS, credential/challenge forwarding, write rejection, redirect relay, cancellation and partial-response failure tests. No caching. |
-| 1e. Docker Engine acceptance and setup docs | Not started | Document proxy/CA setup and verify a real pull, CA trust failure, and CA persistence after restart. Record evidence and finish the plan's slice-1 checks. |
+| 1d. Intercepted registry forwarding | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/ffb081fa1fd0fa8a671463e1b5e2c27039d9b275) | TLS interception, authority binding, verified upstream TLS, credential/challenge forwarding, write rejection, redirect relay, cancellation and partial-response failure tests. No caching. |
+| 1e. Docker Engine acceptance and setup docs | Complete | Local authenticated registry, compiled binary, fresh Docker daemons, CA rejection/trust/persistence and digest/byte assertions; operator guide and runnable example. |
 
 ## Validation and review
 
@@ -76,6 +75,18 @@ log redaction, and graceful TLS keepalive shutdown. Both independent reviews com
 Rejected a claimed truncated-stream completion-log bug: the standard reverse proxy
 aborts the HTTP handler on copy failure; an added executable regression confirmed
 `outcome=aborted` (not `complete`) and a client read error. Checks rerun successfully.
+
+1e validation: tests/race/vet and example `--check` passed. Real Docker 29.8.0
+acceptance passed repeatedly with the compiled binary: missing CA trust reached
+zero origin HTTP requests, both authenticated fresh-daemon pulls matched the expected
+manifest/config/rootfs digests, each fetched one 118-byte layer, and the proxy CA
+fingerprint was unchanged after restart. The expected manifest digest is
+`sha256:ea16de605af6cdec08219d0e31bc573cfd28ac2ef8b115e759bfaac7c107edde`.
+Both independent reviews and follow-up reviews completed. Fixed the fixture counter
+to exclude HEAD from GET body-byte assertions, with a regression test. Acceptance
+services/directories were cleaned up; only the repository's normal Docker service
+remains. Generated service metadata is kept in ignored `.amp/portals/`, not test source.
+See the [operating guide](operations.md) for setup, evidence, and unvalidated flows.
 
 ## Later slices: queued scope
 

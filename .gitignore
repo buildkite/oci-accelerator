@@ -1,1 +1,4 @@
 .amp/portals/
+/bin/
+/data/
+/config.local.yaml

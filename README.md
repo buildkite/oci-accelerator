@@ -1,8 +1,21 @@
 # Docker accelerator
 
-A planned standalone Go HTTPS pull-through cache for Docker Engine images.
-Implementation is in progress. See the [approved plan](docs/plans/https-registry-cache.md).
+A standalone Go explicit HTTPS proxy for Docker Engine, with selective registry
+TLS interception and persistent CA identity. **Caching is not implemented yet.**
+See the [implementation plan](docs/plans/https-registry-cache.md).
 Track completed and upcoming slices in the [implementation log](docs/implementation-log.md).
+
+## Build and configure
+
+```sh
+go build -o bin/docker-accelerator ./cmd/docker-accelerator
+bin/docker-accelerator --config config.example.yaml --check
+```
+
+Follow the [operating guide](docs/operations.md) to configure registry authorities,
+start the proxy, verify/install its public CA, and configure Docker Engine.
+The default listener is loopback-only. Do not expose it publicly: there is no
+proxy-user authentication, and unconfigured CONNECT destinations are opaque tunnels.
 
 ## Development in Amp orbs
 
@@ -36,5 +49,16 @@ go vet ./...
 ```
 
 Registry credentials belong to the Docker client, never the setup script or a
-shared orb snapshot. Future proxy/CA configuration will be documented alongside
-the implementation; setup does not install a proxy CA into Docker's trust store.
+shared orb snapshot. Setup does not install a proxy CA into Docker's trust store.
+
+Real Docker acceptance is opt-in and uses fresh isolated daemon state:
+
+```sh
+DOCKER_ACCELERATOR_E2E=1 go test -v ./integration \
+  -run TestDockerPullThroughCompiledProxy -count=1 -timeout=5m
+```
+
+It validates CA rejection/trust, authenticated pulls, image digests, origin byte
+counts, and persistent CA identity using local fixtures—not public registries.
+See the [guide](docs/operations.md#acceptance-evidence-and-repeatable-checks) for
+prerequisites, cleanup, tested versions, and limitations.

@@ -4,7 +4,8 @@
 
 Build a standalone Go binary that accelerates Docker Engine image pulls through an explicit HTTPS-intercepting forward proxy. Image names remain unchanged. Docker Engine hosts configure the proxy and trust its CA.
 
-Slice 1 implementation is authorized. Track progress in the [implementation log](../implementation-log.md). Caching slices remain queued.
+Slice 1 is implemented and validated. See the [operating guide](../operations.md)
+and [implementation log](../implementation-log.md). Caching slices remain queued.
 
 ## Agreed scope
 
@@ -111,6 +112,10 @@ The YAML schema covers listen address, registry authorities, cache directory/siz
 ## Delivery slices
 
 ### 1. Working explicit proxy and CA lifecycle
+
+**Complete:** subslices 1a–1e passed baseline checks, independent review, and real
+Docker Engine acceptance using an authenticated local TLS registry. See the
+[recorded evidence](../operations.md#acceptance-evidence-and-repeatable-checks).
 
 Create the Go module, binary entry point, validated YAML configuration, CONNECT dispatcher, TLS interception, and transparent upstream forwarding. Enforce intercepted pull-only methods. Persist the CA and document Docker Engine setup. Keep ownership boundaries simple: configuration, proxy/TLS, registry policy, and disk cache; avoid provider adapters and generic plugin interfaces.
 
