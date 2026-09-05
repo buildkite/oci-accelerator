@@ -40,7 +40,7 @@ prerequisites were completed before interception.
 | 1b. Persistent CA lifecycle | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/0b3b6fc5c411f9b6b1340b18c2068876528e019a) | Atomic CA initialization/reuse and bounded leaf issuance; tests for trust, permissions, invalid state, renewal, concurrency, and stable CA identity. |
 | 1c. CONNECT routing and opaque tunnels | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/268e48b0c6eb7521db85581f31ca251afbe1f159) | Strict authority parsing, configured-host refusal, passthrough, buffered bytes, half-close, idle/cap/shutdown tests. CLI starts the listener and handles signals. |
 | 1d. Intercepted registry forwarding | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/ffb081fa1fd0fa8a671463e1b5e2c27039d9b275) | TLS interception, authority binding, verified upstream TLS, credential/challenge forwarding, write rejection, redirect relay, cancellation and partial-response failure tests. No caching. |
-| 1e. Docker Engine acceptance and setup docs | Complete | Local authenticated registry, compiled binary, fresh Docker daemons, CA rejection/trust/persistence and digest/byte assertions; operator guide and runnable example. |
+| 1e. Docker Engine acceptance and setup docs | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/f068f8d2ee8d13475d612b373501b1bf6f582d35) | Local authenticated registry, compiled binary, fresh Docker daemons, CA rejection/trust/persistence and digest/byte assertions; operator guide and runnable example. |
 
 ## Validation and review
 
