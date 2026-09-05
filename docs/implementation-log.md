@@ -6,10 +6,10 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 ## Current status
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle (1a–1e).
-- **In progress:** slice 2; 2b complete, preparing 2c.
-- **Next:** 2c authorized delivery and 2d Docker acceptance.
+- **In progress:** slice 2; 2c complete, preparing 2d.
+- **Next:** 2d Docker acceptance.
 - Slice 2 recommendations and autonomous implementation are approved. Stop before
-  slice 3. No caching is enabled yet.
+  slice 3. Caching is enabled when a cache directory is configured.
 
 ## Completed groundwork
 
@@ -26,7 +26,7 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 | Slice | Status | Outcome |
 | --- | --- | --- |
 | 1. Working explicit proxy and CA lifecycle | Complete | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
-| 2. Authorized digest-blob caching | In progress | 2a complete: blob classification and safe redirects. Disk caching follows in 2b–2c. |
+| 2. Authorized digest-blob caching | In progress | 2a–2c complete: safe redirects, verified bounded storage, and authorized delivery. Real Docker cache acceptance is next. |
 | 3. Digest manifests and generic protocol compatibility | Not started | Representation-aware digest-manifest caching and registry/auth compatibility; tags remain uncached. |
 | 4. Concurrency and operational hardening | Not started | Fill coalescing, cancellation, recovery, resource bounds, diagnostics, graceful shutdown, and measured cold/warm behavior. |
 
@@ -99,7 +99,7 @@ CDNs: the approved policy explicitly permits them; the list grants private-desti
 exceptions. Code-only input excluded docs/history, with ambient guidance isolation
 limitations disclosed.
 
-2b complete: test/race/vet passed, including atomic fill visibility, digest/length
+[2b complete](https://ampcode.com/@buildkite/docker-accelerator/commit/5a435e865b72348ce950ffbf77a705f80dec6745): test/race/vet passed, including atomic fill visibility, digest/length
 failures, /dev/full write errors, reservations, competing writers, reader pinning,
 restart/corruption cleanup, restrictive umask, and lock ownership. Both independent
 reviews and follow-ups completed. Fixed startup eviction ordering and preflighted
@@ -110,7 +110,16 @@ wiring is 2c. Rejected adding goroutines to pretend regular-file syscalls are
 context-cancellable: Go cannot preempt a stalled kernel filesystem operation, and
 abandoning it would leak ownership. Ordinary cancellation/Abort is covered; storage
 stall resilience remains an operational limitation, not a verified hard deadline.
-Commit link will be added in the next subslice.
+
+2c complete: test/race/vet passed, plus three repeated race runs of warm permission,
+cancel/shutdown, and concurrent-client tests. Cold bytes were verified; warm HTTP
+fixtures delivered identical cached bytes despite the origin sending only accepted
+headers, proving body substitution and prompt cancellation. Denied/revoked clients,
+public HEAD/protected GET, storage denial, outages, per-hop no-store, metadata and
+protocol bypasses, cross-registry/repository isolation, and failed fills are covered.
+Both independent reviews and follow-ups completed; fixed unexpected Serve termination
+to shut down the proxy before closing storage. Code-only isolation limitation remains
+as recorded above. Commit link follows with 2d.
 
 Slice 2 has an approved concrete breakdown in the plan. Break later slices down
 using the implementation then available.

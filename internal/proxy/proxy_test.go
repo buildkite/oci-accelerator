@@ -135,7 +135,7 @@ func listen(t *testing.T) net.Listener {
 func start(t *testing.T, cfg config.Config) (*Proxy, string) {
 	t.Helper()
 	l := listen(t)
-	p := New(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p := New(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	go func() { _ = p.Serve(l) }()
 	t.Cleanup(func() { shutdown(t, p) })
 	return p, l.Addr().String()

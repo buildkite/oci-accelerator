@@ -1,7 +1,9 @@
 # Docker accelerator
 
 A standalone Go explicit HTTPS proxy for Docker Engine, with selective registry
-TLS interception and persistent CA identity. **Caching is not implemented yet.**
+TLS interception, persistent CA identity, and authorized SHA-256 blob caching.
+Every cached delivery still requires a successful upstream GET. Manifests remain
+uncached; there is no offline fallback or request-rate-limit avoidance.
 See the [implementation plan](docs/plans/https-registry-cache.md).
 Track completed and upcoming slices in the [implementation log](docs/implementation-log.md).
 

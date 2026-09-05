@@ -1,7 +1,9 @@
 # Running the proxy with Docker Engine
 
-Slice 1 is a working explicit HTTPS proxy, **not yet a cache**. Every request goes
-upstream. There is no offline fallback, rate-limit avoidance, or demonstrated speedup.
+The proxy caches verified SHA-256 blobs when `cache.dir` is configured. Every
+request still goes upstream for current GET authorization before any cache hit.
+There is no offline fallback or request-rate-limit avoidance. Real Docker cache
+acceptance is the next validation step; local protocol/cache checks pass.
 Linux Docker Engine is the validated target; Docker Desktop, Windows, containerd,
 and BuildKit-specific integration are not validated.
 
@@ -114,7 +116,7 @@ See [the complete example](../config.example.yaml). Configuration is static unti
 | `registries` | Required nonempty list of distinct canonical authorities |
 | `redirect_allowlist` | Optional private HTTPS storage authorities; does not enable CONNECT interception |
 | `ca_dir` | Required; private persistent state |
-| `cache.dir`, `cache.max_bytes` | Reserved for later slices; 32 GiB default size, no cache reads/writes yet |
+| `cache.dir`, `cache.max_bytes` | Optional cache directory; omission disables caching. Default maximum 32 GiB including fill/metadata reservations |
 | `dial_timeout`, `tls_handshake_timeout` | `10s` each |
 | `response_header_timeout` | `30s`; also bounds incoming request headers |
 | `idle_timeout` | `2m`; idle tunnels, upstream I/O, downstream writes, and keepalive |
@@ -140,9 +142,43 @@ hops retain only Accept, Accept-Encoding, and User-Agent, never registry credent
 or cookies. These restrictions do not constrain user-selected opaque CONNECT tunnels.
 
 JSON stderr logs include configured registry, status, duration, downstream body bytes,
-and completion outcome. Aborted streaming responses may have already sent status 200;
+completion outcome, `cache` (hit/miss/bypass), `fill` (none/stored/bypass/failed/aborted),
+and `upstream_body_bytes` consumed by the forwarding code. The latter excludes
+transport/kernel read-ahead and is not a wire-level traffic measurement.
+Aborted streaming responses may have already sent status 200;
 the client still receives an incomplete-body error. No paths, signed queries, auth
-headers, token bodies, or raw upstream errors are logged. Cache metrics are not implemented.
+headers, token bodies, or raw upstream errors are logged. A metrics endpoint and
+aggregate operational counters remain planned for slice 4.
+
+## Cache behavior and storage
+
+Only full, query-free SHA-256 blob GETs (including image configs) are cached. All
+manifests, HEAD, Range, conditional requests, unknown-length bodies, encoded bodies,
+no-store responses/requests, and unsupported Vary dimensions bypass caching.
+Each delivery needs a terminal upstream 200 with matching length/media type and
+consistent digest headers when present. CDN digest headers are optional. Denials,
+rate limits, upstream outages, TLS failures, and metadata mismatches never trigger
+an offline/stale fallback. Responses use current upstream headers, not saved cookies
+or authentication metadata. Warm GETs can transfer bytes before cancellation.
+
+Use one process per private cache directory, with an owner-controlled parent.
+An unsafe/unusable configured directory fails startup; omitted `cache.dir` leaves
+forwarding-only mode. Runtime capacity and storage-write failures bypass admission
+without making the upstream transfer depend on a cache write.
+
+The limit charges declared body bytes plus 4 KiB per entry for metadata, including
+in-progress fills. Leave filesystem headroom for blocks, directories, and inodes.
+Entries larger than the budget are forwarded uncached. LRU eviction skips active
+readers; competing cold clients authorize/transfer independently, with at most one
+storage writer per key. Fills are removed on cancellation and only published after
+complete length and digest verification. Startup removes recognized abandoned fills
+and invalid pairs and rehashes persisted bodies before first use. Live hit recency
+is in memory; restart approximates order using commit times. Do not modify live
+cache files. Unknown files cause startup refusal, not arbitrary deletion.
+
+Network cancellation and shutdown close client-owned transfers and abort incomplete
+fills. Regular-file kernel I/O cannot be preempted by Go context cancellation;
+a stalled filesystem can delay cleanup. This is not a hard storage-stall deadline.
 
 ## Shutdown, recovery, and CA replacement
 

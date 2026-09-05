@@ -159,7 +159,7 @@ func TestAddressPolicyAndRebinding(t *testing.T) {
 			t.Errorf("blocked %s", ip)
 		}
 	}
-	p := New(config.Config{DialTimeout: time.Second}, nil, nil)
+	p := New(config.Config{DialTimeout: time.Second}, nil, nil, nil)
 	l := listen(t)
 	defer l.Close()
 	_, port, _ := net.SplitHostPort(l.Addr().String())

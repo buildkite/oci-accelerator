@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"ampcode.com/buildkite/docker-accelerator/internal/ca"
+	"ampcode.com/buildkite/docker-accelerator/internal/cache"
 	"ampcode.com/buildkite/docker-accelerator/internal/config"
 )
 
@@ -27,6 +28,7 @@ type Proxy struct {
 	signer       *ca.Authority
 	logger       *slog.Logger
 	transport    *http.Transport
+	cache        *cache.Store
 	destinations map[string]struct{}
 	lookupIP     func(context.Context, string) ([]net.IPAddr, error)
 
@@ -38,8 +40,9 @@ type Proxy struct {
 	changed  chan struct{}
 }
 
-// New constructs a proxy. It does not open a listener.
-func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger) *Proxy {
+// New constructs a proxy. The caller owns store and closes it after shutdown.
+// A nil store disables caching. New does not open a listener.
+func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *cache.Store) *Proxy {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -52,6 +55,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger) *Proxy {
 	}
 	p := &Proxy{cfg: cfg, signer: signer, logger: logger, transport: transport, configured: make(map[string]struct{}, len(cfg.Registries)), conns: make(map[*trackedConn]struct{}), inners: make(map[*http.Server]struct{}), changed: make(chan struct{}, 1)}
 	p.destinations = make(map[string]struct{})
+	p.cache = store
 	p.lookupIP = net.DefaultResolver.LookupIPAddr
 	transport.DialContext = p.dialUpstream
 	for _, registry := range cfg.Registries {

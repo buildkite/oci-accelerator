@@ -112,3 +112,20 @@
 - Storage remains unwired until 2c. Same-key concurrent fills bypass admission;
   active readers cannot be evicted. Runtime corruption/missing bodies become misses
   and permit a replacement fill. Unknown operator files are not automatically deleted.
+
+## 2c — authorized delivery
+
+- Retain the standard reverse proxy; a request transport follows safe redirects and
+  substitutes only after the current client's terminal GET response passes metadata
+  policy. Keys hash canonical registry, repository, blob kind, digest, exact Accept
+  value list, and observed media type. No request headers or signed URLs are persisted.
+- Honor no-store and digest inconsistencies throughout the redirect chain. Preserve
+  original request bypass policy before hop-by-hop stripping. Vary supports Accept
+  only; unknown dimensions, trailers, nonidentity encoding, and unknown lengths bypass.
+- A response-body wrapper counts upstream bytes consumed and streams into one optional
+  fill. Cache write/commit failures never change upstream bytes or stream errors.
+  Close/cancellation abort incomplete fills; duplicate cold clients keep independent
+  authorized transfers rather than waiting for storage coalescing.
+- CLI owns optional store startup/cleanup. Cache initialization failure is sanitized
+  and occurs before listen; --check creates no CA or cache files. Regular-file kernel
+  stalls cannot be context-preempted; no unowned background writes are introduced.

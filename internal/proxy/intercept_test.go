@@ -452,7 +452,7 @@ func startSignedProxy(t *testing.T, cfg config.Config, signer *ca.Authority, log
 	if logs != nil {
 		output = logs
 	}
-	p := New(cfg, signer, slog.New(slog.NewTextHandler(output, nil)))
+	p := New(cfg, signer, slog.New(slog.NewTextHandler(output, nil)), nil)
 	go func() { _ = p.Serve(l) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)

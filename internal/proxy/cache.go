@@ -1,0 +1,160 @@
+package proxy
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"mime"
+	"net/http"
+	"strings"
+
+	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"ampcode.com/buildkite/docker-accelerator/internal/cache"
+)
+
+type requestStats struct {
+	cache, fill         string
+	upstreamBytes       int64
+	eligible, cacheable bool
+}
+type statsKey struct{}
+
+func cacheHeaders(h http.Header, digest string) bool {
+	for _, value := range h.Values("Cache-Control") {
+		for _, directive := range strings.Split(value, ",") {
+			name, _, _ := strings.Cut(directive, "=")
+			if strings.EqualFold(strings.TrimSpace(name), "no-store") {
+				return false
+			}
+		}
+	}
+	for _, value := range h.Values("Vary") {
+		for _, name := range strings.Split(value, ",") {
+			if !strings.EqualFold(strings.TrimSpace(name), "Accept") {
+				return false
+			}
+		}
+	}
+	for _, value := range h.Values("Docker-Content-Digest") {
+		if value != digest {
+			return false
+		}
+	}
+	return true
+}
+
+func blobMetadata(req *http.Request, resp *http.Response) (cache.Metadata, bool) {
+	repo, digest, ok := blobRequest(req)
+	if !ok || resp.StatusCode != http.StatusOK || resp.ContentLength < 0 || resp.Uncompressed || len(resp.Trailer) != 0 || resp.Header.Get("Content-Range") != "" {
+		return cache.Metadata{}, false
+	}
+	if !cacheHeaders(req.Header, digest) || !cacheHeaders(resp.Header, digest) {
+		return cache.Metadata{}, false
+	}
+	encoding := resp.Header.Values("Content-Encoding")
+	if len(encoding) > 1 || len(encoding) == 1 && !strings.EqualFold(encoding[0], "identity") {
+		return cache.Metadata{}, false
+	}
+	media := resp.Header.Values("Content-Type")
+	if len(media) != 1 || len(media[0]) > 1024 {
+		return cache.Metadata{}, false
+	}
+	if _, _, err := mime.ParseMediaType(media[0]); err != nil {
+		return cache.Metadata{}, false
+	}
+	a, err := authority.Parse(req.URL.Host, "443")
+	if err != nil {
+		return cache.Metadata{}, false
+	}
+	// Length-delimited serialization avoids collisions and preserves distinct
+	// Accept header values. Only the hash, not raw request headers, is persisted.
+	key, _ := json.Marshal([]any{a.String(), repo, "blob", digest, req.Header.Values("Accept"), media[0]})
+	sum := sha256.Sum256(key)
+	return cache.Metadata{Key: hex.EncodeToString(sum[:]), Digest: digest, Size: resp.ContentLength, MediaType: media[0]}, true
+}
+
+func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted bool, stats *requestStats) *http.Response {
+	resp.Body = &countedBody{ReadCloser: resp.Body, stats: stats}
+	if p.cache == nil || !permitted {
+		return resp
+	}
+	meta, ok := blobMetadata(req, resp)
+	if !ok {
+		return resp
+	}
+	if body, err := p.cache.Get(req.Context(), meta); err == nil {
+		resp.Body.Close()
+		resp.Body = body
+		stats.cache = "hit"
+		return resp
+	}
+	stats.cache = "miss"
+	if req.Context().Err() != nil {
+		return resp
+	}
+	fill, err := p.cache.Begin(meta)
+	if err != nil {
+		stats.fill = "bypass"
+		return resp
+	}
+	resp.Body = &fillingBody{ReadCloser: resp.Body, fill: fill, ctx: req.Context(), stats: stats}
+	return resp
+}
+
+type countedBody struct {
+	io.ReadCloser
+	stats *requestStats
+}
+
+func (b *countedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.stats.upstreamBytes += int64(n)
+	return n, err
+}
+
+// The reverse proxy owns this body. Closing it aborts any unfinished fill;
+// cache failures must never replace the upstream stream's bytes or errors.
+type fillingBody struct {
+	io.ReadCloser
+	fill  *cache.Fill
+	ctx   context.Context
+	stats *requestStats
+}
+
+func (b *fillingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if b.fill != nil && b.ctx.Err() != nil {
+		b.abort("aborted")
+	}
+	if b.fill != nil && n > 0 {
+		if _, e := b.fill.Write(p[:n]); e != nil {
+			b.abort("failed")
+		}
+	}
+	if b.fill != nil && err != nil {
+		if err == io.EOF && b.ctx.Err() == nil {
+			b.stats.fill = "stored"
+			if b.fill.Commit() != nil {
+				b.stats.fill = "failed"
+			}
+			b.fill = nil
+		} else {
+			b.abort("aborted")
+		}
+	}
+	return n, err
+}
+func (b *fillingBody) abort(outcome string) {
+	if b.fill != nil {
+		b.fill.Abort()
+		b.fill = nil
+		b.stats.fill = outcome
+	}
+}
+func (b *fillingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.abort("aborted")
+	return err
+}

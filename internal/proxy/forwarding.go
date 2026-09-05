@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -60,13 +61,19 @@ func (p *Proxy) interceptHandler(target authority.Authority) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		completed := false
+		stats := &requestStats{cache: "bypass", fill: "none"}
+		_, digest, eligible := blobRequest(r)
+		stats.eligible = eligible
+		stats.cacheable = eligible && cacheHeaders(r.Header, digest)
+		r = r.WithContext(context.WithValue(r.Context(), statsKey{}, stats))
 		lw := &loggingWriter{ResponseWriter: w, status: http.StatusOK, idleTimeout: p.cfg.IdleTimeout}
 		defer func() {
 			outcome := "aborted"
 			if completed {
 				outcome = "complete"
 			}
-			p.logger.Info("registry request", "registry", target.String(), "status", lw.status, "duration", time.Since(started), "bytes", lw.bytes, "outcome", outcome)
+			p.logger.Info("registry request", "registry", target.String(), "status", lw.status, "duration", time.Since(started), "bytes", lw.bytes, "outcome", outcome,
+				"cache", stats.cache, "fill", stats.fill, "upstream_body_bytes", stats.upstreamBytes)
 		}()
 		if r.RequestURI == "" || !strings.HasPrefix(r.RequestURI, "/") || strings.HasPrefix(r.RequestURI, "//") || r.URL.IsAbs() {
 			refuse(lw, "invalid request target", http.StatusBadRequest)
