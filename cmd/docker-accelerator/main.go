@@ -6,11 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"ampcode.com/buildkite/docker-accelerator/internal/ca"
 	"ampcode.com/buildkite/docker-accelerator/internal/config"
 	"ampcode.com/buildkite/docker-accelerator/internal/proxy"
 )
@@ -24,7 +26,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string, stdout, _ io.Writer) error {
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("docker-accelerator", flag.ContinueOnError)
 	// The flag package includes rejected arguments in its diagnostics. Suppress
 	// those diagnostics so command-line input is never reflected in an error.
@@ -49,12 +51,18 @@ func run(ctx context.Context, args []string, stdout, _ io.Writer) error {
 		fmt.Fprintln(stdout, "configuration validated")
 		return nil
 	}
+	signer, err := ca.Open(cfg.CADir, cfg.MaxLeafCertificates)
+	if err != nil {
+		return fmt.Errorf("CA startup failed: %w", err)
+	}
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return errors.New("cannot listen on configured address")
 	}
 	defer listener.Close()
-	p := proxy.New(cfg)
+	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	logger.Info("proxy ready", "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
+	p := proxy.New(cfg, signer, logger)
 	done := make(chan error, 1)
 	go func() { done <- p.Serve(listener) }()
 	select {

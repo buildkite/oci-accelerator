@@ -47,3 +47,18 @@
 - Wire CLI signal handling and deadline-bounded shutdown now; `--check` validates
   without opening sockets or creating CA state. Configured registries remain unavailable
   until interception is wired in 1d, never silently tunneled.
+
+## 1d — intercepted forwarding
+
+- Use Go TLS and HTTP/1.1 on intercepted connections. Bind SNI (when present) and
+  every HTTP Host to CONNECT. Require origin-form targets to avoid absolute-URI
+  Host normalization ambiguity. Allow bodyless GET, HEAD, OPTIONS only; deny upgrades.
+- Use the standard reverse proxy with a direct, verified-TLS transport. Preserve
+  raw paths/queries and authentication/challenges; strip hop-by-hop/proxy credentials
+  and spoofable forwarding headers. Return redirects to the client without following.
+- Bound response headers to 64 KiB, upstream sockets to 16 per registry and 32 idle
+  globally (8 per registry). Bound idle I/O instead of total layer transfer duration.
+  Stop keepalive on intercepted servers during shutdown and drain active responses.
+- Log only configured registry, status, duration, bytes, and completion outcome.
+  Do not log raw upstream errors, paths, queries, request headers, or token bodies.
+  Startup reports the public CA path and SHA-256 fingerprint; `--check` is side-effect-free.

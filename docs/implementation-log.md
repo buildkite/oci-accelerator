@@ -6,8 +6,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 ## Current status
 
 - **Completed implementation slices:** none.
-- **In progress:** slice 1; 1a–1c complete.
-- **Next:** 1d — intercepted forwarding.
+- **In progress:** slice 1; 1a–1d complete.
+- **Next:** 1e — Docker acceptance and setup docs.
 - Autonomous implementation of 1a–1e is authorized; stop before caching.
 
 ## Completed groundwork
@@ -39,8 +39,8 @@ provides evidence, without silently changing the approved scope.
 | --- | --- | --- |
 | 1a. Go module and configuration | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/763cd026ffa760d47929d53a103ec772dfb85a85) | Strict YAML/authority/CLI tests pass, including defaults, malformed/duplicate/unknown values, and redacted errors. |
 | 1b. Persistent CA lifecycle | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/0b3b6fc5c411f9b6b1340b18c2068876528e019a) | Atomic CA initialization/reuse and bounded leaf issuance; tests for trust, permissions, invalid state, renewal, concurrency, and stable CA identity. |
-| 1c. CONNECT routing and opaque tunnels | Complete | Strict authority parsing, configured-host refusal, passthrough, buffered bytes, half-close, idle/cap/shutdown tests. CLI starts the listener and handles signals. |
-| 1d. Intercepted registry forwarding | Not started | Connect CA/TLS handling to the proxy; bind HTTP/TLS authorities to CONNECT, verify upstream TLS, forward client authentication/challenges, and reject writes. Test successful forwarding and the failure/security boundaries with local origins. No caching. |
+| 1c. CONNECT routing and opaque tunnels | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/268e48b0c6eb7521db85581f31ca251afbe1f159) | Strict authority parsing, configured-host refusal, passthrough, buffered bytes, half-close, idle/cap/shutdown tests. CLI starts the listener and handles signals. |
+| 1d. Intercepted registry forwarding | Complete | TLS interception, authority binding, verified upstream TLS, credential/challenge forwarding, write rejection, redirect relay, cancellation and partial-response failure tests. No caching. |
 | 1e. Docker Engine acceptance and setup docs | Not started | Document proxy/CA setup and verify a real pull, CA trust failure, and CA persistence after restart. Record evidence and finish the plan's slice-1 checks. |
 
 ## Validation and review
@@ -68,6 +68,14 @@ without a failure. Both independent reviews completed. The code reviewer noted
 the raw-header bound is stricter than Go's internal allowance; retained intentionally
 as the documented 64 KiB limit, rather than depending on parser implementation slack.
 Plan-aware review found no issues. Lifecycle regressions also passed three race runs.
+
+1d validation: tests/race/vet passed, including trusted/untrusted client and upstream
+TLS, SNI/HTTP authority rejection, exact bytes/auth/query preservation, method policy,
+redirect non-following, protocol statuses, cancellation, stalled/truncated streams,
+log redaction, and graceful TLS keepalive shutdown. Both independent reviews completed.
+Rejected a claimed truncated-stream completion-log bug: the standard reverse proxy
+aborts the HTTP handler on copy failure; an added executable regression confirmed
+`outcome=aborted` (not `complete`) and a client read error. Checks rerun successfully.
 
 ## Later slices: queued scope
 

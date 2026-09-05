@@ -28,12 +28,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, configured := p.configured[target.String()]; configured {
-		refuse(w, "registry interception unavailable", http.StatusServiceUnavailable)
+		if p.signer == nil {
+			refuse(w, "registry interception unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		p.intercept(w, r, target)
 		return
 	}
 
-	dialer := net.Dialer{Timeout: p.cfg.DialTimeout}
-	upstream, err := dialer.DialContext(r.Context(), "tcp", net.JoinHostPort(target.Host(), target.Port()))
+	upstream, err := (&net.Dialer{Timeout: p.cfg.DialTimeout}).DialContext(r.Context(), "tcp", net.JoinHostPort(target.Host(), target.Port()))
 	if err != nil {
 		refuse(w, "destination unavailable", http.StatusBadGateway)
 		return
@@ -120,7 +123,6 @@ func (p *Proxy) relay(client, upstream net.Conn, buffered *bufio.Reader) {
 	if buffered.Buffered() != 0 {
 		clientSource = io.MultiReader(io.LimitReader(buffered, int64(buffered.Buffered())), clientActive)
 	}
-
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go copyHalf(&wg, upstreamActive, clientSource, upstream, client, idle)
@@ -142,7 +144,6 @@ func (c *activityConn) Read(b []byte) (int, error) {
 	}
 	return n, err
 }
-
 func (c *activityConn) Write(b []byte) (int, error) {
 	n, err := c.Conn.Write(b)
 	if n != 0 {
@@ -150,7 +151,6 @@ func (c *activityConn) Write(b []byte) (int, error) {
 	}
 	return n, err
 }
-
 func (c *activityConn) CloseWrite() error {
 	if conn, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return conn.CloseWrite()
@@ -160,8 +160,7 @@ func (c *activityConn) CloseWrite() error {
 
 func copyHalf(wg *sync.WaitGroup, dst io.Writer, src io.Reader, dstConn, srcConn net.Conn, idle time.Duration) {
 	defer wg.Done()
-	_, err := io.Copy(dst, src)
-	if err != nil {
+	if _, err := io.Copy(dst, src); err != nil {
 		_ = dstConn.Close()
 		_ = srcConn.Close()
 		return
