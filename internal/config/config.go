@@ -1,0 +1,155 @@
+// Package config loads and validates docker-accelerator configuration.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"go.yaml.in/yaml/v3"
+)
+
+var ErrInvalid = errors.New("invalid configuration")
+
+const DefaultCacheMaxBytes int64 = 32 << 30
+
+type Config struct {
+	Listen                string
+	Registries            []authority.Authority
+	CADir                 string
+	Cache                 Cache
+	DialTimeout           time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+	IdleTimeout           time.Duration
+	ShutdownTimeout       time.Duration
+	MaxConnections        int
+	MaxLeafCertificates   int
+}
+
+type Cache struct {
+	Dir      string
+	MaxBytes int64
+}
+
+type duration time.Duration
+
+func (d *duration) UnmarshalYAML(node *yaml.Node) error {
+	if node.Tag == "!!null" {
+		return nil
+	}
+	if node.Tag != "!!str" {
+		return ErrInvalid
+	}
+	v, err := time.ParseDuration(node.Value)
+	if err != nil || v <= 0 {
+		return ErrInvalid
+	}
+	*d = duration(v)
+	return nil
+}
+
+type rawConfig struct {
+	Listen                string   `yaml:"listen"`
+	Registries            []string `yaml:"registries"`
+	CADir                 string   `yaml:"ca_dir"`
+	Cache                 rawCache `yaml:"cache"`
+	DialTimeout           duration `yaml:"dial_timeout"`
+	TLSHandshakeTimeout   duration `yaml:"tls_handshake_timeout"`
+	ResponseHeaderTimeout duration `yaml:"response_header_timeout"`
+	IdleTimeout           duration `yaml:"idle_timeout"`
+	ShutdownTimeout       duration `yaml:"shutdown_timeout"`
+	MaxConnections        int      `yaml:"max_connections"`
+	MaxLeafCertificates   int      `yaml:"max_leaf_certificates"`
+}
+
+type rawCache struct {
+	Dir      string `yaml:"dir"`
+	MaxBytes int64  `yaml:"max_bytes"`
+}
+
+// Load reads one strict YAML document from path and resolves relative directories
+// against the configuration file's directory.
+func Load(path string) (Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("open configuration: %w", err)
+	}
+	defer f.Close()
+
+	raw := defaults()
+	dec := yaml.NewDecoder(f)
+	dec.KnownFields(true)
+	if err := dec.Decode(&raw); err != nil {
+		return Config{}, ErrInvalid
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); err != io.EOF {
+		return Config{}, ErrInvalid
+	}
+	return validate(raw, filepath.Dir(path))
+}
+
+func defaults() rawConfig {
+	return rawConfig{
+		Listen:                "127.0.0.1:3128",
+		Cache:                 rawCache{MaxBytes: DefaultCacheMaxBytes},
+		DialTimeout:           duration(10 * time.Second),
+		TLSHandshakeTimeout:   duration(10 * time.Second),
+		ResponseHeaderTimeout: duration(30 * time.Second),
+		IdleTimeout:           duration(2 * time.Minute),
+		ShutdownTimeout:       duration(15 * time.Second),
+		MaxConnections:        256,
+		MaxLeafCertificates:   256,
+	}
+}
+
+func validate(raw rawConfig, base string) (Config, error) {
+	host, port, err := net.SplitHostPort(raw.Listen)
+	portNumber, portErr := strconv.ParseUint(port, 10, 16)
+	if err != nil || portErr != nil || portNumber == 0 || len(raw.Registries) == 0 || strings.TrimSpace(raw.CADir) == "" {
+		return Config{}, ErrInvalid
+	}
+	if host != "" {
+		if _, err := authority.Parse(net.JoinHostPort(host, port), ""); err != nil {
+			return Config{}, ErrInvalid
+		}
+	}
+	if raw.Cache.MaxBytes <= 0 || raw.MaxConnections <= 0 || raw.MaxLeafCertificates <= 0 {
+		return Config{}, ErrInvalid
+	}
+	registries := make([]authority.Authority, len(raw.Registries))
+	seen := make(map[string]bool, len(raw.Registries))
+	for i, text := range raw.Registries {
+		a, err := authority.Parse(text, "443")
+		if err != nil || seen[a.String()] {
+			return Config{}, ErrInvalid
+		}
+		seen[a.String()] = true
+		registries[i] = a
+	}
+
+	return Config{
+		Listen: raw.Listen, Registries: registries,
+		CADir:       resolve(base, raw.CADir),
+		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: raw.Cache.MaxBytes},
+		DialTimeout: time.Duration(raw.DialTimeout), TLSHandshakeTimeout: time.Duration(raw.TLSHandshakeTimeout),
+		ResponseHeaderTimeout: time.Duration(raw.ResponseHeaderTimeout), IdleTimeout: time.Duration(raw.IdleTimeout),
+		ShutdownTimeout: time.Duration(raw.ShutdownTimeout), MaxConnections: raw.MaxConnections,
+		MaxLeafCertificates: raw.MaxLeafCertificates,
+	}, nil
+}
+
+func resolve(base, path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Clean(filepath.Join(base, path))
+}

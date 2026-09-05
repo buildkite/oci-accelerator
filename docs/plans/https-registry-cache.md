@@ -4,7 +4,7 @@
 
 Build a standalone Go binary that accelerates Docker Engine image pulls through an explicit HTTPS-intercepting forward proxy. Image names remain unchanged. Docker Engine hosts configure the proxy and trust its CA.
 
-No proxy implementation exists yet. Track completed groundwork and upcoming slices in the [implementation log](../implementation-log.md). This document is the implementation plan, not authorization to begin implementation.
+Slice 1 implementation is authorized. Track progress in the [implementation log](../implementation-log.md). Caching slices remain queued.
 
 ## Agreed scope
 
@@ -103,6 +103,7 @@ The YAML schema covers listen address, registry authorities, cache directory/siz
 - These redirect restrictions apply to proxy-originated fetches. User-selected unrestricted opaque tunneling is a broader egress capability and must be protected by deployment network controls.
 - Persist the CA certificate and private key in a private directory with restrictive permissions. Initialize atomically; refuse to silently replace missing/inconsistent CA state on an existing installation. Never overwrite an existing key or silently rotate a trusted CA.
 - Generate short-lived per-host leaf certificates using Go's TLS/X.509 support and a bounded in-memory certificate cache. Use modern TLS defaults and normal upstream certificate/hostname verification.
+- Use a ten-year CA and 24-hour leaf certificates, renewing leaves under the same CA. CA replacement remains explicit.
 - Startup reports the CA certificate path/fingerprint and fails clearly for unusable/expired CA material. Document manual trust installation and explicit CA replacement. Do not expose private key material or encourage downloading a CA over an unauthenticated network and trusting it blindly.
 - Use structured logs with request outcome, registry, cache result, duration, and byte counts. Exclude credentials, signed query strings, raw configuration dumps, and response token bodies. Metrics should distinguish authorized hits, misses, bypasses, failures, fills, evictions, disk use, and actual upstream bytes; avoid per-image/token labels.
 - Support graceful shutdown: stop accepting work, drain with a deadline, and remove incomplete fills. Run without root on the default port. Document single-writer ownership of the cache directory.
@@ -114,6 +115,8 @@ The YAML schema covers listen address, registry authorities, cache directory/siz
 Create the Go module, binary entry point, validated YAML configuration, CONNECT dispatcher, TLS interception, and transparent upstream forwarding. Enforce intercepted pull-only methods. Persist the CA and document Docker Engine setup. Keep ownership boundaries simple: configuration, proxy/TLS, registry policy, and disk cache; avoid provider adapters and generic plugin interfaces.
 
 Verify with local TLS origin servers and a real Docker Engine pull: trusted CA succeeds, missing trust fails, invalid upstream TLS fails, configured hosts are intercepted, unconfigured hosts tunnel, mismatched authorities are rejected, mutation methods are denied, and restarting preserves the CA fingerprint. This slice performs no caching.
+
+In slice 1, relay redirects unchanged to the client. Proxy-originated redirect following and its destination/credential protections arrive together in slice 2.
 
 ### 2. Authorized digest-blob caching
 
@@ -152,4 +155,4 @@ The first version is complete when:
 
 Container packaging, containerd/BuildKit-specific setup and validation, S3 or shared storage, multi-instance coordination, push passthrough, tag caching, stale/offline mode, proxy-held credentials, authorization-decision caching, environment-variable migration compatibility, automatic CA distribution, and automatic CA rotation.
 
-The GET-authorization strategy is approved. No further product decision is blocking the plan; implementation awaits an explicit go-ahead.
+The GET-authorization strategy is approved. Autonomous implementation of subslices 1a–1e is authorized; stop before caching and pause for material scope/security decisions or unresolved verification blockers.

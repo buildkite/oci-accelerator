@@ -6,10 +6,9 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 ## Current status
 
 - **Completed implementation slices:** none.
-- **In progress:** none; proxy implementation has not started.
-- **Next:** 1a — Go module, binary entry point, and validated YAML configuration.
-- Implementation still awaits an explicit go-ahead; seeding this log does not
-  start the work.
+- **In progress:** slice 1; 1a complete.
+- **Next:** 1b — persistent CA lifecycle.
+- Autonomous implementation of 1a–1e is authorized; stop before caching.
 
 ## Completed groundwork
 
@@ -25,7 +24,7 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 | Slice | Status | Outcome |
 | --- | --- | --- |
-| 1. Working explicit proxy and CA lifecycle | Not started — next | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
+| 1. Working explicit proxy and CA lifecycle | In progress | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
 | 2. Authorized digest-blob caching | Not started | Per-request upstream GET authorization, safe redirects, verified atomic disk fills, cache substitution, capacity limits, and basic eviction. |
 | 3. Digest manifests and generic protocol compatibility | Not started | Representation-aware digest-manifest caching and registry/auth compatibility; tags remain uncached. |
 | 4. Concurrency and operational hardening | Not started | Fill coalescing, cancellation, recovery, resource bounds, diagnostics, graceful shutdown, and measured cold/warm behavior. |
@@ -38,13 +37,22 @@ provides evidence, without silently changing the approved scope.
 
 | Subslice | Status | Outcome and validation |
 | --- | --- | --- |
-| 1a. Go module and configuration | Next — not started | Binary entry point and `--config` YAML loading; tests for defaults, invalid values, and unknown fields. |
+| 1a. Go module and configuration | Complete | Strict YAML/authority/CLI tests pass, including defaults, malformed/duplicate/unknown values, and redacted errors. |
 | 1b. Persistent CA lifecycle | Not started | Safe CA initialization/reuse and bounded per-host leaf issuance; tests for trust, permissions, invalid state, and stable CA identity across restarts. |
 | 1c. CONNECT routing and opaque tunnels | Not started | Strict authority parsing, configured-host dispatch, and passthrough for other destinations; tests for malformed requests, bidirectional forwarding, and cleanup. Configured hosts fail closed until interception is wired in 1d. |
 | 1d. Intercepted registry forwarding | Not started | Connect CA/TLS handling to the proxy; bind HTTP/TLS authorities to CONNECT, verify upstream TLS, forward client authentication/challenges, and reject writes. Test successful forwarding and the failure/security boundaries with local origins. No caching. |
 | 1e. Docker Engine acceptance and setup docs | Not started | Document proxy/CA setup and verify a real pull, CA trust failure, and CA persistence after restart. Record evidence and finish the plan's slice-1 checks. |
 
 ## Later slices: queued scope
+
+1a validation: `go test ./...`, `go test -race ./...`, `go vet ./...` passed.
+Two fresh read-only reviewers inspected the same source/test/diff snapshot. The
+code-only reviewer received a filtered `/tmp` bundle with no docs or Git history;
+ambient tool/project guidance cannot be fully isolated, so this is not a fully
+blind review. Its review found no issues. The plan reviewer flagged YAML merge
+overrides as duplicate fields; this was rejected because explicit overrides of
+merged defaults are defined YAML semantics, not duplicate keys in one mapping.
+Actual duplicate mapping keys are rejected. No behavior changed during review.
 
 Break these into concrete subslices before starting each slice, using the
 implementation then available rather than speculating about file boundaries now.
@@ -69,6 +77,5 @@ implementation then available rather than speculating about file boundaries now.
 - Mark a subslice complete only after implementation, validation, and independent
   review are finished and feedback is resolved. Record a concise outcome and
   decisive validation evidence, plus its commit link once available.
-- Keep implementation decisions and their reasons in the running decision log;
-  do not duplicate that narrative here. No implementation decisions are recorded
-  yet; the approved design decisions remain in the plan.
+- Keep implementation decisions and their reasons in the [decision log](decision-log.md);
+  do not duplicate that narrative here.

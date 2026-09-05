@@ -1,7 +1,7 @@
 # Docker accelerator
 
 A planned standalone Go HTTPS pull-through cache for Docker Engine images.
-Implementation has not started. See the [approved plan](docs/plans/https-registry-cache.md).
+Implementation is in progress. See the [approved plan](docs/plans/https-registry-cache.md).
 Track completed and upcoming slices in the [implementation log](docs/implementation-log.md).
 
 ## Development in Amp orbs
@@ -27,7 +27,7 @@ Use `sudo docker` for daemon operations. If it is not ready, inspect
 `amp orb service logs docker-daemon`. Amp supervises the daemon across CLI
 updates and orb pause/resume; no custom resume hook is needed.
 
-Once implementation exists, run:
+Run the baseline checks:
 
 ```sh
 go test ./...
