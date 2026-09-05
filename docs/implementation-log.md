@@ -7,8 +7,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
   2 — authorized digest-blob caching (2a–2d).
-- **In progress:** slice 3; 3a validated and independently reviewed, ready to commit.
-- **Next:** 3b–3d, then 4a–4e. Combined autonomous implementation, checks, reviews,
+- **In progress:** slice 3; 3b validated and reviewed, ready to commit.
+- **Next:** 3c–3d, then 4a–4e. Combined autonomous implementation, checks, reviews,
   commits/pushes, and isolated acceptance/fault/load resources are authorized.
 
 ## Completed groundwork
@@ -133,13 +133,25 @@ cleaned up. See the operating guide for fixture pacing and benchmark limitations
 
 ## Later slices: queued scope
 
-3a validation: test/race/vet passed; object-path fuzzing executed 225280 cases.
+[3a complete](https://ampcode.com/@buildkite/docker-accelerator/commit/4f1a8c7):
+test/race/vet passed; object-path fuzzing executed 225280 cases.
 All four manifest types passed cold/warm/store-and-proxy restart substitution,
 fresh-GET/revocation, metadata bypass, corrupt-fill, isolation and redirect checks.
 Paired snapshot reviews found no issues. The code-only review used a filtered
 source/test/diff bundle; ambient guidance cannot be fully isolated.
 
+The existing real Docker acceptance also passed after 3a: Docker 29.8.0, layer
+GETs/body bytes cold 1/8390075, warm 1/32768, restart 1/262144, stable CA and
+exact inspected digests. No test-owned services remain.
+
 Remaining slices follow the approved plan.
+
+3b validation: test/race/vet passed, including Basic registry auth, opaque-token-host
+certificate identity, client-owned refresh, expiry/revocation/scope denials, mutable
+tags, manifest bypasses and redirect credential stripping. Paired reviews and
+follow-ups completed. Added Basic/refresh coverage and pinned original-body checks
+from review; the reported Accept gap was already covered by 3a's same-URL/media
+accept-key test. No production changes were needed. Same filtered-review limitation.
 
 - **3a:** authorized, representation-aware digest-manifest caching using the
   existing store and redirect stack, preserving blob entries.

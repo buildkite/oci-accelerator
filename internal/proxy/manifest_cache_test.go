@@ -244,3 +244,70 @@ func TestManifestCacheSeparatesRepositoriesAndRegistries(t *testing.T) {
 		t.Fatal("cross-registry manifest substitution")
 	}
 }
+
+func TestManifestTagsAndAcceptRepresentationsRemainIsolated(t *testing.T) {
+	const (
+		bodyA = `{"schemaVersion":2,"variant":"A"}`
+		bodyB = `{"schemaVersion":2,"variant":"B"}`
+	)
+	var tagB atomic.Bool
+	var calls atomic.Int32
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body := bodyA
+		media := manifestMediaTypes[0]
+		if r.URL.Path == "/v2/team/image/manifests/latest" && tagB.Load() {
+			body = bodyB
+		}
+		if r.Header.Get("Accept") == manifestMediaTypes[1] {
+			body, media = bodyB, manifestMediaTypes[1]
+		}
+		manifestHeaders(w, body, media)
+		io.WriteString(w, body)
+	}))
+	defer origin.Close()
+	_, client := cacheFixture(t, origin, 1<<20, nil)
+	request := func(path, accept string) string {
+		t.Helper()
+		r, _ := http.NewRequest(http.MethodGet, origin.URL+path, nil)
+		r.Header.Set("Accept", accept)
+		resp, err := client.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Header.Get("Content-Type") != accept || resp.ContentLength != int64(len(got)) {
+			t.Fatalf("representation headers = %q/%d body=%q", resp.Header.Get("Content-Type"), resp.ContentLength, got)
+		}
+		return string(got)
+	}
+
+	tag := "/v2/team/image/manifests/latest"
+	if got := request(tag, manifestMediaTypes[0]); got != bodyA {
+		t.Fatalf("tag A = %q", got)
+	}
+	tagB.Store(true)
+	if got := request(tag, manifestMediaTypes[0]); got != bodyB {
+		t.Fatalf("mutated tag = %q", got)
+	}
+	digestA := manifestURL("team/image", bodyA)
+	if got := request(digestA, manifestMediaTypes[0]); got != bodyA {
+		t.Fatalf("digest A cold = %q", got)
+	}
+	if got := request(digestA, manifestMediaTypes[0]); got != bodyA {
+		t.Fatalf("digest A warm = %q", got)
+	}
+	if got := request(manifestURL("team/image", bodyB), manifestMediaTypes[1]); got != bodyB {
+		t.Fatalf("index representation = %q", got)
+	}
+	if got := request(digestA, manifestMediaTypes[0]); got != bodyA {
+		t.Fatalf("Accept variant contaminated digest A = %q", got)
+	}
+	if calls.Load() != 6 {
+		t.Fatalf("origin GETs = %d, want 6 per-request authorization GETs", calls.Load())
+	}
+}

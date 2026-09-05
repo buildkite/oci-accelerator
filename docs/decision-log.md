@@ -156,3 +156,13 @@
 - Public Hub/GHCR checks need no account secrets; choose small maintained images,
   record resolved digests, and leave slice 3 incomplete if required external evidence
   is blocked. Local fixtures own credentialed denial/revocation evidence.
+
+## 3b — protocol and authentication fixtures
+
+- Use a distinct localhost token hostname with its own CA trusted only by the client;
+  assert the original peer certificate through opaque CONNECT. The proxy only relays
+  challenges, never acquires or interprets tokens. Fixture registry grants enforce
+  repository, expiry via a deterministic clock, and revocation on every GET.
+- Extend manifest-specific bypass, mutable-tag, representation, and redirect tests
+  without changing production code. Keep replacement bodies the same length so
+  individual policy/key dimensions, not accidental framing differences, are tested.
