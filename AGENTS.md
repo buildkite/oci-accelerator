@@ -31,6 +31,8 @@
 - Update it as work progresses and sequencing changes. Keep it concise and
   human-readable; mark work complete only after implementation, validation,
   and independent review are finished.
+- When updating the log, link each completed subslice to the commit or commits
+  that implement it. Use actual commit links once the commits exist.
 
 ## Decision log
 
@@ -85,4 +87,9 @@
 
 ## Commit messages
 
+- Give every commit a readable summary of the changes it implements in the
+  commit body, and summarize those changes when reporting the commit to the user.
+- Include the plan's slice/subslice identifier in implementation commit titles,
+  for example `feat(1a): add validated YAML configuration`. Do not invent slice
+  numbers for documentation or maintenance outside the implementation plan.
 - Do not add Amp branding or attribution to commit subjects, bodies, or trailers.
