@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	mathrand "math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -37,8 +38,31 @@ type registryCounts struct {
 	mu       sync.Mutex
 	authed   map[string]int
 	bytes    map[string]int64
+	tags     map[string]int
+	active   int
 	badAuth  int
 	requests int
+}
+
+func (c *registryCounts) waitIdle(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		active := c.active
+		c.mu.Unlock()
+		if active == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("origin requests did not finish")
+}
+
+func (c *registryCounts) tagCount(path string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tags[path]
 }
 
 func (c *registryCounts) snapshot() (map[string]int, map[string]int64, int, int) {
@@ -65,7 +89,8 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 
 	root := t.TempDir()
 	ip := nonLoopbackIPv4(t)
-	origin, image, counts := startRegistry(t, root, ip)
+	payload := deterministicLargePayload()
+	origin, image, counts := startRegistry(t, root, ip, makeImageWithPayload(t, payload))
 	defer origin.Close()
 	authority := origin.Listener.Addr().String()
 
@@ -74,10 +99,10 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 	proxyPort := freePort(t, "127.0.0.1")
 	proxyCA := filepath.Join(root, "proxy-ca")
 	config := filepath.Join(root, "proxy.yaml")
-	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 1048576\n", proxyPort, authority, proxyCA, filepath.Join(root, "cache")), 0o600)
+	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 33554432\n", proxyPort, authority, proxyCA, filepath.Join(root, "cache")), 0o600)
 
 	randomSuffix := strings.ToLower(rand.Text())
-	prefix := "acc1e-" + randomSuffix[:8]
+	prefix := "acc2d-" + randomSuffix[:8]
 	proxyName := prefix + "-proxy"
 	t.Cleanup(func() { stopService(t, proxyName) })
 	startService(t, proxyName, fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCAPath(root)), shell(bin), shell(config)))
@@ -112,11 +137,31 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 	auth := base64.StdEncoding.EncodeToString([]byte(registryUser + ":" + registryPass))
 	writeFile(t, filepath.Join(clientDir, "config.json"), fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, authority, auth), 0o600)
 
-	sock2, stopDaemon2 := startDaemon(t, prefix+"-trusted-a", proxyPort, proxyCert)
+	tagPath := "/v2/tiny/manifests/latest"
+	sock2, stopDaemon2 := startDaemon(t, prefix+"-cold", proxyPort, proxyCert)
+	tag0 := counts.tagCount(tagPath)
 	pullAndVerify(t, sock2, clientDir, authority, image)
 	stopDaemon2()
+	counts.waitIdle(t)
 	a1, b1, bad1, _ := counts.snapshot()
 	assertOrigin(t, a1, b1, bad1, image)
+	if a1[image.layerPath] != 1 || b1[image.layerPath] != int64(len(image.layer)) {
+		t.Fatalf("cold layer origin traffic requests/bytes=%d/%d, want 1/%d", a1[image.layerPath], b1[image.layerPath], len(image.layer))
+	}
+	if counts.tagCount(tagPath) <= tag0 {
+		t.Fatal("cold pull did not resolve the tag upstream")
+	}
+
+	sock3, stopDaemon3 := startDaemon(t, prefix+"-warm", proxyPort, proxyCert)
+	tag1 := counts.tagCount(tagPath)
+	pullAndVerify(t, sock3, clientDir, authority, image)
+	stopDaemon3()
+	counts.waitIdle(t)
+	a2, b2, bad2, _ := counts.snapshot()
+	assertWarmOrigin(t, a1, b1, a2, b2, bad2, image, "warm-same-proxy")
+	if counts.tagCount(tagPath) <= tag1 {
+		t.Fatal("warm pull did not resolve the tag upstream")
+	}
 
 	if !stopService(t, proxyName) {
 		t.Fatal("cannot restart proxy after failed stop")
@@ -127,15 +172,17 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 		t.Fatalf("proxy CA changed across restart: %s != %s", fingerprint2, fingerprint1)
 	}
 
-	sock3, stopDaemon3 := startDaemon(t, prefix+"-trusted-b", proxyPort, proxyCert)
-	pullAndVerify(t, sock3, clientDir, authority, image)
-	stopDaemon3()
-	a2, b2, bad2, _ := counts.snapshot()
-	assertOrigin(t, a2, b2, bad2, image)
-	if a2[image.layerPath]-a1[image.layerPath] != a1[image.layerPath] || b2[image.layerPath]-b1[image.layerPath] != b1[image.layerPath] {
-		t.Fatalf("fresh daemon did not resend the same layer traffic: first requests/bytes=%d/%d second=%d/%d", a1[image.layerPath], b1[image.layerPath], a2[image.layerPath]-a1[image.layerPath], b2[image.layerPath]-b1[image.layerPath])
+	sock4, stopDaemon4 := startDaemon(t, prefix+"-restart", proxyPort, proxyCert)
+	tag2 := counts.tagCount(tagPath)
+	pullAndVerify(t, sock4, clientDir, authority, image)
+	stopDaemon4()
+	counts.waitIdle(t)
+	a3, b3, bad3, _ := counts.snapshot()
+	assertWarmOrigin(t, a2, b2, a3, b3, bad3, image, "warm-after-restart")
+	if counts.tagCount(tagPath) <= tag2 {
+		t.Fatal("restart pull did not resolve the tag upstream")
 	}
-	t.Logf("docker=%s image=%s layer requests/bytes phase1=%d/%d phase2=%d/%d proxy_CA_stable=true", dockerVersion(t), image.manifestDigest, a1[image.layerPath], b1[image.layerPath], a2[image.layerPath]-a1[image.layerPath], b2[image.layerPath]-b1[image.layerPath])
+	t.Logf("docker=%s image=%s cold=%d/%d warm=%d/%d restart=%d/%d proxy_CA_stable=true", dockerVersion(t), image.manifestDigest, a1[image.layerPath], b1[image.layerPath], a2[image.layerPath]-a1[image.layerPath], b2[image.layerPath]-b1[image.layerPath], a3[image.layerPath]-a2[image.layerPath], b3[image.layerPath]-b2[image.layerPath])
 }
 
 type fixtureImage struct {
@@ -143,10 +190,9 @@ type fixtureImage struct {
 	manifestDigest, configDigest, layerDigest, diffID, layerPath, configPath string
 }
 
-func startRegistry(t *testing.T, root string, ip net.IP) (*httptestServer, fixtureImage, *registryCounts) {
+func startRegistry(t *testing.T, root string, ip net.IP, image fixtureImage) (*httptestServer, fixtureImage, *registryCounts) {
 	t.Helper()
-	image := makeImage(t)
-	counts := &registryCounts{authed: map[string]int{}, bytes: map[string]int64{}}
+	counts := &registryCounts{authed: map[string]int{}, bytes: map[string]int64{}, tags: map[string]int{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/" {
@@ -184,7 +230,13 @@ func startRegistry(t *testing.T, root string, ip net.IP) (*httptestServer, fixtu
 	s := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		counts.mu.Lock()
 		counts.requests++
+		counts.active++
 		counts.mu.Unlock()
+		defer func() {
+			counts.mu.Lock()
+			counts.active--
+			counts.mu.Unlock()
+		}()
 		mux.ServeHTTP(w, r)
 	}), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = s.Serve(tlsLn) }()
@@ -215,6 +267,11 @@ func registryReply(c *registryCounts, w http.ResponseWriter, r *http.Request, bo
 		c.authed[r.URL.Path]++
 		c.mu.Unlock()
 	}
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && strings.HasSuffix(r.URL.Path, "/manifests/latest") {
+		c.mu.Lock()
+		c.tags[r.URL.Path]++
+		c.mu.Unlock()
+	}
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	}
@@ -226,14 +283,35 @@ func registryReply(c *registryCounts, w http.ResponseWriter, r *http.Request, bo
 	if r.Method == http.MethodHead {
 		return
 	}
-	n, _ := w.Write(body)
-	c.mu.Lock()
-	c.bytes[r.URL.Path] += int64(n)
-	c.mu.Unlock()
+	chunkSize := len(body)
+	if len(body) >= 1<<20 {
+		chunkSize = 32 << 10
+	}
+	for offset := 0; offset < len(body); offset += chunkSize {
+		end := min(offset+chunkSize, len(body))
+		select {
+		case <-r.Context().Done():
+			return
+		default:
+		}
+		n, err := w.Write(body[offset:end])
+		c.mu.Lock()
+		c.bytes[r.URL.Path] += int64(n)
+		c.mu.Unlock()
+		if err != nil {
+			return
+		}
+		if len(body) >= 1<<20 {
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
 }
 
 func TestRegistryBodyCountersExcludeHEAD(t *testing.T) {
-	c := &registryCounts{authed: map[string]int{}, bytes: map[string]int64{}}
+	c := &registryCounts{authed: map[string]int{}, bytes: map[string]int64{}, tags: map[string]int{}}
 	for _, method := range []string{http.MethodHead, http.MethodGet} {
 		r := httptest.NewRequest(method, "/v2/tiny/blobs/object", nil)
 		r.SetBasicAuth(registryUser, registryPass)
@@ -250,11 +328,70 @@ func TestRegistryBodyCountersExcludeHEAD(t *testing.T) {
 	}
 }
 
+func TestRegistryStreamingCancellationCountsWrittenBytes(t *testing.T) {
+	c := &registryCounts{authed: map[string]int{}, bytes: map[string]int64{}, tags: map[string]int{}}
+	body := deterministicLargePayload()
+	done := make(chan struct{})
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		registryReply(c, w, r, body, "application/octet-stream")
+	}))
+	defer s.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL+"/large", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.SetBasicAuth(registryUser, registryPass)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64<<10)
+	if _, err := io.ReadFull(resp.Body, buf); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	_ = resp.Body.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("streaming handler did not observe cancellation")
+	}
+	a, b, bad, _ := c.snapshot()
+	if a["/large"] != 1 || b["/large"] <= 0 || b["/large"] >= int64(len(body))/2 || bad != 0 {
+		t.Fatalf("canceled stream requests=%d bytes=%d body=%d badAuth=%d", a["/large"], b["/large"], len(body), bad)
+	}
+}
+
+func TestLargeFixtureIsDeterministicAndIncompressible(t *testing.T) {
+	a := makeImageWithPayload(t, deterministicLargePayload())
+	b := makeImageWithPayload(t, deterministicLargePayload())
+	if a.manifestDigest != b.manifestDigest || a.configDigest != b.configDigest || a.layerDigest != b.layerDigest || a.diffID != b.diffID {
+		t.Fatal("large fixture manifest/config/layer/rootfs digests are not deterministic")
+	}
+	if len(a.layer) < 8<<20 || len(a.layer) > (8<<20)+(64<<10) {
+		t.Fatalf("large fixture layer size=%d, want approximately 8 MiB", len(a.layer))
+	}
+}
+
+func deterministicLargePayload() []byte {
+	payload := make([]byte, 8<<20)
+	_, _ = mathrand.New(mathrand.NewSource(0xacc2d)).Read(payload)
+	return payload
+}
+
 func makeImage(t *testing.T) fixtureImage {
+	t.Helper()
+	return makeImageWithPayload(t, []byte("docker-accelerator acceptance\n"))
+}
+
+func makeImageWithPayload(t *testing.T, payload []byte) fixtureImage {
 	t.Helper()
 	var tarbuf bytes.Buffer
 	tw := tar.NewWriter(&tarbuf)
-	payload := []byte("docker-accelerator acceptance\n")
 	if err := tw.WriteHeader(&tar.Header{Name: "proof.txt", Mode: 0o644, Size: int64(len(payload)), ModTime: time.Unix(0, 0)}); err != nil {
 		t.Fatal(err)
 	}
@@ -349,16 +486,25 @@ func pullAndVerify(t *testing.T, socket, clientDir, authority string, image fixt
 	if r.err != nil {
 		t.Fatalf("docker pull: %v: %s", r.err, trim(r.output))
 	}
-	out := docker(t, socket, env, "image", "inspect", authority+"/tiny:latest", "--format", "{{.Id}} {{json .RootFS.Layers}}")
-	if !strings.Contains(out, image.configDigest) || !strings.Contains(out, image.diffID) {
-		t.Fatalf("inspect lacks expected config/diff ID: %s", trim(out))
+	out := docker(t, socket, env, "image", "inspect", authority+"/tiny:latest", "--format", "{{json .}}")
+	var inspected struct {
+		ID          string `json:"Id"`
+		RootFS      struct{ Layers []string }
+		RepoDigests []string
 	}
-	if !strings.Contains(r.output, image.manifestDigest) { // Docker output differs by version; RepoDigests is authoritative when present.
-		inspect := docker(t, socket, env, "image", "inspect", authority+"/tiny:latest", "--format", "{{json .RepoDigests}}")
-		if !strings.Contains(inspect, image.manifestDigest) {
-			t.Fatalf("pulled image lacks manifest digest %s: %s", image.manifestDigest, trim(inspect))
+	if err := json.Unmarshal([]byte(out), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if inspected.ID != image.configDigest || len(inspected.RootFS.Layers) != 1 || inspected.RootFS.Layers[0] != image.diffID {
+		t.Fatal("inspected config/rootfs digest does not match fixture")
+	}
+	want := authority + "/tiny@" + image.manifestDigest
+	for _, digest := range inspected.RepoDigests {
+		if digest == want {
+			return
 		}
 	}
+	t.Fatalf("inspected RepoDigests lacks %s: %v", want, inspected.RepoDigests)
 }
 
 func assertOrigin(t *testing.T, a map[string]int, b map[string]int64, bad int, image fixtureImage) {
@@ -370,6 +516,23 @@ func assertOrigin(t *testing.T, a map[string]int, b map[string]int64, bad int, i
 	}
 	if bad != 0 {
 		t.Fatalf("origin received %d malformed Authorization headers", bad)
+	}
+}
+
+func assertWarmOrigin(t *testing.T, beforeA map[string]int, beforeB map[string]int64, afterA map[string]int, afterB map[string]int64, bad int, image fixtureImage, phase string) {
+	t.Helper()
+	for _, path := range []string{image.layerPath, image.configPath} {
+		if afterA[path]-beforeA[path] != 1 {
+			t.Fatalf("%s blob %s did not receive exactly one fresh authenticated GET", phase, path)
+		}
+	}
+	requests := afterA[image.layerPath] - beforeA[image.layerPath]
+	written := afterB[image.layerPath] - beforeB[image.layerPath]
+	if requests != 1 || written < 0 || written >= int64(len(image.layer))/2 {
+		t.Fatalf("%s layer origin traffic requests/bytes=%d/%d, want exactly one request and less than %d bytes", phase, requests, written, len(image.layer)/2)
+	}
+	if bad != 0 {
+		t.Fatalf("%s origin received %d malformed Authorization headers", phase, bad)
 	}
 }
 

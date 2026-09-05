@@ -60,7 +60,8 @@ DOCKER_ACCELERATOR_E2E=1 go test -v ./integration \
   -run TestDockerPullThroughCompiledProxy -count=1 -timeout=5m
 ```
 
-It validates CA rejection/trust, authenticated pulls, image digests, origin byte
-counts, and persistent CA identity using local fixtures—not public registries.
+It validates CA rejection/trust, authenticated cold/warm/restart pulls, exact image
+digests, fresh upstream GETs, reduced warm layer bytes, and persistent CA identity
+using local fixtures—not public registries.
 See the [guide](docs/operations.md#acceptance-evidence-and-repeatable-checks) for
 prerequisites, cleanup, tested versions, and limitations.

@@ -129,3 +129,16 @@
 - CLI owns optional store startup/cleanup. Cache initialization failure is sanitized
   and occurs before listen; --check creates no CA or cache files. Regular-file kernel
   stalls cannot be context-preempted; no unowned background writes are introduced.
+
+## 2d — Docker cache acceptance
+
+- Reuse the isolated compiled-binary fixture with deterministic ~8 MiB incompressible
+  content. Use a fresh Docker VFS store for cold, warm, and restarted-proxy phases;
+  preserve only the proxy's CA/cache state. Keep the tiny default image unit fixture.
+- Pace large origin bodies in 32 KiB chunks and wait for handlers to finish before
+  snapshots. Assert fresh GETs for layer and config, exact inspected image digests,
+  tag resolution, and substantially reduced warm layer bytes. Do not claim zero
+  upstream bytes, rate-limit avoidance, or an unmeasured throughput improvement.
+- Retain opt-in privileged acceptance and clean up only owned supervised services.
+  Security/denial matrices use deterministic local HTTP/TLS tests rather than
+  depending on Docker's authentication retries for exact request-count assertions.

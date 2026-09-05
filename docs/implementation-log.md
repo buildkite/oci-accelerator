@@ -5,11 +5,12 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 ## Current status
 
-- **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle (1a–1e).
-- **In progress:** slice 2; 2c complete, preparing 2d.
-- **Next:** 2d Docker acceptance.
-- Slice 2 recommendations and autonomous implementation are approved. Stop before
-  slice 3. Caching is enabled when a cache directory is configured.
+- **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
+  2 — authorized digest-blob caching (2a–2d).
+- **In progress:** none.
+- **Next:** slice 3 — digest manifests and generic protocol compatibility, awaiting authorization.
+- Stopped at the approved slice-2 boundary. Caching is enabled when a cache
+  directory is configured; manifests remain uncached.
 
 ## Completed groundwork
 
@@ -26,7 +27,7 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 | Slice | Status | Outcome |
 | --- | --- | --- |
 | 1. Working explicit proxy and CA lifecycle | Complete | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
-| 2. Authorized digest-blob caching | In progress | 2a–2c complete: safe redirects, verified bounded storage, and authorized delivery. Real Docker cache acceptance is next. |
+| 2. Authorized digest-blob caching | Complete | 2a–2d: safe redirects, verified bounded storage, authorized delivery, and real Docker cold/warm/restart acceptance. |
 | 3. Digest manifests and generic protocol compatibility | Not started | Representation-aware digest-manifest caching and registry/auth compatibility; tags remain uncached. |
 | 4. Concurrency and operational hardening | Not started | Fill coalescing, cancellation, recovery, resource bounds, diagnostics, graceful shutdown, and measured cold/warm behavior. |
 
@@ -89,7 +90,7 @@ services/directories were cleaned up; only the repository's normal Docker servic
 remains. Generated service metadata is kept in ignored `.amp/portals/`, not test source.
 See the [operating guide](operations.md) for setup, evidence, and unvalidated flows.
 
-## Later slices: queued scope
+## Slice 2: completed subslices and validation
 
 [2a complete](https://ampcode.com/@buildkite/docker-accelerator/commit/1a3b32c8f947f17235457d2cd2d1e57f69c82d89): test/race/vet passed; path fuzzing ran 139,409 cases and redirect
 fuzzing 42,194 without failure. Both independent reviews and focused follow-ups
@@ -111,7 +112,7 @@ context-cancellable: Go cannot preempt a stalled kernel filesystem operation, an
 abandoning it would leak ownership. Ordinary cancellation/Abort is covered; storage
 stall resilience remains an operational limitation, not a verified hard deadline.
 
-2c complete: test/race/vet passed, plus three repeated race runs of warm permission,
+[2c complete](https://ampcode.com/@buildkite/docker-accelerator/commit/2b4f3e2c91a7ab71ef797396536a55a6592e8565): test/race/vet passed, plus three repeated race runs of warm permission,
 cancel/shutdown, and concurrent-client tests. Cold bytes were verified; warm HTTP
 fixtures delivered identical cached bytes despite the origin sending only accepted
 headers, proving body substitution and prompt cancellation. Denied/revoked clients,
@@ -119,15 +120,23 @@ public HEAD/protected GET, storage denial, outages, per-hop no-store, metadata a
 protocol bypasses, cross-registry/repository isolation, and failed fills are covered.
 Both independent reviews and follow-ups completed; fixed unexpected Serve termination
 to shut down the proxy before closing storage. Code-only isolation limitation remains
-as recorded above. Commit link follows with 2d.
+as recorded above.
 
-Slice 2 has an approved concrete breakdown in the plan. Break later slices down
-using the implementation then available.
+2d complete: test/race/vet and repeated real Docker 29.8.0 acceptance passed,
+including a race-instrumented fixture run. The final strengthened test observed
+layer GETs/body bytes cold 1/8,390,075, warm 1/32,768, restarted proxy 1/196,608.
+Layer and config each received a fresh authenticated GET in both warm phases;
+exact inspected manifest/config/rootfs digests matched, tags were re-resolved, and
+the CA fingerprint stayed unchanged. Missing CA trust reached zero origin HTTP
+requests. Both reviews and follow-ups completed; strengthened per-config GET and
+authoritative RepoDigests assertions in response to review. All owned services were
+cleaned up. See the operating guide for fixture pacing and benchmark limitations.
+The 2d commit link will be recorded in the following log-only commit.
 
-- **Slice 2:** prove cold/warm byte correctness and reduced upstream body
-  transfer, with fresh authorization for every delivery. Cover denied/revoked
-  clients, public-HEAD/protected-GET behavior, redirected layers, interrupted
-  fills, and bounded cache admission. Never serve cache on upstream failure.
+## Later slices: queued scope
+
+Break later slices down using the implementation then available.
+
 - **Slice 3:** cover OCI/Docker media types and multi-platform images, Basic and
   bearer authentication, separate token hosts, and redirect credential stripping.
   Verify fresh tags, registry/repository/representation isolation, and correct

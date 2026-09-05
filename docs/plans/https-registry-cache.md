@@ -4,9 +4,9 @@
 
 Build a standalone Go binary that accelerates Docker Engine image pulls through an explicit HTTPS-intercepting forward proxy. Image names remain unchanged. Docker Engine hosts configure the proxy and trust its CA.
 
-Slice 1 is implemented and validated. See the [operating guide](../operations.md)
-and [implementation log](../implementation-log.md). Slice 2 is in progress; digest
-manifests and broader operational hardening remain queued for slices 3 and 4.
+Slices 1 and 2 are implemented and validated. See the [operating guide](../operations.md)
+and [implementation log](../implementation-log.md). Digest manifests and broader
+operational hardening remain queued for slices 3 and 4.
 
 ## Agreed scope
 
@@ -126,6 +126,11 @@ In slice 1, relay redirects unchanged to the client. Proxy-originated redirect f
 
 ### 2. Authorized digest-blob caching
 
+**Complete:** 2a–2d passed required checks, paired independent review, and real
+Docker cold/warm/restart acceptance. Stored SHA-256 blobs reduce origin body
+transfer while each request still obtains current GET authorization. See the
+[measured evidence](../operations.md#acceptance-evidence-and-repeatable-checks).
+
 Add the exact-request upstream GET authorization path, safe redirects, filesystem entries, verified atomic fills, and cache substitution. Include hard capacity handling and basic eviction rather than temporarily allowing an unbounded cache.
 
 Verify cold and warm pulls, same bytes/digest, reduced upstream body bytes on warm large objects, and one authorization request per client request. Test separate clients with allowed/denied/revoked access to the same warm entry. Include a fake upstream where HEAD is public but GET is protected: it must not leak cached content. Keep tag manifests uncached.
@@ -170,9 +175,7 @@ and writer ownership on cancellation or the shutdown deadline.
    to already configured registry authorities. This permits a private storage host
    without adding it to the TLS-interception registry list. It grants destination
    permission only: TLS verification and cross-origin credential stripping still
-   apply. Public HTTPS storage needs no entry. The simpler alternative is to reuse
-   `registries`, which also causes interception of direct client CONNECTs to those
-   storage hosts. Reject a DNS answer containing any disallowed destination address
+   apply. Public HTTPS storage needs no entry. Reject a DNS answer containing any disallowed destination address
    and dial only vetted addresses, keeping the original hostname for TLS checks.
 2. **Warm-hit metadata contract.** Require terminal `200`, known
    matching Content-Length and media type, identity encoding, and no unsupported
@@ -182,8 +185,7 @@ and writer ownership on cancellation or the shutdown deadline.
    header at the final CDN: the original digest-addressed GET plus its accepted
    redirect chain identifies the object, and stored bytes were independently hashed.
    Missing required length/media type or inconsistent digest metadata means normal
-   forwarding, not substitution. A stricter alternative requires an explicit
-   matching terminal Docker-Content-Digest and sacrifices hits on CDNs omitting it.
+   forwarding, not substitution.
 3. **Cache enablement and startup failure.** Preserve forwarding-only
    mode when `cache.dir` is omitted, activating caching when it is supplied. An
    explicitly configured directory that cannot be safely opened should fail startup
@@ -196,12 +198,10 @@ The user approved these defaults and minimum-safety sequencing and authorized
 after slice 2, or earlier for a material scope/security change or unresolved required
 check.
 
-Planning environment check: Docker CLI 29.8.0 is installed, but no Docker daemon
-or Amp services are currently running. The existing acceptance test creates its own
-supervised isolated daemons; verify those start successfully during implementation.
-Extend its 118-byte fixture rather than claiming measurable savings from that tiny
-layer. Count per-path GETs and cancellation-aware streamed origin bytes; warm
-authorization can transfer some bytes before cancellation and need not transfer zero.
+Acceptance runs use their own supervised isolated Docker 29.8.0 daemons and a
+deterministic incompressible ~8 MiB layer. Per-path GETs and cancellation-aware
+streamed origin bytes are asserted; warm authorization can transfer some bytes
+before cancellation and need not transfer zero. Services are removed afterward.
 
 ### 3. Digest manifests and generic protocol compatibility
 

@@ -2,8 +2,8 @@
 
 The proxy caches verified SHA-256 blobs when `cache.dir` is configured. Every
 request still goes upstream for current GET authorization before any cache hit.
-There is no offline fallback or request-rate-limit avoidance. Real Docker cache
-acceptance is the next validation step; local protocol/cache checks pass.
+There is no offline fallback or request-rate-limit avoidance. Local protocol/cache
+checks and real Docker cold/warm/restart acceptance pass.
 Linux Docker Engine is the validated target; Docker Desktop, Windows, containerd,
 and BuildKit-specific integration are not validated.
 
@@ -206,9 +206,11 @@ the public certificate and remove old trust on clients. There is no automatic ro
 ## Acceptance evidence and repeatable checks
 
 The local fixture verifies Basic authentication, a Docker schema-2 image, CA trust
-failure, and CA identity across proxy restart using the compiled binary. Each pull
+failure, and cold/warm/restarted-proxy caching using the compiled binary. Each pull
 uses a fresh isolated daemon, avoiding Docker's local layer cache. Origin request
-and byte counters plus manifest/config/rootfs digests are asserted.
+and byte counters plus exact inspected manifest/config/rootfs digests are asserted.
+Both layer and config blobs receive one fresh authenticated GET per warm phase;
+tag resolution also reaches upstream on every pull.
 
 Run in an orb with Go, Docker Engine, Amp service management, passwordless sudo,
 and a non-loopback IPv4 interface:
@@ -225,7 +227,24 @@ CA trust overrides, not insecure TLS. Normal `go test ./...` skips this opt-in t
 but validates the deterministic image fixture.
 
 Validated with Go 1.27.1 and Docker Engine/CLI 29.8.0 on Linux amd64: no-trust pull
-reached zero origin HTTP requests; each trusted fresh-state pull fetched one 118-byte
-layer; the image digests matched and CA identity survived restart. This tiny fixture
-is correctness evidence, not a performance benchmark. Docker Hub/GHCR, bearer-token
-flows, and multi-platform external compatibility checks remain planned for slice 3.
+reached zero origin HTTP requests, image digests matched in all three successful
+phases, and CA identity survived restart. A representative final run recorded:
+
+| Phase (fresh Docker store each time) | Authorized layer GETs | Origin layer body bytes |
+| --- | ---: | ---: |
+| Cold | 1 | 8,390,075 |
+| Warm, same proxy | 1 | 32,768 |
+| Warm, restarted proxy | 1 | 196,608 |
+
+The deterministic manifest digest is
+`sha256:f0c62108e748e004823f36ecaa075912d0ed5a00912730e96fef75e66ea02c75`.
+The fixture streams an incompressible ~8 MiB layer in 32 KiB chunks with 1 ms
+pacing; cancellation may still write some upstream bytes. Assertions require less
+than half the layer on warm requests, not these exact timing-dependent byte counts.
+Counters settle after handlers finish before each phase snapshot. This proves
+correctness and body-transfer savings, not production latency or throughput.
+
+Default tests cover denied/revoked clients, public HEAD/protected GET, CDN denials,
+TLS and upstream failures, bypass semantics, and interrupted/corrupt/full-cache
+behavior. Docker Hub/GHCR, bearer-token flows, multi-platform compatibility, full
+load/crash testing, and operational metrics remain for slices 3 and 4.
