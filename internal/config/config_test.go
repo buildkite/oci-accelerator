@@ -25,7 +25,7 @@ func TestLoadDefaultsAndRelativePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := filepath.Dir(path)
-	if c.Listen != "127.0.0.1:3128" || c.CADir != filepath.Join(base, "ca") || c.Cache.Dir != filepath.Join(base, "cache") || c.Cache.MaxBytes != DefaultCacheMaxBytes || c.Cache.MaxFills != DefaultCacheMaxFills || c.Cache.MaxEntries != DefaultCacheMaxEntries || c.Cache.FillTimeout != DefaultCacheFillTimeout {
+	if c.Listen != "127.0.0.1:3128" || c.CADir != filepath.Join(base, "ca") || c.Cache.Dir != filepath.Join(base, "cache") || c.Cache.MaxBytes != DefaultCacheMaxBytes || c.Cache.MaxFills != DefaultCacheMaxFills || c.Cache.MaxEntries != DefaultCacheMaxEntries || c.Cache.FillTimeout != DefaultCacheFillTimeout || c.Cache.FillWaitTimeout != time.Second {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
 	if c.DialTimeout != 10*time.Second || c.TLSHandshakeTimeout != 10*time.Second || c.ResponseHeaderTimeout != 30*time.Second || c.IdleTimeout != 2*time.Minute || c.ShutdownTimeout != 15*time.Second || c.MaxConnections != 256 || c.MaxLeafCertificates != 256 {
@@ -40,12 +40,12 @@ func TestLoadDefaultsAndRelativePaths(t *testing.T) {
 }
 
 func TestLoadExplicitOperationalOverrides(t *testing.T) {
-	path := writeConfig(t, "listen: ':8080'\nregistries: [example.com]\nca_dir: /ca\ncache: {dir: /cache, max_bytes: 12345, max_fills: 7, max_entries: 99, fill_timeout: 3m}\ndial_timeout: 1s\ntls_handshake_timeout: 2s\nresponse_header_timeout: 3s\nidle_timeout: 4s\nshutdown_timeout: 5s\nmax_connections: 6\nmax_leaf_certificates: 8\n")
+	path := writeConfig(t, "listen: ':8080'\nregistries: [example.com]\nca_dir: /ca\ncache: {dir: /cache, max_bytes: 12345, max_fills: 7, max_entries: 99, fill_timeout: 3m, fill_wait_timeout: 0s}\ndial_timeout: 1s\ntls_handshake_timeout: 2s\nresponse_header_timeout: 3s\nidle_timeout: 4s\nshutdown_timeout: 5s\nmax_connections: 6\nmax_leaf_certificates: 8\n")
 	c, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Listen != ":8080" || c.CADir != "/ca" || c.Cache.Dir != "/cache" || c.Cache.MaxBytes != 12345 || c.Cache.MaxFills != 7 || c.Cache.MaxEntries != 99 || c.Cache.FillTimeout != 3*time.Minute {
+	if c.Listen != ":8080" || c.CADir != "/ca" || c.Cache.Dir != "/cache" || c.Cache.MaxBytes != 12345 || c.Cache.MaxFills != 7 || c.Cache.MaxEntries != 99 || c.Cache.FillTimeout != 3*time.Minute || c.Cache.FillWaitTimeout != 0 {
 		t.Fatalf("cache/path overrides: %+v", c)
 	}
 	if c.DialTimeout != time.Second || c.TLSHandshakeTimeout != 2*time.Second || c.ResponseHeaderTimeout != 3*time.Second || c.IdleTimeout != 4*time.Second || c.ShutdownTimeout != 5*time.Second || c.MaxConnections != 6 || c.MaxLeafCertificates != 8 {
@@ -117,6 +117,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"registries: [example.com]\nca_dir: ca\ncache: {max_fills: 0}\n",
 		"registries: [example.com]\nca_dir: ca\ncache: {max_entries: -1}\n",
 		"registries: [example.com]\nca_dir: ca\ncache: {fill_timeout: 0s}\n",
+		"registries: [example.com]\nca_dir: ca\ncache: {fill_wait_timeout: -1s}\n",
 		"registries: [example.com]\nca_dir: ca\nlisten: '127.0.0.1:99999'\n",
 		"registries: [example.com]\nca_dir: ca\nlisten: '127.0.0.1:'\n",
 		"registries: [example.com]\nca_dir: ca\nlisten: 'bad host:3128'\n",

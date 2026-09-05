@@ -21,6 +21,66 @@ func testMeta(key, body string) Metadata {
 	return Metadata{Key: fmt.Sprintf("%x", sha256.Sum256([]byte(key))), Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))), Size: int64(len(body)), MediaType: "application/octet-stream"}
 }
 
+func TestCompletionTracksMatchingFillTerminalState(t *testing.T) {
+	s := openTest(t, 1<<20)
+	meta := testMeta("completion", "body")
+	f, err := s.Begin(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, ok := s.Completion(meta)
+	if !ok {
+		t.Fatal("active fill not observed")
+	}
+	mismatch := meta
+	mismatch.MediaType = "different"
+	if _, ok := s.Completion(mismatch); ok {
+		t.Fatal("mismatching metadata observed")
+	}
+	select {
+	case <-done:
+		t.Fatal("active fill reported complete")
+	default:
+	}
+	if _, err := f.Write([]byte("body")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("commit did not notify")
+	}
+	if published, ok := s.Completion(meta); !ok {
+		t.Fatal("published completion not observed")
+	} else {
+		select {
+		case <-published:
+		default:
+			t.Fatal("published completion was not closed")
+		}
+	}
+}
+
+func TestCompletionNotifiesAbortAndClose(t *testing.T) {
+	s := openTest(t, 1<<20)
+	first, _ := s.Begin(testMeta("abort-completion", "a"))
+	aborted, _ := s.Completion(first.meta)
+	if err := first.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	<-aborted
+
+	second, _ := s.Begin(testMeta("close-completion", "b"))
+	closed, _ := s.Completion(second.meta)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	<-closed
+}
+
 func TestEntrySlotsAndFillConcurrencyAreDistinctLimits(t *testing.T) {
 	t.Run("entry slots", func(t *testing.T) {
 		s, err := OpenWithLimits(filepath.Join(t.TempDir(), "cache"), Limits{MaxBytes: 1 << 20, MaxFills: 3, MaxEntries: 1, FillTimeout: time.Minute})

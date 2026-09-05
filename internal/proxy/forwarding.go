@@ -73,7 +73,7 @@ func (p *Proxy) interceptHandler(target authority.Authority) http.Handler {
 				outcome = "complete"
 			}
 			p.logger.Info("registry request", "registry", target.String(), "status", lw.status, "duration", time.Since(started), "bytes", lw.bytes, "outcome", outcome,
-				"cache", stats.cache, "fill", stats.fill, "upstream_body_bytes", stats.upstreamBytes)
+				"cache", stats.cache, "fill", stats.fill, "wait", stats.wait, "fallback", stats.fallback, "upstream_body_bytes", stats.upstreamBytes)
 		}()
 		if r.RequestURI == "" || !strings.HasPrefix(r.RequestURI, "/") || strings.HasPrefix(r.RequestURI, "//") || r.URL.IsAbs() {
 			refuse(lw, "invalid request target", http.StatusBadRequest)

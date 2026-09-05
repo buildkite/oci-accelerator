@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"ampcode.com/buildkite/docker-accelerator/internal/authority"
 	"ampcode.com/buildkite/docker-accelerator/internal/cache"
@@ -16,6 +17,7 @@ import (
 
 type requestStats struct {
 	cache, fill         string
+	wait, fallback      string
 	upstreamBytes       int64
 	eligible, cacheable bool
 }
@@ -88,32 +90,55 @@ func manifestMediaType(mediaType string) bool {
 	}
 }
 
-func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted bool, stats *requestStats) *http.Response {
+func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted, mayWait bool, stats *requestStats) (*http.Response, bool) {
 	resp.Body = &countedBody{ReadCloser: resp.Body, stats: stats}
 	if p.cache == nil || !permitted {
-		return resp
+		return resp, false
 	}
 	meta, ok := objectMetadata(req, resp)
 	if !ok {
-		return resp
+		return resp, false
 	}
 	if body, err := p.cache.Get(req.Context(), meta); err == nil {
 		resp.Body.Close()
 		resp.Body = body
 		stats.cache = "hit"
-		return resp
+		return resp, false
 	}
 	stats.cache = "miss"
+	if mayWait && p.cfg.Cache.FillWaitTimeout > 0 {
+		if completed, active := p.cache.Completion(meta); active {
+			resp.Body.Close()
+			timer := time.NewTimer(p.cfg.Cache.FillWaitTimeout)
+			defer timer.Stop()
+			select {
+			case <-completed:
+				stats.wait = "complete"
+				if body, err := p.cache.Get(req.Context(), meta); err == nil {
+					resp.Body = body
+					stats.cache = "wait_hit"
+					return resp, false
+				}
+			case <-req.Context().Done():
+				stats.wait = "canceled"
+				return nil, false
+			case <-timer.C:
+				stats.wait = "timeout"
+			}
+			stats.fallback = "retry"
+			return nil, true
+		}
+	}
 	if req.Context().Err() != nil {
-		return resp
+		return resp, false
 	}
 	fill, err := p.cache.Begin(meta)
 	if err != nil {
 		stats.fill = "bypass"
-		return resp
+		return resp, false
 	}
 	resp.Body = &fillingBody{ReadCloser: resp.Body, fill: fill, ctx: req.Context(), stats: stats}
-	return resp
+	return resp, false
 }
 
 type countedBody struct {

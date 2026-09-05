@@ -22,7 +22,7 @@ Edit the registry list before starting. Names have no scheme or path; omitted po
 mean 443. IPv4, bracketed IPv6, and explicitly configured private registries are
 supported. Matching includes the port. Relative directories resolve from the YAML
 file's directory. Unknown/duplicate mapping keys and extra YAML documents are errors.
-Null values retain defaults; zero limits/timeouts are invalid. `--check` validates
+Null values retain defaults; zero limits/timeouts are invalid except `fill_wait_timeout: 0s`. `--check` validates
 configuration only: it does not check CA state, bind sockets, or create directories.
 
 In an orb, run the built proxy under supervision instead of the foreground command:
@@ -120,6 +120,7 @@ See [the complete example](../config.example.yaml). Configuration is static unti
 | `cache.max_fills` | `16` active writers globally; excess misses stream uncached |
 | `cache.max_entries` | `100000` completed entries plus reserved fill slots; evict unused LRU entries or bypass |
 | `cache.fill_timeout` | `10m` per fill; expiry discards cache admission, not the upstream transfer |
+| `cache.fill_wait_timeout` | `1s`; an authorized follower waits for an existing fill. `0s` disables waiting |
 | `dial_timeout`, `tls_handshake_timeout` | `10s` each |
 | `response_header_timeout` | `30s`; also bounds incoming request headers |
 | `idle_timeout` | `2m`; idle tunnels, upstream I/O, downstream writes, and keepalive |
@@ -151,7 +152,8 @@ hops retain only Accept, Accept-Encoding, and User-Agent, never registry credent
 or cookies. These restrictions do not constrain user-selected opaque CONNECT tunnels.
 
 JSON stderr logs include configured registry, status, duration, downstream body bytes,
-completion outcome, `cache` (hit/miss/bypass), `fill` (none/stored/bypass/failed/aborted),
+completion outcome, `cache` (hit/wait_hit/miss/bypass), `fill` (none/stored/bypass/failed/aborted),
+`wait` (complete/canceled/timeout or empty), `fallback` (retry or empty),
 and `upstream_body_bytes` consumed by the forwarding code. The latter excludes
 transport/kernel read-ahead and is not a wire-level traffic measurement.
 Aborted streaming responses may have already sent status 200;
@@ -181,8 +183,15 @@ without making the upstream transfer depend on a cache write.
 The limit charges declared body bytes plus 4 KiB per entry for metadata, including
 in-progress fills. Leave filesystem headroom for blocks, directories, and inodes.
 Entries larger than the budget are forwarded uncached. LRU eviction skips active
-readers; competing cold clients authorize/transfer independently, with at most one
-storage writer per key. Fills are removed on cancellation and only published after
+readers; competing cold clients authorize independently, with at most one
+storage writer per key. Matching authorized followers close their origin body and
+wait up to `fill_wait_timeout` for that fill, then use a normal verified pinned read.
+Timeout, leader failure, or eviction causes one fresh original GET through the full
+authorization/redirect policy, with no second wait. New denials are never replaced
+by the earlier authorization. Zero wait streams immediately. Leader disconnect
+aborts storage and wakes followers; follower cancellation does not keep or stop
+the leader's download. There are no detached downloads or leader handoffs.
+Fills are removed on cancellation and only published after
 complete length and digest verification. Startup removes recognized abandoned fills
 and invalid pairs and rehashes persisted bodies before first use. Live hit recency
 is in memory; restart approximates order using commit times. Do not modify live

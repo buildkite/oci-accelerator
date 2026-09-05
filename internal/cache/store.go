@@ -23,6 +23,12 @@ var (
 	ErrBypass = errors.New("cache bypass")
 )
 
+var completedNotification = func() <-chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
 type Metadata struct {
 	Key, Digest string
 	Size        int64
@@ -68,6 +74,23 @@ type Limits struct {
 	MaxFills    int
 	MaxEntries  int
 	FillTimeout time.Duration
+}
+
+// Completion returns a notification for a matching active or already-published
+// fill. The channel closes only after the store's terminal state is visible.
+func (s *Store) Completion(meta Metadata) (<-chan struct{}, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, false
+	}
+	if e, ok := s.entries[meta.Key]; ok && e.meta == meta && !e.invalid {
+		return completedNotification, true
+	}
+	if f, ok := s.fills[meta.Key]; ok && f.meta == meta {
+		return f.completed, true
+	}
+	return nil, false
 }
 
 func (l Limits) valid() bool {

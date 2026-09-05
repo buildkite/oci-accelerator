@@ -20,9 +20,10 @@ var ErrInvalid = errors.New("invalid configuration")
 
 const DefaultCacheMaxBytes int64 = 32 << 30
 const (
-	DefaultCacheMaxFills    = 16
-	DefaultCacheMaxEntries  = 100000
-	DefaultCacheFillTimeout = 10 * time.Minute
+	DefaultCacheMaxFills        = 16
+	DefaultCacheMaxEntries      = 100000
+	DefaultCacheFillTimeout     = 10 * time.Minute
+	DefaultCacheFillWaitTimeout = time.Second
 )
 
 type Config struct {
@@ -41,14 +42,16 @@ type Config struct {
 }
 
 type Cache struct {
-	Dir         string
-	MaxBytes    int64
-	MaxFills    int
-	MaxEntries  int
-	FillTimeout time.Duration
+	Dir             string
+	MaxBytes        int64
+	MaxFills        int
+	MaxEntries      int
+	FillTimeout     time.Duration
+	FillWaitTimeout time.Duration
 }
 
 type duration time.Duration
+type nonNegativeDuration time.Duration
 
 func (d *duration) UnmarshalYAML(node *yaml.Node) error {
 	if node.Tag == "!!null" {
@@ -62,6 +65,21 @@ func (d *duration) UnmarshalYAML(node *yaml.Node) error {
 		return ErrInvalid
 	}
 	*d = duration(v)
+	return nil
+}
+
+func (d *nonNegativeDuration) UnmarshalYAML(node *yaml.Node) error {
+	if node.Tag == "!!null" {
+		return nil
+	}
+	if node.Tag != "!!str" {
+		return ErrInvalid
+	}
+	v, err := time.ParseDuration(node.Value)
+	if err != nil || v < 0 {
+		return ErrInvalid
+	}
+	*d = nonNegativeDuration(v)
 	return nil
 }
 
@@ -81,11 +99,12 @@ type rawConfig struct {
 }
 
 type rawCache struct {
-	Dir         string   `yaml:"dir"`
-	MaxBytes    int64    `yaml:"max_bytes"`
-	MaxFills    int      `yaml:"max_fills"`
-	MaxEntries  int      `yaml:"max_entries"`
-	FillTimeout duration `yaml:"fill_timeout"`
+	Dir             string              `yaml:"dir"`
+	MaxBytes        int64               `yaml:"max_bytes"`
+	MaxFills        int                 `yaml:"max_fills"`
+	MaxEntries      int                 `yaml:"max_entries"`
+	FillTimeout     duration            `yaml:"fill_timeout"`
+	FillWaitTimeout nonNegativeDuration `yaml:"fill_wait_timeout"`
 }
 
 // Load reads one strict YAML document from path and resolves relative directories
@@ -113,7 +132,7 @@ func Load(path string) (Config, error) {
 func defaults() rawConfig {
 	return rawConfig{
 		Listen:                "127.0.0.1:3128",
-		Cache:                 rawCache{MaxBytes: DefaultCacheMaxBytes, MaxFills: DefaultCacheMaxFills, MaxEntries: DefaultCacheMaxEntries, FillTimeout: duration(DefaultCacheFillTimeout)},
+		Cache:                 rawCache{MaxBytes: DefaultCacheMaxBytes, MaxFills: DefaultCacheMaxFills, MaxEntries: DefaultCacheMaxEntries, FillTimeout: duration(DefaultCacheFillTimeout), FillWaitTimeout: nonNegativeDuration(DefaultCacheFillWaitTimeout)},
 		DialTimeout:           duration(10 * time.Second),
 		TLSHandshakeTimeout:   duration(10 * time.Second),
 		ResponseHeaderTimeout: duration(30 * time.Second),
@@ -150,7 +169,7 @@ func validate(raw rawConfig, base string) (Config, error) {
 	return Config{
 		Listen: raw.Listen, Registries: registries, RedirectAllowlist: redirectAllowlist,
 		CADir:       resolve(base, raw.CADir),
-		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: raw.Cache.MaxBytes, MaxFills: raw.Cache.MaxFills, MaxEntries: raw.Cache.MaxEntries, FillTimeout: time.Duration(raw.Cache.FillTimeout)},
+		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: raw.Cache.MaxBytes, MaxFills: raw.Cache.MaxFills, MaxEntries: raw.Cache.MaxEntries, FillTimeout: time.Duration(raw.Cache.FillTimeout), FillWaitTimeout: time.Duration(raw.Cache.FillWaitTimeout)},
 		DialTimeout: time.Duration(raw.DialTimeout), TLSHandshakeTimeout: time.Duration(raw.TLSHandshakeTimeout),
 		ResponseHeaderTimeout: time.Duration(raw.ResponseHeaderTimeout), IdleTimeout: time.Duration(raw.IdleTimeout),
 		ShutdownTimeout: time.Duration(raw.ShutdownTimeout), MaxConnections: raw.MaxConnections,

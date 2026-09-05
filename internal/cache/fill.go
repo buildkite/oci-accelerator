@@ -25,6 +25,7 @@ type Fill struct {
 	timer           *time.Timer
 	timerDone       chan struct{}
 	timerDoneOnce   sync.Once
+	completed       chan struct{}
 }
 
 func (s *Store) Begin(meta Metadata) (*Fill, error) {
@@ -72,7 +73,7 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		os.RemoveAll(d)
 		return nil, err
 	}
-	fill := &Fill{store: s, meta: meta, dir: d, file: f, hash: sha256.New(), charge: charge, deadline: time.Now().Add(s.fillTimeout), timerDone: make(chan struct{})}
+	fill := &Fill{store: s, meta: meta, dir: d, file: f, hash: sha256.New(), charge: charge, deadline: time.Now().Add(s.fillTimeout), timerDone: make(chan struct{}), completed: make(chan struct{})}
 	s.fills[meta.Key] = fill
 	s.reserved += charge
 	fill.timer = time.AfterFunc(s.fillTimeout, func() {
@@ -176,6 +177,7 @@ func (f *Fill) Commit() error {
 	f.store.bytes += f.charge
 	f.store.mu.Unlock()
 	f.done = true
+	close(f.completed)
 	return nil
 }
 func (f *Fill) Abort() error {
@@ -222,6 +224,7 @@ func (f *Fill) finish(cause error) error {
 	}
 	f.store.mu.Unlock()
 	f.done = true
+	close(f.completed)
 	return cause
 }
 func syncDirectory(p string) error {

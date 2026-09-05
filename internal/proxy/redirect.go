@@ -17,6 +17,15 @@ var errRedirect = errors.New("upstream redirect refused")
 type registryTransport struct{ p *Proxy }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, retry, err := t.roundTrip(req, true)
+	if err != nil || !retry {
+		return resp, err
+	}
+	resp, _, err = t.roundTrip(req, false)
+	return resp, err
+}
+
+func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Response, bool, error) {
 	object, eligible := immutableObjectRequest(req)
 	stats, _ := req.Context().Value(statsKey{}).(*requestStats)
 	if stats == nil {
@@ -31,19 +40,23 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	for hops := 0; ; hops++ {
 		resp, err := t.p.transport.RoundTrip(current)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if !eligible || !redirectStatus(resp.StatusCode) {
-			return t.p.cachedResponse(req, resp, permitted, stats), nil
+			cached, retry := t.p.cachedResponse(req, resp, permitted, mayWait, stats)
+			if cached == nil && req.Context().Err() != nil {
+				return nil, false, req.Context().Err()
+			}
+			return cached, retry, nil
 		}
 		permitted = permitted && cacheHeaders(resp.Header, object.digest)
 		resp.Body.Close()
 		if hops == 5 {
-			return nil, errRedirect
+			return nil, false, errRedirect
 		}
 		next, err := redirectURL(current.URL, resp.Header.Get("Location"))
 		if err != nil || seen[next.String()] {
-			return nil, errRedirect
+			return nil, false, errRedirect
 		}
 		seen[next.String()] = true
 		out := current.Clone(req.Context())

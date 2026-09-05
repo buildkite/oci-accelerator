@@ -196,3 +196,14 @@
   Recheck deadlines before publication, including after filesystem operations.
 - Keep defaults at 16 fills, 100000 entry slots and 10m lifetime. Limits constrain
   caching rather than successful authorized pulls, and do not preempt kernel I/O.
+
+## 4b — authorized follower waiting
+
+- Add store-owned terminal notifications matched against full metadata. Subscribe
+  under the store lock; notify only after publish/removal, and acquire ordinary
+  verified readers rather than pinning for waiters.
+- The proxy closes each follower's independently authorized upstream body before
+  waiting. A bounded second transport attempt restarts from the original request,
+  repeating redirect and authorization policy without another wait loop.
+- Preserve client-owned leader lifecycle. Default wait is 1s; `0s` disables it.
+  Cancellation affects only that request; no detached workers or leader handoff.
