@@ -21,3 +21,17 @@
   are accepted for later slices but do not enable caching.
 - Canonicalize authorities centrally so registry selection and CONNECT dispatch use
   the same identity. Configuration errors never echo YAML values.
+
+## 1b — CA lifecycle
+
+- Use ECDSA P-256 and publish a fully written, synced staging directory atomically.
+  Initialization requires an absent CA directory and an owner-controlled parent;
+  a sibling initialization lock prevents competing initializers. Existing incomplete,
+  insecure, expired, mismatched, or symlinked material fails closed without replacement.
+- Store `ca.key` with mode 0600 and `ca.crt` with mode 0644 inside a 0700 directory.
+  The public certificate is separate from the private key for safe trust distribution.
+- Keep a bounded FIFO leaf cache, synchronize issuance, and renew within one hour
+  of expiry. Cap leaf expiry at CA expiry; reject issuance under an expired CA.
+- After an interrupted first initialization, operators must inspect and remove a stale
+  `<ca-dir>.lock` or `.ca-init-*` directory only after stopping all initializers.
+  Never remove/replace an established CA as an automatic repair.

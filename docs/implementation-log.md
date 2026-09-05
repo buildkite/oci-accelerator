@@ -6,8 +6,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 ## Current status
 
 - **Completed implementation slices:** none.
-- **In progress:** slice 1; 1a complete.
-- **Next:** 1b — persistent CA lifecycle.
+- **In progress:** slice 1; 1a–1b complete.
+- **Next:** 1c — CONNECT routing.
 - Autonomous implementation of 1a–1e is authorized; stop before caching.
 
 ## Completed groundwork
@@ -37,13 +37,13 @@ provides evidence, without silently changing the approved scope.
 
 | Subslice | Status | Outcome and validation |
 | --- | --- | --- |
-| 1a. Go module and configuration | Complete | Strict YAML/authority/CLI tests pass, including defaults, malformed/duplicate/unknown values, and redacted errors. |
-| 1b. Persistent CA lifecycle | Not started | Safe CA initialization/reuse and bounded per-host leaf issuance; tests for trust, permissions, invalid state, and stable CA identity across restarts. |
+| 1a. Go module and configuration | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/763cd026ffa760d47929d53a103ec772dfb85a85) | Strict YAML/authority/CLI tests pass, including defaults, malformed/duplicate/unknown values, and redacted errors. |
+| 1b. Persistent CA lifecycle | Complete | Atomic CA initialization/reuse and bounded leaf issuance; tests for trust, permissions, invalid state, renewal, concurrency, and stable CA identity. |
 | 1c. CONNECT routing and opaque tunnels | Not started | Strict authority parsing, configured-host dispatch, and passthrough for other destinations; tests for malformed requests, bidirectional forwarding, and cleanup. Configured hosts fail closed until interception is wired in 1d. |
 | 1d. Intercepted registry forwarding | Not started | Connect CA/TLS handling to the proxy; bind HTTP/TLS authorities to CONNECT, verify upstream TLS, forward client authentication/challenges, and reject writes. Test successful forwarding and the failure/security boundaries with local origins. No caching. |
 | 1e. Docker Engine acceptance and setup docs | Not started | Document proxy/CA setup and verify a real pull, CA trust failure, and CA persistence after restart. Record evidence and finish the plan's slice-1 checks. |
 
-## Later slices: queued scope
+## Validation and review
 
 1a validation: `go test ./...`, `go test -race ./...`, `go vet ./...` passed.
 Two fresh read-only reviewers inspected the same source/test/diff snapshot. The
@@ -53,6 +53,17 @@ blind review. Its review found no issues. The plan reviewer flagged YAML merge
 overrides as duplicate fields; this was rejected because explicit overrides of
 merged defaults are defined YAML semantics, not duplicate keys in one mapping.
 Actual duplicate mapping keys are rejected. No behavior changed during review.
+
+1b validation: all three baseline checks passed. Both independent reviews and
+follow-up reviews completed using matching snapshots and the same code-only
+isolation limitation. Fixed restrictive-umask key permissions and added a regression
+test. Rejected same-user file/path replacement races as outside the private,
+owner-controlled filesystem boundary; cooperative initialization is serialized and
+existing keys are never overwritten. Windows compilation was noted but is not a
+validated target: this first implementation uses Unix filesystem ownership/permissions
+and is tested on Linux Docker Engine. Windows support is not claimed.
+
+## Later slices: queued scope
 
 Break these into concrete subslices before starting each slice, using the
 implementation then available rather than speculating about file boundaries now.
