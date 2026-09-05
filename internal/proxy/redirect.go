@@ -38,6 +38,11 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
 	for hops := 0; ; hops++ {
+		if current.Method == http.MethodGet {
+			t.p.metrics.mu.Lock()
+			t.p.metrics.upstream++
+			t.p.metrics.mu.Unlock()
+		}
 		resp, err := t.p.transport.RoundTrip(current)
 		if err != nil {
 			return nil, false, err

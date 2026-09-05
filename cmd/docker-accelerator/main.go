@@ -6,8 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -77,11 +79,44 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 		return errors.New("cannot listen on configured address")
 	}
 	defer listener.Close()
-	logger.Info("proxy ready", "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
 	p := proxy.New(cfg, signer, logger, store)
+	var metricsDone chan struct{}
+	if cfg.MetricsListen != "" {
+		metricsListener, err := net.Listen("tcp", cfg.MetricsListen)
+		if err != nil {
+			return errors.New("cannot listen on configured metrics address")
+		}
+		defer metricsListener.Close()
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", p.MetricsHandler())
+		metricsServer := &http.Server{Handler: mux, ReadHeaderTimeout: cfg.ResponseHeaderTimeout, WriteTimeout: cfg.ResponseHeaderTimeout, IdleTimeout: cfg.IdleTimeout, MaxHeaderBytes: 64 << 10, ErrorLog: log.New(io.Discard, "", 0)}
+		metricsDone = make(chan struct{})
+		go func() {
+			_ = metricsServer.Serve(metricsListener)
+			close(metricsDone)
+		}()
+		defer func() {
+			shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			defer cancel()
+			if err := metricsServer.Shutdown(shutdown); err != nil {
+				_ = metricsServer.Close()
+				if runErr == nil {
+					runErr = errors.New("metrics cleanup failed")
+				}
+			}
+			<-metricsDone
+		}()
+	}
+	logger.Info("proxy ready", "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
 	done := make(chan error, 1)
 	go func() { done <- p.Serve(listener) }()
 	select {
+	case <-metricsDone:
+		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		_ = p.Shutdown(shutdown)
+		<-done
+		return errors.New("metrics listener stopped unexpectedly")
 	case err := <-done:
 		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()

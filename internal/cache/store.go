@@ -23,6 +23,32 @@ var (
 	ErrBypass = errors.New("cache bypass")
 )
 
+type AdmissionReason uint8
+
+const (
+	AdmissionAccepted AdmissionReason = iota
+	AdmissionInvalid
+	AdmissionOversized
+	AdmissionExisting
+	AdmissionFillLimit
+	AdmissionCapacity
+	AdmissionClosed
+	AdmissionIOError
+	AdmissionReasonCount
+)
+
+func (r AdmissionReason) String() string {
+	return [...]string{"accepted", "invalid", "oversized", "existing", "fill_limit", "capacity", "closed", "io_error"}[r]
+}
+
+type AdmissionError struct {
+	Reason AdmissionReason
+	Cause  error
+}
+
+func (e *AdmissionError) Error() string { return "cache admission refused: " + e.Reason.String() }
+func (e *AdmissionError) Unwrap() error { return ErrBypass }
+
 var completedNotification = func() <-chan struct{} {
 	c := make(chan struct{})
 	close(c)
@@ -35,9 +61,12 @@ type Metadata struct {
 	MediaType   string
 }
 type Stats struct {
-	Bytes, Reserved int64
-	Entries, Fills  int
-	Evictions       int64
+	Bytes, Reserved                                 int64
+	Entries, Fills                                  int
+	Evictions                                       int64
+	Readers                                         int
+	FillSuccess, FillFailure, FillAbort, FillExpiry int64
+	Admissions                                      [AdmissionReasonCount]int64
 }
 
 type diskMetadata struct {
@@ -55,18 +84,21 @@ type entry struct {
 }
 
 type Store struct {
-	mu                   sync.Mutex
-	dir                  string
-	max                  int64
-	maxFills, maxEntries int
-	fillTimeout          time.Duration
-	failedSlots          int
-	bytes, reserved      int64
-	evictions            int64
-	entries              map[string]*entry
-	fills                map[string]*Fill
-	lock                 *os.File
-	closed               bool
+	mu                                              sync.Mutex
+	dir                                             string
+	max                                             int64
+	maxFills, maxEntries                            int
+	fillTimeout                                     time.Duration
+	failedSlots                                     int
+	bytes, reserved                                 int64
+	evictions                                       int64
+	readers                                         int
+	fillSuccess, fillFailure, fillAbort, fillExpiry int64
+	admissions                                      [AdmissionReasonCount]int64
+	entries                                         map[string]*entry
+	fills                                           map[string]*Fill
+	lock                                            *os.File
+	closed                                          bool
 }
 
 type Limits struct {
@@ -316,7 +348,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64) bool {
 func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Stats{s.bytes, s.reserved, len(s.entries), len(s.fills), s.evictions}
+	return Stats{Bytes: s.bytes, Reserved: s.reserved, Entries: len(s.entries), Fills: len(s.fills), Evictions: s.evictions, Readers: s.readers, FillSuccess: s.fillSuccess, FillFailure: s.fillFailure, FillAbort: s.fillAbort, FillExpiry: s.fillExpiry, Admissions: s.admissions}
 }
 func (s *Store) Close() error {
 	s.mu.Lock()

@@ -83,6 +83,22 @@ func TestLoadAllowsEmptyRedirectAllowlist(t *testing.T) {
 	}
 }
 
+func TestMetricsListenValidation(t *testing.T) {
+	valid := []string{"127.0.0.1:9090", "[::1]:9090"}
+	for _, address := range valid {
+		c, err := Load(writeConfig(t, "registries: [registry.example]\nca_dir: ca\nmetrics_listen: '"+address+"'\n"))
+		if err != nil || c.MetricsListen != address {
+			t.Errorf("valid %q: %+v %v", address, c, err)
+		}
+	}
+	invalid := []string{"localhost:9090", "0.0.0.0:9090", "192.0.2.1:9090", "127.0.0.1:0", "127.0.0.1:http", "[fe80::1%lo]:9090", ":9090"}
+	for _, address := range invalid {
+		if _, err := Load(writeConfig(t, "registries: [registry.example]\nca_dir: ca\nmetrics_listen: '"+address+"'\n")); !errors.Is(err, ErrInvalid) {
+			t.Errorf("invalid %q: %v", address, err)
+		}
+	}
+}
+
 func TestLoadRejectsInvalidRedirectAllowlist(t *testing.T) {
 	tests := []string{
 		"redirect_allowlist: [user:secret@cdn.example]",

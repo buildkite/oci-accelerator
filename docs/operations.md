@@ -113,6 +113,7 @@ See [the complete example](../config.example.yaml). Configuration is static unti
 | Setting | Default / requirement |
 | --- | --- |
 | `listen` | `127.0.0.1:3128`; explicit host:port, valid nonzero numeric port |
+| `metrics_listen` | Disabled; optional literal loopback IP and explicit nonzero port (for example `127.0.0.1:9090`) |
 | `registries` | Required nonempty list of distinct canonical authorities |
 | `redirect_allowlist` | Optional private HTTPS storage authorities; does not enable CONNECT interception |
 | `ca_dir` | Required; private persistent state |
@@ -154,12 +155,39 @@ or cookies. These restrictions do not constrain user-selected opaque CONNECT tun
 JSON stderr logs include configured registry, status, duration, downstream body bytes,
 completion outcome, `cache` (hit/wait_hit/miss/bypass), `fill` (none/stored/bypass/failed/aborted),
 `wait` (complete/canceled/timeout or empty), `fallback` (retry or empty),
+`admission` (a bounded refusal reason or empty),
 and `upstream_body_bytes` consumed by the forwarding code. The latter excludes
 transport/kernel read-ahead and is not a wire-level traffic measurement.
 Aborted streaming responses may have already sent status 200;
 the client still receives an incomplete-body error. No paths, signed queries, auth
-headers, token bodies, or raw upstream errors are logged. A metrics endpoint and
-aggregate operational counters remain planned for slice 4.
+headers, token bodies, or raw upstream errors are logged.
+
+### Metrics
+
+Set `metrics_listen: 127.0.0.1:9090` to expose Prometheus text at `/metrics` on a
+separate local listener. Hostnames, wildcard/public addresses, zoned IPv6 and port
+zero are rejected. There is no metrics route on the CONNECT listener, public bind,
+admin API, or pprof endpoint. Bind failure fails startup. Protect local access and
+do not expose this endpoint through a portal or public reverse proxy.
+
+Metric names start with `docker_accelerator_`:
+
+- `requests_total`, `request_status_total`, and `request_duration_seconds` histogram:
+  completed/aborted outcomes, bounded status classes, and elapsed handler duration.
+- `cache_total`, `fills_total`, `waits_total`, `fallbacks_total`: request outcomes.
+  `upstream_get_attempts_total` includes redirects and both fallback attempts;
+  `upstream_body_bytes_total` counts consumed bytes, not wire read-ahead.
+  Body byte counters are recorded on request completion, not continuously mid-stream.
+- `cache_admissions_total{reason=...}`: accepted, invalid, oversized, existing,
+  fill_limit, capacity, closed, or io_error. `store_fill_*_total` records actual
+  success, failure, abort and expiry transitions, including idle-fill expiry.
+- Active requests/waits/connections; cache entries/fills/readers, charged bytes,
+  reserved bytes and evictions; Go heap allocation and goroutine gauges.
+
+All labels are fixed enums; no client, repository, path, digest, token or URL labels.
+Counters reset at process restart. Scrapes copy bounded state before writing;
+slow/failed scrapes do not hold request/cache locks during network output. Logical
+cache bytes exclude filesystem block/inode overhead, and heap allocation is not RSS.
 
 ## Cache behavior and storage
 

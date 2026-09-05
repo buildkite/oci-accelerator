@@ -62,6 +62,9 @@ func (p *Proxy) interceptHandler(target authority.Authority) http.Handler {
 		started := time.Now()
 		completed := false
 		stats := &requestStats{cache: "bypass", fill: "none"}
+		p.metrics.mu.Lock()
+		p.metrics.activeRequests++
+		p.metrics.mu.Unlock()
 		object, eligible := immutableObjectRequest(r)
 		stats.eligible = eligible
 		stats.cacheable = eligible && cacheHeaders(r.Header, object.digest)
@@ -72,8 +75,9 @@ func (p *Proxy) interceptHandler(target authority.Authority) http.Handler {
 			if completed {
 				outcome = "complete"
 			}
+			p.metrics.finish(stats, outcome, lw.status, time.Since(started), lw.bytes)
 			p.logger.Info("registry request", "registry", target.String(), "status", lw.status, "duration", time.Since(started), "bytes", lw.bytes, "outcome", outcome,
-				"cache", stats.cache, "fill", stats.fill, "wait", stats.wait, "fallback", stats.fallback, "upstream_body_bytes", stats.upstreamBytes)
+				"cache", stats.cache, "fill", stats.fill, "admission", stats.admission, "wait", stats.wait, "fallback", stats.fallback, "upstream_body_bytes", stats.upstreamBytes)
 		}()
 		if r.RequestURI == "" || !strings.HasPrefix(r.RequestURI, "/") || strings.HasPrefix(r.RequestURI, "//") || r.URL.IsAbs() {
 			refuse(lw, "invalid request target", http.StatusBadRequest)

@@ -31,6 +31,7 @@ type Proxy struct {
 	cache        *cache.Store
 	destinations map[string]struct{}
 	lookupIP     func(context.Context, string) ([]net.IPAddr, error)
+	metrics      *metrics
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -53,7 +54,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		TLSHandshakeTimeout:    cfg.TLSHandshakeTimeout, ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
 		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}},
 	}
-	p := &Proxy{cfg: cfg, signer: signer, logger: logger, transport: transport, configured: make(map[string]struct{}, len(cfg.Registries)), conns: make(map[*trackedConn]struct{}), inners: make(map[*http.Server]struct{}), changed: make(chan struct{}, 1)}
+	p := &Proxy{cfg: cfg, signer: signer, logger: logger, transport: transport, metrics: newMetrics(), configured: make(map[string]struct{}, len(cfg.Registries)), conns: make(map[*trackedConn]struct{}), inners: make(map[*http.Server]struct{}), changed: make(chan struct{}, 1)}
 	p.destinations = make(map[string]struct{})
 	p.cache = store
 	p.lookupIP = net.DefaultResolver.LookupIPAddr

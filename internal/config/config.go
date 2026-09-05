@@ -28,6 +28,7 @@ const (
 
 type Config struct {
 	Listen                string
+	MetricsListen         string
 	Registries            []authority.Authority
 	RedirectAllowlist     []authority.Authority
 	CADir                 string
@@ -85,6 +86,7 @@ func (d *nonNegativeDuration) UnmarshalYAML(node *yaml.Node) error {
 
 type rawConfig struct {
 	Listen                string   `yaml:"listen"`
+	MetricsListen         string   `yaml:"metrics_listen"`
 	Registries            []string `yaml:"registries"`
 	RedirectAllowlist     []string `yaml:"redirect_allowlist"`
 	CADir                 string   `yaml:"ca_dir"`
@@ -154,6 +156,14 @@ func validate(raw rawConfig, base string) (Config, error) {
 			return Config{}, ErrInvalid
 		}
 	}
+	if raw.MetricsListen != "" {
+		host, port, err := net.SplitHostPort(raw.MetricsListen)
+		portNumber, portErr := strconv.ParseUint(port, 10, 16)
+		ip := net.ParseIP(host)
+		if err != nil || portErr != nil || portNumber == 0 || ip == nil || !ip.IsLoopback() || strings.Contains(host, "%") {
+			return Config{}, ErrInvalid
+		}
+	}
 	if raw.Cache.MaxBytes <= 0 || raw.Cache.MaxFills <= 0 || raw.Cache.MaxEntries <= 0 || raw.Cache.FillTimeout <= 0 || raw.MaxConnections <= 0 || raw.MaxLeafCertificates <= 0 {
 		return Config{}, ErrInvalid
 	}
@@ -167,7 +177,7 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}
 
 	return Config{
-		Listen: raw.Listen, Registries: registries, RedirectAllowlist: redirectAllowlist,
+		Listen: raw.Listen, MetricsListen: raw.MetricsListen, Registries: registries, RedirectAllowlist: redirectAllowlist,
 		CADir:       resolve(base, raw.CADir),
 		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: raw.Cache.MaxBytes, MaxFills: raw.Cache.MaxFills, MaxEntries: raw.Cache.MaxEntries, FillTimeout: time.Duration(raw.Cache.FillTimeout), FillWaitTimeout: time.Duration(raw.Cache.FillWaitTimeout)},
 		DialTimeout: time.Duration(raw.DialTimeout), TLSHandshakeTimeout: time.Duration(raw.TLSHandshakeTimeout),

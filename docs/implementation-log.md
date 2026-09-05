@@ -7,8 +7,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
   2 — authorized digest-blob caching; 3 — digest manifests and compatibility.
-- **In progress:** 4d — bounded operational metrics.
-- **Next:** 4d–4e. Combined autonomous implementation, checks, reviews,
+- **In progress:** 4e — concurrent acceptance, measurements and handoff.
+- **Next:** Complete 4e. Combined autonomous implementation, checks, reviews,
   commits/pushes, and isolated acceptance/fault/load resources are authorized.
 
 ## Completed groundwork
@@ -28,7 +28,7 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 | 1. Working explicit proxy and CA lifecycle | Complete | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
 | 2. Authorized digest-blob caching | Complete | 2a–2d: safe redirects, verified bounded storage, authorized delivery, and real Docker cold/warm/restart acceptance. |
 | 3. Digest manifests and generic protocol compatibility | Complete | Representation-aware caching, local bearer/multi-platform fixtures and anonymous Hub/GHCR acceptance. |
-| 4. Concurrency and operational hardening | In progress | 4a resource limits next; coalescing, fault checks, metrics and load evidence follow. |
+| 4. Concurrency and operational hardening | In progress | 4a–4d complete; concurrent load evidence and handoff remain. |
 
 ## Slice 1: completed subslices
 
@@ -188,7 +188,7 @@ leaking them to the CDN. Paired reviews and follow-ups completed. Added determin
 post-notification eviction and active-leader/waiter shutdown checks requested in review;
 reviewers repeated those under race detection 20 times without failure.
 
-4c complete: test/race/vet and repeated opt-in compiled-proxy fault tests passed,
+[4c complete](https://ampcode.com/@buildkite/docker-accelerator/commit/97e0fb3): test/race/vet and repeated opt-in compiled-proxy fault tests passed,
 including a race-instrumented fixture run. Actual process kill during a nonempty fill
 recovered the same CA/cache and exact warm bytes (3 GETs/4063232 origin bytes).
 Private-tmpfs ENOSPC preserved 614400 bytes; recovery served two authorized 131072-byte
@@ -196,6 +196,13 @@ responses using one origin body. Subprocess and concurrent-corruption/pinning te
 Paired reviews and follow-ups completed; added a barrier after the first hash chunk
 to prove cancellation during concurrent first verification. Staged publication states
 are explicitly distinguished from actual API/process-kill cases; no power-loss claim.
+
+4d complete: test/race/vet passed. Actual HTTP fixtures assert cold/warm, denial,
+no-store, corrupt fill, failed upstream transport, wait/fallback and redirect GET
+counts, body counters and store transitions. Concurrent scraping/cancel/shutdown and
+CLI disabled/enabled routes, bind failure, --check, and listener cleanup passed.
+Both snapshot reviews found no material issues. Labels remain fixed enums and
+metrics are optional on a separate literal-loopback listener only.
 
 - **3a:** authorized, representation-aware digest-manifest caching using the
   existing store and redirect stack, preserving blob entries.

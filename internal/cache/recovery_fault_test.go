@@ -308,7 +308,7 @@ func TestConcurrentRestartCorruption(t *testing.T) {
 		t.Fatalf("canceled Get = %v", err)
 	}
 	next := testMeta("next", "next")
-	if _, err := s.Begin(next); err != ErrBypass {
+	if _, err := s.Begin(next); !errors.Is(err, ErrBypass) {
 		t.Fatalf("admission with all entry slots pinned = %v", err)
 	}
 	close(gate)

@@ -34,6 +34,7 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 		return nil, ErrMiss
 	}
 	e.pins++
+	s.readers++
 	need := !e.verified
 	s.mu.Unlock()
 	f, err := os.Open(e.dir + "/body")
@@ -103,6 +104,7 @@ func (s *Store) unpin(e *entry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e.pins--
+	s.readers--
 	if e.invalid && e.pins == 0 && os.RemoveAll(e.dir) == nil {
 		delete(s.entries, e.meta.Key)
 		s.bytes -= e.charge

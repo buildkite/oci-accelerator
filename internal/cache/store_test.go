@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -64,6 +65,70 @@ func TestCompletionTracksMatchingFillTerminalState(t *testing.T) {
 	}
 }
 
+func TestAdmissionReasonsAreDistinctAndBounded(t *testing.T) {
+	s, err := OpenWithLimits(filepath.Join(t.TempDir(), "cache"), Limits{MaxBytes: metadataReservation + 1, MaxFills: 1, MaxEntries: 1, FillTimeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := testMeta("invalid", "x")
+	invalid.Key = "invalid"
+	if _, err := s.Begin(invalid); !errors.Is(err, ErrBypass) {
+		t.Fatal(err)
+	}
+	oversized := testMeta("oversized", "xx")
+	if _, err := s.Begin(oversized); !errors.Is(err, ErrBypass) {
+		t.Fatal(err)
+	}
+	accepted := testMeta("accepted", "x")
+	f, err := s.Begin(accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Begin(accepted); !errors.Is(err, ErrBypass) {
+		t.Fatal(err)
+	}
+	if _, err := s.Begin(testMeta("limited", "x")); !errors.Is(err, ErrBypass) {
+		t.Fatal(err)
+	}
+	if err := f.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	put(t, s, accepted, "x")
+	reader, err := s.Get(context.Background(), accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Begin(testMeta("capacity", "x")); !errors.Is(err, ErrBypass) {
+		t.Fatalf("capacity admission = %v", err)
+	}
+	reader.Close()
+	moved := s.dir + ".moved"
+	if err := os.Rename(s.dir, moved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Begin(testMeta("io-error", "x")); !errors.Is(err, ErrBypass) {
+		t.Fatalf("I/O admission = %v", err)
+	}
+	if err := os.Rename(moved, s.dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Begin(testMeta("closed", "x")); !errors.Is(err, ErrBypass) {
+		t.Fatal(err)
+	}
+	stats := s.Stats()
+	for reason, want := range map[AdmissionReason]int64{AdmissionAccepted: 2, AdmissionInvalid: 1, AdmissionOversized: 1, AdmissionExisting: 1, AdmissionFillLimit: 1, AdmissionCapacity: 1, AdmissionClosed: 1, AdmissionIOError: 1} {
+		if got := stats.Admissions[reason]; got != want {
+			t.Errorf("admission %s = %d, want %d", reason, got, want)
+		}
+	}
+	if len(stats.Admissions) != int(AdmissionReasonCount) {
+		t.Fatalf("admission taxonomy length = %d", len(stats.Admissions))
+	}
+}
+
 func TestCompletionNotifiesAbortAndClose(t *testing.T) {
 	s := openTest(t, 1<<20)
 	first, _ := s.Begin(testMeta("abort-completion", "a"))
@@ -92,7 +157,7 @@ func TestEntrySlotsAndFillConcurrencyAreDistinctLimits(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Begin(testMeta("b", "b")); err != ErrBypass {
+		if _, err := s.Begin(testMeta("b", "b")); !errors.Is(err, ErrBypass) {
 			t.Fatalf("second slot = %v", err)
 		}
 		f.Abort()
@@ -102,7 +167,7 @@ func TestEntrySlotsAndFillConcurrencyAreDistinctLimits(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Begin(b); err != ErrBypass || s.Stats().Evictions != 0 {
+		if _, err := s.Begin(b); !errors.Is(err, ErrBypass) || s.Stats().Evictions != 0 {
 			t.Fatal("pinned entry slot must refuse admission without eviction")
 		}
 		r.Close()
@@ -122,7 +187,7 @@ func TestEntrySlotsAndFillConcurrencyAreDistinctLimits(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Begin(testMeta("b", "b")); err != ErrBypass {
+		if _, err := s.Begin(testMeta("b", "b")); !errors.Is(err, ErrBypass) {
 			t.Fatalf("second fill = %v", err)
 		}
 		read(t, s, testMeta("stored", "s"), "s")
@@ -142,7 +207,7 @@ func TestPinnedEntryRefusalDoesNotEvictUsefulEntries(t *testing.T) {
 	}
 	defer r.Close()
 	tooLarge := testMeta("large", strings.Repeat("x", int(charge)))
-	if _, err := s.Begin(tooLarge); err != ErrBypass {
+	if _, err := s.Begin(tooLarge); !errors.Is(err, ErrBypass) {
 		t.Fatalf("admission = %v", err)
 	}
 	read(t, s, b, "b")
@@ -210,6 +275,10 @@ func TestFillTimeoutAndTerminalPathsCompleteTimer(t *testing.T) {
 		case <-shutdown.timerDone:
 		default:
 			t.Fatal("shutdown retained timer")
+		}
+		stats := s.Stats()
+		if stats.FillExpiry != 1 || stats.FillAbort != 2 || stats.FillFailure != 1 || stats.FillSuccess != 1 || stats.Fills != 0 || stats.Reserved != 0 {
+			t.Fatalf("terminal fill counters = %+v", stats)
 		}
 	})
 }
@@ -296,7 +365,7 @@ func TestFillReadRestart(t *testing.T) {
 	if _, err := s.Get(context.Background(), m); err != ErrMiss {
 		t.Fatal("partial body exposed")
 	}
-	if _, err := s.Begin(m); err != ErrBypass {
+	if _, err := s.Begin(m); !errors.Is(err, ErrBypass) {
 		t.Fatal("competing writer admitted")
 	}
 	io.WriteString(f, "bytes")
@@ -435,14 +504,14 @@ func TestCapacityLRUPinningAndConcurrency(t *testing.T) {
 	}
 	r1, _ := s.Get(context.Background(), a)
 	r2, _ := s.Get(context.Background(), c)
-	if _, err := s.Begin(testMeta("d", "dddd")); err != ErrBypass {
+	if _, err := s.Begin(testMeta("d", "dddd")); !errors.Is(err, ErrBypass) {
 		t.Fatal("evicted pinned entries")
 	}
 	r1.Close()
 	r2.Close()
 	tooLarge := testMeta("big", "")
 	tooLarge.Size = math.MaxInt64
-	if _, err := s.Begin(tooLarge); err != ErrBypass {
+	if _, err := s.Begin(tooLarge); !errors.Is(err, ErrBypass) {
 		t.Fatal("overflow admitted")
 	}
 	s2 := openTest(t, charge)
@@ -594,7 +663,7 @@ func TestRestrictiveUmaskAndTinyCapacity(t *testing.T) {
 	if s.Stats().Bytes != 0 {
 		t.Fatal("reduced capacity not respected")
 	}
-	if _, err := s.Begin(m); err != ErrBypass {
+	if _, err := s.Begin(m); !errors.Is(err, ErrBypass) {
 		t.Fatal("tiny cache admitted blob")
 	}
 }

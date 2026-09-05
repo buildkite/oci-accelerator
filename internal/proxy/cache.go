@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 type requestStats struct {
 	cache, fill         string
 	wait, fallback      string
+	admission           string
 	upstreamBytes       int64
 	eligible, cacheable bool
 }
@@ -109,6 +111,12 @@ func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted
 	if mayWait && p.cfg.Cache.FillWaitTimeout > 0 {
 		if completed, active := p.cache.Completion(meta); active {
 			resp.Body.Close()
+			if p.metrics != nil {
+				p.metrics.mu.Lock()
+				p.metrics.activeWaits++
+				p.metrics.mu.Unlock()
+				defer func() { p.metrics.mu.Lock(); p.metrics.activeWaits--; p.metrics.mu.Unlock() }()
+			}
 			timer := time.NewTimer(p.cfg.Cache.FillWaitTimeout)
 			defer timer.Stop()
 			select {
@@ -135,6 +143,10 @@ func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted
 	fill, err := p.cache.Begin(meta)
 	if err != nil {
 		stats.fill = "bypass"
+		var admission *cache.AdmissionError
+		if errors.As(err, &admission) {
+			stats.admission = admission.Reason.String()
+		}
 		return resp, false
 	}
 	resp.Body = &fillingBody{ReadCloser: resp.Body, fill: fill, ctx: req.Context(), stats: stats}

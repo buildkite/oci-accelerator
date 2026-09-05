@@ -221,3 +221,15 @@
 - Corrupt files only while the store is closed. Concurrent first reads must reject
   corrupt bytes, valid readers remain pinned through admission pressure, and
   cancellation/close must release reservations and pins.
+
+## 4d — operational metrics
+
+- Use a separate disabled-by-default literal-loopback listener with only `/metrics`.
+  CLI binds before readiness, drains/forces closure and joins the server. Keep
+  metrics outside CONNECT routing and never add public/admin/profiling access.
+- Emit stdlib Prometheus text with fixed outcome/status/admission enums only.
+  Snapshot counters before network writes; count upstream GET attempts at dispatch,
+  body bytes and request durations at handler completion, and fill lifecycle at the
+  store transition. Counters reset on restart; no credential/path/digest labels.
+- Reuse store occupancy and pin accounting. Add Go heap/goroutine gauges to support
+  the approved load evidence; RSS and filesystem allocation are measured externally.
