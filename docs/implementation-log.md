@@ -8,9 +8,9 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
   2 — authorized digest-blob caching; 3 — digest manifests and compatibility;
   4 — concurrency and operational hardening.
-- **In progress:** Final commit publication; all implementation and checks complete.
-- **Next:** Close the authorized run after publication. Deferred features require
-  separate scope approval; there are no new design decisions blocking slices 3–4.
+- **In progress:** None. All implementation commits are pushed to `origin/main`.
+- **Next:** The authorized run is complete. Deferred features require separate
+  scope approval; there are no unresolved verification blockers for slices 3–4.
 
 ## Completed groundwork
 
@@ -205,7 +205,7 @@ CLI disabled/enabled routes, bind failure, --check, and listener cleanup passed.
 Both snapshot reviews found no material issues. Labels remain fixed enums and
 metrics are optional on a separate literal-loopback listener only.
 
-4e complete: test/race/vet and example `--check` passed. All 39 compiled-proxy HTTP
+[4e complete](https://ampcode.com/@buildkite/docker-accelerator/commit/513bdfc): test/race/vet and example `--check` passed. All 39 compiled-proxy HTTP
 cases and six fresh-daemon Docker phases passed (combined run 240.61s); corrected
 Docker report calculations passed a subsequent 51.08s run. Exact bytes/identities,
 independent GET authorization, warm savings, structural caps and quiescent cleanup
