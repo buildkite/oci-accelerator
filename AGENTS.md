@@ -114,6 +114,8 @@
 
 ## Commit messages
 
+- Push each commit to `origin` immediately after creating it; do not accumulate
+  completed commits only in the local checkout.
 - Give every commit a readable summary of the changes it implements in the
   commit body, and summarize those changes when reporting the commit to the user.
 - Include the plan's slice/subslice identifier in implementation commit titles,
