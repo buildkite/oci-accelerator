@@ -96,3 +96,19 @@
   fails startup, while runtime admission failures do not fail upstream transfers.
 - Bring minimum reader/writer/capacity/restart safety into slice 2; leave coalescing
   and broader operational/performance hardening for slice 4.
+
+## 2b — bounded verified storage
+
+- Use private 0700 entry directories containing 0600 body and JSON metadata files.
+  Sync both files and their staging directory, then rename the directory atomically
+  and sync its parent. A process-held advisory lock enforces one store owner.
+- Reserve declared body length plus 4 KiB per entry before writing. The limit is
+  logical cache bytes plus conservative sidecar reservations, not filesystem block,
+  inode, or directory overhead; operators still need filesystem headroom. Oversized
+  or unknown-length objects bypass admission, and failed cleanup retains its charge.
+- Keep live LRU order in memory; restart uses commit times as an approximation.
+  Read startup inventory in bounded batches and bound sidecar reads. Rehash bodies
+  before first reuse after restart, outside the global lock with reader pinning.
+- Storage remains unwired until 2c. Same-key concurrent fills bypass admission;
+  active readers cannot be evicted. Runtime corruption/missing bodies become misses
+  and permit a replacement fill. Unknown operator files are not automatically deleted.

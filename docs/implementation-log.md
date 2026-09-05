@@ -6,8 +6,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 ## Current status
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle (1a–1e).
-- **In progress:** slice 2; 2a complete, preparing 2b.
-- **Next:** 2b — bounded verified disk storage; then 2c delivery and 2d acceptance.
+- **In progress:** slice 2; 2b complete, preparing 2c.
+- **Next:** 2c authorized delivery and 2d Docker acceptance.
 - Slice 2 recommendations and autonomous implementation are approved. Stop before
   slice 3. No caching is enabled yet.
 
@@ -91,13 +91,26 @@ See the [operating guide](operations.md) for setup, evidence, and unvalidated fl
 
 ## Later slices: queued scope
 
-2a complete: test/race/vet passed; path fuzzing ran 139,409 cases and redirect
+[2a complete](https://ampcode.com/@buildkite/docker-accelerator/commit/1a3b32c8f947f17235457d2cd2d1e57f69c82d89): test/race/vet passed; path fuzzing ran 139,409 cases and redirect
 fuzzing 42,194 without failure. Both independent reviews and focused follow-ups
 completed on matching snapshots. Fixed omitted deprecated IPv6 site-local space
 with a regression test. Rejected the code-only review's request to allowlist public
 CDNs: the approved policy explicitly permits them; the list grants private-destination
 exceptions. Code-only input excluded docs/history, with ambient guidance isolation
-limitations disclosed. Commit link will be added with the next subslice.
+limitations disclosed.
+
+2b complete: test/race/vet passed, including atomic fill visibility, digest/length
+failures, /dev/full write errors, reservations, competing writers, reader pinning,
+restart/corruption cleanup, restrictive umask, and lock ownership. Both independent
+reviews and follow-ups completed. Fixed startup eviction ordering and preflighted
+reclaimable space before deleting insufficient victims. Retained documented
+commit-time approximation after restart rather than per-hit metadata writes.
+The low-level store uses explicit Abort for caller-owned fills; request cancellation
+wiring is 2c. Rejected adding goroutines to pretend regular-file syscalls are
+context-cancellable: Go cannot preempt a stalled kernel filesystem operation, and
+abandoning it would leak ownership. Ordinary cancellation/Abort is covered; storage
+stall resilience remains an operational limitation, not a verified hard deadline.
+Commit link will be added in the next subslice.
 
 Slice 2 has an approved concrete breakdown in the plan. Break later slices down
 using the implementation then available.
