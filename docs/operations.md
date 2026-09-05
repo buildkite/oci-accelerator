@@ -310,3 +310,24 @@ The test creates private empty client configuration, uses normal system TLS trus
 plus its private proxy CA, never executes images, and cleans up its services/state.
 Tags can change; each run records the resolved digest and pins subsequent pulls.
 Network/rate-limit failures fail an explicitly enabled test rather than becoming skips.
+
+### Crash and filesystem-exhaustion checks
+
+```sh
+DOCKER_ACCELERATOR_FAULT_E2E=1 go test -v ./integration \
+  -run '^TestCache(ENOSPC|Crash)Acceptance$' -count=1 -timeout=10m
+```
+
+These Linux checks use owned supervised proxy processes and private state. ENOSPC
+requires passwordless sudo, mount namespaces and tmpfs; no shared/root filesystem
+is exhausted. A 1 MiB tmpfs with 700 KiB ballast refuses caching of a 600 KiB body,
+but every upstream byte reaches the client. After reclaiming ballast, cold/warm
+128 KiB transfers match, with two fresh GETs but only one origin body.
+
+The crash check kills a compiled proxy during a nonempty fill, then restarts the
+same cache and CA. Abandoned files disappear, the lock is reacquired, and exact
+cold/warm bytes are recovered with a stable CA. Unit subprocess cases also exercise
+actual active/committed API state and staged incomplete/renamed publication state.
+These are process-crash and restart checks, not power-loss or faulty-device claims.
+Concurrent corruption/reader pin tests and active-fill/waiter shutdown tests run in
+the normal race suite. Do not modify cache files while a proxy is running.

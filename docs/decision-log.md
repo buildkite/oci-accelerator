@@ -207,3 +207,17 @@
   repeating redirect and authorization policy without another wait loop.
 - Preserve client-owned leader lifecycle. Default wait is 1s; `0s` disables it.
   Cancellation affects only that request; no detached workers or leader handoff.
+
+## 4c — bounded fault evidence
+
+- Kill an owned compiled proxy during an observed nonempty fill, restart the same
+  cache/CA, then verify full bytes and headers-only warm substitution. Separate
+  store subprocess cases cover actual active/committed API state and explicitly
+  staged pre/post-publication disk states. This certifies neither power loss nor
+  an interrupted real Commit at every filesystem instruction.
+- Exercise actual ENOSPC inside a private 1 MiB tmpfs with 700 KiB ballast outside
+  the cache. The valid 600 KiB transfer must survive cache failure; removing only
+  test ballast restores admission and a fresh authorized warm hit.
+- Corrupt files only while the store is closed. Concurrent first reads must reject
+  corrupt bytes, valid readers remain pinned through admission pressure, and
+  cancellation/close must release reservations and pins.

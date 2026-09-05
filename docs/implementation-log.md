@@ -7,8 +7,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
   2 — authorized digest-blob caching; 3 — digest manifests and compatibility.
-- **In progress:** 4c — recovery and shutdown fault coverage.
-- **Next:** 4c–4e. Combined autonomous implementation, checks, reviews,
+- **In progress:** 4d — bounded operational metrics.
+- **Next:** 4d–4e. Combined autonomous implementation, checks, reviews,
   commits/pushes, and isolated acceptance/fault/load resources are authorized.
 
 ## Completed groundwork
@@ -180,13 +180,22 @@ deadline/publication transaction: the approved deadline is checked under the fil
 locks, not a real-time scheduling guarantee. Stalled filesystem operations remain an
 explicit limitation. Parent review fixed terminal-write timer retention before review.
 
-4b complete: test/race/vet passed; authorized blob/manifest wait hits, denial,
+[4b complete](https://ampcode.com/@buildkite/docker-accelerator/commit/2b161ac): test/race/vet passed; authorized blob/manifest wait hits, denial,
 metadata bypass, timeout/zero-wait, leader/follower disconnect, and full cross-origin
 fallback replay passed 10 race repetitions. Every follower performs its own GET;
 fallback adds exactly one attempt and restores original registry credentials without
 leaking them to the CDN. Paired reviews and follow-ups completed. Added deterministic
 post-notification eviction and active-leader/waiter shutdown checks requested in review;
 reviewers repeated those under race detection 20 times without failure.
+
+4c complete: test/race/vet and repeated opt-in compiled-proxy fault tests passed,
+including a race-instrumented fixture run. Actual process kill during a nonempty fill
+recovered the same CA/cache and exact warm bytes (3 GETs/4063232 origin bytes).
+Private-tmpfs ENOSPC preserved 614400 bytes; recovery served two authorized 131072-byte
+responses using one origin body. Subprocess and concurrent-corruption/pinning tests pass.
+Paired reviews and follow-ups completed; added a barrier after the first hash chunk
+to prove cancellation during concurrent first verification. Staged publication states
+are explicitly distinguished from actual API/process-kill cases; no power-loss claim.
 
 - **3a:** authorized, representation-aware digest-manifest caching using the
   existing store and redirect stack, preserving blob entries.
