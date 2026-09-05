@@ -34,6 +34,8 @@
 - Prefer the standard library. Add dependencies, interfaces, wrappers, and
   configuration only when they solve a concrete need, not hypothetical future
   requirements.
+- Prefer many small, focused Go files over a few large files. Organize files
+  by coherent responsibility, keeping closely related code together.
 
 ## Executable verification
 
