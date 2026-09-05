@@ -129,6 +129,79 @@ Add the exact-request upstream GET authorization path, safe redirects, filesyste
 
 Verify cold and warm pulls, same bytes/digest, reduced upstream body bytes on warm large objects, and one authorization request per client request. Test separate clients with allowed/denied/revoked access to the same warm entry. Include a fake upstream where HEAD is public but GET is protected: it must not leak cached content. Keep tag manifests uncached.
 
+#### Approved implementation sequence
+
+Keep the existing CONNECT/TLS boundary and standard reverse proxy. Add registry
+request/response policy under `internal/proxy` and filesystem ownership under
+`internal/cache`; wire cache startup before opening the listener in
+`cmd/docker-accelerator/main.go`. Do not introduce provider adapters or replace
+the working forwarding stack. Each row is a separate implementation commit,
+validated and reviewed before beginning the next row.
+
+| Subslice | Outcome | Decisive validation |
+| --- | --- | --- |
+| 2a. Blob policy and safe redirects | Classify exact, query-free SHA-256 blob GETs, including image config blobs. Exclude manifests, HEAD, Range, conditionals, unsupported digests, and ambiguous paths. Follow eligible blob GET redirects with a fixed five-hop limit, verified TLS, loop rejection, connection-time IP checks, and origin-sensitive header stripping. Other request redirects remain client-handled. Add the approved private-destination configuration. | Table tests and fuzzing for paths/redirects; local TLS registry/CDN tests for relative and absolute locations, signed queries, same-origin and cross-origin headers, HTTPS-only policy, private addresses, mixed DNS results, rebinding, hop limits, and terminal denials. No disk caching yet. |
+| 2b. Bounded verified disk store | Add private single-instance cache storage, immutable bodies and bounded sidecars, same-filesystem atomic publication, SHA-256/length verification, capacity reservations including metadata, basic LRU eviction, and reader pinning. Keep it unwired from request delivery until 2c. | Exact-byte store tests; capacity and concurrent admission assertions; duplicate-writer exclusion; cancellation, truncation, digest mismatch, write failure, pinned-reader eviction, startup cleanup, and first-reuse digest verification after restart. |
+| 2c. Authorized cache delivery | Wire the store and response policy into forwarding. Always obtain the client's upstream GET and terminal response before substitution. Serve a pinned verified body only after matching metadata; otherwise stream upstream while optionally filling. Use fresh response headers; never persist credentials, cookies, or redirect URLs. Add redacted cache outcome and upstream-body-byte diagnostics. | Cold/warm exact-byte and origin-request assertions; separate allowed/denied/revoked users; public HEAD/protected GET; outage, TLS failure, 401/403/404/429/5xx; metadata mismatch, no-store, Vary, encoding, partial/conditional bypasses; registry/repository isolation; interrupted fills, disk failure, and shutdown cleanup. |
+| 2d. Docker acceptance and operator handoff | Extend the compiled-binary fixture with a large deterministic incompressible layer and fresh Docker daemons for cold, warm, and restarted-proxy pulls. Update README, configuration example, and operating guide to describe actual cache behavior and limits. | Matching manifest/config/rootfs digests; fresh upstream blob GET on each delivery; materially fewer origin body bytes on warm pulls, including after proxy restart; unchanged CA identity and fresh tag resolution. Keep local HTTP security tests authoritative for exact denial and request-count cases Docker may retry. |
+
+For every subslice, run `go test ./...`, `go test -race ./...`, and `go vet ./...`,
+plus focused checks above. Use two fresh read-only reviewers on the same snapshot:
+one with plan context, one with a code/test/diff-only bundle. Disclose the existing
+limitation that ambient agent guidance cannot be fully isolated. Resolve findings
+before committing; maintain the decision and implementation logs and push each
+completed commit according to the repository rules.
+
+**Minimum safety now, optimization later.** Slice 2 must already exclude competing
+writers, reserve space before writes, pin readers, clean abandoned temporary state,
+validate persisted entries before reuse, and abandon failed fills without breaking
+an otherwise valid upstream transfer. These cannot wait until slice 4 once caching
+is enabled. Concurrent requests for an already-filling key can transfer independently
+without writing another cache entry; waiting/fill coalescing remains slice 4. Broader
+crash/load testing, detailed metrics, and performance tuning also remain slice 4.
+Use existing connection and idle-I/O bounds for client-owned fills; release storage
+and writer ownership on cancellation or the shutdown deadline.
+
+#### Approved slice-2 decisions
+
+1. **Private redirect destinations.** Use a separate optional
+   `redirect_allowlist` of canonical HTTPS authorities (including port), in addition
+   to already configured registry authorities. This permits a private storage host
+   without adding it to the TLS-interception registry list. It grants destination
+   permission only: TLS verification and cross-origin credential stripping still
+   apply. Public HTTPS storage needs no entry. The simpler alternative is to reuse
+   `registries`, which also causes interception of direct client CONNECTs to those
+   storage hosts. Reject a DNS answer containing any disallowed destination address
+   and dial only vetted addresses, keeping the original hostname for TLS checks.
+2. **Warm-hit metadata contract.** Require terminal `200`, known
+   matching Content-Length and media type, identity encoding, and no unsupported
+   Vary dimensions or no-store directive. Key blobs by registry, repository, digest,
+   exact Accept value, and observed media type. Verify every present
+   Docker-Content-Digest against the requested SHA-256, but do not require that
+   header at the final CDN: the original digest-addressed GET plus its accepted
+   redirect chain identifies the object, and stored bytes were independently hashed.
+   Missing required length/media type or inconsistent digest metadata means normal
+   forwarding, not substitution. A stricter alternative requires an explicit
+   matching terminal Docker-Content-Digest and sacrifices hits on CDNs omitting it.
+3. **Cache enablement and startup failure.** Preserve forwarding-only
+   mode when `cache.dir` is omitted, activating caching when it is supplied. An
+   explicitly configured directory that cannot be safely opened should fail startup
+   rather than silently disable caching; runtime capacity/write failures should only
+   bypass admission. Keep `--check` side-effect-free. This preserves existing configs
+   while making the example's existing cache directory effective.
+
+The user approved these defaults and minimum-safety sequencing and authorized
+2a–2d, per-subslice commits/pushes, and supervised local acceptance services. Stop
+after slice 2, or earlier for a material scope/security change or unresolved required
+check.
+
+Planning environment check: Docker CLI 29.8.0 is installed, but no Docker daemon
+or Amp services are currently running. The existing acceptance test creates its own
+supervised isolated daemons; verify those start successfully during implementation.
+Extend its 118-byte fixture rather than claiming measurable savings from that tiny
+layer. Count per-path GETs and cancellation-aware streamed origin bytes; warm
+authorization can transfer some bytes before cancellation and need not transfer zero.
+
 ### 3. Digest manifests and generic protocol compatibility
 
 Add digest-manifest caching with representation-aware keys. Test OCI and Docker manifest media types, image indexes/multi-platform images, Basic and bearer auth, separate token-service hosts, relative/absolute redirect chains, and cross-origin credential stripping. Keep HEAD/Range/conditional forwarding as explicit bypasses.
@@ -160,4 +233,4 @@ The first version is complete when:
 
 Container packaging, containerd/BuildKit-specific setup and validation, S3 or shared storage, multi-instance coordination, push passthrough, tag caching, stale/offline mode, proxy-held credentials, authorization-decision caching, environment-variable migration compatibility, automatic CA distribution, and automatic CA rotation.
 
-The GET-authorization strategy is approved. Autonomous implementation of subslices 1a–1e is authorized; stop before caching and pause for material scope/security decisions or unresolved verification blockers.
+The GET-authorization strategy and slice-2 decisions above are approved. Autonomous implementation of subslices 2a–2d is authorized; stop before slice 3 and pause for material scope/security decisions or unresolved verification blockers.

@@ -112,6 +112,7 @@ See [the complete example](../config.example.yaml). Configuration is static unti
 | --- | --- |
 | `listen` | `127.0.0.1:3128`; explicit host:port, valid nonzero numeric port |
 | `registries` | Required nonempty list of distinct canonical authorities |
+| `redirect_allowlist` | Optional private HTTPS storage authorities; does not enable CONNECT interception |
 | `ca_dir` | Required; private persistent state |
 | `cache.dir`, `cache.max_bytes` | Reserved for later slices; 32 GiB default size, no cache reads/writes yet |
 | `dial_timeout`, `tls_handshake_timeout` | `10s` each |
@@ -129,8 +130,14 @@ idle-I/O bounds, not a fixed total download timeout.
 Intercepted traffic uses TLS 1.2+ and HTTP/1.1. Only bodyless GET, HEAD, and OPTIONS
 are allowed; mutations, upgrades, conflicting TLS/HTTP authorities, and non-origin-form
 HTTP targets are denied. Tag, digest, HEAD, Range, and conditional requests all go
-upstream. Redirects are returned unchanged for Docker to handle; proxy-side redirect
-following and its address/credential policy arrive together with caching in slice 2.
+upstream. Eligible query-free SHA-256 blob GET redirects are followed by the proxy,
+up to five hops. Other redirects are returned unchanged for Docker to handle.
+Redirects must use HTTPS with verified certificates; userinfo, fragments, loops,
+and implicit private/link-local/loopback destinations are rejected. Configure private
+storage authorities in `redirect_allowlist` (or `registries` if they also require
+interception). All DNS results are checked before dialing vetted IPs. Cross-origin
+hops retain only Accept, Accept-Encoding, and User-Agent, never registry credentials
+or cookies. These restrictions do not constrain user-selected opaque CONNECT tunnels.
 
 JSON stderr logs include configured registry, status, duration, downstream body bytes,
 and completion outcome. Aborted streaming responses may have already sent status 200;

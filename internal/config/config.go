@@ -23,6 +23,7 @@ const DefaultCacheMaxBytes int64 = 32 << 30
 type Config struct {
 	Listen                string
 	Registries            []authority.Authority
+	RedirectAllowlist     []authority.Authority
 	CADir                 string
 	Cache                 Cache
 	DialTimeout           time.Duration
@@ -59,6 +60,7 @@ func (d *duration) UnmarshalYAML(node *yaml.Node) error {
 type rawConfig struct {
 	Listen                string   `yaml:"listen"`
 	Registries            []string `yaml:"registries"`
+	RedirectAllowlist     []string `yaml:"redirect_allowlist"`
 	CADir                 string   `yaml:"ca_dir"`
 	Cache                 rawCache `yaml:"cache"`
 	DialTimeout           duration `yaml:"dial_timeout"`
@@ -125,19 +127,17 @@ func validate(raw rawConfig, base string) (Config, error) {
 	if raw.Cache.MaxBytes <= 0 || raw.MaxConnections <= 0 || raw.MaxLeafCertificates <= 0 {
 		return Config{}, ErrInvalid
 	}
-	registries := make([]authority.Authority, len(raw.Registries))
-	seen := make(map[string]bool, len(raw.Registries))
-	for i, text := range raw.Registries {
-		a, err := authority.Parse(text, "443")
-		if err != nil || seen[a.String()] {
-			return Config{}, ErrInvalid
-		}
-		seen[a.String()] = true
-		registries[i] = a
+	registries, err := parseAuthorities(raw.Registries)
+	if err != nil {
+		return Config{}, ErrInvalid
+	}
+	redirectAllowlist, err := parseAuthorities(raw.RedirectAllowlist)
+	if err != nil {
+		return Config{}, ErrInvalid
 	}
 
 	return Config{
-		Listen: raw.Listen, Registries: registries,
+		Listen: raw.Listen, Registries: registries, RedirectAllowlist: redirectAllowlist,
 		CADir:       resolve(base, raw.CADir),
 		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: raw.Cache.MaxBytes},
 		DialTimeout: time.Duration(raw.DialTimeout), TLSHandshakeTimeout: time.Duration(raw.TLSHandshakeTimeout),
@@ -145,6 +145,20 @@ func validate(raw rawConfig, base string) (Config, error) {
 		ShutdownTimeout: time.Duration(raw.ShutdownTimeout), MaxConnections: raw.MaxConnections,
 		MaxLeafCertificates: raw.MaxLeafCertificates,
 	}, nil
+}
+
+func parseAuthorities(texts []string) ([]authority.Authority, error) {
+	authorities := make([]authority.Authority, len(texts))
+	seen := make(map[string]bool, len(texts))
+	for i, text := range texts {
+		a, err := authority.Parse(text, "443")
+		if err != nil || seen[a.String()] {
+			return nil, ErrInvalid
+		}
+		seen[a.String()] = true
+		authorities[i] = a
+	}
+	return authorities, nil
 }
 
 func resolve(base, path string) string {

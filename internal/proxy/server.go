@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"sync"
-	"time"
 
 	"ampcode.com/buildkite/docker-accelerator/internal/ca"
 	"ampcode.com/buildkite/docker-accelerator/internal/config"
@@ -22,12 +21,14 @@ const maxHeaderBytes = 64 << 10
 
 // Proxy is an HTTP CONNECT forward proxy.
 type Proxy struct {
-	cfg        config.Config
-	server     *http.Server
-	configured map[string]struct{}
-	signer     *ca.Authority
-	logger     *slog.Logger
-	transport  *http.Transport
+	cfg          config.Config
+	server       *http.Server
+	configured   map[string]struct{}
+	signer       *ca.Authority
+	logger       *slog.Logger
+	transport    *http.Transport
+	destinations map[string]struct{}
+	lookupIP     func(context.Context, string) ([]net.IPAddr, error)
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -47,18 +48,18 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger) *Proxy {
 		MaxConnsPerHost: 16, IdleConnTimeout: cfg.IdleTimeout,
 		MaxResponseHeaderBytes: maxHeaderBytes,
 		TLSHandshakeTimeout:    cfg.TLSHandshakeTimeout, ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			conn, err := (&net.Dialer{Timeout: cfg.DialTimeout, KeepAlive: 30 * time.Second}).DialContext(ctx, network, address)
-			if err != nil {
-				return nil, err
-			}
-			return &idleReadWriteConn{Conn: conn, timeout: cfg.IdleTimeout}, nil
-		},
 		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}},
 	}
 	p := &Proxy{cfg: cfg, signer: signer, logger: logger, transport: transport, configured: make(map[string]struct{}, len(cfg.Registries)), conns: make(map[*trackedConn]struct{}), inners: make(map[*http.Server]struct{}), changed: make(chan struct{}, 1)}
+	p.destinations = make(map[string]struct{})
+	p.lookupIP = net.DefaultResolver.LookupIPAddr
+	transport.DialContext = p.dialUpstream
 	for _, registry := range cfg.Registries {
 		p.configured[registry.String()] = struct{}{}
+		p.destinations[registry.String()] = struct{}{}
+	}
+	for _, destination := range cfg.RedirectAllowlist {
+		p.destinations[destination.String()] = struct{}{}
 	}
 	p.server = &http.Server{
 		Handler:           p,

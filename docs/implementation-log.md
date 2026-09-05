@@ -6,9 +6,10 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 ## Current status
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle (1a–1e).
-- **In progress:** none.
-- **Next:** slice 2 — authorized digest-blob caching, awaiting authorization.
-- Stopped at the approved slice-1 boundary. No caching is implemented.
+- **In progress:** slice 2; 2a complete, preparing 2b.
+- **Next:** 2b — bounded verified disk storage; then 2c delivery and 2d acceptance.
+- Slice 2 recommendations and autonomous implementation are approved. Stop before
+  slice 3. No caching is enabled yet.
 
 ## Completed groundwork
 
@@ -25,7 +26,7 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 | Slice | Status | Outcome |
 | --- | --- | --- |
 | 1. Working explicit proxy and CA lifecycle | Complete | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
-| 2. Authorized digest-blob caching | Not started | Per-request upstream GET authorization, safe redirects, verified atomic disk fills, cache substitution, capacity limits, and basic eviction. |
+| 2. Authorized digest-blob caching | In progress | 2a complete: blob classification and safe redirects. Disk caching follows in 2b–2c. |
 | 3. Digest manifests and generic protocol compatibility | Not started | Representation-aware digest-manifest caching and registry/auth compatibility; tags remain uncached. |
 | 4. Concurrency and operational hardening | Not started | Fill coalescing, cancellation, recovery, resource bounds, diagnostics, graceful shutdown, and measured cold/warm behavior. |
 
@@ -90,8 +91,16 @@ See the [operating guide](operations.md) for setup, evidence, and unvalidated fl
 
 ## Later slices: queued scope
 
-Break these into concrete subslices before starting each slice, using the
-implementation then available rather than speculating about file boundaries now.
+2a complete: test/race/vet passed; path fuzzing ran 139,409 cases and redirect
+fuzzing 42,194 without failure. Both independent reviews and focused follow-ups
+completed on matching snapshots. Fixed omitted deprecated IPv6 site-local space
+with a regression test. Rejected the code-only review's request to allowlist public
+CDNs: the approved policy explicitly permits them; the list grants private-destination
+exceptions. Code-only input excluded docs/history, with ambient guidance isolation
+limitations disclosed. Commit link will be added with the next subslice.
+
+Slice 2 has an approved concrete breakdown in the plan. Break later slices down
+using the implementation then available.
 
 - **Slice 2:** prove cold/warm byte correctness and reduced upstream body
   transfer, with fresh authorization for every delivery. Cover denied/revoked

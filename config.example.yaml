@@ -3,6 +3,8 @@ listen: 127.0.0.1:3128
 registries:
   - registry-1.docker.io
   - ghcr.io
+# Optional private HTTPS storage destinations; does not enable interception.
+redirect_allowlist: []
 ca_dir: ./data/ca
 # Reserved for later slices. No cache is read or written yet.
 cache:

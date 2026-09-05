@@ -78,3 +78,21 @@
 - Document startup, manual trust, unrestricted opaque relay risks, runtime bounds,
   CA recovery/replacement, and no-cache limitations. Ignore example runtime state
   and local config so generated CA keys are not accidentally staged.
+
+## Slice 2 authorization and 2a — redirects
+
+- User approved 2a–2d, per-subslice validation/review/commits/pushes, and isolated
+  supervised acceptance services. Stop before slice 3 or on unresolved blockers.
+- Use a separate `redirect_allowlist`; it never adds intercepted CONNECT hosts.
+  Configured registries also permit private destinations. Validate all DNS answers
+  before dialing vetted IPs, retaining hostname verification, and cap chains at
+  five redirects. Reject non-HTTPS, userinfo, fragments, and loops.
+- Follow only eligible digest-blob GETs; preserve bypass redirect behavior.
+  Cross-origin hops retain only Accept, Accept-Encoding, and User-Agent, so custom
+  credential headers cannot leak. Never restore credentials after leaving an origin.
+- Approved delivery contract: known matching length/media type and verified stored
+  SHA-256; check any provided digest header, but do not require it from a CDN.
+  Omitted cache directory keeps forwarding-only mode; unusable configured storage
+  fails startup, while runtime admission failures do not fail upstream transfers.
+- Bring minimum reader/writer/capacity/restart safety into slice 2; leave coalescing
+  and broader operational/performance hardening for slice 4.

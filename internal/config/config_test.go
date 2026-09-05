@@ -34,6 +34,60 @@ func TestLoadDefaultsAndRelativePaths(t *testing.T) {
 	if c.Registries[0].String() != "example.com" || c.Registries[1].String() != "[::1]:5000" {
 		t.Fatalf("registries: %v", c.Registries)
 	}
+	if len(c.RedirectAllowlist) != 0 {
+		t.Fatalf("redirect allowlist should default empty: %v", c.RedirectAllowlist)
+	}
+}
+
+func TestLoadRedirectAllowlist(t *testing.T) {
+	path := writeConfig(t, "registries: [registry.example]\nredirect_allowlist: [CDN.EXAMPLE.:443, cdn.example:8443, '[2001:0DB8::1]', '[::1]:5000']\nca_dir: ca\n")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cdn.example", "cdn.example:8443", "[2001:db8::1]", "[::1]:5000"}
+	if len(c.RedirectAllowlist) != len(want) {
+		t.Fatalf("redirect allowlist: %v", c.RedirectAllowlist)
+	}
+	for i, authority := range c.RedirectAllowlist {
+		if authority.String() != want[i] {
+			t.Errorf("redirect allowlist[%d] = %q, want %q", i, authority.String(), want[i])
+		}
+	}
+	if len(c.Registries) != 1 || c.Registries[0].String() != "registry.example" {
+		t.Fatalf("redirect allowlist changed registries: %v", c.Registries)
+	}
+}
+
+func TestLoadAllowsEmptyRedirectAllowlist(t *testing.T) {
+	c, err := Load(writeConfig(t, "registries: [registry.example]\nredirect_allowlist: []\nca_dir: ca\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.RedirectAllowlist) != 0 {
+		t.Fatalf("redirect allowlist: %v", c.RedirectAllowlist)
+	}
+}
+
+func TestLoadRejectsInvalidRedirectAllowlist(t *testing.T) {
+	tests := []string{
+		"redirect_allowlist: [user:secret@cdn.example]",
+		"redirect_allowlist: [cdn.example:0]",
+		"redirect_allowlist: [cdn.example:99999]",
+		"redirect_allowlist: [' cdn.example']",
+		"redirect_allowlist: [cdn.example, CDN.EXAMPLE.:443]",
+		"redirect_allowlist: [cdn.example:8443, CDN.EXAMPLE.:08443]",
+	}
+	for _, entry := range tests {
+		input := "registries: [registry.example]\nca_dir: ca\n" + entry + "\n"
+		_, err := Load(writeConfig(t, input))
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("Load(%q) unexpectedly returned %v", entry, err)
+		}
+		if err != nil && (strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "cdn.example")) {
+			t.Errorf("error leaked redirect allowlist input: %v", err)
+		}
+	}
 }
 
 func TestLoadRejectsInvalid(t *testing.T) {

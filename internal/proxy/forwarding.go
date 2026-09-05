@@ -35,7 +35,7 @@ func (c *idleReadWriteConn) Write(b []byte) (int, error) {
 func (p *Proxy) interceptHandler(target authority.Authority) http.Handler {
 	upstream := &url.URL{Scheme: "https", Host: net.JoinHostPort(target.Host(), target.Port())}
 	rp := &httputil.ReverseProxy{
-		Transport:     p.transport,
+		Transport:     registryTransport{p},
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			rawQuery := pr.In.URL.RawQuery
