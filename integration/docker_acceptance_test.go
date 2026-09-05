@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -537,6 +538,10 @@ func assertWarmOrigin(t *testing.T, beforeA map[string]int, beforeB map[string]i
 }
 
 func startDaemon(t *testing.T, name string, proxyPort int, trust string) (string, func()) {
+	return startDaemonWithHosts(t, name, proxyPort, trust, "")
+}
+
+func startDaemonWithHosts(t *testing.T, name string, proxyPort int, trust, hosts string) (string, func()) {
 	t.Helper()
 	// containerd's Unix socket limit is only 104 bytes, so keep this independent
 	// daemon's paths short rather than placing them below testing.TempDir.
@@ -547,7 +552,15 @@ func startDaemon(t *testing.T, name string, proxyPort int, trust string) (string
 	sock := filepath.Join(dir, "docker.sock")
 	cfg := filepath.Join(dir, "daemon.json")
 	writeFile(t, cfg, fmt.Sprintf(`{"proxies":{"http-proxy":"http://127.0.0.1:%d","https-proxy":"http://127.0.0.1:%d","no-proxy":""},"features":{"containerd-snapshotter":false}}`, proxyPort, proxyPort), 0o600)
-	cmd := fmt.Sprintf("sudo -n env SSL_CERT_FILE=%s dockerd --config-file %s --host unix://%s --group $(id -gn) --data-root %s --exec-root %s --pidfile %s --bridge none --iptables=false --ip-forward=false --ip-masq=false --storage-driver=vfs", shell(trust), shell(cfg), shell(sock), shell(filepath.Join(dir, "data")), shell(filepath.Join(dir, "exec")), shell(filepath.Join(dir, "dockerd.pid")))
+	group, err := exec.Command("id", "-gn").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dock := fmt.Sprintf("sudo -n env SSL_CERT_FILE=%s dockerd --config-file %s --host unix://%s --group %s --data-root %s --exec-root %s --pidfile %s --bridge none --iptables=false --ip-forward=false --ip-masq=false --storage-driver=vfs", shell(trust), shell(cfg), shell(sock), shell(strings.TrimSpace(string(group))), shell(filepath.Join(dir, "data")), shell(filepath.Join(dir, "exec")), shell(filepath.Join(dir, "dockerd.pid")))
+	cmd := dock
+	if hosts != "" {
+		cmd = namespacedCommand(hosts, dock)
+	}
 	var stopOnce sync.Once
 	stop := func() {
 		stopOnce.Do(func() {
@@ -566,6 +579,10 @@ func startDaemon(t *testing.T, name string, proxyPort int, trust string) (string
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if dockerCombined(sock, nil, "info").err == nil {
+			st, err := os.Stat(sock)
+			if err != nil || st.Sys().(*syscall.Stat_t).Gid != uint32(os.Getgid()) {
+				t.Fatal("daemon socket is not owned by the invoking group")
+			}
 			return sock, stop
 		}
 		time.Sleep(250 * time.Millisecond)

@@ -7,8 +7,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
   2 — authorized digest-blob caching (2a–2d).
-- **In progress:** slice 3; 3b validated and reviewed, ready to commit.
-- **Next:** 3c–3d, then 4a–4e. Combined autonomous implementation, checks, reviews,
+- **In progress:** slice 3; 3c validated and reviewed, ready to commit.
+- **Next:** 3d, then 4a–4e. Combined autonomous implementation, checks, reviews,
   commits/pushes, and isolated acceptance/fault/load resources are authorized.
 
 ## Completed groundwork
@@ -146,12 +146,22 @@ exact inspected digests. No test-owned services remain.
 
 Remaining slices follow the approved plan.
 
-3b validation: test/race/vet passed, including Basic registry auth, opaque-token-host
+[3b complete](https://ampcode.com/@buildkite/docker-accelerator/commit/d7c8022):
+test/race/vet passed, including Basic registry auth, opaque-token-host
 certificate identity, client-owned refresh, expiry/revocation/scope denials, mutable
 tags, manifest bypasses and redirect credential stripping. Paired reviews and
 follow-ups completed. Added Basic/refresh coverage and pinned original-body checks
 from review; the reported Accept gap was already covered by 3a's same-URL/media
 accept-key test. No production changes were needed. Same filtered-review limitation.
+
+3c validation: test/race/vet and repeated real Docker 29.8.0 acceptance passed.
+Eight fresh-daemon phases per OCI/Docker format each acquired a token and fetched
+the expected root/child/config/layer; mutated tags selected different config/rootfs,
+old digests remained retrievable, no arm64 child was fetched, and CA identity persisted.
+Baseline Basic/large-layer acceptance also passed (warm/restart 32768/294912 origin
+layer bytes versus 8390075 cold). Paired reviews and follow-ups completed. Fixed
+namespace group expansion and asserted socket GID; supplementary root membership
+had masked the defect in this orb. All owned services cleaned up.
 
 - **3a:** authorized, representation-aware digest-manifest caching using the
   existing store and redirect stack, preserving blob entries.

@@ -249,5 +249,21 @@ correctness and body-transfer savings, not production latency or throughput.
 
 Default tests cover denied/revoked clients, public HEAD/protected GET, CDN denials,
 TLS and upstream failures, bypass semantics, and interrupted/corrupt/full-cache
-behavior. Docker Hub/GHCR, bearer-token flows, multi-platform compatibility, full
-load/crash testing, and operational metrics remain for slices 3 and 4.
+behavior, including client-owned bearer refresh and a separately trusted token host.
+
+Multi-platform acceptance is also opt-in:
+
+```sh
+DOCKER_ACCELERATOR_E2E=1 go test -v ./integration \
+  -run TestDockerMultiPlatformThroughCompiledProxy -count=1 -timeout=10m
+```
+
+It uses OCI indexes/manifests and Docker lists/schema-2 manifests, each with valid
+amd64 and arm64 children. Fresh daemons pull the selected amd64 image by tag and
+digest cold/warm/after proxy restart, then observe an actual tag change and retrieve
+the old immutable digest. Assertions cover root/config/rootfs identity, selected
+child GETs, independent bearer acquisition, and absence of unselected-platform GETs.
+Test hostnames are mapped only inside private mount namespaces (`sudo`, `unshare`,
+and `mount` required); token-service trust is present only in Docker, not the proxy.
+Images are never executed. Small manifest bandwidth savings are not promised.
+Docker Hub/GHCR checks, full load/crash testing, and metrics remain subsequent work.

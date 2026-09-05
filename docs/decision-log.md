@@ -166,3 +166,13 @@
 - Extend manifest-specific bypass, mutable-tag, representation, and redirect tests
   without changing production code. Keep replacement bodies the same length so
   individual policy/key dimensions, not accidental framing differences, are tested.
+
+## 3c — real multi-platform and bearer acceptance
+
+- Reuse compiled proxy and fresh VFS daemons for tag/digest cold, warm and restart
+  phases plus tag mutation and old-digest retrieval. OCI indexes use OCI children;
+  Docker lists use schema-2 children, with valid amd64/arm64 descriptors.
+- Give registry and token service distinct private test hostnames via a bind-mounted
+  hosts file in each test-owned service's mount namespace. Global DNS/trust is untouched.
+  Docker trusts the token CA, but the proxy does not; successful token exchange must
+  remain opaque, not intercepted. Test-only Basic credentials belong to Docker.
