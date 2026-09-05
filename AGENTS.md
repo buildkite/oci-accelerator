@@ -19,9 +19,18 @@
 
 - At the end of every subslice, run an independent review subagent over the
   codebase, including the changes and their surrounding design and integration.
-  Ask it to identify problems, mistakes, regressions, and design issues.
-- Resolve all review feedback before committing the completed subslice and
-  moving on to the next subslice or slice. Re-run affected checks after fixes.
+  Ask it to identify problems, mistakes, regressions, and design issues, and
+  assess the implementation against the plan.
+- Run a second, separate independent review subagent focused only on code
+  quality, logic, bugs, and design. Give it a code-only snapshot or input bundle
+  containing source, tests, and relevant code diffs, not full repository context.
+  Do not expose documentation, plans, decision or implementation logs, design
+  explanations, or the first reviewer's findings. Instruct it not to read those
+  materials or infer requirements that the code does not establish.
+- The code-only review complements, rather than replaces, the first review's
+  assessment of intended behavior and requirements.
+- Resolve feedback from both reviewers before committing the completed subslice
+  and moving on to the next subslice or slice. Re-run affected checks after fixes.
 
 ## Implementation log
 
