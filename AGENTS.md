@@ -23,6 +23,15 @@
 - Resolve all review feedback before committing the completed subslice and
   moving on to the next subslice or slice. Re-run affected checks after fixes.
 
+## Implementation log
+
+- Create and maintain a running implementation log in the repository so the
+  user can see which slices and subslices are completed, in progress, and
+  coming up next.
+- Update it as work progresses and sequencing changes. Keep it concise and
+  human-readable; mark work complete only after implementation, validation,
+  and independent review are finished.
+
 ## Decision log
 
 - While implementing each subslice, maintain a running decision log recording
