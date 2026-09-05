@@ -122,7 +122,7 @@ Both independent reviews and follow-ups completed; fixed unexpected Serve termin
 to shut down the proxy before closing storage. Code-only isolation limitation remains
 as recorded above.
 
-2d complete: test/race/vet and repeated real Docker 29.8.0 acceptance passed,
+[2d complete](https://ampcode.com/@buildkite/docker-accelerator/commit/19035876bfe7c0697459d84cb076f1b363e04453): test/race/vet and repeated real Docker 29.8.0 acceptance passed,
 including a race-instrumented fixture run. The final strengthened test observed
 layer GETs/body bytes cold 1/8,390,075, warm 1/32,768, restarted proxy 1/196,608.
 Layer and config each received a fresh authenticated GET in both warm phases;
@@ -131,7 +131,6 @@ the CA fingerprint stayed unchanged. Missing CA trust reached zero origin HTTP
 requests. Both reviews and follow-ups completed; strengthened per-config GET and
 authoritative RepoDigests assertions in response to review. All owned services were
 cleaned up. See the operating guide for fixture pacing and benchmark limitations.
-The 2d commit link will be recorded in the following log-only commit.
 
 ## Later slices: queued scope
 
