@@ -35,3 +35,15 @@
 - After an interrupted first initialization, operators must inspect and remove a stale
   `<ca-dir>.lock` or `.ca-init-*` directory only after stopping all initializers.
   Never remove/replace an established CA as an automatic repair.
+
+## 1c — CONNECT and connection ownership
+
+- Accept only CONNECT on the outer HTTP listener; close every refused connection.
+  Validate the wire Host as well as the target because Go normalizes CONNECT's Host
+  from its request target. Keep the first-header inspection bounded to 64 KiB.
+- Track and cap accepted sockets, including incomplete headers and hijacked tunnels.
+  Preserve buffered tunnel bytes and TCP half-close; terminate both pumps on errors.
+  Activity refreshes idle deadlines, so healthy long transfers are not time-limited.
+- Wire CLI signal handling and deadline-bounded shutdown now; `--check` validates
+  without opening sockets or creating CA state. Configured registries remain unavailable
+  until interception is wired in 1d, never silently tunneled.

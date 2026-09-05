@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,7 @@ import (
 func TestRunRequiresConfig(t *testing.T) {
 	for _, args := range [][]string{nil, {"extra"}, {"--config", "x", "extra"}, {"--bad", "secret"}} {
 		var errOut bytes.Buffer
-		if err := run(args, &bytes.Buffer{}, &errOut); err == nil {
+		if err := run(context.Background(), args, &bytes.Buffer{}, &errOut); err == nil {
 			t.Errorf("run(%q) succeeded", args)
 		}
 		if errOut.Len() != 0 {
@@ -27,7 +28,7 @@ func TestRunValidatesConfigWithoutLeakingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
-	err := run([]string{"--config", path}, &out, &errOut)
+	err := run(context.Background(), []string{"--config", path}, &out, &errOut)
 	if err == nil || strings.Contains(err.Error(), secret) || strings.Contains(errOut.String(), secret) {
 		t.Fatalf("unsafe result: %v %q", err, errOut.String())
 	}
@@ -39,7 +40,7 @@ func TestRunSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := run([]string{"--config", path}, &out, &bytes.Buffer{}); err != nil {
+	if err := run(context.Background(), []string{"--config", path, "--check"}, &out, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "configuration validated") {

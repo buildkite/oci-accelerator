@@ -6,8 +6,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 ## Current status
 
 - **Completed implementation slices:** none.
-- **In progress:** slice 1; 1a–1b complete.
-- **Next:** 1c — CONNECT routing.
+- **In progress:** slice 1; 1a–1c complete.
+- **Next:** 1d — intercepted forwarding.
 - Autonomous implementation of 1a–1e is authorized; stop before caching.
 
 ## Completed groundwork
@@ -38,8 +38,8 @@ provides evidence, without silently changing the approved scope.
 | Subslice | Status | Outcome and validation |
 | --- | --- | --- |
 | 1a. Go module and configuration | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/763cd026ffa760d47929d53a103ec772dfb85a85) | Strict YAML/authority/CLI tests pass, including defaults, malformed/duplicate/unknown values, and redacted errors. |
-| 1b. Persistent CA lifecycle | Complete | Atomic CA initialization/reuse and bounded leaf issuance; tests for trust, permissions, invalid state, renewal, concurrency, and stable CA identity. |
-| 1c. CONNECT routing and opaque tunnels | Not started | Strict authority parsing, configured-host dispatch, and passthrough for other destinations; tests for malformed requests, bidirectional forwarding, and cleanup. Configured hosts fail closed until interception is wired in 1d. |
+| 1b. Persistent CA lifecycle | [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/0b3b6fc5c411f9b6b1340b18c2068876528e019a) | Atomic CA initialization/reuse and bounded leaf issuance; tests for trust, permissions, invalid state, renewal, concurrency, and stable CA identity. |
+| 1c. CONNECT routing and opaque tunnels | Complete | Strict authority parsing, configured-host refusal, passthrough, buffered bytes, half-close, idle/cap/shutdown tests. CLI starts the listener and handles signals. |
 | 1d. Intercepted registry forwarding | Not started | Connect CA/TLS handling to the proxy; bind HTTP/TLS authorities to CONNECT, verify upstream TLS, forward client authentication/challenges, and reject writes. Test successful forwarding and the failure/security boundaries with local origins. No caching. |
 | 1e. Docker Engine acceptance and setup docs | Not started | Document proxy/CA setup and verify a real pull, CA trust failure, and CA persistence after restart. Record evidence and finish the plan's slice-1 checks. |
 
@@ -62,6 +62,12 @@ owner-controlled filesystem boundary; cooperative initialization is serialized a
 existing keys are never overwritten. Windows compilation was noted but is not a
 validated target: this first implementation uses Unix filesystem ownership/permissions
 and is tested on Linux Docker Engine. Windows support is not claimed.
+
+1c validation: baseline tests/race/vet passed; CONNECT fuzzing ran 167,653 cases
+without a failure. Both independent reviews completed. The code reviewer noted
+the raw-header bound is stricter than Go's internal allowance; retained intentionally
+as the documented 64 KiB limit, rather than depending on parser implementation slack.
+Plan-aware review found no issues. Lifecycle regressions also passed three race runs.
 
 ## Later slices: queued scope
 
