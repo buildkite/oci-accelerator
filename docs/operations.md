@@ -312,7 +312,7 @@ child GETs, independent bearer acquisition, and absence of unselected-platform G
 Test hostnames are mapped only inside private mount namespaces (`sudo`, `unshare`,
 and `mount` required); token-service trust is present only in Docker, not the proxy.
 Images are never executed. Small manifest bandwidth savings are not promised.
-Full load/crash testing and metrics remain slice 4 work.
+Concurrent load and crash checks are described below; metrics are optional.
 
 ### Public registry compatibility
 
@@ -359,3 +359,83 @@ actual active/committed API state and staged incomplete/renamed publication stat
 These are process-crash and restart checks, not power-loss or faulty-device claims.
 Concurrent corruption/reader pin tests and active-fill/waiter shutdown tests run in
 the normal race suite. Do not modify cache files while a proxy is running.
+
+### Concurrent load acceptance
+
+```sh
+reports=$(mktemp -d)
+DOCKER_ACCELERATOR_LOAD_E2E=1 \
+DOCKER_ACCELERATOR_LOAD_REPORT="$reports/http.json" \
+DOCKER_ACCELERATOR_DOCKER_LOAD_REPORT="$reports/docker.json" \
+  go test -v ./integration \
+  -run '^(TestBoundedHTTPLoadAcceptance|TestDockerLoadAcceptance)$' \
+  -count=1 -timeout=20m
+```
+
+Use the prerequisites above, several GiB of disposable disk and enough resources
+for four simultaneous Docker daemons. The HTTP matrix streams tens of GiB; it does
+not buffer large objects in the proxy or fixture. Services and cache/client state
+are private and cleaned up. Reports publish atomically only for complete passing
+matrices (39 HTTP cases or six Docker phases). A failed/partial run does not replace
+an existing report; use a fresh report directory as above and check the test exit
+status rather than treating an older file as new evidence.
+
+The HTTP matrix covers 1/8/32 clients × 8/64 MiB × same/distinct keys ×
+cold/warm/restarted proxy, plus wait-hit, timeout/fallback and 4 KiB entry churn.
+Every case has its own cache. Warm/restart cases populate serially first; reports
+separate those GETs/body bytes from the measured phase. Normal HTTP pacing is 1 ms
+per streaming chunk with a 5s fill wait (not the production default). Limits are
+2 GiB + 1 MiB, 16 fills, 96 entry slots and 64 connections; churn reduces slots to
+eight. Deterministic digest generation and hashing contribute fixture CPU/latency.
+
+Representative results on 2026-09-05, Go 1.27.1, Docker 29.8.0, Linux amd64:
+
+| HTTP, 32 clients × 64 MiB | p50 / p95 milliseconds | Origin GETs | Origin body bytes |
+| --- | ---: | ---: | ---: |
+| Same key, cold | 4097 / 4150 | 32 | 67,460,202 |
+| Same key, warm | 1149 / 1391 | 32 | 1,123,996 |
+| Same key, restart | 1320 / 1463 | 32 | 13,364,594 |
+| Distinct keys, cold | 8078 / 8297 | 32 | 2,147,483,648 |
+| Distinct keys, warm | 1225 / 1425 | 32 | 776,594 |
+| Distinct keys, restart | 1592 / 1734 | 32 | 31,621,120 |
+
+The distinct warm cases first transferred 2,147,483,648 bytes in 32 warmup GETs;
+same-key warmup transferred 67,108,864 bytes in one GET. Those costs are not savings.
+The separate 32-client 8 MiB wait-hit profile (5ms pacing, 5s wait) recorded 31 wait
+hits, 32 GETs, 8,883,989 origin bytes and p95 1628ms. The timeout profile (10ms pacing,
+1ms wait) recorded 31 fallbacks, 63 GETs, 135,110,941 bytes and p95 2991ms. Different
+pacing deliberately exercises both outcomes; this is not a controlled latency
+comparison. Fallback repeats authorization and can transfer duplicate data.
+
+Docker uses one/four fresh VFS daemons per cold/warm/restart phase (15 total), a
+paced ~8 MiB image, the default 1s wait and a 32 MiB cache. Every daemon performs its
+own authenticated layer/config GETs and tag resolution; image identities and CA
+persistence match. Docker-local cache cannot explain these savings.
+
+| Docker daemons / phase | p50 / p95 milliseconds | Layer + config GETs | Layer + config origin bytes |
+| --- | ---: | ---: | ---: |
+| 1 / cold | 470 / 470 | 2 | 8,390,238 |
+| 1 / warm | 152 / 152 | 2 | 32,931 |
+| 1 / restart | 188 / 188 | 2 | 262,307 |
+| 4 / cold | 494 / 494 | 8 | 8,489,031 |
+| 4 / warm | 164 / 165 | 8 | 217,476 |
+| 4 / restart | 185 / 187 | 8 | 885,388 |
+
+Metrics and `/proc` are sampled every 50ms plus boundary samples. HTTP sampled
+maxima were RSS 21,327,872 bytes, Go heap 6,582,704 bytes, 73 FDs, 137 goroutines,
+16 fills and 32 connections; Docker maxima were RSS 16,736,256 bytes, heap 3,220,576
+bytes, 19 FDs and 29 goroutines. These are proxy-only sampled observations, not
+instantaneous maxima, deployment sizing promises or throughput/latency SLAs.
+The eight-entry churn proves cap/eviction behavior, not memory usage at the default
+100000-entry cap; that larger index still needs capacity planning.
+
+Tests assert exact bytes, independent authorization, warm savings, sampled
+byte/entry/fill/connection bounds, and zero fills/readers/reservations/active
+requests/waits/connections after quiescence. FD/goroutine return allows retained
+idle transport state (+16/+32 from baseline); deterministic unit/race tests own
+cap-saturation and lifecycle invariants that sampling cannot prove. Reports include
+baseline/end resources and separate file lengths, allocated filesystem blocks
+(including directories), charged cache bytes and in-flight reservations. For the
+32-distinct warm case, file lengths totalled 2,147,491,456 bytes and allocation
+2,147,618,816 bytes; filesystem allocation is not identical to logical accounting.
+No incomplete cache entries or owned supervised services remained after the run.

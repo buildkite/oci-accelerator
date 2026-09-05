@@ -7,6 +7,13 @@ GET. Tags remain uncached; there is no offline fallback or request-rate-limit av
 See the [implementation plan](docs/plans/https-registry-cache.md).
 Track completed and upcoming slices in the [implementation log](docs/implementation-log.md).
 
+Concurrent fills have byte, entry, writer and lifetime bounds. Independently
+authorized followers can wait briefly for the same fill; timeout uses one fresh
+upstream GET, not stale authorization. Optional loopback-only Prometheus metrics
+expose resource use and fixed request/cache outcomes. See the
+[load evidence](docs/operations.md#concurrent-load-acceptance) for measured
+cold/warm/restart behavior, coalescing tradeoffs, and repeatable checks.
+
 ## Build and configure
 
 ```sh

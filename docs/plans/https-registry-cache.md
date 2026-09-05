@@ -4,9 +4,9 @@
 
 Build a standalone Go binary that accelerates Docker Engine image pulls through an explicit HTTPS-intercepting forward proxy. Image names remain unchanged. Docker Engine hosts configure the proxy and trust its CA.
 
-Slices 1–3 are implemented and validated. See the [operating guide](../operations.md)
-and [implementation log](../implementation-log.md). Concurrency and operational
-hardening remain queued for slice 4.
+Slices 1–4 are implemented and validated. See the [operating guide](../operations.md)
+for configuration, repeatable acceptance checks and measured load limitations, and
+the [implementation log](../implementation-log.md) for commit and review evidence.
 
 ## Agreed scope
 
@@ -286,8 +286,8 @@ manifest bandwidth savings a Docker acceptance gate. Prove substitution with a
 controlled HTTP fixture, and use Docker to verify protocol behavior and image
 identity. Local bearer fixtures use a distinct unconfigured TLS token hostname,
 private test-only name/trust configuration, and registry-side authorization checks;
-the proxy neither parses tokens nor follows challenge realms. Concurrency waiting,
-metrics, broader load/crash hardening, and performance tuning remain slice 4.
+the proxy neither parses tokens nor follows challenge realms. Slice 4 adds
+concurrency waiting, metrics and broader load/crash evidence described below.
 
 ### 4. Concurrency and operational hardening
 
@@ -304,13 +304,13 @@ owns client-driven streaming and fill abort; `server.go` and the CLI already dra
 connections on shutdown. `Store.Stats` exposes occupancy/reservations/evictions,
 and `forwarding.go` emits redacted per-request logs. Extend these owners directly.
 
-Missing work is bounded concurrent-fill waiting, independent fill/index bounds,
-aggregate metrics, and recovery/resource evidence under concurrency. Current tests
-simulate corrupt/incomplete state and use `/dev/full` for a store write failure;
-they do not establish process-crash or real filesystem-exhaustion behavior through
-the compiled proxy. Preserve Linux, private single-owner storage, and the existing
-security contract. No distributed coordination, background prefetch, cache-serving
-without current upstream authorization, or new storage backend is proposed.
+The completed extension adds bounded concurrent-fill waiting, independent fill/index
+bounds, aggregate metrics, and recovery/resource evidence under concurrency. In
+addition to staged corrupt/incomplete states, tests now exercise actual process
+termination and private-tmpfs ENOSPC through the compiled proxy. Linux, private
+single-owner storage, and the existing security contract are preserved. Distributed
+coordination, background prefetch, cache-serving without current upstream
+authorization, and new storage backends remain excluded.
 
 | Subslice | Outcome | Decisive validation |
 | --- | --- | --- |
@@ -428,11 +428,9 @@ The first version is complete when:
 
 Container packaging, containerd/BuildKit-specific setup and validation, S3 or shared storage, multi-instance coordination, push passthrough, tag caching, stale/offline mode, proxy-held credentials, authorization-decision caching, environment-variable migration compatibility, automatic CA distribution, and automatic CA rotation.
 
-The GET-authorization strategy and slice-2 decisions above are approved and slices
-1–2 are complete. Slice-3 format, security, and external-acceptance decisions are
-approved. The user requested planning slice 4 for subsequent autonomous execution
-of both slices. Slice-4 ownership, resource defaults, metrics, and fault/load
-acceptance decisions are approved. The user authorized combined autonomous execution,
-per-subslice commits/pushes, paired reviews, anonymous public pulls, and isolated
-supervised acceptance/fault/load resources with cleanup. The run ends after 4e and pauses
-for material scope/security decisions or unresolved required verification blockers.
+The approved GET-authorization strategy, format/security rules, fill ownership,
+resource defaults, metrics and fault/load acceptance are implemented through 4e.
+The authorized combined run includes per-subslice commits/pushes, paired reviews,
+anonymous public pulls and isolated supervised acceptance/fault/load resources with
+cleanup. No material scope/security changes or verification exceptions were needed.
+Further work requires a new scope decision; deferred features remain deferred.

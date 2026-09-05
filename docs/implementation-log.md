@@ -6,10 +6,11 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 ## Current status
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
-  2 — authorized digest-blob caching; 3 — digest manifests and compatibility.
-- **In progress:** 4e — concurrent acceptance, measurements and handoff.
-- **Next:** Complete 4e. Combined autonomous implementation, checks, reviews,
-  commits/pushes, and isolated acceptance/fault/load resources are authorized.
+  2 — authorized digest-blob caching; 3 — digest manifests and compatibility;
+  4 — concurrency and operational hardening.
+- **In progress:** Final commit publication; all implementation and checks complete.
+- **Next:** Close the authorized run after publication. Deferred features require
+  separate scope approval; there are no new design decisions blocking slices 3–4.
 
 ## Completed groundwork
 
@@ -28,7 +29,7 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 | 1. Working explicit proxy and CA lifecycle | Complete | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
 | 2. Authorized digest-blob caching | Complete | 2a–2d: safe redirects, verified bounded storage, authorized delivery, and real Docker cold/warm/restart acceptance. |
 | 3. Digest manifests and generic protocol compatibility | Complete | Representation-aware caching, local bearer/multi-platform fixtures and anonymous Hub/GHCR acceptance. |
-| 4. Concurrency and operational hardening | In progress | 4a–4d complete; concurrent load evidence and handoff remain. |
+| 4. Concurrency and operational hardening | Complete | 4a–4e: fill/entry/lifetime bounds, authorized coalescing, fault recovery, loopback metrics and concurrent load evidence. |
 
 ## Slice 1: completed subslices
 
@@ -197,12 +198,29 @@ Paired reviews and follow-ups completed; added a barrier after the first hash ch
 to prove cancellation during concurrent first verification. Staged publication states
 are explicitly distinguished from actual API/process-kill cases; no power-loss claim.
 
-4d complete: test/race/vet passed. Actual HTTP fixtures assert cold/warm, denial,
+[4d complete](https://ampcode.com/@buildkite/docker-accelerator/commit/b769576): test/race/vet passed. Actual HTTP fixtures assert cold/warm, denial,
 no-store, corrupt fill, failed upstream transport, wait/fallback and redirect GET
 counts, body counters and store transitions. Concurrent scraping/cancel/shutdown and
 CLI disabled/enabled routes, bind failure, --check, and listener cleanup passed.
 Both snapshot reviews found no material issues. Labels remain fixed enums and
 metrics are optional on a separate literal-loopback listener only.
+
+4e complete: test/race/vet and example `--check` passed. All 39 compiled-proxy HTTP
+cases and six fresh-daemon Docker phases passed (combined run 240.61s); corrected
+Docker report calculations passed a subsequent 51.08s run. Exact bytes/identities,
+independent GET authorization, warm savings, structural caps and quiescent cleanup
+were asserted. The [operating guide](operations.md#concurrent-load-acceptance)
+records sampled resources, latency, traffic, warmup costs and repeatable commands.
+Paired snapshot reviews and focused follow-ups completed, with the same ambient
+guidance limitation for the filtered code-only reviewer. Fixed partial/failed JSON
+publication and tested atomic successful publication. Rejected instantaneous-bound
+proof from periodic samples and invented RSS/latency ceilings: deterministic cap
+tests and measured evidence have separate roles. Rejected deleting an older report
+on failure; preserve prior successful evidence and document fresh output directories
+plus exit-status checking. Config example already reflects all approved defaults.
+Final cross-slice real Docker, OCI/Docker multi-platform, anonymous Hub/GHCR,
+process-crash and private ENOSPC checks all passed together (110.97s). No owned
+supervised services remain. No verification exceptions were needed.
 
 - **3a:** authorized, representation-aware digest-manifest caching using the
   existing store and redirect stack, preserving blob entries.
@@ -239,8 +257,7 @@ metrics are optional on a separate literal-loopback listener only.
   blockers unless explicitly waived. The 1/8/32-client HTTP and 1/4-daemon Docker
   load matrix is approved, with measured performance rather than a throughput/latency
   SLA. Combined execution is authorized.
-  Planning confirmed mount/unshare tools and sudo are
-  available, but has not exercised mount privileges or fault workloads.
+  Private mount/unshare privileges and fault workloads were exercised successfully.
 
 ## Keeping this log current
 

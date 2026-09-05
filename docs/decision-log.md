@@ -233,3 +233,25 @@
   store transition. Counters reset on restart; no credential/path/digest labels.
 - Reuse store occupancy and pin accounting. Add Go heap/goroutine gauges to support
   the approved load evidence; RSS and filesystem allocation are measured externally.
+
+## 4e — concurrent acceptance and measurement
+
+- Run the complete 1/8/32-client, 8/64 MiB same/distinct HTTP matrix with independent
+  cache state per case. Warm and restart cases explicitly populate serially first,
+  reporting those GETs/bytes separately; this isolates warm behavior from admission
+  refusal in a concurrent cold fill. No warmup traffic is claimed as savings.
+- Measure paced local streaming, not Internet throughput. HTTP uses a 5s wait to
+  expose coalescing; a separate 1ms-wait profile exposes fallback. Docker retains
+  the default 1s wait with 1/4 fresh VFS daemons for cold/warm/restart.
+- Sample metrics and `/proc` every 50ms plus boundary samples; report sampled peaks,
+  not guaranteed instantaneous maxima. Assert cache/connection limits, exact bytes,
+  per-client authorization and quiescence; retained idle transport connections have
+  explicit FD/goroutine allowances. Disk reports distinguish actual file lengths,
+  allocated blocks (including directories), and the store's charged reservations.
+- Keep latency and RSS as measured evidence, without tuning to an invented SLA.
+  Unit/race tests remain the deterministic proof of cap saturation and lifecycle
+  interleavings that periodic sampling alone cannot establish.
+- Publish JSON only for complete passing matrices, using a same-directory atomic
+  rename. Preserve any previous successful report on a failed run; operators use
+  a fresh report directory and the test exit status, not file existence, as evidence.
+  Do not silently delete previously collected results.
