@@ -176,3 +176,12 @@
   hosts file in each test-owned service's mount namespace. Global DNS/trust is untouched.
   Docker trusts the token CA, but the proxy does not; successful token exchange must
   remain opaque, not intercepted. Test-only Basic credentials belong to Docker.
+
+## 3d — anonymous external compatibility
+
+- Select Alpine 3.22 on Docker Hub and Flux source-controller v1.7.4 on GHCR.
+  Resolve tags on the cold pull, pin subsequent warm/restart pulls, and compare
+  inspected root/config/rootfs identities. Use fresh private empty client config.
+- Require completed cache entry population to establish proxy use, but keep public
+  smoke evidence separate from local authorization-count and byte-substitution proof.
+  Omit raw pull failure output because registries may include signed redirect URLs.

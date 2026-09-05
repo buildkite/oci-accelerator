@@ -4,9 +4,9 @@
 
 Build a standalone Go binary that accelerates Docker Engine image pulls through an explicit HTTPS-intercepting forward proxy. Image names remain unchanged. Docker Engine hosts configure the proxy and trust its CA.
 
-Slices 1 and 2 are implemented and validated. See the [operating guide](../operations.md)
-and [implementation log](../implementation-log.md). Digest manifests and broader
-operational hardening remain queued for slices 3 and 4.
+Slices 1–3 are implemented and validated. See the [operating guide](../operations.md)
+and [implementation log](../implementation-log.md). Concurrency and operational
+hardening remain queued for slice 4.
 
 ## Agreed scope
 

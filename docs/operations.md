@@ -1,6 +1,6 @@
 # Running the proxy with Docker Engine
 
-The proxy caches verified SHA-256 blobs when `cache.dir` is configured. Every
+The proxy caches verified SHA-256 blobs and digest manifests when `cache.dir` is configured. Every
 request still goes upstream for current GET authorization before any cache hit.
 There is no offline fallback or request-rate-limit avoidance. Local protocol/cache
 checks and real Docker cold/warm/restart acceptance pass.
@@ -266,4 +266,29 @@ child GETs, independent bearer acquisition, and absence of unselected-platform G
 Test hostnames are mapped only inside private mount namespaces (`sudo`, `unshare`,
 and `mount` required); token-service trust is present only in Docker, not the proxy.
 Images are never executed. Small manifest bandwidth savings are not promised.
-Docker Hub/GHCR checks, full load/crash testing, and metrics remain subsequent work.
+Full load/crash testing and metrics remain slice 4 work.
+
+### Public registry compatibility
+
+Anonymous smoke checks passed on 2026-09-05 with Go 1.27.1, Docker Engine/CLI
+29.8.0, and Linux amd64. Each uses fresh Docker state for a cold tag pull, warm
+pinned-digest pull, and pinned-digest pull after proxy restart. Root/config/rootfs
+identity and CA persistence match; completed cache entries prove the proxy was used.
+These are compatibility checks, not measurements of upstream authorization counts
+or cache-hit savings. Deterministic local fixtures remain authoritative for those.
+
+| Public image | Resolved root digest |
+| --- | --- |
+| `docker.io/library/alpine:3.22` | `sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce` |
+| `ghcr.io/fluxcd/source-controller:v1.7.4` | `sha256:16f21ac1795528df80ddef51ccbb14a57b78ea26e66dc8551636ef9a3cec71b3` |
+
+```sh
+DOCKER_ACCELERATOR_PUBLIC_E2E=1 go test -v ./integration \
+  -run TestDockerPublicRegistriesThroughCompiledProxy -count=1 -timeout=10m
+```
+
+No account credentials are used; anonymous bearer exchange stays client-owned.
+The test creates private empty client configuration, uses normal system TLS trust
+plus its private proxy CA, never executes images, and cleans up its services/state.
+Tags can change; each run records the resolved digest and pins subsequent pulls.
+Network/rate-limit failures fail an explicitly enabled test rather than becoming skips.

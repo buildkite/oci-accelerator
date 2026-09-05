@@ -6,9 +6,9 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 ## Current status
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
-  2 — authorized digest-blob caching (2a–2d).
-- **In progress:** slice 3; 3c validated and reviewed, ready to commit.
-- **Next:** 3d, then 4a–4e. Combined autonomous implementation, checks, reviews,
+  2 — authorized digest-blob caching; 3 — digest manifests and compatibility.
+- **In progress:** 4a — explicit cache resource limits.
+- **Next:** 4a–4e. Combined autonomous implementation, checks, reviews,
   commits/pushes, and isolated acceptance/fault/load resources are authorized.
 
 ## Completed groundwork
@@ -27,8 +27,8 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 | --- | --- | --- |
 | 1. Working explicit proxy and CA lifecycle | Complete | Docker Engine pulls through the Go proxy with selective MITM, persistent CA, verified upstream TLS, and pull-only enforcement; no caching. |
 | 2. Authorized digest-blob caching | Complete | 2a–2d: safe redirects, verified bounded storage, authorized delivery, and real Docker cold/warm/restart acceptance. |
-| 3. Digest manifests and generic protocol compatibility | Not started | Representation-aware digest-manifest caching and registry/auth compatibility; tags remain uncached. |
-| 4. Concurrency and operational hardening | Not started | Fill coalescing, cancellation, recovery, resource bounds, diagnostics, graceful shutdown, and measured cold/warm behavior. |
+| 3. Digest manifests and generic protocol compatibility | Complete | Representation-aware caching, local bearer/multi-platform fixtures and anonymous Hub/GHCR acceptance. |
+| 4. Concurrency and operational hardening | In progress | 4a resource limits next; coalescing, fault checks, metrics and load evidence follow. |
 
 ## Slice 1: completed subslices
 
@@ -154,7 +154,8 @@ follow-ups completed. Added Basic/refresh coverage and pinned original-body chec
 from review; the reported Accept gap was already covered by 3a's same-URL/media
 accept-key test. No production changes were needed. Same filtered-review limitation.
 
-3c validation: test/race/vet and repeated real Docker 29.8.0 acceptance passed.
+[3c complete](https://ampcode.com/@buildkite/docker-accelerator/commit/07f5122):
+test/race/vet and repeated real Docker 29.8.0 acceptance passed.
 Eight fresh-daemon phases per OCI/Docker format each acquired a token and fetched
 the expected root/child/config/layer; mutated tags selected different config/rootfs,
 old digests remained retrievable, no arm64 child was fetched, and CA identity persisted.
@@ -162,6 +163,13 @@ Baseline Basic/large-layer acceptance also passed (warm/restart 32768/294912 ori
 layer bytes versus 8390075 cold). Paired reviews and follow-ups completed. Fixed
 namespace group expansion and asserted socket GID; supplementary root membership
 had masked the defect in this orb. All owned services cleaned up.
+
+3d complete: test/race/vet and repeated anonymous Hub/GHCR acceptance passed
+(final run 32.46s). Fresh Docker state preserved exact image identities across
+cold/warm/restart. Paired reviews and follow-ups completed. Replaced count-only
+population assertions with completed-key set comparison to tolerate eviction.
+Rejected adding warm-hit proof to public smoke: deterministic local fixtures own
+that evidence. The filtered code-only review has the same ambient-guidance limitation.
 
 - **3a:** authorized, representation-aware digest-manifest caching using the
   existing store and redirect stack, preserving blob entries.
@@ -172,9 +180,8 @@ had masked the defect in this orb. All owned services cleaned up.
   image selection is approved and account credentials are unnecessary. The external
   acceptance gate is approved: blocked external checks leave 3d/slice 3 incomplete
   unless the user grants an exception. Autonomous execution is authorized.
-- Planning preflight found Go and Docker executables, but no running default Docker
-  socket. Verify supervised acceptance services when implementation is authorized;
-  no slice-3 runtime checks have run or been claimed.
+- Slice-3 local and public acceptance use isolated supervised Docker daemons;
+  the default Docker socket is not required.
 - **4a:** explicit active-fill, entry-count, and fill-lifetime bounds, reusing
   existing reservations, eviction, and reader pinning.
 - **4b:** bounded follower waiting after independent authorization; client-owned
