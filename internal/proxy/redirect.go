@@ -17,7 +17,7 @@ var errRedirect = errors.New("upstream redirect refused")
 type registryTransport struct{ p *Proxy }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	_, digest, eligible := blobRequest(req)
+	object, eligible := immutableObjectRequest(req)
 	stats, _ := req.Context().Value(statsKey{}).(*requestStats)
 	if stats == nil {
 		stats = &requestStats{cache: "bypass", eligible: eligible, cacheable: eligible}
@@ -36,7 +36,7 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if !eligible || !redirectStatus(resp.StatusCode) {
 			return t.p.cachedResponse(req, resp, permitted, stats), nil
 		}
-		permitted = permitted && cacheHeaders(resp.Header, digest)
+		permitted = permitted && cacheHeaders(resp.Header, object.digest)
 		resp.Body.Close()
 		if hops == 5 {
 			return nil, errRedirect

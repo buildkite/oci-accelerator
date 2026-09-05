@@ -7,10 +7,9 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
   2 — authorized digest-blob caching (2a–2d).
-- **In progress:** none.
-- **Next:** slice 3 — digest manifests and generic protocol compatibility, awaiting authorization.
-- Stopped at the approved slice-2 boundary. Caching is enabled when a cache
-  directory is configured; manifests remain uncached.
+- **In progress:** slice 3; 3a validated and independently reviewed, ready to commit.
+- **Next:** 3b–3d, then 4a–4e. Combined autonomous implementation, checks, reviews,
+  commits/pushes, and isolated acceptance/fault/load resources are authorized.
 
 ## Completed groundwork
 
@@ -134,16 +133,52 @@ cleaned up. See the operating guide for fixture pacing and benchmark limitations
 
 ## Later slices: queued scope
 
-Break later slices down using the implementation then available.
+3a validation: test/race/vet passed; object-path fuzzing executed 225280 cases.
+All four manifest types passed cold/warm/store-and-proxy restart substitution,
+fresh-GET/revocation, metadata bypass, corrupt-fill, isolation and redirect checks.
+Paired snapshot reviews found no issues. The code-only review used a filtered
+source/test/diff bundle; ambient guidance cannot be fully isolated.
 
-- **Slice 3:** cover OCI/Docker media types and multi-platform images, Basic and
-  bearer authentication, separate token hosts, and redirect credential stripping.
-  Verify fresh tags, registry/repository/representation isolation, and correct
-  HEAD/Range/conditional bypasses. Record Docker Hub and GHCR compatibility checks.
-- **Slice 4:** exercise concurrent fills, follower cancellation, LRU/read
-  pinning, restart/corruption/disk-full recovery, resource limits, logs/metrics,
-  and graceful shutdown. Measure cold/warm latency, memory, disk occupancy,
-  upstream bytes, and authorization requests; finish operator documentation.
+Remaining slices follow the approved plan.
+
+- **3a:** authorized, representation-aware digest-manifest caching using the
+  existing store and redirect stack, preserving blob entries.
+- **3b:** deterministic local protocol/authentication coverage, including separate
+  bearer token hosts, revocation, negotiation, redirects, and bypasses.
+- **3c:** fresh-daemon Docker multi-platform/digest pulls and actual tag mutation.
+- **3d:** anonymous public Docker Hub/GHCR smoke flows and operator handoff; agent
+  image selection is approved and account credentials are unnecessary. The external
+  acceptance gate is approved: blocked external checks leave 3d/slice 3 incomplete
+  unless the user grants an exception. Autonomous execution is authorized.
+- Planning preflight found Go and Docker executables, but no running default Docker
+  socket. Verify supervised acceptance services when implementation is authorized;
+  no slice-3 runtime checks have run or been claimed.
+- **4a:** explicit active-fill, entry-count, and fill-lifetime bounds, reusing
+  existing reservations, eviction, and reader pinning.
+- **4b:** bounded follower waiting after independent authorization; client-owned
+  fills, cancellation, and one fresh GET fallback rather than background downloads.
+- **4c:** process-crash, real bounded-filesystem exhaustion, concurrent corruption
+  recovery, and shutdown fault tests; fix demonstrated ownership failures.
+- **4d:** optional loopback metrics and bounded diagnostic outcomes.
+- **4e:** concurrent HTTP/Docker acceptance, measured resource/traffic/latency
+  evidence, and final operator handoff.
+- Slice-4 client-owned fills with bounded follower waiting and one fresh GET
+  fallback are approved; background shared downloads and leader handoff are excluded.
+  The configurable wait defaults to 1s; zero disables waiting. The configurable
+  global active-fill cap of 16 is approved; excess misses stream uncached.
+  The configurable 100000-entry cap, including reserved fill slots, is approved;
+  evict unused LRU entries or bypass admission when pins prevent eviction.
+  The configurable 10m fill lifetime is approved; expiry abandons cache storage,
+  not the upstream transfer, subject to the documented kernel-I/O limitation.
+  The optional separate loopback-only Prometheus metrics endpoint is approved;
+  disabled by default, with no public/admin/profiling endpoint or unbounded labels.
+  Isolated process-crash, bounded-filesystem exhaustion, corruption/recovery, and
+  active-work shutdown fault tests are approved; unavailable required checks remain
+  blockers unless explicitly waived. The 1/8/32-client HTTP and 1/4-daemon Docker
+  load matrix is approved, with measured performance rather than a throughput/latency
+  SLA. Combined execution is authorized.
+  Planning confirmed mount/unshare tools and sudo are
+  available, but has not exercised mount privileges or fault workloads.
 
 ## Keeping this log current
 

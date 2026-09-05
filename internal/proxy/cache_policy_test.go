@@ -23,7 +23,7 @@ func cachePolicyFixture() (*http.Request, *http.Response) {
 func TestBlobMetadataAcceptsTerminalBlobResponse(t *testing.T) {
 	req, resp := cachePolicyFixture()
 	resp.Header.Set("Docker-Content-Digest", testBlobDigest)
-	meta, ok := blobMetadata(req, resp)
+	meta, ok := objectMetadata(req, resp)
 	if !ok {
 		t.Fatal("matching terminal blob response was rejected")
 	}
@@ -32,15 +32,17 @@ func TestBlobMetadataAcceptsTerminalBlobResponse(t *testing.T) {
 	}
 
 	resp.Header.Del("Docker-Content-Digest")
-	if _, ok := blobMetadata(req, resp); !ok {
+	if _, ok := objectMetadata(req, resp); !ok {
 		t.Fatal("response without optional CDN digest was rejected")
+	}
+	if meta.Key != "ce77ff66e6785141501fc0f3fd7fbedac4bb24e00a106e0830aecff478edf8f3" {
+		t.Fatalf("legacy blob key changed: %s", meta.Key)
 	}
 }
 
 func TestBlobMetadataRejectsUnsupportedRequests(t *testing.T) {
 	tests := map[string]func(*http.Request){
 		"tag manifest":       func(r *http.Request) { r.URL.Path = "/v2/team/image/manifests/latest" },
-		"digest manifest":    func(r *http.Request) { r.URL.Path = "/v2/team/image/manifests/" + testBlobDigest },
 		"HEAD":               func(r *http.Request) { r.Method = http.MethodHead },
 		"query":              func(r *http.Request) { r.URL.RawQuery = "ns=other" },
 		"empty query marker": func(r *http.Request) { r.URL.ForceQuery = true },
@@ -52,10 +54,39 @@ func TestBlobMetadataRejectsUnsupportedRequests(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			req, resp := cachePolicyFixture()
 			change(req)
-			if _, ok := blobMetadata(req, resp); ok {
+			if _, ok := objectMetadata(req, resp); ok {
 				t.Fatal("unsupported request was cacheable")
 			}
 		})
+	}
+}
+
+func TestManifestMetadataAdmission(t *testing.T) {
+	mediaTypes := []string{
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.oci.image.index.v1+json",
+		"application/vnd.docker.distribution.manifest.v2+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json",
+	}
+	for _, mediaType := range mediaTypes {
+		t.Run(mediaType, func(t *testing.T) {
+			req, resp := cachePolicyFixture()
+			req.URL.Path = "/v2/team/image/manifests/" + testBlobDigest
+			resp.Header.Set("Content-Type", mediaType+`; profile="exact"`)
+			meta, ok := objectMetadata(req, resp)
+			if !ok || meta.MediaType != mediaType+`; profile="exact"` {
+				t.Fatalf("metadata = %+v, %v", meta, ok)
+			}
+		})
+	}
+
+	for _, mediaType := range []string{"application/json", "application/vnd.docker.distribution.manifest.v1+json"} {
+		req, resp := cachePolicyFixture()
+		req.URL.Path = "/v2/team/image/manifests/" + testBlobDigest
+		resp.Header.Set("Content-Type", mediaType)
+		if _, ok := objectMetadata(req, resp); ok {
+			t.Errorf("unsupported manifest media type %q admitted", mediaType)
+		}
 	}
 }
 
@@ -93,7 +124,7 @@ func TestBlobMetadataRejectsUnsafeHeadersAndFraming(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			req, resp := cachePolicyFixture()
 			change(req, resp)
-			if _, ok := blobMetadata(req, resp); ok {
+			if _, ok := objectMetadata(req, resp); ok {
 				t.Fatal("unsafe response was cacheable")
 			}
 		})
@@ -105,7 +136,7 @@ func TestBlobMetadataRejectsUnsupportedResponses(t *testing.T) {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			req, resp := cachePolicyFixture()
 			resp.StatusCode = status
-			if _, ok := blobMetadata(req, resp); ok {
+			if _, ok := objectMetadata(req, resp); ok {
 				t.Fatalf("status %d was cacheable", status)
 			}
 		})
@@ -116,7 +147,7 @@ func TestBlobMetadataKeyIsolation(t *testing.T) {
 	key := func(change func(*http.Request, *http.Response)) string {
 		req, resp := cachePolicyFixture()
 		change(req, resp)
-		meta, ok := blobMetadata(req, resp)
+		meta, ok := objectMetadata(req, resp)
 		if !ok {
 			t.Fatalf("key fixture was rejected")
 		}
@@ -156,6 +187,19 @@ func TestBlobMetadataKeyIsolation(t *testing.T) {
 				t.Fatal("distinct cache dimensions produced the same key")
 			}
 		})
+	}
+	sharedMedia := "application/vnd.oci.image.manifest.v1+json"
+	blobKey := key(func(r *http.Request, p *http.Response) {
+		r.Header["Accept"] = []string{"secret/one", "secret/two"}
+		p.Header.Set("Content-Type", sharedMedia)
+	})
+	manifestKey := key(func(r *http.Request, p *http.Response) {
+		r.URL.Path = "/v2/team/image/manifests/" + testBlobDigest
+		r.Header["Accept"] = []string{"secret/one", "secret/two"}
+		p.Header.Set("Content-Type", sharedMedia)
+	})
+	if blobKey == manifestKey {
+		t.Error("object kind did not isolate otherwise identical keys")
 	}
 	if strings.Contains(base, "secret") || len(base) != 64 {
 		t.Fatalf("cache key exposes raw header data: %q", base)

@@ -207,13 +207,207 @@ before cancellation and need not transfer zero. Services are removed afterward.
 
 Add digest-manifest caching with representation-aware keys. Test OCI and Docker manifest media types, image indexes/multi-platform images, Basic and bearer auth, separate token-service hosts, relative/absolute redirect chains, and cross-origin credential stripping. Keep HEAD/Range/conditional forwarding as explicit bypasses.
 
-Verify that changing a tag is observed on the next pull, identical paths on two registry hosts cannot collide, negotiated representations cannot collide, and warm private content cannot bypass current registry permissions. Exercise Docker Hub and GHCR using credentials provided to the Docker client only; record the exact versions and tested flows.
+Verify that changing a tag is observed on the next pull, identical paths on two registry hosts cannot collide, negotiated representations cannot collide, and warm private content cannot bypass current registry permissions. Exercise Docker Hub and GHCR with anonymous public pulls and client-owned token exchange; record the exact versions and tested flows. Credentialed authentication and private-access enforcement use deterministic local fixtures.
+
+#### Approved implementation sequence
+
+Autonomous implementation of 3a–3d followed by 4a–4e is authorized. Reuse the existing
+reverse proxy, redirect protections, and verified disk store. Request classification
+currently lives in `internal/proxy/blob.go`; eligibility is also consumed by
+`forwarding.go` and `redirect.go`, and metadata/key construction lives in `cache.go`.
+Generalize these together rather than adding a second cache or redirect stack.
+Keep the existing blob key serialization and disk metadata format unchanged so
+completed slice-2 entries survive the upgrade. No new configuration is proposed.
+
+| Subslice | Outcome | Decisive validation |
+| --- | --- | --- |
+| 3a. Authorized digest-manifest caching | Generalize immutable-object classification and metadata to distinguish blobs from digest manifests. Admit the four media types below, reuse verified streaming fills and current-GET substitution, and extend safe redirect following to eligible digest-manifest GETs. Tags and all existing bypasses stay upstream-only. | Classification tables/fuzzing; cold/warm/restart exact bytes and fresh GET counts for all four types; deterministic headers-only warm origin proves substitution; digest mismatch/truncation never publishes; denied/revoked requests and missing/inconsistent metadata never hit; object-kind/registry/repository/Accept/media-type isolation; manifest redirect credential stripping; fixed legacy blob-key compatibility regression and existing blob suite. |
+| 3b. Local protocol and authentication matrix | Add deterministic TLS registry/token/CDN fixtures covering Basic and bearer authentication, separate token hosts, negotiation, tag mutation, and redirected manifests. Keep token acquisition and refresh entirely client-owned. Add only production fixes demonstrated necessary by these tests. | Registry-enforced repository scopes, expired/revoked tokens, allowed/denied clients sharing warm content, and public HEAD/protected GET. Assert exact statuses/challenges/bodies and per-client origin GETs. Verify relative/absolute redirect chains, terminal denial, no-store on intermediate hops, no credential restoration after cross-origin hops, and HEAD/Range/conditional/query/encoding/Vary bypasses. An unconfigured TLS token hostname is reached through CONNECT, receives client-owned token requests, and causes no proxy-side realm fetch. |
+| 3c. Docker multi-platform and mutable-tag acceptance | Extend the compiled-binary local fixture with OCI indexes and Docker manifest lists, valid platform-specific children, and distinct images behind a mutable tag. Retain Basic acceptance and exercise bearer acquisition through a separate token host with real Docker. | Fresh isolated daemons for cold/warm/restarted-proxy digest and tag pulls; exact selected child/config/rootfs digests and fresh upstream digest GETs. Change tag A to B with a different selected child/config/rootfs, prove the next pull observes B, and prove A remains retrievable by digest. Verify index/list platform selection without executing images or requiring emulation. Retain large-blob savings and CA-persistence checks. |
+| 3d. Public registry compatibility and handoff | Run opt-in anonymous Docker Hub and GHCR public-image pull smoke tests using agent-selected references and client-owned token exchange; update README, configuration comments if needed, and operating instructions to match implemented behavior. | Record Docker/Go versions, date, registry, tag/resolved digest, platform, authentication mode, and cold/warm/restart outcomes without secrets. Local fixtures remain authoritative for permission, origin-count, and cache-substitution claims; public successful pulls alone do not prove cache hits. Record unavailable/rate-limited flows as blockers, not passes. |
+
+Each row is one self-contained implementation commit. Format Go and run
+`go test ./...`, `go test -race ./...`, and `go vet ./...` for each row, together
+with its focused checks. Required Docker checks run opt-in with fresh daemon state;
+the existing command is documented in the operating guide, and new test names and
+timeouts will be recorded with their implementation. Go and Docker executables are
+present in this orb, but the default Docker socket was unavailable during planning;
+start and verify supervised services before promising acceptance results.
+
+Use two fresh read-only reviewers on the same source/test/diff snapshot before each
+implementation commit: one plan-aware and one given a code/test/build/diff-only
+bundle. Ambient agent guidance cannot be fully isolated; disclose that limitation.
+Resolve findings and rerun affected checks before advancing. Maintain the decision
+and implementation logs, link completed commits, and push each completed commit
+once execution/commit/push authorization is granted. The user has requested planning
+slice 4 for a combined autonomous run and has now approved that run. Advance
+past slice 3 only after its completion gate; pause
+for a material scope/security decision or unresolved required check.
+
+#### Decisions requested before autonomous implementation
+
+1. **Manifest formats — approved; representation implementation as proposed.** Cache
+   `application/vnd.oci.image.manifest.v1+json`,
+   `application/vnd.oci.image.index.v1+json`,
+   `application/vnd.docker.distribution.manifest.v2+json`, and
+   `application/vnd.docker.distribution.manifest.list.v2+json` only. Forward legacy
+   schema-1 and unknown media types normally without caching. Admit by the parsed
+   media-type base; preserve the exact Content-Type (including valid parameters)
+   and exact Accept value list as key dimensions. Do not rewrite JSON, convert
+   formats, fetch child descriptors proactively, or add a second Accept-negotiation
+   engine: the registry selects the representation and Docker validates it. Hash
+   the actual complete body against the requested SHA-256; a transformed response
+   with a different digest cannot be published. This bounds compatibility work
+   without restricting ordinary forwarding.
+2. **Manifest hit and redirect contract — approved.** Extend the
+   approved blob contract unchanged: fresh client GET and terminal 200, matching
+   known length/media type, identity encoding, acceptable Vary/no-store policy,
+   and agreement of every present Docker-Content-Digest with the requested digest.
+   Do not require a digest response header when absent, including at a final CDN;
+   stored bytes are independently verified. Apply the same five-hop HTTPS,
+   destination-checking, and cross-origin credential-stripping policy to eligible
+   manifest GETs. Metadata gaps/mismatches bypass substitution; errors and denials
+   never fall back. No HEAD optimization or authorization-result caching.
+3. **External acceptance — anonymous public pulls and completion gate approved.**
+   Anonymous public-image pulls are sufficient for Docker Hub and GHCR, including
+   client-owned bearer-token exchange where required. Account login and private-image
+   checks are not required. Deterministic local fixtures remain responsible for
+   credentialed authentication, private-access denial, and revocation coverage. The user authorized
+   agent selection of small, maintained public multi-platform images, recording exact
+   references and resolved digests. Pull only; do not execute or publish images.
+   Use isolated Docker-client state without account credentials; do not repurpose
+   unrelated orb credentials. Approved gate: complete authorized local
+   work first, but leave 3d/slice 3 incomplete and ask if image availability,
+   network access, or rate limits block external evidence. Deferral needs an explicit
+   exception rather than silently dropping the agreed public-registry checks.
+
+Small manifests can transfer in full before upstream cancellation, so do not make
+manifest bandwidth savings a Docker acceptance gate. Prove substitution with a
+controlled HTTP fixture, and use Docker to verify protocol behavior and image
+identity. Local bearer fixtures use a distinct unconfigured TLS token hostname,
+private test-only name/trust configuration, and registry-side authorization checks;
+the proxy neither parses tokens nor follows challenge realms. Concurrency waiting,
+metrics, broader load/crash hardening, and performance tuning remain slice 4.
 
 ### 4. Concurrency and operational hardening
 
 Finish fill coalescing, follower cancellation, LRU/read pinning, crash recovery, disk-full/corruption behavior, bounds, structured diagnostics, metrics, graceful shutdown, and operator documentation. Validate restart/recovery under load before calling the implementation ready.
 
 Measure concurrent large-image cold/warm pulls: peak memory, upstream bytes, latency, disk occupancy, and authorization request count. Tune from results; do not invent an unrequested throughput SLA.
+
+#### Existing foundation and approved sequence
+
+Do not rebuild slice-2 safety mechanisms. `internal/cache/{store,fill,reader}.go`
+already owns reservations, single writers, atomic publication, LRU/reader pins,
+startup cleanup, and first-reuse digest verification. `internal/proxy/cache.go`
+owns client-driven streaming and fill abort; `server.go` and the CLI already drain
+connections on shutdown. `Store.Stats` exposes occupancy/reservations/evictions,
+and `forwarding.go` emits redacted per-request logs. Extend these owners directly.
+
+Missing work is bounded concurrent-fill waiting, independent fill/index bounds,
+aggregate metrics, and recovery/resource evidence under concurrency. Current tests
+simulate corrupt/incomplete state and use `/dev/full` for a store write failure;
+they do not establish process-crash or real filesystem-exhaustion behavior through
+the compiled proxy. Preserve Linux, private single-owner storage, and the existing
+security contract. No distributed coordination, background prefetch, cache-serving
+without current upstream authorization, or new storage backend is proposed.
+
+| Subslice | Outcome | Decisive validation |
+| --- | --- | --- |
+| 4a. Explicit cache resource limits | Extend cache configuration/admission with the proposed active-fill, entry-count, and fill-lifetime limits below. Entry slots are reserved for fills, and both byte and entry constraints apply during startup and eviction. Timeout abandons only cache storage, not the valid upstream transfer. | Small-limit deterministic tests for concurrent admission, pinned/full cache, startup with reduced limits, expiry racing Write/Commit/Abort, and recovered capacity. Exact upstream bytes survive admission refusal/expiry; no completed partial entry. Side-effect-free --check and configuration validation/default tests. |
+| 4b. Bounded authorized fill waiting | Add store-owned completion notification and proxy-owned bounded waiting using the model below. Keep the initiating request as fill owner; no detached download workers. Retry only the follower's own request when a wait cannot yield a verified entry. | Barrier-driven success, leader failure/disconnect, follower cancellation, wait timeout/disablement, commit/eviction races, shutdown, and mixed allowed/denied clients for blobs/manifests. Every client authorizes independently; fallback has exactly one additional full GET attempt and no repeated wait loop. Assert bytes, origin GETs, writer count, released reservations/connections, and no partial delivery. Run focused race repetitions. |
+| 4c. Recovery and shutdown fault coverage | Exercise existing storage and connection ownership with abrupt process exit, interrupted publication, real bounded-filesystem exhaustion, corruption between restarts, and shutdown during fills/waits/readers. Fix demonstrated lifecycle failures in their owning modules. Keep fault injection test-local rather than adding a configurable filesystem layer. | Subprocess crashes at controlled fill/publication boundaries; restart exposes only complete verified objects and removes recognized abandoned state. Real ENOSPC in a private bounded test filesystem preserves otherwise valid upstream transfers and later admission recovers after space is reclaimed. Concurrent first-reuse verification/cancellation, eviction/read pinning, lock release, and shutdown leave no owned workers/fills/reservations after quiescence. Never alter unrelated files/services or exhaust the orb root filesystem. |
+| 4d. Bounded operational metrics | Add the optional separate loopback metrics listener below; retain existing logs and add bounded wait/fallback/admission reasons. Instrument actual transitions, reuse Store.Stats, and keep CLI ownership of listener startup/shutdown. | Exact counters/gauges after cold/warm/bypass/denial/fallback/fill failure/eviction scenarios, including aborted requests and both GET attempts on fallback. Scrape while requests and shutdown run under race detection. Disabled mode opens no listener; invalid address/bind failure is clear; output/logs contain no credentials, paths, queries, digests, or unbounded labels. |
+| 4e. Concurrent acceptance, measurements, and handoff | Run the approved bounded local workload matrix below with compiled binaries and fresh Docker client state. Measure cold/warm/restart behavior and recovery under load; update README, configuration example, operations, decision log, and implementation log with commands and evidence. | Exact image/object digests, independent authorization, warm body savings, enforced byte/entry/fill/connection limits, and resource return after quiescence. Record proxy peak RSS/heap, file descriptors/goroutines, latency distribution, logical reservations and actual filesystem allocation, origin GET/body counters, versions, and workload sizes. Repeat real Docker cold/warm/restart acceptance, now including concurrent clients. Required failures remain blockers rather than being hidden by skips. |
+
+Run 4a–4e sequentially after completed slice 3. Each row requires gofmt,
+`go test ./...`, `go test -race ./...`, `go vet ./...`, its focused checks, and the
+same two-review snapshot gate described for slice 3 before its own implementation
+commit. Resolve material findings with follow-up review, update docs when behavior
+changes rather than waiting for 4e, and push each completed commit after execution
+approval. A baseline test skip is not evidence that an opt-in fault/Docker check
+passed. Unavailable privileges or required checks block advancement unless the user
+grants an explicit exception. Combined authorization includes owned local fault-test
+processes/filesystems and supervised acceptance services, with cleanup.
+
+#### Slice-4 decisions to settle one at a time
+
+1. **Fill ownership and waiting — approved.** Retain client-owned fills. A follower
+   first obtains its own accepted terminal upstream GET and validates complete
+   matching metadata. If that same object/representation has an active fill, close
+   the follower's upstream body before waiting, freeing the origin connection.
+   On completion, acquire a normal pinned verified reader and serve it with the
+   follower's own accepted response headers. Never share authentication results or
+   serve partially filled files. On timeout, failure, or eviction before acquisition,
+   start one fresh GET from the follower's original request/headers through the
+   entire redirect/authorization/metadata path, with no further wait loop. Relay
+   any new denial/failure; do not reuse earlier permission as fallback authorization.
+   A fallback may fill if admission allows, but cannot displace another writer.
+   Leader disconnect aborts its fill and wakes followers; follower disconnect only
+   cancels its wait. Followers do not keep a disconnected leader's download alive.
+   This trades possible duplicate transfer and a second GET for bounded delay and
+   simpler ownership. Background shared downloads and leader handoff are excluded
+   from the approved model. The configurable `cache.fill_wait_timeout` defaults to
+   1s; zero disables waiting. This bounds only the cache wait, not upstream GET or
+   total pull duration.
+2. **Resource defaults — fill/entry caps and lifetime approved.**
+   The configurable `cache.max_fills` defaults to 16 globally. At the limit,
+   additional misses stream uncached; hits and waiting on existing fills remain
+   available. This limits cache writers, not total pulls; same-key waiters do not
+   consume additional fill slots. The configurable `cache.max_entries` defaults to
+   100000, in addition to the byte limit. Evict unused LRU entries at the cap;
+   if pinned readers prevent admission, continue the new transfer uncached.
+   The configurable `cache.fill_timeout` defaults to 10m per fill.
+   These limits must be positive. Active fills
+   reserve entry slots as well as body/metadata bytes; no admission queue is added.
+   Expiry aborts storage and wakes waiters without killing the upstream transfer or
+   starting another fill on that same response. Stop/join owned timer activity on
+   completion/abort/shutdown. Regular-file kernel operations remain non-preemptible:
+   neither fill expiry nor shutdown promises a hard deadline through a stuck
+   filesystem. Existing network idle/connection bounds still apply. Keep the 32 GiB
+   logical byte default and in-memory LRU with commit-time restart approximation;
+   no per-hit metadata writes or automatic filesystem free-space reserve. The entry
+   cap bounds small-object index growth but is not a fixed RSS guarantee; at 100k
+   entries it can consume hundreds of MiB. Measure and document that tradeoff.
+3. **Metrics interface — approved.** Expose standard Prometheus text at `/metrics`
+   on an optional separate `metrics_listen` address, disabled when omitted. Require
+   a literal loopback address and explicit nonzero port; example `127.0.0.1:9090`.
+   No metrics on the CONNECT listener, public bind, pprof, admin API, or new auth/TLS
+   subsystem. Use the standard library for this small fixed metric set. Include
+   request outcomes/durations, authorized cache hits/misses/bypasses, upstream GET
+   attempts and consumed response-body bytes, downstream bytes, fill/wait/fallback
+   outcomes, evictions, active work, entries, charged bytes and reservations.
+   Labels are fixed enums and, where useful, configured registry authorities only;
+   never repository/digest/client/token/redirect-URL labels. Counters reset at process
+   restart. Consumed bytes exclude network read-ahead and are not wire-byte savings.
+   Listener startup failure fails startup; scrape failures do not affect pulls.
+4. **Failure and performance acceptance — approved.** Use private disposable local
+   fixtures, subprocess termination, and a size-limited filesystem in a private mount
+   namespace for real ENOSPC; never fill the host/root disk or stop unrelated services.
+   Validate capabilities before running, clean up all owned resources, and report
+   process-crash tests as such—not power-loss or faulty-device certification. Exercise
+   restart recovery, corruption, and shutdown with active fills, waiters, and readers.
+   Missing required privileges or failed checks leave the subslice incomplete until
+   resolved or explicitly waived. Approved performance acceptance: measure
+   deterministic streamed HTTP workloads at 1/8/32 clients with 8 MiB and 64 MiB
+   objects, using same-key and distinct-key cold/warm/restart phases, plus tiny-object
+   churn for the entry limit. Use 1 and 4 fresh isolated Docker daemons for concurrent
+   image acceptance. Retain the existing paced large-body savings gate; do not set
+   a manifest savings requirement or a throughput/latency SLA. Report both wait-hit
+   and timeout/fallback workloads so the bandwidth/latency tradeoff is visible.
+   Bounded peak work and post-quiescence cleanup are correctness gates; measured
+   latency/RSS are evidence, not an invented performance promise. Required failures
+   or environment limitations leave the subslice incomplete until fixed or waived.
+
+Implementation detail: observe a fill and subscribe to its terminal notification
+atomically under the store lock, matching full metadata. Publish terminal state
+before wake-up, never wait while holding a store/fill lock, and preserve existing
+fill-to-store lock ordering. Eviction before a follower pins is an allowed miss,
+not a reason to keep entries pinned for disconnected waiters. Reuse the normal
+verified-read path. Avoid speculative LRU redesign or restart-hash coalescing;
+change them only if tests/measurements demonstrate a concrete correctness or
+resource problem. Reconcile these extension points with the actual completed
+slice-3 code before starting 4a; ask if that requires a material plan change.
 
 ## Verification and completion criteria
 
@@ -234,4 +428,11 @@ The first version is complete when:
 
 Container packaging, containerd/BuildKit-specific setup and validation, S3 or shared storage, multi-instance coordination, push passthrough, tag caching, stale/offline mode, proxy-held credentials, authorization-decision caching, environment-variable migration compatibility, automatic CA distribution, and automatic CA rotation.
 
-The GET-authorization strategy and slice-2 decisions above are approved. Autonomous implementation of subslices 2a–2d is authorized; stop before slice 3 and pause for material scope/security decisions or unresolved verification blockers.
+The GET-authorization strategy and slice-2 decisions above are approved and slices
+1–2 are complete. Slice-3 format, security, and external-acceptance decisions are
+approved. The user requested planning slice 4 for subsequent autonomous execution
+of both slices. Slice-4 ownership, resource defaults, metrics, and fault/load
+acceptance decisions are approved. The user authorized combined autonomous execution,
+per-subslice commits/pushes, paired reviews, anonymous public pulls, and isolated
+supervised acceptance/fault/load resources with cleanup. The run ends after 4e and pauses
+for material scope/security decisions or unresolved required verification blockers.

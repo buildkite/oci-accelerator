@@ -33,13 +33,13 @@ func TestBlobClassification(t *testing.T) {
 		{strings.Replace(testBlobPath, "team/", "team%2f", 1), "GET", "", false},
 		{strings.Replace(testBlobPath, "team/", "team/../", 1), "GET", "", false},
 		{strings.Replace(testBlobPath, "sha256", "sha512", 1), "GET", "", false},
-		{strings.Replace(testBlobPath, "blobs", "manifests", 1), "GET", "", false},
+		{strings.Replace(testBlobPath, "blobs", "manifests", 1), "GET", "", true},
 	} {
 		r, _ := http.NewRequest(tc.method, "https://registry.test"+tc.path, nil)
 		if tc.header != "" {
 			r.Header[tc.header] = []string{""}
 		}
-		_, _, got := blobRequest(r)
+		_, got := immutableObjectRequest(r)
 		if got != tc.want {
 			t.Errorf("%s %s %s: %v", tc.method, tc.path, tc.header, got)
 		}
@@ -102,6 +102,76 @@ func TestBlobRedirectCredentialsAndDenials(t *testing.T) {
 				t.Fatalf("status=%d body=%q err=%v calls=%d/%d", resp.StatusCode, body, err, originCalls.Load(), cdnCalls.Load())
 			}
 		})
+	}
+}
+
+func TestManifestRedirectCredentialsDenialAndNoStore(t *testing.T) {
+	const body = `{"schemaVersion":2}`
+	var terminalStatus atomic.Int32
+	terminalStatus.Store(http.StatusForbidden)
+	cdn := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, name := range []string{"Authorization", "Cookie", "X-Registry-Secret", "Referer"} {
+			if r.Header.Get(name) != "" {
+				t.Errorf("manifest redirect leaked %s", name)
+			}
+		}
+		if status := int(terminalStatus.Load()); status != http.StatusOK {
+			w.WriteHeader(status)
+			io.WriteString(w, "denied")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		manifestHeaders(w, body, manifestMediaTypes[0])
+		io.WriteString(w, body)
+	}))
+	defer cdn.Close()
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Error("relative manifest redirect lost authorization")
+		}
+		location := "/relative"
+		if r.URL.Path == "/relative" {
+			location = cdn.URL + "/manifest?signature=private"
+		}
+		w.Header().Set("Location", location)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+	p, client := cacheFixture(t, origin, 1<<20, nil)
+	p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
+	a, _ := authority.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
+	p.destinations[a.String()] = struct{}{}
+	u := origin.URL + manifestURL("team/image", body)
+	request := func() (*http.Response, string) {
+		r, _ := http.NewRequest(http.MethodGet, u, nil)
+		r.Header.Set("Authorization", "Bearer secret")
+		r.Header.Set("Cookie", "secret=x")
+		r.Header.Set("X-Registry-Secret", "secret")
+		r.Header.Set("Accept", manifestMediaTypes[0])
+		resp, err := client.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp, string(b)
+	}
+	resp, got := request()
+	if resp.StatusCode != http.StatusForbidden || got != "denied" {
+		t.Fatal("terminal manifest denial was replaced")
+	}
+	terminalStatus.Store(http.StatusOK)
+	for i := 0; i < 2; i++ {
+		resp, got = request()
+		if resp.StatusCode != http.StatusOK || got != body {
+			t.Fatal("terminal manifest no-store response was not relayed")
+		}
+	}
+	if p.cache.Stats().Entries != 0 {
+		t.Fatal("terminal manifest no-store response was cached")
 	}
 }
 
@@ -195,13 +265,13 @@ func TestAddressPolicyAndRebinding(t *testing.T) {
 	}
 }
 
-func FuzzBlobRequest(f *testing.F) {
+func FuzzImmutableObjectRequest(f *testing.F) {
 	f.Add(testBlobPath)
 	f.Add("/v2/repo/manifests/latest")
 	f.Fuzz(func(t *testing.T, path string) {
 		r := &http.Request{Method: "GET", URL: &url.URL{Path: path}, Header: make(http.Header)}
-		repo, digest, ok := blobRequest(r)
-		if ok && (repo == "" || len(digest) != 71 || strings.Contains(path, "..")) {
+		object, ok := immutableObjectRequest(r)
+		if ok && (object.repository == "" || len(object.digest) != 71 || strings.Contains(path, "..")) {
 			t.Fatal("invalid classification")
 		}
 	})

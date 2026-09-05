@@ -45,12 +45,12 @@ func cacheHeaders(h http.Header, digest string) bool {
 	return true
 }
 
-func blobMetadata(req *http.Request, resp *http.Response) (cache.Metadata, bool) {
-	repo, digest, ok := blobRequest(req)
+func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, bool) {
+	object, ok := immutableObjectRequest(req)
 	if !ok || resp.StatusCode != http.StatusOK || resp.ContentLength < 0 || resp.Uncompressed || len(resp.Trailer) != 0 || resp.Header.Get("Content-Range") != "" {
 		return cache.Metadata{}, false
 	}
-	if !cacheHeaders(req.Header, digest) || !cacheHeaders(resp.Header, digest) {
+	if !cacheHeaders(req.Header, object.digest) || !cacheHeaders(resp.Header, object.digest) {
 		return cache.Metadata{}, false
 	}
 	encoding := resp.Header.Values("Content-Encoding")
@@ -61,7 +61,8 @@ func blobMetadata(req *http.Request, resp *http.Response) (cache.Metadata, bool)
 	if len(media) != 1 || len(media[0]) > 1024 {
 		return cache.Metadata{}, false
 	}
-	if _, _, err := mime.ParseMediaType(media[0]); err != nil {
+	baseMedia, _, err := mime.ParseMediaType(media[0])
+	if err != nil || object.kind == manifestKind && !manifestMediaType(baseMedia) {
 		return cache.Metadata{}, false
 	}
 	a, err := authority.Parse(req.URL.Host, "443")
@@ -70,9 +71,21 @@ func blobMetadata(req *http.Request, resp *http.Response) (cache.Metadata, bool)
 	}
 	// Length-delimited serialization avoids collisions and preserves distinct
 	// Accept header values. Only the hash, not raw request headers, is persisted.
-	key, _ := json.Marshal([]any{a.String(), repo, "blob", digest, req.Header.Values("Accept"), media[0]})
+	key, _ := json.Marshal([]any{a.String(), object.repository, string(object.kind), object.digest, req.Header.Values("Accept"), media[0]})
 	sum := sha256.Sum256(key)
-	return cache.Metadata{Key: hex.EncodeToString(sum[:]), Digest: digest, Size: resp.ContentLength, MediaType: media[0]}, true
+	return cache.Metadata{Key: hex.EncodeToString(sum[:]), Digest: object.digest, Size: resp.ContentLength, MediaType: media[0]}, true
+}
+
+func manifestMediaType(mediaType string) bool {
+	switch mediaType {
+	case "application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.oci.image.index.v1+json",
+		"application/vnd.docker.distribution.manifest.v2+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted bool, stats *requestStats) *http.Response {
@@ -80,7 +93,7 @@ func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted
 	if p.cache == nil || !permitted {
 		return resp
 	}
-	meta, ok := blobMetadata(req, resp)
+	meta, ok := objectMetadata(req, resp)
 	if !ok {
 		return resp
 	}

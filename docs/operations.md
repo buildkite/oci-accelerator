@@ -132,7 +132,7 @@ idle-I/O bounds, not a fixed total download timeout.
 Intercepted traffic uses TLS 1.2+ and HTTP/1.1. Only bodyless GET, HEAD, and OPTIONS
 are allowed; mutations, upgrades, conflicting TLS/HTTP authorities, and non-origin-form
 HTTP targets are denied. Tag, digest, HEAD, Range, and conditional requests all go
-upstream. Eligible query-free SHA-256 blob GET redirects are followed by the proxy,
+upstream. Eligible query-free SHA-256 blob/digest-manifest GET redirects are followed by the proxy,
 up to five hops. Other redirects are returned unchanged for Docker to handle.
 Redirects must use HTTPS with verified certificates; userinfo, fragments, loops,
 and implicit private/link-local/loopback destinations are rejected. Configure private
@@ -152,8 +152,11 @@ aggregate operational counters remain planned for slice 4.
 
 ## Cache behavior and storage
 
-Only full, query-free SHA-256 blob GETs (including image configs) are cached. All
-manifests, HEAD, Range, conditional requests, unknown-length bodies, encoded bodies,
+Full, query-free SHA-256 blob GETs (including image configs) and digest manifests
+are cached. Manifest admission supports OCI image manifests/indexes and Docker
+schema-2 manifests/lists; legacy and unknown types are forwarded uncached. Keys
+preserve object kind, exact Accept values, and observed Content-Type; bodies are
+hashed without JSON conversion. Tag manifests, HEAD, Range, conditionals, unknown-length bodies, encoded bodies,
 no-store responses/requests, and unsupported Vary dimensions bypass caching.
 Each delivery needs a terminal upstream 200 with matching length/media type and
 consistent digest headers when present. CDN digest headers are optional. Denials,

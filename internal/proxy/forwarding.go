@@ -62,9 +62,9 @@ func (p *Proxy) interceptHandler(target authority.Authority) http.Handler {
 		started := time.Now()
 		completed := false
 		stats := &requestStats{cache: "bypass", fill: "none"}
-		_, digest, eligible := blobRequest(r)
+		object, eligible := immutableObjectRequest(r)
 		stats.eligible = eligible
-		stats.cacheable = eligible && cacheHeaders(r.Header, digest)
+		stats.cacheable = eligible && cacheHeaders(r.Header, object.digest)
 		r = r.WithContext(context.WithValue(r.Context(), statsKey{}, stats))
 		lw := &loggingWriter{ResponseWriter: w, status: http.StatusOK, idleTimeout: p.cfg.IdleTimeout}
 		defer func() {

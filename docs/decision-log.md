@@ -142,3 +142,17 @@
 - Retain opt-in privileged acceptance and clean up only owned supervised services.
   Security/denial matrices use deterministic local HTTP/TLS tests rather than
   depending on Docker's authentication retries for exact request-count assertions.
+
+## Slices 3–4 authorization and 3a — digest manifests
+
+- User authorized 3a–3d then 4a–4e, per-subslice commits/pushes and paired review,
+  anonymous public pulls, and isolated supervised acceptance/fault/load resources
+  with cleanup. Required blockers and material scope/security changes require a pause.
+- Extend the existing object classifier, metadata and redirect path, preserving blob
+  key serialization and disk format. Admit four OCI/Docker manifest/index media types;
+  retain exact Accept values and raw Content-Type in keys without rewriting JSON.
+- Keep current per-request GET authorization and verified-byte substitution unchanged.
+  Missing digest headers are permitted; present ones must match. Tags stay uncached.
+- Public Hub/GHCR checks need no account secrets; choose small maintained images,
+  record resolved digests, and leave slice 3 incomplete if required external evidence
+  is blocked. Local fixtures own credentialed denial/revocation evidence.
