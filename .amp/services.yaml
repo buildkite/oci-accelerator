@@ -1,0 +1,3 @@
+services:
+  docker-daemon:
+    command: sudo -n dockerd --host=unix:///var/run/docker.sock

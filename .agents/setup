@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run from the repository root; Amp invokes this script there.
+started=$SECONDS
+packages=()
+for package in ca-certificates curl build-essential; do
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+    packages+=("$package")
+  fi
+done
+if ((${#packages[@]})); then
+  echo "Installing system prerequisites: ${packages[*]}"
+  sudo -n apt-get update
+  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+fi
+
+# Pinned to an official stable release; update the version and both checksums together.
+go_version=1.27.1
+go_root="/usr/local/lib/go-$go_version"
+case "$(uname -m)" in
+  x86_64)
+    arch=amd64
+    checksum=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+    ;;
+  aarch64)
+    arch=arm64
+    checksum=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
+    ;;
+  *) echo "Unsupported Go architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+if [[ ! -d "$go_root" ]]; then
+  echo "Installing Go $go_version ($arch)"
+  temporary=$(mktemp -d)
+  trap 'rm -rf "$temporary"' EXIT
+  curl --fail --location --silent --show-error --retry 3 --max-time 120 \
+    "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" -o "$temporary/go.tar.gz"
+  echo "$checksum  $temporary/go.tar.gz" | sha256sum --check
+  tar -xzf "$temporary/go.tar.gz" -C "$temporary"
+  sudo -n mkdir -p /usr/local/lib
+  sudo -n mv "$temporary/go" "$go_root"
+fi
+[[ "$("$go_root/bin/go" version)" == "go version go${go_version} linux/${arch}" ]]
+# /usr/local/bin is on PATH in fresh non-interactive login shells too.
+sudo -n ln -sfn "$go_root/bin/go" /usr/local/bin/go
+sudo -n ln -sfn "$go_root/bin/gofmt" /usr/local/bin/gofmt
+go version
+
+if ! command -v docker >/dev/null || ! command -v dockerd >/dev/null; then
+  echo "Installing Docker Engine (daemon starts separately as an orb service)"
+  sudo -n install -m 0755 -d /etc/apt/keyrings
+  sudo -n curl --fail --silent --show-error --retry 3 --max-time 60 \
+    https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+  sudo -n chmod a+r /etc/apt/keyrings/docker.asc
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $VERSION_CODENAME stable" \
+    | sudo -n tee /etc/apt/sources.list.d/docker.list >/dev/null
+  sudo -n apt-get update
+  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io
+fi
+docker --version
+dockerd --version
+
+if [[ -f go.mod ]]; then
+  echo "Downloading Go module dependencies"
+  go mod download
+else
+  echo "No go.mod yet; skipping module dependencies"
+fi
+echo "Orb setup completed in $((SECONDS - started))s"
