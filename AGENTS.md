@@ -4,6 +4,8 @@
 
 - Always use subagents whenever possible. Delegate clearly bounded work and run
   independent work in parallel when it does not conflict.
+- Only the coordinating agent delegates unless nested delegation is explicitly
+  requested. Workers and reviewers must not recursively spawn more subagents.
 - Keep responsibility for integration and verification with the coordinating
   agent; delegation does not replace checking the results.
 
@@ -17,37 +19,50 @@
 
 ## Independent review
 
-- At the end of every subslice, run an independent review subagent over the
-  codebase, including the changes and their surrounding design and integration.
-  Ask it to identify problems, mistakes, regressions, and design issues, and
-  assess the implementation against the plan.
-- Run a second, separate independent review subagent focused only on code
-  quality, logic, bugs, and design. Give it a code-only snapshot or input bundle
-  containing source, tests, and relevant code diffs, not full repository context.
-  Do not expose documentation, plans, decision or implementation logs, design
-  explanations, or the first reviewer's findings. Instruct it not to read those
-  materials or infer requirements that the code does not establish.
+- At the end of every implementation subslice, use two fresh, read-only review
+  subagents that did not implement it. Both must review the same source, tests,
+  and code-diff snapshot. This two-review gate does not apply to routine editorial
+  changes outside implementation subslices.
+- Give the first reviewer repository and plan context. Ask it to identify
+  problems, mistakes, regressions, and design issues across the changes and
+  their surrounding code, and assess the implementation against the plan.
+- Focus the second reviewer only on code quality, logic, bugs, and design.
+  Provide a filtered workspace or input bundle containing source, tests,
+  fixtures, build/module files, and code diffs, but no documentation or Git
+  history. Do not supply normal repository context that automatically exposes
+  `AGENTS.md`, plans, logs, design explanations, or the first reviewer's findings.
+  Instruct it not to read those materials or infer requirements that the code
+  does not establish. If the tooling cannot provide this separation, disclose
+  the limitation rather than claiming a blind review.
 - The code-only review complements, rather than replaces, the first review's
   assessment of intended behavior and requirements.
 - Resolve feedback from both reviewers before committing the completed subslice
-  and moving on to the next subslice or slice. Re-run affected checks after fixes.
+  or moving on: fix actionable findings and briefly explain rejected or
+  inapplicable findings. Do not silently discard feedback.
+- Re-run affected checks after fixes. Material behavior or design changes made
+  during review must receive follow-up independent review under the same context
+  rules before committing the completed subslice or moving on.
 
 ## Implementation log
 
-- Create and maintain a running implementation log in the repository so the
-  user can see which slices and subslices are completed, in progress, and
-  coming up next.
+- Maintain `docs/implementation-log.md` so the user can see which slices and
+  subslices are completed, in progress, and coming up next.
 - Update it as work progresses and sequencing changes. Keep it concise and
   human-readable; mark work complete only after implementation, validation,
   and independent review are finished.
 - When updating the log, link each completed subslice to the commit or commits
   that implement it. Use actual commit links once the commits exist.
+- Add the implementation commit's link afterward in a log-only commit or the
+  next commit; this does not violate one implementation commit per subslice.
+  Do not amend commits to chase a self-referencing commit hash.
 
 ## Decision log
 
-- While implementing each subslice, maintain a running decision log recording
-  the decisions made and why. Keep it concise and human-readable;
-  avoid transcripts, routine command logs, and repeated plan text.
+- While implementing each subslice, maintain `docs/decision-log.md`, creating it
+  when implementation begins. Record the decisions made and why, and include
+  the relevant entries in the associated implementation commit.
+- Keep entries concise and human-readable; avoid transcripts, routine command
+  logs, and repeated plan text.
 
 ## Simple, idiomatic Go
 
@@ -62,6 +77,9 @@
 - Format Go changes with `gofmt`. Before completing an implementation subslice,
   run `go test ./...`, `go test -race ./...`, and `go vet ./...`.
 - Add regression tests for bugs. Report blocked or failing checks honestly.
+- If a required check fails or cannot run, record the blocker in the
+  implementation log and keep the subslice incomplete. Do not advance past it
+  until the blocker is resolved or the user explicitly grants an exception.
 
 ## Behavioral tests
 
