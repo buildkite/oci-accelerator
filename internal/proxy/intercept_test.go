@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
 	"ampcode.com/buildkite/docker-accelerator/internal/ca"
 	"ampcode.com/buildkite/docker-accelerator/internal/config"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 func TestInterceptForwardsRequestAndRelaysSensitiveResponse(t *testing.T) {
@@ -423,11 +423,11 @@ func interceptFixtureWithOriginTrustAndLogs(t *testing.T, origin *httptest.Serve
 		t.Fatal(err)
 	}
 	u, _ := url.Parse(origin.URL)
-	registry, err := authority.Parse(u.Host, "443")
+	registry, err := hostport.Parse(u.Host, "443")
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, addr := startSignedProxy(t, config.Config{Registries: []authority.Authority{registry}, MaxConnections: 32, DialTimeout: time.Second, TLSHandshakeTimeout: time.Second, ResponseHeaderTimeout: 300 * time.Millisecond, IdleTimeout: 150 * time.Millisecond}, signer, logs)
+	p, addr := startSignedProxy(t, config.Config{Registries: []hostport.HostPort{registry}, MaxConnections: 32, DialTimeout: time.Second, TLSHandshakeTimeout: time.Second, ResponseHeaderTimeout: 300 * time.Millisecond, IdleTimeout: 150 * time.Millisecond}, signer, logs)
 	p.transport.TLSClientConfig.RootCAs = originRoots
 	clientRoots := x509.NewCertPool()
 	if trustClient {

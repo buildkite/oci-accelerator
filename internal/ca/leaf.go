@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 const leafRenewal = time.Hour
@@ -33,7 +33,7 @@ func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 	if now.Before(a.cert.NotBefore) || !now.Before(a.cert.NotAfter) {
 		return nil, errors.New("CA certificate is not currently valid")
 	}
-	parsed, err := authority.Parse(host, "443")
+	parsed, err := hostport.Parse(host, "443")
 	if err != nil || parsed.Port() != "443" {
 		return nil, errors.New("invalid certificate host")
 	}

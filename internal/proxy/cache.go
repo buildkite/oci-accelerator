@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
 	"ampcode.com/buildkite/docker-accelerator/internal/cache"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 type requestStats struct {
@@ -69,7 +69,7 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 	if err != nil || object.kind == manifestKind && !manifestMediaType(baseMedia) {
 		return cache.Metadata{}, false
 	}
-	a, err := authority.Parse(req.URL.Host, "443")
+	a, err := hostport.Parse(req.URL.Host, "443")
 	if err != nil {
 		return cache.Metadata{}, false
 	}

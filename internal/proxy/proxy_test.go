@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
 	"ampcode.com/buildkite/docker-accelerator/internal/config"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 func TestTunnelPreservesBufferedPayloadAndHalfClose(t *testing.T) {
@@ -53,8 +53,8 @@ func TestTunnelPreservesBufferedPayloadAndHalfClose(t *testing.T) {
 }
 
 func TestRefusals(t *testing.T) {
-	configured, _ := authority.Parse("127.0.0.1:9", "443")
-	p, addr := start(t, config.Config{Registries: []authority.Authority{configured}, MaxConnections: 4, DialTimeout: time.Second, ResponseHeaderTimeout: time.Second, IdleTimeout: time.Second})
+	configured, _ := hostport.Parse("127.0.0.1:9", "443")
+	p, addr := start(t, config.Config{Registries: []hostport.HostPort{configured}, MaxConnections: 4, DialTimeout: time.Second, ResponseHeaderTimeout: time.Second, IdleTimeout: time.Second})
 	for _, tc := range []struct {
 		request string
 		status  int

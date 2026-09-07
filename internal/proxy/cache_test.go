@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
 	"ampcode.com/buildkite/docker-accelerator/internal/cache"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 func cacheFixture(t *testing.T, origin *httptest.Server, limit int64, logs *bytes.Buffer) (*Proxy, *http.Client) {
@@ -286,7 +286,7 @@ func TestRedirectedCacheAuthorizesCDNAndHonorsRegistryNoStore(t *testing.T) {
 	}))
 	defer origin.Close()
 	p, c := cacheFixture(t, origin, 1<<20, nil)
-	a, _ := authority.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
+	a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
 	p.destinations[a.String()] = struct{}{}
 	p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
 	u := origin.URL + blobURL(body)

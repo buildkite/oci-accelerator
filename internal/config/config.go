@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -29,8 +29,8 @@ const (
 type Config struct {
 	Listen                string
 	MetricsListen         string
-	Registries            []authority.Authority
-	RedirectAllowlist     []authority.Authority
+	Registries            []hostport.HostPort
+	RedirectAllowlist     []hostport.HostPort
 	CADir                 string
 	Cache                 Cache
 	DialTimeout           time.Duration
@@ -152,7 +152,7 @@ func validate(raw rawConfig, base string) (Config, error) {
 		return Config{}, ErrInvalid
 	}
 	if host != "" {
-		if _, err := authority.Parse(net.JoinHostPort(host, port), ""); err != nil {
+		if _, err := hostport.Parse(net.JoinHostPort(host, port), ""); err != nil {
 			return Config{}, ErrInvalid
 		}
 	}
@@ -187,11 +187,11 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}, nil
 }
 
-func parseAuthorities(texts []string) ([]authority.Authority, error) {
-	authorities := make([]authority.Authority, len(texts))
+func parseAuthorities(texts []string) ([]hostport.HostPort, error) {
+	authorities := make([]hostport.HostPort, len(texts))
 	seen := make(map[string]bool, len(texts))
 	for i, text := range texts {
-		a, err := authority.Parse(text, "443")
+		a, err := hostport.Parse(text, "443")
 		if err != nil || seen[a.String()] {
 			return nil, ErrInvalid
 		}

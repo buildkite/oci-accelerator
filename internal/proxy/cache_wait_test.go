@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 const waitTestTimeout = 3 * time.Second
@@ -463,7 +463,7 @@ func TestCacheFillWaitCrossOriginTimeoutReplaysRegistryRequest(t *testing.T) {
 	defer origin.Close()
 	p, c := cacheFixture(t, origin, 1<<20, nil)
 	p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
-	a, _ := authority.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
+	a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
 	p.destinations[a.String()] = struct{}{}
 	p.cfg.Cache.FillWaitTimeout = 25 * time.Millisecond
 	request := func(token string, ctx context.Context) (*http.Response, []byte, error) {

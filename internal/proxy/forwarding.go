@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 type idleReadWriteConn struct {
@@ -33,7 +33,7 @@ func (c *idleReadWriteConn) Write(b []byte) (int, error) {
 	return c.Conn.Write(b)
 }
 
-func (p *Proxy) interceptHandler(target authority.Authority) http.Handler {
+func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 	upstream := &url.URL{Scheme: "https", Host: net.JoinHostPort(target.Host(), target.Port())}
 	rp := &httputil.ReverseProxy{
 		Transport:     registryTransport{p},
@@ -84,7 +84,7 @@ func (p *Proxy) interceptHandler(target authority.Authority) http.Handler {
 			completed = true
 			return
 		}
-		host, err := authority.Parse(r.Host, "443")
+		host, err := hostport.Parse(r.Host, "443")
 		if err != nil || host != target {
 			refuse(lw, "authority mismatch", http.StatusMisdirectedRequest)
 			completed = true

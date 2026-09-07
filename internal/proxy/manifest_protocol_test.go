@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 func TestWarmManifestProtocolBypasses(t *testing.T) {
@@ -185,7 +185,7 @@ func TestWarmManifestIntermediateNoStoreAndCrossOriginReturnStayBypassed(t *test
 	defer origin.Close()
 	p, client := cacheFixture(t, origin, 1<<20, nil)
 	p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
-	a, _ := authority.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
+	a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
 	p.destinations[a.String()] = struct{}{}
 	u := origin.URL + manifestURL("team/image", cached)
 	request := func() (*http.Request, *http.Response, string) {

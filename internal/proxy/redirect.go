@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 var errRedirect = errors.New("upstream redirect refused")
@@ -93,7 +93,7 @@ func redirectURL(base *url.URL, location string) (*url.URL, error) {
 	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Fragment != "" {
 		return nil, errRedirect
 	}
-	a, err := authority.Parse(u.Host, "443")
+	a, err := hostport.Parse(u.Host, "443")
 	if err != nil {
 		return nil, errRedirect
 	}
@@ -102,8 +102,8 @@ func redirectURL(base *url.URL, location string) (*url.URL, error) {
 }
 
 func sameOrigin(a, b *url.URL) bool {
-	x, ex := authority.Parse(a.Host, "443")
-	y, ey := authority.Parse(b.Host, "443")
+	x, ex := hostport.Parse(a.Host, "443")
+	y, ey := hostport.Parse(b.Host, "443")
 	return ex == nil && ey == nil && a.Scheme == b.Scheme && x == y
 }
 
@@ -142,7 +142,7 @@ func publicIP(ip net.IP) bool {
 func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.DialTimeout)
 	defer cancel()
-	a, err := authority.Parse(address, "443")
+	a, err := hostport.Parse(address, "443")
 	if err != nil {
 		return nil, errRedirect
 	}

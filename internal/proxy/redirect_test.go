@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
 	"ampcode.com/buildkite/docker-accelerator/internal/config"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 var testBlobPath = "/v2/team/image/blobs/sha256:" + strings.Repeat("a", 64)
@@ -82,7 +82,7 @@ func TestBlobRedirectCredentialsAndDenials(t *testing.T) {
 			defer origin.Close()
 			p, _, client := interceptFixture(t, origin, nil, true)
 			p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
-			a, _ := authority.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
+			a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
 			p.destinations[a.String()] = struct{}{}
 			if _, intercepted := p.configured[a.String()]; intercepted {
 				t.Fatal("storage intercepted")
@@ -139,7 +139,7 @@ func TestManifestRedirectCredentialsDenialAndNoStore(t *testing.T) {
 	defer origin.Close()
 	p, client := cacheFixture(t, origin, 1<<20, nil)
 	p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
-	a, _ := authority.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
+	a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
 	p.destinations[a.String()] = struct{}{}
 	u := origin.URL + manifestURL("team/image", body)
 	request := func() (*http.Response, string) {
@@ -203,7 +203,7 @@ func TestRedirectRefusals(t *testing.T) {
 			defer origin.Close()
 			p, _, client := interceptFixture(t, origin, nil, true)
 			if mode == "untrusted" {
-				a, _ := authority.Parse(strings.Replace(strings.TrimPrefix(cdn.URL, "https://"), "127.0.0.1", "localhost", 1), "443")
+				a, _ := hostport.Parse(strings.Replace(strings.TrimPrefix(cdn.URL, "https://"), "127.0.0.1", "localhost", 1), "443")
 				p.destinations[a.String()] = struct{}{}
 			}
 			resp, err := client.Get(origin.URL + testBlobPath)
@@ -242,7 +242,7 @@ func TestAddressPolicyAndRebinding(t *testing.T) {
 		c.Close()
 		t.Fatal("mixed answer accepted")
 	}
-	a, _ := authority.Parse("storage.test:"+port, "443")
+	a, _ := hostport.Parse("storage.test:"+port, "443")
 	p.destinations[a.String()] = struct{}{}
 	calls = 0
 	p.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {

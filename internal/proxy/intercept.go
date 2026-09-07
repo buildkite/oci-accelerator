@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 type bufferedConn struct {
@@ -41,7 +41,7 @@ func (l *oneConnListener) Close() error   { l.finish(); return nil }
 func (l *oneConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
 func (l *oneConnListener) finish()        { l.stop.Do(func() { close(l.done) }) }
 
-func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target authority.Authority) {
+func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostport.HostPort) {
 	h, ok := w.(http.Hijacker)
 	if !ok {
 		refuse(w, "interception unavailable", http.StatusInternalServerError)
@@ -81,7 +81,7 @@ func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target authori
 	tlsConn := tls.Server(raw, &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS13, NextProtos: []string{"http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if hello.ServerName != "" {
-				sni, e := authority.Parse(hello.ServerName, "443")
+				sni, e := hostport.Parse(hello.ServerName, "443")
 				if e != nil || sni.Host() != target.Host() {
 					return nil, errors.New("TLS name mismatch")
 				}

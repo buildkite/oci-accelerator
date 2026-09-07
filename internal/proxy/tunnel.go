@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/authority"
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +74,7 @@ func rawCONNECTValid(header []byte) bool {
 	if len(parts) != 3 || parts[0] != http.MethodConnect {
 		return true
 	}
-	target, err := authority.Parse(parts[1], "")
+	target, err := hostport.Parse(parts[1], "")
 	if err != nil {
 		return false
 	}
@@ -88,21 +88,21 @@ func rawCONNECTValid(header []byte) bool {
 			hostText = strings.TrimSpace(value)
 		}
 	}
-	host, err := authority.Parse(hostText, "")
+	host, err := hostport.Parse(hostText, "")
 	return err == nil && host == target
 }
 
-func validateCONNECT(r *http.Request) (authority.Authority, error) {
+func validateCONNECT(r *http.Request) (hostport.HostPort, error) {
 	if r.RequestURI == "" || r.Host == "" || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
-		return authority.Authority{}, authority.ErrInvalid
+		return hostport.HostPort{}, hostport.ErrInvalid
 	}
-	target, err := authority.Parse(r.RequestURI, "")
+	target, err := hostport.Parse(r.RequestURI, "")
 	if err != nil {
-		return authority.Authority{}, err
+		return hostport.HostPort{}, err
 	}
-	host, err := authority.Parse(r.Host, "")
+	host, err := hostport.Parse(r.Host, "")
 	if err != nil || host != target {
-		return authority.Authority{}, authority.ErrInvalid
+		return hostport.HostPort{}, hostport.ErrInvalid
 	}
 	return target, nil
 }

@@ -1,5 +1,5 @@
-// Package authority parses and canonicalizes network authorities.
-package authority
+// Package hostport parses and canonicalizes host:port network authorities.
+package hostport
 
 import (
 	"errors"
@@ -10,43 +10,43 @@ import (
 
 var ErrInvalid = errors.New("invalid authority")
 
-// Authority is a canonical host and port pair.
-type Authority struct {
+// HostPort is a canonical host and port pair.
+type HostPort struct {
 	host string
 	port string
 }
 
 // Parse parses text as a host or host:port. If the port is omitted, defaultPort
 // is used; an empty defaultPort therefore requires an explicit port.
-func Parse(text, defaultPort string) (Authority, error) {
+func Parse(text, defaultPort string) (HostPort, error) {
 	if text == "" || text != strings.TrimSpace(text) || strings.ContainsAny(text, "@/?#%*") {
-		return Authority{}, ErrInvalid
+		return HostPort{}, ErrInvalid
 	}
 
 	host, port, err := split(text)
 	if err != nil {
-		return Authority{}, ErrInvalid
+		return HostPort{}, ErrInvalid
 	}
 	if port == "" {
 		port = defaultPort
 	}
 	if port == "" || !validPort(port) {
-		return Authority{}, ErrInvalid
+		return HostPort{}, ErrInvalid
 	}
 	portNumber, _ := strconv.Atoi(port)
 	port = strconv.Itoa(portNumber)
 
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
 	if host == "" || strings.Contains(host, ":") && net.ParseIP(host) == nil {
-		return Authority{}, ErrInvalid
+		return HostPort{}, ErrInvalid
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		host = ip.String()
 	} else if looksLikeIPv4(host) || !validHostname(host) {
-		return Authority{}, ErrInvalid
+		return HostPort{}, ErrInvalid
 	}
 
-	return Authority{host: host, port: port}, nil
+	return HostPort{host: host, port: port}, nil
 }
 
 func split(text string) (string, string, error) {
@@ -106,15 +106,15 @@ func validHostname(host string) bool {
 	return true
 }
 
-func (a Authority) Host() string { return a.host }
-func (a Authority) Port() string { return a.port }
+func (h HostPort) Host() string { return h.host }
+func (h HostPort) Port() string { return h.port }
 
-func (a Authority) String() string {
-	if a.port == "443" {
-		if strings.Contains(a.host, ":") {
-			return "[" + a.host + "]"
+func (h HostPort) String() string {
+	if h.port == "443" {
+		if strings.Contains(h.host, ":") {
+			return "[" + h.host + "]"
 		}
-		return a.host
+		return h.host
 	}
-	return net.JoinHostPort(a.host, a.port)
+	return net.JoinHostPort(h.host, h.port)
 }
