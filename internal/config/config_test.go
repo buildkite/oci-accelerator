@@ -139,6 +139,53 @@ func TestLoadRejectsNullListElements(t *testing.T) {
 	}
 }
 
+func TestLoadCanonicalizesListen(t *testing.T) {
+	tests := map[string]string{
+		"EXAMPLE.com.:3128":   "example.com:3128",
+		"[2001:0DB8::1]:3128": "[2001:db8::1]:3128",
+		"127.0.0.1:03128":     "127.0.0.1:3128",
+		":3128":               ":3128",
+		"0.0.0.0:3128":        "0.0.0.0:3128",
+		"[::]:3128":           "[::]:3128",
+		"127.0.0.1:3128":      "127.0.0.1:3128",
+	}
+	for input, want := range tests {
+		c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\nlisten: '"+input+"'\n"))
+		if err != nil {
+			t.Errorf("Load(listen=%q) returned %v", input, err)
+			continue
+		}
+		if c.Listen != want {
+			t.Errorf("Load(listen=%q) = %q, want %q", input, c.Listen, want)
+		}
+	}
+}
+
+func TestLoadRejectsInvalidListen(t *testing.T) {
+	invalid := []string{
+		"Host_Underscore:3128",
+		"a..b:3128",
+		"bad host:3128",
+		"127.0.0.1:99999",
+		"127.0.0.1:",
+	}
+	for _, input := range invalid {
+		if _, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\nlisten: '"+input+"'\n")); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Load(listen=%q) unexpectedly returned %v", input, err)
+		}
+	}
+}
+
+func TestLoadCanonicalizesMetricsListen(t *testing.T) {
+	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\nmetrics_listen: '127.0.0.1:09090'\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MetricsListen != "127.0.0.1:9090" {
+		t.Fatalf("metrics_listen = %q, want 127.0.0.1:9090", c.MetricsListen)
+	}
+}
+
 func TestLoadRejectsNonIntegerNumericLimits(t *testing.T) {
 	tests := []string{
 		"cache: {max_bytes: 1.9}",

@@ -214,21 +214,17 @@ func defaults() rawConfig {
 }
 
 func validate(raw rawConfig, base string) (Config, error) {
-	host, port, err := net.SplitHostPort(raw.Listen)
-	portNumber, portErr := strconv.ParseUint(port, 10, 16)
-	if err != nil || portErr != nil || portNumber == 0 || len(raw.Registries) == 0 || strings.TrimSpace(raw.CADir) == "" {
+	if len(raw.Registries) == 0 || strings.TrimSpace(raw.CADir) == "" {
 		return Config{}, ErrInvalid
 	}
-	if host != "" {
-		if _, err := hostport.Parse(net.JoinHostPort(host, port), ""); err != nil {
-			return Config{}, ErrInvalid
-		}
+	listen, err := canonicalBindAddress(raw.Listen, false)
+	if err != nil {
+		return Config{}, ErrInvalid
 	}
-	if raw.MetricsListen != "" {
-		host, port, err := net.SplitHostPort(raw.MetricsListen)
-		portNumber, portErr := strconv.ParseUint(port, 10, 16)
-		ip := net.ParseIP(host)
-		if err != nil || portErr != nil || portNumber == 0 || ip == nil || !ip.IsLoopback() || strings.Contains(host, "%") {
+	metricsListen := raw.MetricsListen
+	if metricsListen != "" {
+		metricsListen, err = canonicalBindAddress(raw.MetricsListen, true)
+		if err != nil {
 			return Config{}, ErrInvalid
 		}
 	}
@@ -245,7 +241,7 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}
 
 	return Config{
-		Listen: raw.Listen, MetricsListen: raw.MetricsListen, Registries: registries, RedirectAllowlist: redirectAllowlist,
+		Listen: listen, MetricsListen: metricsListen, Registries: registries, RedirectAllowlist: redirectAllowlist,
 		CADir:       resolve(base, raw.CADir),
 		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: int64(raw.Cache.MaxBytes), MaxFills: int(raw.Cache.MaxFills), MaxEntries: int(raw.Cache.MaxEntries), FillTimeout: time.Duration(raw.Cache.FillTimeout), FillWaitTimeout: time.Duration(raw.Cache.FillWaitTimeout)},
 		DialTimeout: time.Duration(raw.DialTimeout), TLSHandshakeTimeout: time.Duration(raw.TLSHandshakeTimeout),
@@ -253,6 +249,47 @@ func validate(raw rawConfig, base string) (Config, error) {
 		ShutdownTimeout: time.Duration(raw.ShutdownTimeout), MaxConnections: int(raw.MaxConnections),
 		MaxLeafCertificates: int(raw.MaxLeafCertificates),
 	}, nil
+}
+
+// canonicalBindAddress validates a host:port bind address and returns its
+// canonical form. The port is parsed once, range-checked, and re-emitted without
+// leading zeros. An empty host (":3128") and a wildcard host ("0.0.0.0"/"[::]")
+// are preserved verbatim so they remain valid net.Listen targets; any other host
+// is canonicalized by hostport.Canonicalize (lowercase, trailing-dot stripped,
+// IP literals normalized). When loopback is true the address must bind an
+// explicit loopback IP literal with no zone, matching the metrics endpoint's
+// constraints.
+func canonicalBindAddress(address string, loopback bool) (string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", ErrInvalid
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNumber == 0 {
+		return "", ErrInvalid
+	}
+	normalizedPort := strconv.FormatUint(portNumber, 10)
+
+	if loopback {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() || strings.Contains(host, "%") {
+			return "", ErrInvalid
+		}
+		return net.JoinHostPort(ip.String(), normalizedPort), nil
+	}
+
+	canonicalHost := host
+	if host != "" {
+		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+			// Preserve wildcard binds ("0.0.0.0"/"::") verbatim.
+		} else {
+			canonicalHost, err = hostport.Canonicalize(host)
+			if err != nil {
+				return "", ErrInvalid
+			}
+		}
+	}
+	return net.JoinHostPort(canonicalHost, normalizedPort), nil
 }
 
 // parseAuthorities canonicalizes each element, rejecting the whole list if any

@@ -298,3 +298,27 @@ changing any security boundary or agreed scope.
   canonicalization and duplicate checks are unchanged.
 - Errors continue to surface only `ErrInvalid`, never the offending element, so a
   redirect destination or registry name cannot leak through a configuration error.
+
+### Canonicalize listen and metrics bind addresses
+
+- `listen: 'EXAMPLE.com.:3128'` was accepted but `Config.Listen` stored the raw
+  string, inconsistent with the canonicalized `Registries`. `validate` also parsed
+  the port twice and gated host validation on `host != ""`, so the port was never
+  normalized and the two code paths could diverge.
+- Extract the host canonicalization already inside `hostport.Parse` into an
+  exported `hostport.Canonicalize`, and have `Parse` call it so its observable
+  behavior is unchanged (all existing hostport tests pass verbatim). This gives the
+  config package the same lowercase, trailing-dot, and IP-literal canonicalization
+  the registry list uses, from one source of truth.
+- Replace the duplicated listen handling with a single `canonicalBindAddress`:
+  split once, range-check the port, re-emit it without leading zeros, and rebuild
+  with `net.JoinHostPort` so `127.0.0.1:03128` becomes `127.0.0.1:3128`. The host is
+  canonicalized only when it is neither empty nor a wildcard, detected with
+  `net.ParseIP(host).IsUnspecified()` (covers `0.0.0.0` and `::`). Empty (`:3128`)
+  and wildcard (`0.0.0.0:3128`, `[::]:3128`) binds are preserved verbatim because
+  `main.go` passes `Listen`/`MetricsListen` straight to `net.Listen`, so they must
+  remain valid tcp bind targets.
+- Apply the same routine to `MetricsListen` while keeping its stricter rule: the
+  host must be an explicit loopback IP literal with no `%` zone. Canonicalizing the
+  loopback literal and normalizing its port keeps metrics consistent with `listen`
+  without loosening the loopback-only guarantee.
