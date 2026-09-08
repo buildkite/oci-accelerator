@@ -46,8 +46,15 @@ type AdmissionError struct {
 	Cause  error
 }
 
-func (e *AdmissionError) Error() string { return "cache admission refused: " + e.Reason.String() }
-func (e *AdmissionError) Unwrap() error { return ErrBypass }
+func (e *AdmissionError) Error() string {
+	message := "cache admission refused: " + e.Reason.String()
+	if e.Cause != nil {
+		message += ": " + e.Cause.Error()
+	}
+	return message
+}
+func (e *AdmissionError) Unwrap() error        { return e.Cause }
+func (e *AdmissionError) Is(target error) bool { return target == ErrBypass }
 
 var completedNotification = func() <-chan struct{} {
 	c := make(chan struct{})
