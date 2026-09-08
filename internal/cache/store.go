@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -226,106 +225,6 @@ func validMeta(m Metadata) bool {
 	return e1 == nil && e2 == nil && m.Key == strings.ToLower(m.Key) && m.Digest == strings.ToLower(m.Digest)
 }
 
-func (s *Store) inventory() error {
-	directory, err := os.Open(s.dir)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	for {
-		des, readErr := directory.ReadDir(64)
-		if readErr != nil && readErr != io.EOF {
-			return readErr
-		}
-		for _, de := range des {
-			n := de.Name()
-			if n == ".lock" {
-				continue
-			}
-			if strings.HasPrefix(n, ".fill-") && de.IsDir() {
-				if err := os.RemoveAll(filepath.Join(s.dir, n)); err != nil {
-					return err
-				}
-				continue
-			}
-			if len(n) != 64 || !de.IsDir() {
-				return fmt.Errorf("unrecognized cache state %q", n)
-			}
-			if _, err := hex.DecodeString(n); err != nil || n != strings.ToLower(n) {
-				return fmt.Errorf("unrecognized cache state %q", n)
-			}
-			p := filepath.Join(s.dir, n)
-			pi, err := os.Lstat(p)
-			if err != nil || pi.Mode().Perm() != 0o700 || !owned(pi) {
-				return errors.New("insecure cache entry")
-			}
-			d, err := os.Open(p)
-			if err != nil {
-				return err
-			}
-			children, readErr := d.ReadDir(3)
-			d.Close()
-			if readErr != nil && readErr != io.EOF {
-				return readErr
-			}
-			for _, child := range children {
-				if child.Name() != "body" && child.Name() != "meta" {
-					return fmt.Errorf("unrecognized state in cache entry %q", n)
-				}
-			}
-			mi, err := os.Lstat(filepath.Join(p, "meta"))
-			if err == nil && (!mi.Mode().IsRegular() || mi.Mode().Perm() != 0o600 || !owned(mi)) {
-				return errors.New("insecure cache metadata")
-			}
-			var raw []byte
-			if err == nil && mi.Size() <= metadataReservation {
-				var f *os.File
-				f, err = os.Open(filepath.Join(p, "meta"))
-				if err == nil {
-					raw, err = io.ReadAll(io.LimitReader(f, metadataReservation+1))
-					f.Close()
-				}
-			}
-			if err != nil || len(raw) > int(metadataReservation) {
-				if err := os.RemoveAll(p); err != nil {
-					return err
-				}
-				continue
-			}
-			var dm diskMetadata
-			if json.Unmarshal(raw, &dm) != nil || !validMeta(dm.Metadata) || dm.Key != n {
-				if err := os.RemoveAll(p); err != nil {
-					return err
-				}
-				continue
-			}
-			bi, err := os.Lstat(filepath.Join(p, "body"))
-			if err != nil || !bi.Mode().IsRegular() || bi.Mode().Perm() != 0o600 || !owned(bi) || bi.Size() != dm.Size {
-				if err := os.RemoveAll(p); err != nil {
-					return err
-				}
-				continue
-			}
-			charge, ok := add(dm.Size, metadataReservation)
-			if !ok {
-				return errors.New("cache entry size overflow")
-			}
-			// Keep the startup index bounded even when capacity was reduced.
-			if charge > s.max || s.evictLocked(charge, 1, dm.Committed) != nil {
-				if err := os.RemoveAll(p); err != nil {
-					return err
-				}
-				continue
-			}
-			s.entries[n] = &entry{meta: dm.Metadata, dir: p, charge: charge, last: dm.Committed}
-			s.bytes += charge
-		}
-		if readErr == io.EOF {
-			break
-		}
-	}
-	return nil
-}
 func add(a, b int64) (int64, bool) {
 	if a < 0 || b < 0 || a > int64(^uint64(0)>>1)-b {
 		return 0, false
