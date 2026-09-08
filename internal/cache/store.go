@@ -204,11 +204,15 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 }
 
 func ensurePrivateDir(dir string) error {
+	// The parent need not be exactly 0700, but must be a real directory owned by
+	// this user with no group- or other-write bit that would let another account
+	// swap the cache directory underneath us.
 	parentInfo, parentErr := os.Lstat(filepath.Dir(dir))
-	if parentErr != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || parentInfo.Mode().Perm()&0o022 != 0 || !owned(parentInfo) {
+	parentPrivate := parentErr == nil && isRealDir(parentInfo) && parentInfo.Mode().Perm()&0o022 == 0 && owned(parentInfo)
+	if !parentPrivate {
 		return errors.New("cache parent must be an owner-controlled non-symlink directory")
 	}
-	i, err := os.Lstat(dir)
+	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		if err = os.Mkdir(dir, 0o700); err != nil {
 			return err
@@ -216,25 +220,53 @@ func ensurePrivateDir(dir string) error {
 		if err = os.Chmod(dir, 0o700); err != nil {
 			return err
 		}
-		i, err = os.Lstat(dir)
+		info, err = os.Lstat(dir)
 	}
-	if err != nil || !i.IsDir() || i.Mode()&os.ModeSymlink != 0 || i.Mode().Perm() != 0o700 || !owned(i) {
+	// The cache directory itself must be owned by this user and exactly 0700.
+	dirPrivate := err == nil && isRealDir(info) && info.Mode().Perm() == 0o700 && owned(info)
+	if !dirPrivate {
 		return errors.New("cache directory must be owned, non-symlink, and mode 0700")
 	}
 	return nil
 }
+
+// isRealDir reports whether info describes a directory that is not a symlink.
+func isRealDir(info os.FileInfo) bool {
+	return info.IsDir() && info.Mode()&os.ModeSymlink == 0
+}
+
 func owned(i os.FileInfo) bool {
 	st, ok := i.Sys().(*syscall.Stat_t)
 	return ok && int(st.Uid) == os.Geteuid()
 }
 
-func validMeta(m Metadata) bool {
-	if m.Size < 0 || len(m.Key) != 64 || len(m.Digest) != 71 || !strings.HasPrefix(m.Digest, "sha256:") || len(m.MediaType) > 1024 {
+const (
+	keyHexLen       = 64                            // A key is the lowercase hex of a SHA-256 sum.
+	digestPrefix    = "sha256:"                     // Every digest is a SHA-256 digest.
+	digestLen       = len(digestPrefix) + keyHexLen // "sha256:" plus 64 hex characters.
+	maxMediaTypeLen = 1024                          // Bound on the stored media-type string.
+)
+
+// isLowerHex reports whether s consists solely of lowercase hexadecimal digits.
+// The empty string qualifies; callers bound the length separately.
+func isLowerHex(s string) bool {
+	if _, err := hex.DecodeString(s); err != nil {
 		return false
 	}
-	_, e1 := hex.DecodeString(m.Key)
-	_, e2 := hex.DecodeString(m.Digest[7:])
-	return e1 == nil && e2 == nil && m.Key == strings.ToLower(m.Key) && m.Digest == strings.ToLower(m.Digest)
+	return s == strings.ToLower(s)
+}
+
+// validMeta reports whether m is a well-formed key for a SHA-256 object: a
+// lowercase-hex key, a lowercase "sha256:"-prefixed hex digest, a non-negative
+// size, and a bounded media type.
+func validMeta(m Metadata) bool {
+	if m.Size < 0 || len(m.Key) != keyHexLen || len(m.MediaType) > maxMediaTypeLen {
+		return false
+	}
+	if len(m.Digest) != digestLen || !strings.HasPrefix(m.Digest, digestPrefix) {
+		return false
+	}
+	return isLowerHex(m.Key) && isLowerHex(m.Digest[len(digestPrefix):])
 }
 
 func add(a, b int64) (int64, bool) {
@@ -256,12 +288,12 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 		// A fitting admission must not reset another request's deferred batch.
 		return nil
 	}
-	var es []*entry
+	var candidates []*entry
 	available := s.max - s.bytes - s.reserved
 	availableSlots := s.maxEntries - len(s.entries) - len(s.fills) - len(s.failedCleanups)
 	for _, e := range s.entries {
 		if e.pins == 0 && e.last <= before {
-			es = append(es, e)
+			candidates = append(candidates, e)
 			available += e.charge
 			availableSlots++
 		}
@@ -269,17 +301,17 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 	if available < need || availableSlots < needSlots {
 		return ErrBypass
 	}
-	sort.Slice(es, func(i, j int) bool {
-		if es[i].last == es[j].last {
-			return es[i].meta.Key < es[j].meta.Key
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].last == candidates[j].last {
+			return candidates[i].meta.Key < candidates[j].meta.Key
 		}
-		return es[i].last < es[j].last
+		return candidates[i].last < candidates[j].last
 	})
-	start, count := 0, len(es)
+	start, count := 0, len(candidates)
 	if maxAttempts > 0 {
 		count = min(count, maxAttempts)
 		if s.evictionAfter != "" {
-			for i, e := range es {
+			for i, e := range candidates {
 				if e.last > s.evictionAfterLast || e.last == s.evictionAfterLast && e.meta.Key > s.evictionAfter {
 					start = i
 					break
@@ -292,10 +324,10 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 		available = s.max - s.bytes - s.reserved
 		availableSlots = s.maxEntries - len(s.entries) - len(s.fills) - len(s.failedCleanups)
 		for i := range count {
-			available += es[(start+i)%len(es)].charge
+			available += candidates[(start+i)%len(candidates)].charge
 			availableSlots++
 		}
-		last := es[(start+count-1)%len(es)]
+		last := candidates[(start+count-1)%len(candidates)]
 		s.evictionAfterLast, s.evictionAfter = last.last, last.meta.Key
 		if available < need || availableSlots < needSlots {
 			return ErrBypass
@@ -307,7 +339,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 			s.evictionAfter = ""
 			return nil
 		}
-		e := es[(start+i)%len(es)]
+		e := candidates[(start+i)%len(candidates)]
 		if err := os.RemoveAll(e.dir); err == nil {
 			delete(s.entries, e.meta.Key)
 			// Eviction only selects unpinned entries, so their charge is free.
