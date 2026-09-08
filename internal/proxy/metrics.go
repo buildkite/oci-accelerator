@@ -52,7 +52,15 @@ type metrics struct {
 }
 
 func newMetrics() *metrics {
-	return &metrics{requests: map[string]uint64{}, statuses: map[string]uint64{}, cache: map[string]uint64{}, fills: map[string]uint64{}, waits: map[string]uint64{}, fallback: map[string]uint64{}, rejects: map[string]uint64{}}
+	return &metrics{
+		requests: map[string]uint64{},
+		statuses: map[string]uint64{},
+		cache:    map[string]uint64{},
+		fills:    map[string]uint64{},
+		waits:    map[string]uint64{},
+		fallback: map[string]uint64{},
+		rejects:  map[string]uint64{},
+	}
 }
 
 type metricsSnapshot struct {
