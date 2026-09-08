@@ -142,7 +142,7 @@ func TestOpenReaderRejectsStaleEntry(t *testing.T) {
 				put(t, s, next, body)
 			}
 
-			r, err := s.openReader(context.Background(), e, need)
+			r, err := s.openReader(context.Background(), e, need, nil)
 			if r != nil {
 				r.Close()
 				t.Fatal("stale entry returned a reader")

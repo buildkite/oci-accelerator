@@ -21,6 +21,12 @@ type Reader struct {
 }
 
 func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
+	return s.get(ctx, meta, nil, nil)
+}
+
+// get's callbacks are nil in production. They are per-call test seams for
+// pausing after verification begins and immediately before a verifier wait.
+func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, beforeWait func()) (*Reader, error) {
 	if !validMeta(meta) {
 		return nil, ErrMiss
 	}
@@ -38,6 +44,9 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 		if need && e.verifying != nil {
 			done := e.verifying
 			s.mu.Unlock()
+			if beforeWait != nil {
+				beforeWait()
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ErrMiss
@@ -53,7 +62,7 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 		e.pins++
 		s.readers++
 		s.mu.Unlock()
-		r, err := s.openReader(ctx, e, need)
+		r, err := s.openReader(ctx, e, need, afterVerificationRead)
 		if need {
 			s.mu.Lock()
 			close(e.verifying)
@@ -66,7 +75,7 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 
 // openReader takes ownership of a pin acquired under s.mu. On success the
 // Reader owns that pin; every failure closes the file and releases the pin.
-func (s *Store) openReader(ctx context.Context, e *entry, need bool) (*Reader, error) {
+func (s *Store) openReader(ctx context.Context, e *entry, need bool, afterVerificationRead func()) (*Reader, error) {
 	meta := e.meta
 	f, err := os.Open(e.dir + "/body")
 	if err != nil {
@@ -88,6 +97,10 @@ func (s *Store) openReader(ctx context.Context, e *entry, need bool) (*Reader, e
 			}
 			var n int
 			n, err = f.Read(buf)
+			if afterVerificationRead != nil {
+				afterVerificationRead()
+				afterVerificationRead = nil
+			}
 			if n > 0 {
 				_, _ = h.Write(buf[:n])
 			}
