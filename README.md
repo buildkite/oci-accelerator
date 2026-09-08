@@ -16,8 +16,9 @@ expose resource use and fixed request/cache outcomes.
   ownership, and design rationale.
 - [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
   recovery, and repeatable acceptance checks.
-- [CA package](internal/ca/README.md) and [cache benchmarks](internal/cache/benchmarks.md):
-  internal contracts and performance investigation.
+- [CA package](internal/ca/README.md) and [cache package](internal/cache/README.md):
+  internal contracts, with [cache benchmarks](internal/cache/benchmarks.md) for
+  performance investigation.
 - [Working rules](AGENTS.md): contribution, review, and verification requirements.
 
 ## Build and configure
