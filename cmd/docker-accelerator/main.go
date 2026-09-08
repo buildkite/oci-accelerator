@@ -11,8 +11,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"ampcode.com/buildkite/docker-accelerator/internal/ca"
 	"ampcode.com/buildkite/docker-accelerator/internal/cache"
@@ -21,7 +19,7 @@ import (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdownContext()
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
