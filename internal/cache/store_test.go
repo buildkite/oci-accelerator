@@ -284,36 +284,121 @@ func TestFillTimeoutAndTerminalPathsCompleteTimer(t *testing.T) {
 }
 
 func TestExpirationRacesNeverPublishOverdueFill(t *testing.T) {
-	for i := 0; i < 20; i++ {
-		s, err := OpenWithLimits(filepath.Join(t.TempDir(), "cache"), Limits{MaxBytes: 1 << 20, MaxFills: 1, MaxEntries: 1, FillTimeout: time.Millisecond})
-		if err != nil {
-			t.Fatal(err)
-		}
-		m := testMeta(fmt.Sprintf("race-%d", i), "x")
-		f, err := s.Begin(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		f.Write([]byte("x"))
-		time.Sleep(time.Millisecond)
-		results := make(chan error, 3)
-		go func() { _, err := f.Write(nil); results <- err }()
-		go func() { results <- f.Commit() }()
-		go func() { results <- f.Abort() }()
-		for j := 0; j < 3; j++ {
-			<-results
-		}
-		select {
-		case <-f.timerDone:
-		case <-time.After(time.Second):
-			t.Fatal("terminal operation did not join timer")
-		}
-		if stats := s.Stats(); stats.Fills != 0 || stats.Reserved != 0 || stats.Entries != 0 {
-			t.Fatalf("overdue fill published or retained: %+v", stats)
-		}
-		if err := s.Close(); err != nil {
-			t.Fatal(err)
-		}
+	for _, first := range []string{"contended", "timer", "write", "commit", "abort"} {
+		t.Run(first, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const timeout = time.Minute
+				s, err := OpenWithLimits(filepath.Join(t.TempDir(), "cache"), Limits{MaxBytes: 1 << 20, MaxFills: 1, MaxEntries: 1, FillTimeout: timeout})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.Close()
+				m := testMeta("expiry-race", "x")
+				f, err := s.Begin(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n, err := f.Write([]byte("x")); n != 1 || err != nil {
+					t.Fatalf("initial Write = %d, %v", n, err)
+				}
+				operations := map[string]func() error{
+					"write": func() error {
+						n, err := f.Write(nil)
+						if n != 0 {
+							t.Errorf("overdue Write returned %d bytes", n)
+						}
+						return err
+					},
+					"commit": f.Commit,
+					"abort":  f.Abort,
+				}
+				results := make(map[string]error)
+				if first == "contended" {
+					// Hold the fill across its deadline: the timer cannot finish
+					// before the competitors are launched. Do not synctest.Wait
+					// here: mutex waits are not durably blocked in a bubble.
+					f.mu.Lock()
+					time.Sleep(timeout)
+				} else {
+					if first != "timer" {
+						// Model a delayed timer callback without changing the fill's
+						// deadline; force each operation to win in its own subtest.
+						f.timer.Reset(2 * timeout)
+					}
+					time.Sleep(timeout)
+					if first == "timer" {
+						synctest.Wait()
+					} else {
+						results[first] = operations[first]()
+						delete(operations, first)
+					}
+				}
+				type result struct {
+					operation string
+					err       error
+				}
+				ready, start := make(chan struct{}, len(operations)), make(chan struct{})
+				completed := make(chan result, len(operations))
+				for name, operation := range operations {
+					go func() {
+						ready <- struct{}{}
+						<-start
+						completed <- result{name, operation()}
+					}()
+				}
+				for range operations {
+					<-ready
+				}
+				close(start)
+				if first == "contended" {
+					if f.done || time.Now().Before(f.deadline) {
+						t.Error("expected an overdue, still-active fill before releasing competitors")
+					}
+					f.mu.Unlock()
+				}
+				for range operations {
+					got := <-completed
+					results[got.operation] = got.err
+				}
+				expiredResults := 0
+				for name, err := range results {
+					if name == "abort" {
+						if err != nil {
+							t.Errorf("Abort = %v, want nil", err)
+						}
+						continue
+					}
+					want := os.ErrClosed
+					if name == first || first == "contended" && errors.Is(err, errFillExpired) {
+						want = errFillExpired
+					}
+					if !errors.Is(err, want) {
+						t.Errorf("%s = %v, want %v", name, err, want)
+					}
+					if errors.Is(err, errFillExpired) {
+						expiredResults++
+					}
+				}
+				st := s.Stats()
+				if st.Fills != 0 || st.Reserved != 0 || st.Bytes != 0 || st.Entries != 0 || st.FillSuccess != 0 || st.FillFailure != 0 || st.FillExpiry+st.FillAbort != 1 || expiredResults > 1 || int64(expiredResults) > st.FillExpiry {
+					t.Fatalf("overdue terminal state: %+v, expiry results=%d", st, expiredResults)
+				}
+				if first == "abort" && st.FillAbort != 1 || first != "abort" && first != "contended" && st.FillExpiry != 1 {
+					t.Fatalf("wrong terminal winner for %s: %+v", first, st)
+				}
+				select {
+				case <-f.timerDone:
+				default:
+					t.Fatal("terminal operations did not join timer")
+				}
+				if r, err := s.Get(context.Background(), m); err != ErrMiss {
+					if r != nil {
+						r.Close()
+					}
+					t.Fatalf("overdue entry Get = %v, want ErrMiss", err)
+				}
+			})
+		})
 	}
 }
 func openTest(t *testing.T, limit int64) *Store {
