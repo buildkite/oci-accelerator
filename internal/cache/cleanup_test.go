@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -45,6 +46,7 @@ func abandonFill(t *testing.T, s *Store, meta Metadata, published bool) string {
 }
 
 func TestAdmissionRetriesFailedCleanup(t *testing.T) {
+	requireUnprivilegedTest(t)
 	const charge = metadataReservation + 4
 	for _, limit := range []string{"slots", "bytes"} {
 		for _, state := range []string{"staging", "published", "removed"} {
@@ -105,6 +107,7 @@ func TestAdmissionRetriesFailedCleanup(t *testing.T) {
 }
 
 func TestCommitRetiresCleanupBeforeReusingPath(t *testing.T) {
+	requireUnprivilegedTest(t)
 	const charge = metadataReservation + 4
 	s := openTest(t, 3*charge)
 	meta := testMeta("reused-cleanup", "body")
@@ -134,6 +137,7 @@ func TestCommitRetiresCleanupBeforeReusingPath(t *testing.T) {
 }
 
 func TestConcurrentCleanupRetriesReclaimOnce(t *testing.T) {
+	requireUnprivilegedTest(t)
 	const charge = metadataReservation + 4
 	s := openTest(t, charge)
 	meta := testMeta("concurrent-cleanup", "body")
@@ -166,6 +170,7 @@ func TestConcurrentCleanupRetriesReclaimOnce(t *testing.T) {
 }
 
 func TestFailedAdmissionCleanupIsRetained(t *testing.T) {
+	requireUnprivilegedTest(t)
 	s := openTest(t, metadataReservation)
 	dir, err := os.MkdirTemp(s.dir, ".fill-")
 	if err != nil {
@@ -194,5 +199,82 @@ func TestFailedAdmissionCleanupIsRetained(t *testing.T) {
 	put(t, s, testMeta("empty", ""), "")
 	if st := s.Stats(); st.CleanupSlots != 0 || st.CleanupBytes != 0 || st.Bytes != metadataReservation {
 		t.Fatalf("admission cleanup not reclaimed: %+v", st)
+	}
+}
+
+func TestCleanupRetryBudgetAndRotation(t *testing.T) {
+	requireUnprivilegedTest(t)
+	for _, persistent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persistent=%t", persistent), func(t *testing.T) {
+			const count = 2 * cleanupRetryLimit
+			const charge = metadataReservation + 4
+			s := openTest(t, 1<<20) // Plenty of free space: the budget still applies.
+			fills := make([]*Fill, count)
+			for i := range fills {
+				f, err := s.Begin(testMeta(fmt.Sprintf("abandoned-%d", i), "body"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				fills[i] = f
+				if _, err := io.WriteString(f, "body"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Build the backlog before any further admission can retry it.
+			for i, f := range fills {
+				if err := os.Chmod(f.dir, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(f.dir, 0o700) })
+				if err := f.Abort(); !errors.Is(err, os.ErrPermission) {
+					t.Fatalf("Abort = %v, want permission error", err)
+				}
+				if !persistent || i >= cleanupRetryLimit {
+					if err := os.Chmod(f.dir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for attempt := 1; attempt <= 2; attempt++ {
+				f, err := s.Begin(testMeta("next", "body"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.Abort(); err != nil {
+					t.Fatal(err)
+				}
+				remaining := count - attempt*cleanupRetryLimit
+				if persistent {
+					remaining += cleanupRetryLimit
+				}
+				if st := s.Stats(); st.CleanupSlots != remaining || st.CleanupBytes != int64(remaining)*charge || st.Bytes != st.CleanupBytes || st.Reserved != 0 {
+					t.Fatalf("attempt %d accounting = %+v, want %d retained", attempt, st, remaining)
+				}
+				for i, old := range fills {
+					removed := i < attempt*cleanupRetryLimit
+					if persistent {
+						removed = attempt == 2 && i >= cleanupRetryLimit
+					}
+					_, err := os.Stat(old.dir)
+					if removed && !errors.Is(err, os.ErrNotExist) || !removed && err != nil {
+						t.Fatalf("attempt %d directory %d removed=%t: %v", attempt, i, removed, err)
+					}
+				}
+			}
+			for _, f := range fills {
+				if _, err := os.Stat(f.dir); err == nil {
+					if err := os.Chmod(f.dir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			put(t, s, testMeta("recovered", "body"), "body")
+			s.mu.Lock()
+			queueLength := s.cleanupQueue.Len()
+			s.mu.Unlock()
+			if st := s.Stats(); queueLength != 0 || st.CleanupSlots != 0 || st.CleanupBytes != 0 || st.Bytes != charge {
+				t.Fatalf("recovery queue=%d stats=%+v", queueLength, st)
+			}
+		})
 	}
 }

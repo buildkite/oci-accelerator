@@ -369,8 +369,7 @@ func TestConcurrentRestartCorruption(t *testing.T) {
 }
 
 // Err is first checked at Get ingress, then between verification reads. Block
-// the third check, after one hash chunk, so every reader has pinned and started
-// hashing before any can finish; ordinary context cancellation interrupts half.
+// the third check, after one hash chunk, to hold the elected verifier.
 type verificationBarrierContext struct {
 	context.Context
 	checks  int
@@ -387,10 +386,69 @@ func (c *verificationBarrierContext) Err() error {
 	return c.Context.Err()
 }
 
-func TestConcurrentFirstVerificationCancellation(t *testing.T) {
+type waiterContext struct {
+	context.Context
+	waiting chan<- struct{}
+	once    sync.Once
+	checks  int
+}
+
+func (c *waiterContext) Err() error {
+	c.checks++
+	return c.Context.Err()
+}
+
+func (c *waiterContext) Done() <-chan struct{} {
+	c.once.Do(func() { c.waiting <- struct{}{} })
+	return c.Context.Done()
+}
+
+type getResult struct {
+	body string
+	err  error
+}
+
+func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func awaitGet(t *testing.T, ch <-chan getResult, what string) getResult {
+	t.Helper()
+	select {
+	case result := <-ch:
+		return result
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		return getResult{}
+	}
+}
+
+func asyncGet(s *Store, ctx context.Context, m Metadata) <-chan getResult {
+	result := make(chan getResult, 1)
+	go func() {
+		r, err := s.Get(ctx, m)
+		if err == nil {
+			body, readErr := io.ReadAll(r)
+			closeErr := r.Close()
+			err = errors.Join(readErr, closeErr)
+			result <- getResult{body: string(body), err: err}
+			return
+		}
+		result <- getResult{err: err}
+	}()
+	return result
+}
+
+func openUnverifiedTestEntry(t *testing.T, key string) (*Store, Metadata, string) {
+	t.Helper()
 	dir := filepath.Join(t.TempDir(), "cache")
 	body := string(bytes.Repeat([]byte("verified"), 128*1024))
-	m := testMeta("verification-cancellation", body)
+	m := testMeta(key, body)
 	s, err := Open(dir, 2<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -403,58 +461,199 @@ func TestConcurrentFirstVerificationCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return s, m, body
+}
+
+func TestFirstVerificationSharedByWaiters(t *testing.T) {
+	s, m, body := openUnverifiedTestEntry(t, "verification-shared")
 	defer s.Close()
-	const clients = 8
-	arrived, release := make(chan struct{}, clients), make(chan struct{})
+	arrived, release := make(chan struct{}, 1), make(chan struct{})
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
-	results := make(chan error, clients)
-	cancels := make([]context.CancelFunc, clients)
+	owner := asyncGet(s, &verificationBarrierContext{Context: context.Background(), arrived: arrived, release: release}, m)
+	awaitSignal(t, arrived, "owner verification")
+	const clients = 8
+	waiting := make(chan struct{}, clients)
+	contexts := make([]*waiterContext, clients)
+	results := make([]<-chan getResult, clients)
 	for i := range clients {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancels[i] = cancel
-		defer cancel()
-		ctx = &verificationBarrierContext{Context: ctx, arrived: arrived, release: release}
-		go func() {
-			r, err := s.Get(ctx, m)
-			if i%2 == 0 {
-				if r != nil {
-					r.Close()
-				}
-				if err != ErrMiss {
-					err = errors.New("canceled verification did not miss")
-				} else {
-					err = nil
-				}
-			} else if err == nil {
-				got, readErr := io.ReadAll(r)
-				r.Close()
-				err = readErr
-				if string(got) != body {
-					err = errors.New("verified body changed")
-				}
-			}
-			results <- err
-		}()
+		contexts[i] = &waiterContext{Context: context.Background(), waiting: waiting}
+		results[i] = asyncGet(s, contexts[i], m)
 	}
 	for range clients {
-		select {
-		case <-arrived:
-		case <-time.After(3 * time.Second):
-			t.Fatal("readers did not enter concurrent first verification")
-		}
+		awaitSignal(t, waiting, "shared waiter")
 	}
-	for i := 0; i < clients; i += 2 {
-		cancels[i]()
+	if st := s.Stats(); st.Readers != 1 {
+		t.Fatalf("verification readers = %d, want one owner", st.Readers)
 	}
 	releaseOnce.Do(func() { close(release) })
-	for range clients {
-		if err := <-results; err != nil {
-			t.Error(err)
+	if got := awaitGet(t, owner, "owner"); got.err != nil || got.body != body {
+		t.Fatalf("owner = (%d bytes, %v)", len(got.body), got.err)
+	}
+	for i, result := range results {
+		if got := awaitGet(t, result, "shared waiter"); got.err != nil || got.body != body {
+			t.Fatalf("waiter = (%d bytes, %v)", len(got.body), got.err)
+		}
+		// Only ingress and the post-notification recheck; hashing calls Err
+		// again for each body chunk and must not occur in these waiters.
+		if contexts[i].checks != 2 {
+			t.Errorf("waiter %d context checks = %d, want 2 (no hashing)", i, contexts[i].checks)
 		}
 	}
-	read(t, s, m, body) // Cancellation must not invalidate otherwise good content.
+	if st := s.Stats(); st.Readers != 0 {
+		t.Fatalf("verification leaked pins: %+v", st)
+	}
+}
+
+func TestFirstVerificationWaiterCancellation(t *testing.T) {
+	s, m, body := openUnverifiedTestEntry(t, "verification-waiter-cancel")
+	defer s.Close()
+	arrived, release := make(chan struct{}, 1), make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	owner := asyncGet(s, &verificationBarrierContext{Context: context.Background(), arrived: arrived, release: release}, m)
+	awaitSignal(t, arrived, "owner verification")
+	waiting := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	waiter := asyncGet(s, &waiterContext{Context: ctx, waiting: waiting}, m)
+	awaitSignal(t, waiting, "waiter selection")
+	if st := s.Stats(); st.Readers != 1 {
+		t.Fatalf("concurrent verification readers = %d, want one owner", st.Readers)
+	}
+	cancel()
+	if got := awaitGet(t, waiter, "canceled waiter"); got.err != ErrMiss {
+		t.Fatalf("canceled waiter = %v, want ErrMiss", got.err)
+	}
+	close(release)
+	if got := awaitGet(t, owner, "owner"); got.err != nil || got.body != body {
+		t.Fatalf("owner = (%d bytes, %v)", len(got.body), got.err)
+	}
+	if st := s.Stats(); st.Readers != 0 {
+		t.Fatalf("verification leaked pins: %+v", st)
+	}
+}
+
+func TestFirstVerificationCancellationPermitsTakeover(t *testing.T) {
+	s, m, body := openUnverifiedTestEntry(t, "verification-takeover")
+	defer s.Close()
+	ownerArrived, ownerRelease := make(chan struct{}, 1), make(chan struct{})
+	defer func() {
+		select {
+		case <-ownerRelease:
+		default:
+			close(ownerRelease)
+		}
+	}()
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	owner := asyncGet(s, &verificationBarrierContext{Context: ownerCtx, arrived: ownerArrived, release: ownerRelease}, m)
+	awaitSignal(t, ownerArrived, "owner verification")
+	waiting := make(chan struct{}, 1)
+	takeoverArrived, takeoverRelease := make(chan struct{}, 1), make(chan struct{})
+	defer func() {
+		select {
+		case <-takeoverRelease:
+		default:
+			close(takeoverRelease)
+		}
+	}()
+	takeoverCtx := &verificationBarrierContext{Context: context.Background(), arrived: takeoverArrived, release: takeoverRelease}
+	takeover := asyncGet(s, &waiterContext{Context: takeoverCtx, waiting: waiting}, m)
+	awaitSignal(t, waiting, "takeover waiter")
+	if st := s.Stats(); st.Readers != 1 {
+		t.Fatalf("concurrent verification readers = %d, want one owner", st.Readers)
+	}
+	cancelOwner()
+	close(ownerRelease)
+	if got := awaitGet(t, owner, "canceled owner"); got.err != ErrMiss {
+		t.Fatalf("canceled owner = %v, want ErrMiss", got.err)
+	}
+	awaitSignal(t, takeoverArrived, "takeover verification")
+	close(takeoverRelease)
+	if got := awaitGet(t, takeover, "takeover"); got.err != nil || got.body != body {
+		t.Fatalf("takeover = (%d bytes, %v)", len(got.body), got.err)
+	}
+	if st := s.Stats(); st.Readers != 0 {
+		t.Fatalf("takeover leaked pins: %+v", st)
+	}
+}
+
+func TestFirstVerificationCorruptionWakesWaiters(t *testing.T) {
+	s, m, _ := openUnverifiedTestEntry(t, "verification-corrupt-waiters")
+	defer s.Close()
+	arrived, release := make(chan struct{}, 1), make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	owner := asyncGet(s, &verificationBarrierContext{Context: context.Background(), arrived: arrived, release: release}, m)
+	awaitSignal(t, arrived, "owner verification")
+	waiting := make(chan struct{}, 1)
+	waiter := asyncGet(s, &waiterContext{Context: context.Background(), waiting: waiting}, m)
+	awaitSignal(t, waiting, "corruption waiter")
+	if st := s.Stats(); st.Readers != 1 {
+		t.Fatalf("concurrent verification readers = %d, want one owner", st.Readers)
+	}
+	f, err := os.OpenFile(filepath.Join(s.dir, m.Key, "body"), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := f.WriteAt([]byte("corrupt"), 256*1024)
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if got := awaitGet(t, owner, "corrupt owner"); got.err != ErrMiss {
+		t.Fatalf("corrupt owner = %v, want ErrMiss", got.err)
+	}
+	if got := awaitGet(t, waiter, "corruption waiter"); got.err != ErrMiss {
+		t.Fatalf("corruption waiter = %v, want ErrMiss", got.err)
+	}
+	if st := s.Stats(); st.Readers != 0 {
+		t.Fatalf("corruption leaked pins: %+v", st)
+	}
+}
+
+func TestCloseRejectsFirstVerificationWaiters(t *testing.T) {
+	s, m, body := openUnverifiedTestEntry(t, "verification-close-waiters")
+	arrived, release := make(chan struct{}, 1), make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	owner := asyncGet(s, &verificationBarrierContext{Context: context.Background(), arrived: arrived, release: release}, m)
+	awaitSignal(t, arrived, "owner verification")
+	waiting := make(chan struct{}, 1)
+	waiter := asyncGet(s, &waiterContext{Context: context.Background(), waiting: waiting}, m)
+	awaitSignal(t, waiting, "shutdown waiter")
+	if st := s.Stats(); st.Readers != 1 {
+		t.Fatalf("concurrent verification readers = %d, want one owner", st.Readers)
+	}
+	if err := s.Close(); err == nil {
+		t.Fatal("Close with verifier unexpectedly succeeded")
+	}
+	close(release)
+	if got := awaitGet(t, owner, "owner after Close"); got.err != nil || got.body != body {
+		t.Fatalf("owner after Close = (%d bytes, %v)", len(got.body), got.err)
+	}
+	if got := awaitGet(t, waiter, "waiter after Close"); got.err != ErrMiss {
+		t.Fatalf("waiter after Close = %v, want ErrMiss", got.err)
+	}
+	if st := s.Stats(); st.Readers != 0 {
+		t.Fatalf("shutdown leaked pins: %+v", st)
+	}
 	if err := s.Close(); err != nil {
-		t.Fatalf("verification leaked pins: %v", err)
+		t.Fatalf("final Close: %v", err)
 	}
 }

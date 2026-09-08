@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const validConfig = `registries: [example.com]
+ca_dir: ca
+cache: {dir: cache}
+`
+
 func writeConfig(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -26,7 +31,13 @@ func assertEqual[T comparable](t *testing.T, field string, actual, expected T) {
 }
 
 func TestLoadDefaultsAndRelativePaths(t *testing.T) {
-	path := writeConfig(t, "registries: [EXAMPLE.com.:443, '[::1]:5000']\nca_dir: ca\ncache:\n  dir: cache\n  max_bytes: null\ndial_timeout: null\n")
+	path := writeConfig(t, `registries: [EXAMPLE.com.:443, '[::1]:5000']
+ca_dir: ca
+cache:
+  dir: cache
+  max_bytes: null
+dial_timeout: null
+`)
 	c, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +67,24 @@ func TestLoadDefaultsAndRelativePaths(t *testing.T) {
 }
 
 func TestLoadExplicitOperationalOverrides(t *testing.T) {
-	path := writeConfig(t, "listen: ':8080'\nregistries: [example.com]\nca_dir: /ca\ncache: {dir: /cache, max_bytes: 12345, max_fills: 7, max_entries: 99, fill_timeout: 3m, fill_wait_timeout: 0s}\ndial_timeout: 1s\ntls_handshake_timeout: 2s\nresponse_header_timeout: 3s\nidle_timeout: 4s\nshutdown_timeout: 5s\nmax_connections: 6\nmax_leaf_certificates: 8\n")
+	path := writeConfig(t, `listen: ':8080'
+registries: [example.com]
+ca_dir: /ca
+cache:
+  dir: /cache
+  max_bytes: 12345
+  max_fills: 7
+  max_entries: 99
+  fill_timeout: 3m
+  fill_wait_timeout: 0s
+dial_timeout: 1s
+tls_handshake_timeout: 2s
+response_header_timeout: 3s
+idle_timeout: 4s
+shutdown_timeout: 5s
+max_connections: 6
+max_leaf_certificates: 8
+`)
 	c, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +107,11 @@ func TestLoadExplicitOperationalOverrides(t *testing.T) {
 }
 
 func TestLoadRedirectAllowlist(t *testing.T) {
-	path := writeConfig(t, "registries: [registry.example]\nredirect_allowlist: [CDN.EXAMPLE.:443, cdn.example:8443, '[2001:0DB8::1]', '[::1]:5000']\nca_dir: ca\n")
+	path := writeConfig(t, `registries: [registry.example]
+redirect_allowlist: [CDN.EXAMPLE.:443, cdn.example:8443, '[2001:0DB8::1]', '[::1]:5000']
+ca_dir: ca
+cache: {dir: cache}
+`)
 	c, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +131,7 @@ func TestLoadRedirectAllowlist(t *testing.T) {
 }
 
 func TestLoadAllowsEmptyRedirectAllowlist(t *testing.T) {
-	c, err := Load(writeConfig(t, "registries: [registry.example]\nredirect_allowlist: []\nca_dir: ca\n"))
+	c, err := Load(writeConfig(t, validConfig+"redirect_allowlist: []\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +143,7 @@ func TestLoadAllowsEmptyRedirectAllowlist(t *testing.T) {
 func TestMetricsListenValidation(t *testing.T) {
 	valid := []string{"127.0.0.1:9090", "[::1]:9090"}
 	for _, address := range valid {
-		c, err := Load(writeConfig(t, "registries: [registry.example]\nca_dir: ca\nmetrics_listen: '"+address+"'\n"))
+		c, err := Load(writeConfig(t, validConfig+"metrics_listen: '"+address+"'\n"))
 		if err != nil || c.MetricsListen != address {
 			t.Errorf("valid %q: %+v %v", address, c, err)
 		}
@@ -124,7 +156,7 @@ func TestMetricsListenValidation(t *testing.T) {
 	}
 	for _, test := range invalid {
 		t.Run("invalid_"+test.name, func(t *testing.T) {
-			if _, err := Load(writeConfig(t, "registries: [registry.example]\nca_dir: ca\nmetrics_listen: '"+test.address+"'\n")); !errors.Is(err, ErrInvalid) {
+			if _, err := Load(writeConfig(t, validConfig+"metrics_listen: '"+test.address+"'\n")); !errors.Is(err, ErrInvalid) {
 				t.Errorf("invalid %q: %v", test.address, err)
 			}
 		})
@@ -142,7 +174,7 @@ func TestLoadRejectsInvalidRedirectAllowlist(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			input := "registries: [registry.example]\nca_dir: ca\n" + test.entry + "\n"
+			input := validConfig + test.entry + "\n"
 			_, err := Load(writeConfig(t, input))
 			if !errors.Is(err, ErrInvalid) {
 				t.Errorf("Load(%q) unexpectedly returned %v", test.entry, err)
@@ -163,7 +195,7 @@ func TestLoadRejectsNullListElements(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			input := "ca_dir: ca\n" + test.entry + "\n"
+			input := "ca_dir: ca\ncache: {dir: cache}\n" + test.entry + "\n"
 			_, err := Load(writeConfig(t, input))
 			if !errors.Is(err, ErrInvalid) {
 				t.Errorf("Load(%q) unexpectedly returned %v", test.entry, err)
@@ -186,7 +218,7 @@ func TestLoadCanonicalizesListen(t *testing.T) {
 		"127.0.0.1:3128":      "127.0.0.1:3128",
 	}
 	for input, want := range tests {
-		c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\nlisten: '"+input+"'\n"))
+		c, err := Load(writeConfig(t, validConfig+"listen: '"+input+"'\n"))
 		if err != nil {
 			t.Errorf("Load(listen=%q) returned %v", input, err)
 			continue
@@ -207,7 +239,7 @@ func TestLoadRejectsInvalidListen(t *testing.T) {
 	}
 	for _, test := range invalid {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\nlisten: '"+test.input+"'\n")); !errors.Is(err, ErrInvalid) {
+			if _, err := Load(writeConfig(t, validConfig+"listen: '"+test.input+"'\n")); !errors.Is(err, ErrInvalid) {
 				t.Errorf("Load(listen=%q) unexpectedly returned %v", test.input, err)
 			}
 		})
@@ -215,7 +247,7 @@ func TestLoadRejectsInvalidListen(t *testing.T) {
 }
 
 func TestLoadCanonicalizesMetricsListen(t *testing.T) {
-	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\nmetrics_listen: '127.0.0.1:09090'\n"))
+	c, err := Load(writeConfig(t, validConfig+"metrics_listen: '127.0.0.1:09090'\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,25 +258,25 @@ func TestLoadCanonicalizesMetricsListen(t *testing.T) {
 
 func TestLoadRejectsNonIntegerNumericLimits(t *testing.T) {
 	tests := []struct{ name, entry string }{
-		{"fractional_max_bytes", "cache: {max_bytes: 1.9}"},
-		{"float_max_bytes", "cache: {max_bytes: 1.0}"},
-		{"string_max_fills", "cache: {max_fills: \"7\"}"},
-		{"fractional_max_fills", "cache: {max_fills: 1.5}"},
-		{"fractional_max_entries", "cache: {max_entries: 1.5}"},
-		{"boolean_max_connections", "max_connections: true"},
-		{"fractional_max_connections", "max_connections: 1.5"},
-		{"fractional_max_leaf_certificates", "max_leaf_certificates: 1.5"},
+		{"fractional_max_bytes", "cache: {dir: cache, max_bytes: 1.9}"},
+		{"float_max_bytes", "cache: {dir: cache, max_bytes: 1.0}"},
+		{"string_max_fills", "cache: {dir: cache, max_fills: \"7\"}"},
+		{"fractional_max_fills", "cache: {dir: cache, max_fills: 1.5}"},
+		{"fractional_max_entries", "cache: {dir: cache, max_entries: 1.5}"},
+		{"boolean_max_connections", "cache: {dir: cache}\nmax_connections: true"},
+		{"fractional_max_connections", "cache: {dir: cache}\nmax_connections: 1.5"},
+		{"fractional_max_leaf_certificates", "cache: {dir: cache}\nmax_leaf_certificates: 1.5"},
 		// Non-decimal integer forms are !!int but not decimal; rejected for clarity.
-		{"hex_max_bytes", "cache: {max_bytes: 0xff}"},
-		{"octal_max_bytes", "cache: {max_bytes: 0o17}"},
-		{"legacy_octal_max_bytes", "cache: {max_bytes: 017}"},
-		{"underscored_max_bytes", "cache: {max_bytes: 1_000}"},
+		{"hex_max_bytes", "cache: {dir: cache, max_bytes: 0xff}"},
+		{"octal_max_bytes", "cache: {dir: cache, max_bytes: 0o17}"},
+		{"legacy_octal_max_bytes", "cache: {dir: cache, max_bytes: 017}"},
+		{"underscored_max_bytes", "cache: {dir: cache, max_bytes: 1_000}"},
 		// A non-decimal form on a strictInt field exercises the shared parse path.
-		{"octal_max_connections", "max_connections: 0o17"},
+		{"octal_max_connections", "cache: {dir: cache}\nmax_connections: 0o17"},
 		// A genuinely !!int value above MaxInt64 hits the decimal ParseInt range
 		// error. A 20+ digit literal instead resolves to !!float and is rejected
 		// earlier by the tag guard, so it would not cover this branch.
-		{"max_bytes_out_of_range", "cache: {max_bytes: 9223372036854775808}"},
+		{"max_bytes_out_of_range", "cache: {dir: cache, max_bytes: 9223372036854775808}"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -257,7 +289,10 @@ func TestLoadRejectsNonIntegerNumericLimits(t *testing.T) {
 }
 
 func TestLoadPreservesDefaultForNullNumericLimit(t *testing.T) {
-	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {max_fills: null}\n"))
+	c, err := Load(writeConfig(t, `registries: [example.com]
+ca_dir: ca
+cache: {dir: cache, max_fills: null}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +302,10 @@ func TestLoadPreservesDefaultForNullNumericLimit(t *testing.T) {
 }
 
 func TestLoadAcceptsLargeValidInteger(t *testing.T) {
-	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {max_bytes: 34359738368}\n"))
+	c, err := Load(writeConfig(t, `registries: [example.com]
+ca_dir: ca
+cache: {dir: cache, max_bytes: 34359738368}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +315,10 @@ func TestLoadAcceptsLargeValidInteger(t *testing.T) {
 }
 
 func TestLoadAcceptsSignedInteger(t *testing.T) {
-	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {max_fills: +7}\n"))
+	c, err := Load(writeConfig(t, `registries: [example.com]
+ca_dir: ca
+cache: {dir: cache, max_fills: +7}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,26 +327,106 @@ func TestLoadAcceptsSignedInteger(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsMissingOrInvalidCacheDir(t *testing.T) {
+	tests := []struct {
+		name  string
+		cache string
+	}{
+		{"omitted_cache", ""},
+		{"null_cache", "cache: null\n"},
+		{"empty_cache", "cache: {}\n"},
+		{"omitted_dir", "cache: {max_bytes: 123}\n"},
+		{"null_dir", "cache: {dir: null}\n"},
+		{"empty_dir", "cache: {dir: ''}\n"},
+		{"spaces_dir", "cache: {dir: '   '}\n"},
+		{"mixed_whitespace_dir", "cache: {dir: \" \\t \"}\n"},
+		{"newline_dir", "cache: {dir: \"\\n\"}\n"},
+		{"unicode_whitespace_dir", "cache: {dir: \"\\u2003\"}\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\n"+test.cache))
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load unexpectedly returned %v", err)
+			}
+			if !strings.Contains(err.Error(), "cache.dir") {
+				t.Errorf("error lacks cache.dir context: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadResolvesCacheDirWithoutTrimming(t *testing.T) {
+	tests := []struct {
+		name, dir string
+	}{
+		{"relative", "cache"},
+		{"absolute", "/var/cache/accelerator"},
+		{"spaced", " cache directory "},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeConfig(t, `registries: [example.com]
+ca_dir: ca
+cache:
+  dir: '`+test.dir+"'\n")
+			c, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := test.dir
+			if !filepath.IsAbs(want) {
+				want = filepath.Join(filepath.Dir(path), want)
+			}
+			assertEqual(t, "Cache.Dir", c.Cache.Dir, want)
+		})
+	}
+}
+
 func TestLoadRejectsInvalid(t *testing.T) {
 	tests := []struct{ name, input string }{
-		{"missing_registries", "ca_dir: ca\n"},
-		{"missing_ca_dir", "registries: [example.com]\n"},
-		{"unknown_field", "registries: [example.com]\nca_dir: ca\nunknown: true\n"},
-		{"duplicate_registries_key", "registries: [example.com]\nregistries: [other.example]\nca_dir: ca\n"},
-		{"duplicate_registry", "registries: [example.com, EXAMPLE.COM:443]\nca_dir: ca\n"},
-		{"registry_credentials", "registries: [user:pass@example.com]\nca_dir: ca\n"},
-		{"empty_registry", "registries: ['']\nca_dir: ca\n"},
-		{"zero_dial_timeout", "registries: [example.com]\nca_dir: ca\ndial_timeout: 0s\n"},
-		{"zero_max_connections", "registries: [example.com]\nca_dir: ca\nmax_connections: 0\n"},
-		{"zero_max_fills", "registries: [example.com]\nca_dir: ca\ncache: {max_fills: 0}\n"},
-		{"negative_max_entries", "registries: [example.com]\nca_dir: ca\ncache: {max_entries: -1}\n"},
-		{"zero_fill_timeout", "registries: [example.com]\nca_dir: ca\ncache: {fill_timeout: 0s}\n"},
-		{"negative_fill_wait_timeout", "registries: [example.com]\nca_dir: ca\ncache: {fill_wait_timeout: -1s}\n"},
-		{"listen_port_out_of_range", "registries: [example.com]\nca_dir: ca\nlisten: '127.0.0.1:99999'\n"},
-		{"listen_missing_port", "registries: [example.com]\nca_dir: ca\nlisten: '127.0.0.1:'\n"},
-		{"listen_invalid_host", "registries: [example.com]\nca_dir: ca\nlisten: 'bad host:3128'\n"},
-		{"multiple_documents", "registries: [example.com]\nca_dir: ca\n---\n{}\n"},
-		{"malformed_yaml", "registries: [example.com\nca_dir: secret-value\n"},
+		{"missing_registries", "ca_dir: ca\ncache: {dir: cache}\n"},
+		{"missing_ca_dir", "registries: [example.com]\ncache: {dir: cache}\n"},
+		{"unknown_field", validConfig + "unknown: true\n"},
+		{"duplicate_registries_key", validConfig + "registries: [other.example]\n"},
+		{"duplicate_registry", `registries: [example.com, EXAMPLE.COM:443]
+ca_dir: ca
+cache: {dir: cache}
+`},
+		{"registry_credentials", `registries: [user:pass@example.com]
+ca_dir: ca
+cache: {dir: cache}
+`},
+		{"empty_registry", `registries: ['']
+ca_dir: ca
+cache: {dir: cache}
+`},
+		{"zero_dial_timeout", validConfig + "dial_timeout: 0s\n"},
+		{"zero_max_connections", validConfig + "max_connections: 0\n"},
+		{"zero_max_fills", `registries: [example.com]
+ca_dir: ca
+cache: {dir: cache, max_fills: 0}
+`},
+		{"negative_max_entries", `registries: [example.com]
+ca_dir: ca
+cache: {dir: cache, max_entries: -1}
+`},
+		{"zero_fill_timeout", `registries: [example.com]
+ca_dir: ca
+cache: {dir: cache, fill_timeout: 0s}
+`},
+		{"negative_fill_wait_timeout", `registries: [example.com]
+ca_dir: ca
+cache: {dir: cache, fill_wait_timeout: -1s}
+`},
+		{"listen_port_out_of_range", validConfig + "listen: '127.0.0.1:99999'\n"},
+		{"listen_missing_port", validConfig + "listen: '127.0.0.1:'\n"},
+		{"listen_invalid_host", validConfig + "listen: 'bad host:3128'\n"},
+		{"multiple_documents", validConfig + "---\n{}\n"},
+		{"malformed_yaml", `registries: [example.com
+ca_dir: secret-value
+cache: {dir: cache}
+`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -52,7 +52,6 @@ type Cache struct {
 }
 
 type duration time.Duration
-type nonNegativeDuration time.Duration
 
 // strictString prevents YAML from coercing other scalar types into strings.
 // Null scalar fields retain their defaults; pointer list elements remain nil.
@@ -136,29 +135,14 @@ func (d *duration) UnmarshalYAML(node *yaml.Node) error {
 	if node.Tag == "!!null" {
 		return nil
 	}
-	if node.Tag != "!!str" {
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
 		return invalidNode(node, "must be a duration string")
 	}
 	v, err := time.ParseDuration(node.Value)
-	if err != nil || v <= 0 {
-		return invalidNode(node, "must be a positive duration string")
+	if err != nil {
+		return invalidNode(node, "must be a duration string")
 	}
 	*d = duration(v)
-	return nil
-}
-
-func (d *nonNegativeDuration) UnmarshalYAML(node *yaml.Node) error {
-	if node.Tag == "!!null" {
-		return nil
-	}
-	if node.Tag != "!!str" {
-		return invalidNode(node, "must be a duration string")
-	}
-	v, err := time.ParseDuration(node.Value)
-	if err != nil || v < 0 {
-		return invalidNode(node, "must be a non-negative duration string")
-	}
-	*d = nonNegativeDuration(v)
 	return nil
 }
 
@@ -179,12 +163,12 @@ type rawConfig struct {
 }
 
 type rawCache struct {
-	Dir             strictString        `yaml:"dir"`
-	MaxBytes        strictInt64         `yaml:"max_bytes"`
-	MaxFills        strictInt           `yaml:"max_fills"`
-	MaxEntries      strictInt           `yaml:"max_entries"`
-	FillTimeout     duration            `yaml:"fill_timeout"`
-	FillWaitTimeout nonNegativeDuration `yaml:"fill_wait_timeout"`
+	Dir             strictString `yaml:"dir"`
+	MaxBytes        strictInt64  `yaml:"max_bytes"`
+	MaxFills        strictInt    `yaml:"max_fills"`
+	MaxEntries      strictInt    `yaml:"max_entries"`
+	FillTimeout     duration     `yaml:"fill_timeout"`
+	FillWaitTimeout duration     `yaml:"fill_wait_timeout"`
 }
 
 // Load reads one strict YAML document from path and resolves relative directories
@@ -192,18 +176,27 @@ type rawCache struct {
 func Load(path string) (Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("open configuration: %w", err)
+		return Config{}, fmt.Errorf("read configuration: %w", err)
 	}
 	defer f.Close()
 
 	raw := defaults()
-	dec := yaml.NewDecoder(f)
+	reader := &readErrorTracker{Reader: f}
+	dec := yaml.NewDecoder(reader)
 	dec.KnownFields(true)
-	if err := dec.Decode(&raw); err != nil {
+	err = dec.Decode(&raw)
+	if reader.err != nil {
+		return Config{}, fmt.Errorf("read configuration: %w", reader.err)
+	}
+	if err != nil {
 		return Config{}, safeDecodeError(err)
 	}
 	var extra yaml.Node
-	if err := dec.Decode(&extra); err == nil {
+	err = dec.Decode(&extra)
+	if reader.err != nil {
+		return Config{}, fmt.Errorf("read configuration: %w", reader.err)
+	}
+	if err == nil {
 		return Config{}, fmt.Errorf("%w: expected exactly one YAML document", ErrInvalid)
 	} else if err != io.EOF {
 		return Config{}, safeDecodeError(err)
@@ -219,7 +212,7 @@ func defaults() rawConfig {
 			MaxFills:        strictInt(DefaultCacheMaxFills),
 			MaxEntries:      strictInt(DefaultCacheMaxEntries),
 			FillTimeout:     duration(DefaultCacheFillTimeout),
-			FillWaitTimeout: nonNegativeDuration(DefaultCacheFillWaitTimeout),
+			FillWaitTimeout: duration(DefaultCacheFillWaitTimeout),
 		},
 		DialTimeout:           duration(10 * time.Second),
 		TLSHandshakeTimeout:   duration(10 * time.Second),
@@ -237,6 +230,9 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}
 	if strings.TrimSpace(string(raw.CADir)) == "" {
 		return Config{}, fmt.Errorf("%w: ca_dir: must be a non-blank directory path", ErrInvalid)
+	}
+	if strings.TrimSpace(string(raw.Cache.Dir)) == "" {
+		return Config{}, fmt.Errorf("%w: cache.dir: must be a non-blank directory path", ErrInvalid)
 	}
 	listen, err := canonicalBindAddress(string(raw.Listen), false)
 	if err != nil {
@@ -256,13 +252,30 @@ func validate(raw rawConfig, base string) (Config, error) {
 		{"cache.max_bytes", int64(raw.Cache.MaxBytes)},
 		{"cache.max_fills", int64(raw.Cache.MaxFills)},
 		{"cache.max_entries", int64(raw.Cache.MaxEntries)},
-		{"cache.fill_timeout", int64(raw.Cache.FillTimeout)},
 		{"max_connections", int64(raw.MaxConnections)},
 		{"max_leaf_certificates", int64(raw.MaxLeafCertificates)},
 	} {
 		if limit.value <= 0 {
 			return Config{}, fmt.Errorf("%w: %s: must be positive", ErrInvalid, limit.field)
 		}
+	}
+	for _, timeout := range []struct {
+		field string
+		value duration
+	}{
+		{"dial_timeout", raw.DialTimeout},
+		{"tls_handshake_timeout", raw.TLSHandshakeTimeout},
+		{"response_header_timeout", raw.ResponseHeaderTimeout},
+		{"idle_timeout", raw.IdleTimeout},
+		{"shutdown_timeout", raw.ShutdownTimeout},
+		{"cache.fill_timeout", raw.Cache.FillTimeout},
+	} {
+		if timeout.value <= 0 {
+			return Config{}, fmt.Errorf("%w: %s: must be positive", ErrInvalid, timeout.field)
+		}
+	}
+	if raw.Cache.FillWaitTimeout < 0 {
+		return Config{}, fmt.Errorf("%w: cache.fill_wait_timeout: must be non-negative", ErrInvalid)
 	}
 	registries, err := parseAuthorities(raw.Registries)
 	if err != nil {
@@ -363,7 +376,7 @@ func parseAuthorities(texts []*strictString) ([]hostport.HostPort, error) {
 }
 
 func resolve(base, path string) string {
-	if path == "" || filepath.IsAbs(path) {
+	if filepath.IsAbs(path) {
 		return path
 	}
 	return filepath.Clean(filepath.Join(base, path))

@@ -38,6 +38,11 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	if !ok || charge > s.max {
 		return nil, s.refuse(AdmissionOversized, nil)
 	}
+	// JSON escaping can exceed the sidecar limit even for a short raw string.
+	// Reject before eviction or staging; Commit still checks its final encoding.
+	if _, err := encodeMeta(meta); err != nil {
+		return nil, s.refuse(AdmissionInvalid, err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -68,11 +73,9 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		s.admissions[AdmissionFillLimit]++
 		return nil, &AdmissionError{Reason: AdmissionFillLimit}
 	}
-	// Retry abandoned directories before evicting useful entries. Failed
-	// retries keep their bytes and slots charged against admission limits.
-	for dir := range s.failedCleanups {
-		_ = s.removeCleanupLocked(dir)
-	}
+	// Retry a bounded batch before eviction. Failed or deferred cleanups
+	// keep their bytes and slots charged against admission limits.
+	s.retryCleanupsLocked()
 	if !s.evictLocked(charge, 1, math.MaxInt64) {
 		s.admissions[AdmissionCapacity]++
 		return nil, &AdmissionError{Reason: AdmissionCapacity}
@@ -232,15 +235,11 @@ func (f *Fill) stopTimer() {
 }
 func (f *Fill) finish(cause error) error {
 	if f.file != nil {
-		if e := f.file.Close(); cause == nil {
-			cause = e
-		}
+		cause = errors.Join(cause, f.file.Close())
 		f.file = nil
 	}
 	removeErr := os.RemoveAll(f.dir)
-	if cause == nil {
-		cause = removeErr
-	}
+	cause = errors.Join(cause, removeErr)
 	f.store.mu.Lock()
 	if cause == nil {
 		f.store.fillAbort++
