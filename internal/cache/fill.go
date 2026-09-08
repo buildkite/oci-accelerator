@@ -38,6 +38,11 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	if !ok || charge > s.max {
 		return nil, s.refuse(AdmissionOversized, nil)
 	}
+	// JSON escaping can exceed the sidecar limit even for a short raw string.
+	// Reject before eviction or staging; Commit still checks its final encoding.
+	if _, err := encodeMeta(meta); err != nil {
+		return nil, s.refuse(AdmissionInvalid, err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 )
 
 func TestAdmissionErrorPreservesCause(t *testing.T) {
@@ -66,5 +68,60 @@ func TestBeginIOErrorPreservesFilesystemCause(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), admission.Cause.Error()) {
 		t.Fatalf("message omits filesystem cause: %v", err)
+	}
+}
+
+func TestAdmissionChecksEncodedMetadataBeforeEviction(t *testing.T) {
+	for _, size := range []int{int(metadataReservation) - 1, int(metadataReservation), int(metadataReservation) + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := openTest(t, metadataReservation+4)
+				old := testMeta("useful", "body")
+				put(t, s, old, "body")
+				meta := testMeta("escaped", "body")
+				prefix := `application/octet-stream; x="` + strings.Repeat("<", 600)
+				meta.MediaType = prefix + `"`
+				base, err := encodeMeta(meta)
+				if err != nil {
+					t.Fatal(err)
+				}
+				meta.MediaType = prefix + strings.Repeat("a", size-len(base)) + `"`
+				if !validMeta(meta) {
+					t.Fatal("fixture exceeds raw metadata limits")
+				}
+				raw, _ := encodeMeta(meta)
+				if len(raw) != size {
+					t.Fatalf("encoded size = %d, want %d", len(raw), size)
+				}
+				if size <= int(metadataReservation) {
+					put(t, s, meta, "body")
+					read(t, s, meta, "body")
+					info, err := os.Stat(filepath.Join(s.dir, meta.Key, "meta"))
+					if err != nil || info.Size() != int64(size) {
+						t.Fatalf("published sidecar = %v, %v", info, err)
+					}
+					return
+				}
+				want := s.Stats()
+				want.Admissions[AdmissionInvalid]++
+				f, err := s.Begin(meta)
+				if f != nil {
+					f.Abort()
+					t.Fatal("oversized metadata admitted")
+				}
+				var admission *AdmissionError
+				if !errors.Is(err, ErrBypass) || !errors.As(err, &admission) || admission.Reason != AdmissionInvalid || admission.Cause == nil {
+					t.Fatalf("Begin = %v, want invalid admission with cause", err)
+				}
+				if got := s.Stats(); got != want {
+					t.Fatalf("rejected metadata changed cache: got %+v, want %+v", got, want)
+				}
+				read(t, s, old, "body")
+				staging, err := filepath.Glob(filepath.Join(s.dir, ".fill-*"))
+				if err != nil || len(staging) != 0 {
+					t.Fatalf("rejected metadata staged files: %v, %v", staging, err)
+				}
+			})
+		})
 	}
 }
