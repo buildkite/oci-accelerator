@@ -37,6 +37,13 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 	s.readers++
 	need := !e.verified
 	s.mu.Unlock()
+	return s.openReader(ctx, e, need)
+}
+
+// openReader takes ownership of a pin acquired under s.mu. On success the
+// Reader owns that pin; every failure closes the file and releases the pin.
+func (s *Store) openReader(ctx context.Context, e *entry, need bool) (*Reader, error) {
+	meta := e.meta
 	f, err := os.Open(e.dir + "/body")
 	if err != nil {
 		s.invalidate(e)
@@ -85,11 +92,17 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 			s.unpin(e)
 			return nil, ErrMiss
 		}
-		s.mu.Lock()
-		e.verified = true
-		s.mu.Unlock()
 	}
 	s.mu.Lock()
+	// The path may have been replaced since selection. Only the same valid
+	// entry can lend its verification state to this open descriptor.
+	if s.entries[meta.Key] != e || e.invalid {
+		s.mu.Unlock()
+		f.Close()
+		s.unpin(e)
+		return nil, ErrMiss
+	}
+	e.verified = true
 	e.last = time.Now().UnixNano()
 	s.mu.Unlock()
 	return &Reader{store: s, entry: e, file: f}, nil
