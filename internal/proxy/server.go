@@ -89,11 +89,12 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		p.destinations[destination.String()] = struct{}{}
 	}
 	p.server = &http.Server{
-		Handler:           p,
-		ReadHeaderTimeout: cfg.ResponseHeaderTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
-		MaxHeaderBytes:    maxHeaderBytes,
-		ErrorLog:          log.New(io.Discard, "", 0),
+		Handler:                      p,
+		DisableGeneralOptionsHandler: true,
+		ReadHeaderTimeout:            cfg.ResponseHeaderTimeout,
+		IdleTimeout:                  cfg.IdleTimeout,
+		MaxHeaderBytes:               maxHeaderBytes,
+		ErrorLog:                     log.New(io.Discard, "", 0),
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
 			if tracked, ok := conn.(*trackedConn); ok {
 				return context.WithValue(ctx, connContextKey{}, tracked)

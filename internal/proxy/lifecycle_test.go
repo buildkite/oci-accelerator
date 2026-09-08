@@ -39,6 +39,28 @@ func TestRefusalClosesConnectionBeforeSecondCONNECT(t *testing.T) {
 	shutdown(t, p)
 }
 
+func TestGeneralOPTIONSClosesBeforeSubsequentCONNECT(t *testing.T) {
+	_, addr := start(t, config.Config{MaxConnections: 2, ResponseHeaderTimeout: time.Second, IdleTimeout: time.Second})
+	conn := dialLifecycle(t, addr)
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	reader := bufio.NewReader(conn)
+	if _, err := io.WriteString(conn, "OPTIONS * HTTP/1.1\r\nHost: proxy.invalid\r\n\r\nCONNECT registry.invalid:443 HTTP/1.1\r\nHost: other.invalid:443\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodOptions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusMethodNotAllowed || !resp.Close || string(body) != "method not allowed\n" {
+		t.Fatalf("OPTIONS status=%d close=%v body=%q err=%v", resp.StatusCode, resp.Close, body, err)
+	}
+	if _, err := reader.ReadByte(); err != io.EOF {
+		t.Fatalf("connection after OPTIONS: %v, want EOF without a CONNECT response", err)
+	}
+}
+
 func TestUpstreamFINReachesClientWhileClientWriteRemainsOpen(t *testing.T) {
 	origin := listen(t)
 	accepted := make(chan net.Conn, 1)
