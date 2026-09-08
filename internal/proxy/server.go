@@ -212,7 +212,7 @@ func (c *trackedConn) Read(b []byte) (int, error) {
 			c.header = append(c.header, b[:remaining]...)
 		}
 		if end := bytes.Index(c.header, []byte("\r\n\r\n")); end >= 0 {
-			c.rawOK = rawCONNECTValid(c.header[:end])
+			c.rawOK = rawCONNECTAcceptable(c.header[:end])
 			c.checked = true
 			c.header = nil
 		} else if len(c.header) == maxHeaderBytes {

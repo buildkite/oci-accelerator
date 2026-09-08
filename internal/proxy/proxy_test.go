@@ -109,6 +109,33 @@ func TestShutdownClosesActiveTunnelAtDeadline(t *testing.T) {
 	upstream.Close()
 }
 
+func TestRawCONNECTAcceptable(t *testing.T) {
+	for _, tc := range []struct {
+		name, head string
+		want       bool
+	}{
+		{"valid matching authority", "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443", true},
+		{"valid bracketed ipv6 authority", "CONNECT [::1]:5000 HTTP/1.1\r\nHost: [::1]:5000", true},
+		{"target host mismatch", "CONNECT example.com:443 HTTP/1.1\r\nHost: other.example:443", false},
+		{"target port mismatch", "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:8443", false},
+		{"unparseable target in three-part line", "CONNECT @@@ HTTP/1.1\r\nHost: example.com:443", false},
+		{"unparseable host", "CONNECT example.com:443 HTTP/1.1\r\nHost: @@@", false},
+		{"missing host header", "CONNECT example.com:443 HTTP/1.1\r\nUser-Agent: x", false},
+		{"duplicate host header", "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nHost: example.com:443", false},
+		{"non-connect method deferred", "GET / HTTP/1.1\r\nHost: example.com", true},
+		{"wrong word count deferred", "CONNECT not a target HTTP/1.1\r\nHost: example.com:443", true},
+		{"irregular spacing deferred to net/http", "CONNECT  example.com:443 HTTP/1.1\r\nHost: other.example:443", true},
+		{"malformed first line deferred", "garbage line without three parts", true},
+		{"empty first line deferred", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rawCONNECTAcceptable([]byte(tc.head)); got != tc.want {
+				t.Fatalf("rawCONNECTAcceptable(%q) = %v, want %v", tc.head, got, tc.want)
+			}
+		})
+	}
+}
+
 func FuzzValidateCONNECT(f *testing.F) {
 	for _, seed := range []string{"example.com:443", "[::1]:5000", "example.com", "user@host:1"} {
 		f.Add(seed)

@@ -12,6 +12,19 @@
   a second parallel copy in `TestManifestMetadataAdmission` (the exact drift #14
   targets) surfaced by code-only review.
 
+- B (#11): rename `rawCONNECTValid` to `rawCONNECTAcceptable` with a doc comment
+  stating its true contract — it returns false only for a syntactic single-space
+  CONNECT request line whose target/Host is unparseable or disagrees, and true
+  ("nothing to reject at the raw level") otherwise. Behavior is unchanged; the
+  raw sniff is defense-in-depth ahead of net/http, which itself rejects malformed
+  request-line spacing before ServeHTTP runs (verified), with validateCONNECT as
+  the authoritative target/Host agreement check. Kept the single-space
+  `strings.Split` as-is rather than tightening it: deferring irregular spacing is
+  safe because net/http rejects it, so changing it would alter behavior for no
+  security gain. Added TestRawCONNECTAcceptable covering the deferral cases and
+  both false branches (unparseable target in a three-part line, unparseable/missing/
+  duplicate Host, target/port mismatch).
+
 ## Slice 1 authorization
 
 - Implement 1a–1e autonomously, with per-subslice commits and independent review.
