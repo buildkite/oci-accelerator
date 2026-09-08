@@ -28,7 +28,9 @@ func (c *idleReadWriteConn) Read(b []byte) (int, error) {
 }
 func (c *idleReadWriteConn) Write(b []byte) (int, error) {
 	if c.timeout > 0 {
-		_ = c.SetWriteDeadline(time.Now().Add(c.timeout))
+		// The transport may already be reading on a pooled connection. Give
+		// that pending read a fresh budget when sending the next request.
+		_ = c.SetDeadline(time.Now().Add(c.timeout))
 	}
 	return c.Conn.Write(b)
 }

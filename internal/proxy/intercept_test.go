@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,6 +85,132 @@ func TestInterceptForwardsRequestAndRelaysSensitiveResponse(t *testing.T) {
 			t.Errorf("logs contain secret %q: %s", secret, logs.String())
 		}
 	}
+}
+
+func TestInterceptUpstreamKeepAliveReadDeadlineRefreshesForNextRequest(t *testing.T) {
+	const (
+		firstBody  = "first"
+		secondBody = "second"
+	)
+	var (
+		requests atomic.Int32
+		mu       sync.Mutex
+		remotes  []string
+	)
+	releaseSecond := make(chan struct{})
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		mu.Lock()
+		remotes = append(remotes, r.RemoteAddr)
+		mu.Unlock()
+		switch n {
+		case 1:
+			_, _ = io.WriteString(w, firstBody)
+		default:
+			<-releaseSecond
+			_, _ = io.WriteString(w, secondBody)
+		}
+	}))
+	defer origin.Close()
+	release := safeRelease(releaseSecond)
+	defer release()
+
+	p, _, client := interceptFixture(t, origin, nil, true)
+	const idle = 800 * time.Millisecond
+	p.cfg.IdleTimeout = idle
+	p.transport.IdleConnTimeout = idle
+	p.transport.ResponseHeaderTimeout = idle
+
+	readDeadlines := make(chan time.Time, 32)
+	dialIP := p.dialIP
+	p.dialIP = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dialIP(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &observedReadDeadlineConn{Conn: conn, deadlines: readDeadlines}, nil
+	}
+
+	get := func(path string) (string, error) {
+		resp, err := client.Get(origin.URL + path)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		return string(body), err
+	}
+	if body, err := get("/v2/first"); err != nil || body != firstBody {
+		t.Fatalf("first GET: body=%q err=%v", body, err)
+	}
+
+	// The transport's idle pool reader has already installed this absolute
+	// deadline. Start the next request comfortably before it, but hold its
+	// response until after it. A reused connection must refresh the read
+	// deadline for the active request rather than replaying the GET.
+	var pendingDeadline time.Time
+	deadlineWait := time.NewTimer(time.Second)
+	defer deadlineWait.Stop()
+	for pendingDeadline.IsZero() {
+		select {
+		case d := <-readDeadlines:
+			if time.Until(d) > idle/2 {
+				pendingDeadline = d
+			}
+		case <-deadlineWait.C:
+			t.Fatal("upstream transport did not enter its pending keep-alive read")
+		}
+	}
+	if wait := time.Until(pendingDeadline.Add(-idle / 3)); wait > 0 {
+		time.Sleep(wait)
+	}
+
+	type result struct {
+		body string
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		body, err := get("/v2/second")
+		resultCh <- result{body: body, err: err}
+	}()
+	for requests.Load() < 2 {
+		if time.Now().After(pendingDeadline) {
+			t.Fatal("second GET did not reach upstream before stale read deadline")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if wait := time.Until(pendingDeadline.Add(150 * time.Millisecond)); wait > 0 {
+		time.Sleep(wait)
+	}
+	release()
+
+	res := <-resultCh
+	if res.err != nil || res.body != secondBody {
+		t.Errorf("second GET: body=%q err=%v", res.body, res.err)
+	}
+	mu.Lock()
+	gotRemotes := append([]string(nil), remotes...)
+	mu.Unlock()
+	if got := requests.Load(); got != 2 {
+		t.Errorf("upstream GET count = %d, want 2 (requests from %v)", got, gotRemotes)
+	}
+	if len(gotRemotes) >= 2 && gotRemotes[0] != gotRemotes[1] {
+		t.Errorf("second GET did not reuse upstream connection: remotes = %v", gotRemotes)
+	}
+}
+
+type observedReadDeadlineConn struct {
+	net.Conn
+	deadlines chan<- time.Time
+}
+
+func (c *observedReadDeadlineConn) SetReadDeadline(deadline time.Time) error {
+	select {
+	case c.deadlines <- deadline:
+	default:
+	}
+	return c.Conn.SetReadDeadline(deadline)
 }
 
 func TestInterceptTrustFailures(t *testing.T) {
