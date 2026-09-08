@@ -56,12 +56,31 @@ type metricsSnapshot struct {
 	activeRequests, activeWaits                                int64
 }
 
+func (m *metrics) snapshot() metricsSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return metricsSnapshot{
+		requests:        cloneMap(m.requests),
+		statuses:        cloneMap(m.statuses),
+		cache:           cloneMap(m.cache),
+		fills:           cloneMap(m.fills),
+		waits:           cloneMap(m.waits),
+		fallback:        cloneMap(m.fallback),
+		rejects:         cloneMap(m.rejects),
+		upstream:        m.upstream,
+		upstreamBytes:   m.upstreamBytes,
+		downstreamBytes: m.downstreamBytes,
+		durations:       m.durations,
+		durationSum:     m.durationSum,
+		activeRequests:  m.activeRequests,
+		activeWaits:     m.activeWaits,
+	}
+}
+
 func (p *Proxy) MetricsHandler() http.Handler { return http.HandlerFunc(p.writeMetrics) }
 
 func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
-	p.metrics.mu.Lock()
-	m := metricsSnapshot{requests: cloneMap(p.metrics.requests), statuses: cloneMap(p.metrics.statuses), cache: cloneMap(p.metrics.cache), fills: cloneMap(p.metrics.fills), waits: cloneMap(p.metrics.waits), fallback: cloneMap(p.metrics.fallback), rejects: cloneMap(p.metrics.rejects), upstream: p.metrics.upstream, upstreamBytes: p.metrics.upstreamBytes, downstreamBytes: p.metrics.downstreamBytes, durations: p.metrics.durations, durationSum: p.metrics.durationSum, activeRequests: p.metrics.activeRequests, activeWaits: p.metrics.activeWaits}
-	p.metrics.mu.Unlock()
+	m := p.metrics.snapshot()
 	cs := cacheStats(p)
 	heapAlloc := heapAllocBytes()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")

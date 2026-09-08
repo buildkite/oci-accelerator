@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,15 +79,63 @@ func TestCacheFillWaitRetriesWhenCompletedEntryIsEvictedBeforeGet(t *testing.T) 
 	p := &Proxy{cache: s}
 	p.cfg.Cache.FillWaitTimeout = time.Second
 	stats := &requestStats{}
-	got, retry := p.cachedResponse(req, response(upstream), true, true, stats)
-	if got != nil || !retry {
-		t.Fatalf("cachedResponse = (%v, %v), want (nil, true)", got, retry)
+	got, retry, err := p.cachedResponse(req, response(upstream), true, true, stats)
+	if got != nil || !retry || err != nil {
+		t.Fatalf("cachedResponse = (%v, %v, %v), want (nil, true, nil)", got, retry, err)
 	}
 	if stats.wait != "complete" || stats.fallback != "retry" {
 		t.Fatalf("request stats = %+v", stats)
 	}
 	if st := s.Stats(); st.Entries != 1 || st.Fills != 0 || st.Reserved != 0 || st.Evictions != 1 {
 		t.Fatalf("cache stats = %+v, want one replacement and one eviction", st)
+	}
+}
+
+func TestCacheFillWaitReturnsCancellationError(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		t.Run(fmt.Sprintf("leader-aborted=%v", complete), func(t *testing.T) {
+			store, err := cache.Open(filepath.Join(t.TempDir(), "cache"), 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			req, resp := cachePolicyFixture()
+			meta, ok := objectMetadata(req, resp)
+			if !ok {
+				t.Fatal("invalid fixture metadata")
+			}
+			leader, err := store.Begin(meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer leader.Abort()
+			ctx, cancel := context.WithCancel(req.Context())
+			defer cancel()
+			req = req.WithContext(ctx)
+			closes := 0
+			resp.Body = &closeCallbackBody{ReadCloser: io.NopCloser(strings.NewReader("abc")), close: func() {
+				closes++
+				cancel()
+				if complete {
+					// Both select cases are ready. Whichever wins, cancellation
+					// must be an error rather than a request for another GET.
+					leader.Abort()
+				}
+			}}
+			p := &Proxy{cache: store, metrics: newMetrics()}
+			p.cfg.Cache.FillWaitTimeout = time.Minute
+			stats := &requestStats{}
+			got, retry, err := p.cachedResponse(req, resp, true, true, stats)
+			if got != nil || retry || !errors.Is(err, context.Canceled) {
+				t.Fatalf("cachedResponse = (%v, %v, %v), want (nil, false, canceled)", got, retry, err)
+			}
+			if closes != 1 || stats.upstreamBytes != 0 || stats.fallback != "" || p.metrics.activeWaits != 0 {
+				t.Fatalf("cancellation cleanup: closes=%d stats=%+v activeWaits=%d", closes, stats, p.metrics.activeWaits)
+			}
+			if !complete && store.Stats().Fills != 1 {
+				t.Fatal("follower cancellation disturbed leader fill")
+			}
+		})
 	}
 }
 

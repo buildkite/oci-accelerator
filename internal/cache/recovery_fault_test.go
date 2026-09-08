@@ -199,13 +199,9 @@ func TestProcessCrashRecovery(t *testing.T) {
 	}
 }
 
-// assertBeginAdmitsPinnedTombstone deterministically reproduces the concurrent
-// corrupt-reader window on an isolated store: one reader keeps a corrupt entry
-// pinned while a second Get invalidates it, leaving an invalid+pinned tombstone.
-// A Begin for that key during the window must be admitted for re-fill rather than
-// refused with AdmissionExisting, which is the thundering-herd wedge this fix
-// removes. Kept on a dedicated store so it does not perturb the caller's slot
-// and eviction accounting.
+// assertBeginAdmitsPinnedTombstone checks refill admission while an invalid
+// entry remains reader-pinned. Its isolated store preserves the caller's
+// capacity and eviction accounting.
 func assertBeginAdmitsPinnedTombstone(t *testing.T) {
 	t.Helper()
 	s := openTest(t, 1<<20)

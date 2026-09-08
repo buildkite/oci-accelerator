@@ -27,6 +27,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, "bad CONNECT request", http.StatusBadRequest)
 		return
 	}
+	p.mu.Lock()
+	if p.closing {
+		p.mu.Unlock()
+		refuse(w, "proxy shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	p.inflight.Add(1)
+	p.mu.Unlock()
+	defer p.inflight.Done()
+
 	if _, configured := p.configured[target.String()]; configured {
 		if p.signer == nil {
 			refuse(w, "registry interception unavailable", http.StatusServiceUnavailable)
@@ -41,15 +51,28 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, "destination unavailable", http.StatusBadGateway)
 		return
 	}
+	defer upstream.Close()
+	p.mu.Lock()
+	if p.closing {
+		p.mu.Unlock()
+		refuse(w, "proxy shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	p.tunnels[upstream] = struct{}{}
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.tunnels, upstream)
+		p.mu.Unlock()
+	}()
+
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		upstream.Close()
 		refuse(w, "tunneling unavailable", http.StatusInternalServerError)
 		return
 	}
 	client, rw, err := hijacker.Hijack()
 	if err != nil {
-		upstream.Close()
 		return
 	}
 	if _, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
@@ -57,7 +80,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		client.Close()
-		upstream.Close()
 		return
 	}
 	p.relay(client, upstream, rw.Reader)

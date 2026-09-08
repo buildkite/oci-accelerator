@@ -6,6 +6,10 @@ daemon) trusts this single self-signed root once; the proxy then mints a leaf
 certificate per intercepted host on demand so the proxy can terminate TLS for 
 whichever registries a Docker client happens to contact.
 
+This package is Unix-only, enforced by `//go:build unix` constraints. Its
+filesystem checks require Unix ownership and permission semantics; Windows
+is not supported.
+
 ## Why a per-host leaf
 
 A TLS certificate is only valid for the hostname(s) named in it. When the proxy
@@ -25,7 +29,13 @@ host with the trusted root. This is the standard forward-proxy CA pattern.
 
 ### `Open(dir string, maxLeaves int) (*Authority, error)`
 
-Loads the CA in `dir`, creating it only when `dir` does not yet exist.
+Loads the CA in `dir`, creating it only when `dir` does not yet exist. The
+parent directory must already exist; a missing parent is an error and no
+directories or files are created. Operators must provision the parent and
+ensure its durability before startup. `Open` does not create ancestors or
+change their permissions; requiring a pre-provisioned parent avoids both
+umask-dependent ancestor creation and incomplete ancestor crash durability.
+
 `maxLeaves` bounds the in-memory leaf cache. On every startup `Open`
 re-parses and re-validates the root certificate and key
 (PEM type, `IsCA`, key usage, self-signature, curve, key/cert pairing, validity

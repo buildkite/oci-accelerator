@@ -1,4 +1,7 @@
-// Package ca manages the proxy's persistent certificate authority and leaf certificates.
+//go:build unix
+
+// Package ca manages the proxy's persistent certificate authority and leaf
+// certificates on Unix systems.
 package ca
 
 import (
@@ -14,7 +17,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 )
@@ -35,6 +37,8 @@ type Authority struct {
 }
 
 // Open loads the CA in dir, creating it only when dir does not exist.
+// Its parent directory must already exist; the operator is responsible for
+// provisioning that parent and ensuring its durability before calling Open.
 func Open(dir string, maxLeaves int) (*Authority, error) {
 	if dir == "" || maxLeaves <= 0 {
 		return nil, errors.New("CA directory and a positive leaf limit are required")
@@ -74,9 +78,6 @@ func (a *Authority) Fingerprint() string {
 
 func initialize(dir string) error {
 	parent := filepath.Dir(dir)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return err
-	}
 	if err := checkParent(parent); err != nil {
 		return err
 	}
@@ -158,9 +159,6 @@ func checkParent(parent string) error {
 }
 
 func ownedByCurrentUser(info os.FileInfo) bool {
-	if runtime.GOOS == "windows" {
-		return true
-	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && int(stat.Uid) == os.Geteuid()
 }

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -211,14 +210,50 @@ func TestRawCONNECTAcceptable(t *testing.T) {
 }
 
 func FuzzValidateCONNECT(f *testing.F) {
-	for _, seed := range []string{"example.com:443", "[::1]:5000", "example.com", "user@host:1"} {
-		f.Add(seed)
+	for _, seed := range []struct {
+		target, host    string
+		contentLength   int64
+		transferEncoded bool
+	}{
+		{"example.com:443", "example.com:443", 0, false},
+		{"EXAMPLE.COM.:0443", "example.com:443", 0, false},
+		{"[::1]:5000", "[::1]:5000", 0, false},
+		{"example.com:443", "other.example:443", 0, false},
+		{"example.com:443", "example.com:8443", 0, false},
+		{"example.com", "example.com", 0, false},
+		{"user@host:1", "user@host:1", 0, false},
+		{"", "example.com:443", 0, false},
+		{"example.com:443", "", 0, false},
+		{"example.com:443", "example.com:443", 1, false},
+		{"example.com:443", "example.com:443", -1, false},
+		{"example.com:443", "example.com:443", 0, true},
+	} {
+		f.Add(seed.target, seed.host, seed.contentLength, seed.transferEncoded)
 	}
-	f.Fuzz(func(t *testing.T, target string) {
-		r := &http.Request{Method: http.MethodConnect, RequestURI: target, Host: target}
-		a, err := validateCONNECT(r)
-		if err == nil && !strings.Contains(net.JoinHostPort(a.Host(), a.Port()), ":") {
-			t.Fatal("invalid canonical result")
+	f.Fuzz(func(t *testing.T, target, host string, contentLength int64, transferEncoded bool) {
+		r := &http.Request{Method: http.MethodConnect, RequestURI: target, Host: host, ContentLength: contentLength}
+		if transferEncoded {
+			r.TransferEncoding = []string{"chunked"}
+		}
+		got, err := validateCONNECT(r)
+		if contentLength != 0 || transferEncoded {
+			if err == nil {
+				t.Fatal("accepted CONNECT with forbidden body framing")
+			}
+			return
+		}
+		// The validator must agree with the authority parser for each input,
+		// reject mismatches, and preserve canonical equivalents and IPv6.
+		want, targetErr := hostport.Parse(target, "")
+		hostAuthority, hostErr := hostport.Parse(host, "")
+		if targetErr != nil || hostErr != nil || want != hostAuthority {
+			if err == nil {
+				t.Fatal("accepted invalid or mismatched CONNECT authorities")
+			}
+			return
+		}
+		if err != nil || got != want {
+			t.Fatalf("matching CONNECT authorities: got %v, %v; want %v", got, err, want)
 		}
 	})
 }

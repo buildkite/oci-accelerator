@@ -1,3 +1,5 @@
+//go:build unix
+
 package ca
 
 import (
@@ -7,14 +9,35 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestOpenRequiresExistingParent(t *testing.T) {
+	for _, parent := range []string{"missing", filepath.Join("missing", "nested")} {
+		t.Run(parent, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, parent, "ca")
+			if _, err := Open(dir, 1); !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "CA parent") {
+				t.Fatalf("Open with missing parent: %v", err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("Open created entries despite missing parent: %v", entries)
+			}
+		})
+	}
+}
 
 func TestRestrictiveUmask(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ca")

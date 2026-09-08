@@ -46,8 +46,15 @@ type AdmissionError struct {
 	Cause  error
 }
 
-func (e *AdmissionError) Error() string { return "cache admission refused: " + e.Reason.String() }
-func (e *AdmissionError) Unwrap() error { return ErrBypass }
+func (e *AdmissionError) Error() string {
+	message := "cache admission refused: " + e.Reason.String()
+	if e.Cause != nil {
+		message += ": " + e.Cause.Error()
+	}
+	return message
+}
+func (e *AdmissionError) Unwrap() error        { return e.Cause }
+func (e *AdmissionError) Is(target error) bool { return target == ErrBypass }
 
 var completedNotification = func() <-chan struct{} {
 	c := make(chan struct{})
@@ -67,6 +74,8 @@ type Stats struct {
 	Readers                                         int
 	FillSuccess, FillFailure, FillAbort, FillExpiry int64
 	Admissions                                      [AdmissionReasonCount]int64
+	CleanupBytes                                    int64 // Included in Bytes until removal succeeds.
+	CleanupSlots                                    int   // Charged against MaxEntries.
 }
 
 type diskMetadata struct {
@@ -91,7 +100,7 @@ type Store struct {
 	max                                             int64
 	maxFills, maxEntries                            int
 	fillTimeout                                     time.Duration
-	failedSlots                                     int
+	failedCleanups                                  map[string]int64
 	bytes, reserved                                 int64
 	evictions                                       int64
 	readers                                         int
@@ -315,14 +324,14 @@ func add(a, b int64) (int64, bool) {
 // before prevents an older startup candidate from evicting newer entries.
 func (s *Store) evictLocked(need int64, needSlots int, before int64) bool {
 	fits := func() bool {
-		return need <= s.max-s.bytes-s.reserved && len(s.entries)+len(s.fills)+s.failedSlots+needSlots <= s.maxEntries
+		return need <= s.max-s.bytes-s.reserved && len(s.entries)+len(s.fills)+len(s.failedCleanups)+needSlots <= s.maxEntries
 	}
 	if fits() {
 		return true
 	}
 	var es []*entry
 	available := s.max - s.bytes - s.reserved
-	availableSlots := s.maxEntries - len(s.entries) - len(s.fills) - s.failedSlots
+	availableSlots := s.maxEntries - len(s.entries) - len(s.fills) - len(s.failedCleanups)
 	for _, e := range s.entries {
 		if e.pins == 0 && e.last <= before {
 			es = append(es, e)
@@ -352,7 +361,11 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64) bool {
 func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Stats{Bytes: s.bytes, Reserved: s.reserved, Entries: len(s.entries), Fills: len(s.fills), Evictions: s.evictions, Readers: s.readers, FillSuccess: s.fillSuccess, FillFailure: s.fillFailure, FillAbort: s.fillAbort, FillExpiry: s.fillExpiry, Admissions: s.admissions}
+	var cleanupBytes int64
+	for _, charge := range s.failedCleanups {
+		cleanupBytes += charge
+	}
+	return Stats{Bytes: s.bytes, Reserved: s.reserved, Entries: len(s.entries), Fills: len(s.fills), Evictions: s.evictions, Readers: s.readers, FillSuccess: s.fillSuccess, FillFailure: s.fillFailure, FillAbort: s.fillAbort, FillExpiry: s.fillExpiry, Admissions: s.admissions, CleanupBytes: cleanupBytes, CleanupSlots: len(s.failedCleanups)}
 }
 func (s *Store) Close() error {
 	s.mu.Lock()

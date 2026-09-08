@@ -109,10 +109,13 @@ func manifestMediaType(mediaType string) bool {
 	return false
 }
 
-func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted, mayWait bool, stats *requestStats) (*http.Response, bool) {
+// cachedResponse returns a response whose body the caller owns, or retry=true
+// after closing the upstream body when a fill wait cannot supply a response.
+// Cancellation while waiting returns an error, with no response or retry.
+func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted, mayWait bool, stats *requestStats) (response *http.Response, retry bool, err error) {
 	resp.Body = &countedBody{ReadCloser: resp.Body, stats: stats}
 	if p.cache == nil || !permitted {
-		return resp, false
+		return resp, false, nil
 	}
 	meta, ok := objectMetadata(req, resp)
 	if !ok {
@@ -129,13 +132,13 @@ func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted
 				stats.reject = reason
 			}
 		}
-		return resp, false
+		return resp, false, nil
 	}
 	if body, err := p.cache.Get(req.Context(), meta); err == nil {
 		resp.Body.Close()
 		resp.Body = body
 		stats.cache = "hit"
-		return resp, false
+		return resp, false, nil
 	}
 	stats.cache = "miss"
 	if mayWait && p.cfg.Cache.FillWaitTimeout > 0 {
@@ -155,20 +158,25 @@ func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted
 				if body, err := p.cache.Get(req.Context(), meta); err == nil {
 					resp.Body = body
 					stats.cache = "wait_hit"
-					return resp, false
+					return resp, false, nil
 				}
 			case <-req.Context().Done():
 				stats.wait = "canceled"
-				return nil, false
+				return nil, false, req.Context().Err()
 			case <-timer.C:
 				stats.wait = "timeout"
 			}
+			// Completion or timeout can race cancellation. Do not request a new
+			// upstream GET when cancellation is already observable.
+			if err := req.Context().Err(); err != nil {
+				return nil, false, err
+			}
 			stats.fallback = "retry"
-			return nil, true
+			return nil, true, nil
 		}
 	}
 	if req.Context().Err() != nil {
-		return resp, false
+		return resp, false, nil
 	}
 	fill, err := p.cache.Begin(meta)
 	if err != nil {
@@ -177,10 +185,10 @@ func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted
 		if errors.As(err, &admission) {
 			stats.admission = admission.Reason.String()
 		}
-		return resp, false
+		return resp, false, nil
 	}
 	resp.Body = &fillingBody{ReadCloser: resp.Body, fill: fill, ctx: req.Context(), stats: stats}
-	return resp, false
+	return resp, false, nil
 }
 
 type countedBody struct {
