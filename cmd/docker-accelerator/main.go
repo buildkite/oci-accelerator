@@ -29,7 +29,12 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr error) {
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return runWithListen(ctx, args, stdout, stderr, net.Listen)
+}
+
+// runWithListen takes ownership of each listener returned by listen.
+func runWithListen(ctx context.Context, args []string, stdout, stderr io.Writer, listen func(string, string) (net.Listener, error)) (runErr error) {
 	flags := flag.NewFlagSet("docker-accelerator", flag.ContinueOnError)
 	// The flag package includes rejected arguments in its diagnostics. Suppress
 	// those diagnostics so command-line input is never reflected in an error.
@@ -73,21 +78,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 		defer func() {
 			if err := store.Close(); err != nil {
 				logger.Error("cache cleanup failed")
-				if runErr == nil {
-					runErr = errors.New("cache cleanup failed")
-				}
+				runErr = errors.Join(runErr, errors.New("cache cleanup failed"))
 			}
 		}()
 	}
-	listener, err := net.Listen("tcp", cfg.Listen)
+	listener, err := listen("tcp", cfg.Listen)
 	if err != nil {
 		return errors.New("cannot listen on configured address")
 	}
-	defer listener.Close()
+	defer func() {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			runErr = errors.Join(runErr, errors.New("proxy listener cleanup failed"))
+		}
+	}()
 	p := proxy.New(cfg, signer, logger, store)
 	var metricsDone chan struct{}
 	if cfg.MetricsListen != "" {
-		metricsListener, err := net.Listen("tcp", cfg.MetricsListen)
+		metricsListener, err := listen("tcp", cfg.MetricsListen)
 		if err != nil {
 			return errors.New("cannot listen on configured metrics address")
 		}
@@ -103,8 +110,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 			ErrorLog:          log.New(io.Discard, "", 0),
 		}
 		metricsDone = make(chan struct{})
+		var metricsErr error
 		go func() {
-			_ = metricsServer.Serve(metricsListener)
+			if err := metricsServer.Serve(metricsListener); !errors.Is(err, http.ErrServerClosed) {
+				// Listener errors may contain addresses; keep the diagnostic generic.
+				metricsErr = errors.New("metrics listener stopped unexpectedly")
+			}
 			close(metricsDone)
 		}()
 		defer func() {
@@ -112,32 +123,27 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 			defer cancel()
 			if err := metricsServer.Shutdown(shutdown); err != nil {
 				_ = metricsServer.Close()
-				if runErr == nil {
-					runErr = errors.New("metrics cleanup failed")
-				}
+				runErr = errors.Join(runErr, errors.New("metrics cleanup failed"))
 			}
 			<-metricsDone
+			runErr = errors.Join(runErr, metricsErr)
 		}()
 	}
 	logger.Info("proxy ready", "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
-	done := make(chan error, 1)
-	go func() { done <- p.Serve(listener) }()
+	var serveErr error
+	done := make(chan struct{})
+	go func() {
+		serveErr = p.Serve(listener)
+		close(done)
+	}()
 	select {
 	case <-metricsDone:
-		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-		_ = p.Shutdown(shutdown)
-		<-done
-		return errors.New("metrics listener stopped unexpectedly")
-	case err := <-done:
-		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-		return errors.Join(err, p.Shutdown(shutdown))
+	case <-done:
 	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-		err := p.Shutdown(shutdown)
-		<-done
-		return err
 	}
+	shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	shutdownErr := p.Shutdown(shutdown)
+	<-done
+	return errors.Join(serveErr, shutdownErr)
 }
