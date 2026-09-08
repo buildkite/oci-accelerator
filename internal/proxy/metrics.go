@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	runtimemetrics "runtime/metrics"
 	"sort"
 	"strings"
 	"sync"
@@ -11,6 +12,21 @@ import (
 
 	"ampcode.com/buildkite/docker-accelerator/internal/cache"
 )
+
+// heapObjectsMetric is the live heap-object byte count. Reading it via
+// runtime/metrics avoids the stop-the-world pause that runtime.ReadMemStats
+// imposes on every scrape.
+const heapObjectsMetric = "/memory/classes/heap/objects:bytes"
+
+// heapAllocBytes returns the live heap-object bytes without stopping the world.
+func heapAllocBytes() uint64 {
+	samples := []runtimemetrics.Sample{{Name: heapObjectsMetric}}
+	runtimemetrics.Read(samples)
+	if samples[0].Value.Kind() != runtimemetrics.KindUint64 {
+		return 0
+	}
+	return samples[0].Value.Uint64()
+}
 
 type metrics struct {
 	mu                             sync.Mutex
@@ -46,8 +62,7 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	m := metricsSnapshot{requests: cloneMap(p.metrics.requests), statuses: cloneMap(p.metrics.statuses), cache: cloneMap(p.metrics.cache), fills: cloneMap(p.metrics.fills), waits: cloneMap(p.metrics.waits), fallback: cloneMap(p.metrics.fallback), upstream: p.metrics.upstream, upstreamBytes: p.metrics.upstreamBytes, downstreamBytes: p.metrics.downstreamBytes, durations: p.metrics.durations, durationSum: p.metrics.durationSum, activeRequests: p.metrics.activeRequests, activeWaits: p.metrics.activeWaits}
 	p.metrics.mu.Unlock()
 	cs := cacheStats(p)
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
+	heapAlloc := heapAllocBytes()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	var b strings.Builder
 	writeMap := func(name, label string, values map[string]uint64) {
@@ -74,7 +89,7 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(&b, "# TYPE docker_accelerator_%s gauge\n", name)
 	}
 	fmt.Fprintf(&b, "docker_accelerator_upstream_get_attempts_total %d\ndocker_accelerator_upstream_body_bytes_total %d\ndocker_accelerator_downstream_bytes_total %d\ndocker_accelerator_active_requests %d\ndocker_accelerator_active_waits %d\ndocker_accelerator_active_connections %d\n", m.upstream, m.upstreamBytes, m.downstreamBytes, m.activeRequests, m.activeWaits, p.connectionCount())
-	fmt.Fprintf(&b, "docker_accelerator_cache_entries %d\ndocker_accelerator_cache_fills %d\ndocker_accelerator_cache_bytes %d\ndocker_accelerator_cache_reserved_bytes %d\ndocker_accelerator_cache_readers %d\ndocker_accelerator_cache_evictions_total %d\ndocker_accelerator_store_fill_success_total %d\ndocker_accelerator_store_fill_failure_total %d\ndocker_accelerator_store_fill_abort_total %d\ndocker_accelerator_store_fill_expiry_total %d\ndocker_accelerator_heap_alloc_bytes %d\ndocker_accelerator_goroutines %d\n", cs.Entries, cs.Fills, cs.Bytes, cs.Reserved, cs.Readers, cs.Evictions, cs.FillSuccess, cs.FillFailure, cs.FillAbort, cs.FillExpiry, mem.Alloc, runtime.NumGoroutine())
+	fmt.Fprintf(&b, "docker_accelerator_cache_entries %d\ndocker_accelerator_cache_fills %d\ndocker_accelerator_cache_bytes %d\ndocker_accelerator_cache_reserved_bytes %d\ndocker_accelerator_cache_readers %d\ndocker_accelerator_cache_evictions_total %d\ndocker_accelerator_store_fill_success_total %d\ndocker_accelerator_store_fill_failure_total %d\ndocker_accelerator_store_fill_abort_total %d\ndocker_accelerator_store_fill_expiry_total %d\ndocker_accelerator_heap_alloc_bytes %d\ndocker_accelerator_goroutines %d\n", cs.Entries, cs.Fills, cs.Bytes, cs.Reserved, cs.Readers, cs.Evictions, cs.FillSuccess, cs.FillFailure, cs.FillAbort, cs.FillExpiry, heapAlloc, runtime.NumGoroutine())
 	for reason := cache.AdmissionReason(0); reason < cache.AdmissionReasonCount; reason++ {
 		fmt.Fprintf(&b, "docker_accelerator_cache_admissions_total{reason=%q} %d\n", reason.String(), cs.Admissions[reason])
 	}

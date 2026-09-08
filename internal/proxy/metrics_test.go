@@ -176,6 +176,32 @@ func TestMetricsHandlerIsBoundedAndRedacted(t *testing.T) {
 	}
 }
 
+func TestHeapAllocBytesGaugeReportsPositiveLiveHeap(t *testing.T) {
+	if got := heapAllocBytes(); got == 0 {
+		t.Fatal("heapAllocBytes() = 0, want live heap-object bytes > 0")
+	}
+	p := &Proxy{metrics: newMetrics(), conns: make(map[*trackedConn]struct{})}
+	w := httptest.NewRecorder()
+	p.MetricsHandler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	body := w.Body.String()
+	var value uint64
+	// Match the sample line, not the "# TYPE ... gauge" declaration, by anchoring
+	// on the preceding newline.
+	line := "\ndocker_accelerator_heap_alloc_bytes "
+	idx := strings.Index(body, line)
+	if idx < 0 {
+		t.Fatalf("heap_alloc_bytes gauge missing:\n%s", body)
+	}
+	rest := body[idx+len(line):]
+	end := strings.IndexByte(rest, '\n')
+	if end < 0 {
+		t.Fatalf("heap_alloc_bytes gauge not newline-terminated: %q", rest)
+	}
+	if _, err := fmt.Sscanf(rest[:end], "%d", &value); err != nil || value == 0 {
+		t.Fatalf("heap_alloc_bytes value = %q (parsed %d, err %v), want positive integer", rest[:end], value, err)
+	}
+}
+
 func TestMetricsHistogramStatusAndOutcomeCounts(t *testing.T) {
 	p := &Proxy{metrics: newMetrics(), conns: make(map[*trackedConn]struct{})}
 	p.metrics.activeRequests = 2

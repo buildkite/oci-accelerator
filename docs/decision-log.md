@@ -47,6 +47,16 @@
   reason as a structured error value rather than its string, and give each subtest
   a fresh Proxy to remove shared-state/order coupling.
 
+- E (#6): source the `docker_accelerator_heap_alloc_bytes` gauge from
+  `runtime/metrics` (`/memory/classes/heap/objects:bytes`) instead of
+  `runtime.ReadMemStats(&mem).Alloc`, removing a stop-the-world pause on every
+  scrape. Go documents that metric as equivalent to `MemStats.HeapAlloc`/`Alloc`,
+  so the reported value is materially the same live-heap-objects figure; the
+  metric name and TYPE are unchanged so dashboards keep working. Alias the import
+  as `runtimemetrics` to avoid colliding with the package's own `metrics` type,
+  and return 0 if the metric is ever unsupported (KindBad) rather than panicking.
+  `runtime.NumGoroutine()` (already non-STW) is retained.
+
 ## Slice 1 authorization
 
 - Implement 1a–1e autonomously, with per-subslice commits and independent review.
