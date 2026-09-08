@@ -81,7 +81,7 @@ func TestLeafClockRollback(t *testing.T) {
 			if replaced == first {
 				t.Fatal("returned not-yet-valid cached leaf after clock rollback")
 			}
-			verifyLeafAt(t, a, replaced, now)
+			verifyCertificateAt(t, a, replaced, "example.com", now)
 		})
 	}
 }
@@ -112,7 +112,7 @@ func TestLeafValidityBoundaries(t *testing.T) {
 	if renewed == first || !renewed.Leaf.NotAfter.After(first.Leaf.NotAfter) {
 		t.Fatal("leaf was not renewed at renewal boundary")
 	}
-	verifyLeafAt(t, a, renewed, now)
+	verifyCertificateAt(t, a, renewed, "example.com", now)
 	now = renewed.Leaf.NotAfter
 	replaced, err := a.Certificate("example.com")
 	if err != nil {
@@ -121,7 +121,7 @@ func TestLeafValidityBoundaries(t *testing.T) {
 	if replaced == renewed {
 		t.Fatal("returned expired cached leaf")
 	}
-	verifyLeafAt(t, a, replaced, now)
+	verifyCertificateAt(t, a, replaced, "example.com", now)
 }
 
 func TestLeafReuseUntilCAExpiry(t *testing.T) {
@@ -147,7 +147,7 @@ func TestLeafReuseUntilCAExpiry(t *testing.T) {
 		if err != nil || got != first {
 			t.Fatalf("reissued CA-capped leaf: %v", err)
 		}
-		verifyLeafAt(t, a, got, now)
+		verifyCertificateAt(t, a, got, "example.com", now)
 	}
 	if _, err := a.Certificate("third.example"); err != nil {
 		t.Fatal(err)
@@ -172,7 +172,7 @@ func TestLeafReuseUntilCAExpiry(t *testing.T) {
 	}
 }
 
-func verifyLeafAt(t *testing.T, a *Authority, leaf *tls.Certificate, now time.Time) {
+func verifyCertificateAt(t *testing.T, a *Authority, leaf *tls.Certificate, host string, now time.Time) {
 	t.Helper()
 	cert, err := x509.ParseCertificate(leaf.Certificate[0])
 	if err != nil {
@@ -180,7 +180,7 @@ func verifyLeafAt(t *testing.T, a *Authority, leaf *tls.Certificate, now time.Ti
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(a.cert)
-	if _, err := cert.Verify(x509.VerifyOptions{Roots: roots, DNSName: "example.com", CurrentTime: now}); err != nil {
+	if _, err := cert.Verify(x509.VerifyOptions{Roots: roots, DNSName: host, CurrentTime: now}); err != nil {
 		t.Fatalf("verify returned certificate bytes: %v", err)
 	}
 }

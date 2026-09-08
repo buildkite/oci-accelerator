@@ -139,20 +139,28 @@ func TestRenewalRefreshesRecency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := a.cert.NotBefore.Add(3 * time.Hour)
+	a.now = func() time.Time { return now }
 	x, err := a.Certificate("x.example")
 	if err != nil {
 		t.Fatal(err)
 	}
+	xDER := bytes.Clone(x.Certificate[0])
+	xNotAfter := x.Leaf.NotAfter
 	if _, err := a.Certificate("y.example"); err != nil {
 		t.Fatal(err)
 	}
-	// Force "x" into the renewal branch. Renewal must move it to most-recently
+	// Advance "x" to the renewal boundary. Renewal must move it to most-recently
 	// used, so the next overflow evicts "y" rather than "x".
-	x.Leaf.NotAfter = time.Now().Add(leafRenewal)
+	now = x.Leaf.NotAfter.Add(-leafRenewal)
 	renewed, err := a.Certificate("x.example")
 	if err != nil || renewed == x {
 		t.Fatalf("near-expiry leaf was not renewed: %v", err)
 	}
+	if !bytes.Equal(x.Certificate[0], xDER) || !x.Leaf.NotAfter.Equal(xNotAfter) {
+		t.Fatal("renewal mutated the original certificate")
+	}
+	verifyCertificateAt(t, a, renewed, "x.example", now)
 	if _, err := a.Certificate("z.example"); err != nil {
 		t.Fatal(err)
 	}
@@ -169,15 +177,23 @@ func TestCapacityOneRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := a.cert.NotBefore.Add(3 * time.Hour)
+	a.now = func() time.Time { return now }
 	first, err := a.Certificate("only.example")
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.Leaf.NotAfter = time.Now().Add(leafRenewal)
+	firstDER := bytes.Clone(first.Certificate[0])
+	firstNotAfter := first.Leaf.NotAfter
+	now = first.Leaf.NotAfter.Add(-leafRenewal)
 	second, err := a.Certificate("only.example")
 	if err != nil || second == first {
 		t.Fatalf("sole entry was not renewed: %v", err)
 	}
+	if !bytes.Equal(first.Certificate[0], firstDER) || !first.Leaf.NotAfter.Equal(firstNotAfter) {
+		t.Fatal("renewal mutated the original certificate")
+	}
+	verifyCertificateAt(t, a, second, "only.example", now)
 	if a.order.Len() != 1 || len(a.leaves) != 1 {
 		t.Fatalf("cache desync at capacity 1: order=%d leaves=%d", a.order.Len(), len(a.leaves))
 	}
@@ -229,6 +245,8 @@ func TestLeafReuseRenewalAndCALimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := a.cert.NotBefore.Add(3 * time.Hour)
+	a.now = func() time.Time { return now }
 	one, err := a.Certificate("EXAMPLE.com.")
 	if err != nil {
 		t.Fatal(err)
@@ -237,19 +255,26 @@ func TestLeafReuseRenewalAndCALimit(t *testing.T) {
 	if err != nil || one != two {
 		t.Fatalf("canonical leaf was not reused: %v", err)
 	}
-	one.Leaf.NotAfter = time.Now().Add(leafRenewal)
+	oneDER := bytes.Clone(one.Certificate[0])
+	oneNotAfter := one.Leaf.NotAfter
+	now = one.Leaf.NotAfter.Add(-leafRenewal)
 	three, err := a.Certificate("example.com")
 	if err != nil || three == one {
 		t.Fatalf("near-expiry leaf was not renewed: %v", err)
 	}
-	a.cert.NotAfter = time.Now().Add(30 * time.Minute)
-	limited, err := a.makeLeaf("limited.example", time.Now())
+	if !bytes.Equal(one.Certificate[0], oneDER) || !one.Leaf.NotAfter.Equal(oneNotAfter) {
+		t.Fatal("renewal mutated the original certificate")
+	}
+	verifyCertificateAt(t, a, three, "example.com", now)
+	now = a.cert.NotAfter.Add(-30 * time.Minute)
+	limited, err := a.Certificate("limited.example")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if limited.Leaf.NotAfter.After(a.cert.NotAfter) {
 		t.Fatal("leaf outlives CA")
 	}
+	verifyCertificateAt(t, a, limited, "limited.example", now)
 	for _, invalid := range []string{"bad..host", "-bad.example", "bad_host"} {
 		if _, err := a.Certificate(invalid); err == nil {
 			t.Errorf("accepted %q", invalid)

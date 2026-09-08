@@ -60,11 +60,17 @@ func TestMetricsBindFailureAndSideEffectFreeCheck(t *testing.T) {
 }
 
 func TestMetricsListenerRoutingAndLifetime(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "metrics_disabled"},
+		{name: "metrics_enabled", enabled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			proxyAddress, metricsAddress := availableAddress(t), ""
-			if enabled {
+			if test.enabled {
 				metricsAddress = availableAddress(t)
 			}
 			path := filepath.Join(root, "config.yaml")
@@ -99,16 +105,31 @@ shutdown_timeout: 100ms
 				}
 				time.Sleep(time.Millisecond)
 			}
-			if enabled {
-				for _, path := range []string{"/metrics", "/", "/debug/pprof/"} {
-					resp, err := client.Get("http://" + metricsAddress + path)
+			if test.enabled {
+				routes := []struct {
+					path        string
+					wantStatus  int
+					wantContent []byte
+				}{
+					{path: "/metrics", wantStatus: http.StatusOK, wantContent: []byte("docker_accelerator_")},
+					{path: "/", wantStatus: http.StatusNotFound},
+					{path: "/debug/pprof/", wantStatus: http.StatusNotFound},
+				}
+				for _, route := range routes {
+					resp, err := client.Get("http://" + metricsAddress + route.path)
 					if err != nil {
-						t.Fatal(err)
+						t.Fatalf("GET %s: %v", route.path, err)
 					}
 					body, err := io.ReadAll(resp.Body)
 					resp.Body.Close()
-					if err != nil || (path == "/metrics" && (resp.StatusCode != 200 || !bytes.Contains(body, []byte("docker_accelerator_")))) || (path != "/metrics" && resp.StatusCode != 404) {
-						t.Fatalf("route %s status=%d err=%v", path, resp.StatusCode, err)
+					if err != nil {
+						t.Fatalf("read %s response: %v", route.path, err)
+					}
+					if resp.StatusCode != route.wantStatus {
+						t.Errorf("GET %s status = %d, want %d", route.path, resp.StatusCode, route.wantStatus)
+					}
+					if route.wantContent != nil && !bytes.Contains(body, route.wantContent) {
+						t.Errorf("GET %s response does not contain %q", route.path, route.wantContent)
 					}
 				}
 			}

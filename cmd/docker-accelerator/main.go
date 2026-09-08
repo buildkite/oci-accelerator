@@ -61,7 +61,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	var store *cache.Store
 	if cfg.Cache.Dir != "" {
-		store, err = cache.OpenWithLimits(cfg.Cache.Dir, cache.Limits{MaxBytes: cfg.Cache.MaxBytes, MaxFills: cfg.Cache.MaxFills, MaxEntries: cfg.Cache.MaxEntries, FillTimeout: cfg.Cache.FillTimeout})
+		store, err = cache.OpenWithLimits(cfg.Cache.Dir, cache.Limits{
+			MaxBytes:    cfg.Cache.MaxBytes,
+			MaxFills:    cfg.Cache.MaxFills,
+			MaxEntries:  cfg.Cache.MaxEntries,
+			FillTimeout: cfg.Cache.FillTimeout,
+		})
 		if err != nil {
 			return errors.New("cache startup failed")
 		}
@@ -89,7 +94,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) (runErr e
 		defer metricsListener.Close()
 		mux := http.NewServeMux()
 		mux.Handle("GET /metrics", p.MetricsHandler())
-		metricsServer := &http.Server{Handler: mux, ReadHeaderTimeout: cfg.ResponseHeaderTimeout, WriteTimeout: cfg.ResponseHeaderTimeout, IdleTimeout: cfg.IdleTimeout, MaxHeaderBytes: 64 << 10, ErrorLog: log.New(io.Discard, "", 0)}
+		metricsServer := &http.Server{
+			Handler:           mux,
+			ReadHeaderTimeout: cfg.ResponseHeaderTimeout,
+			WriteTimeout:      cfg.ResponseHeaderTimeout,
+			IdleTimeout:       cfg.IdleTimeout,
+			MaxHeaderBytes:    64 << 10,
+			ErrorLog:          log.New(io.Discard, "", 0),
+		}
 		metricsDone = make(chan struct{})
 		go func() {
 			_ = metricsServer.Serve(metricsListener)
