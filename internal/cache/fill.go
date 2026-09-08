@@ -75,6 +75,11 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		s.admissions[AdmissionFillLimit]++
 		return nil, &AdmissionError{Reason: AdmissionFillLimit}
 	}
+	// Retry abandoned directories before evicting useful entries. Failed
+	// retries keep their bytes and slots charged against admission limits.
+	for dir := range s.failedCleanups {
+		_ = s.removeCleanupLocked(dir)
+	}
 	if !s.evictLocked(charge, 1, math.MaxInt64) {
 		s.admissions[AdmissionCapacity]++
 		return nil, &AdmissionError{Reason: AdmissionCapacity}
@@ -85,21 +90,15 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		return nil, &AdmissionError{Reason: AdmissionIOError, Cause: err}
 	}
 	if err = os.Chmod(d, 0o700); err != nil {
-		os.RemoveAll(d)
-		s.admissions[AdmissionIOError]++
-		return nil, &AdmissionError{Reason: AdmissionIOError, Cause: err}
+		return nil, s.failAdmissionLocked(d, charge, err)
 	}
 	f, err := os.OpenFile(filepath.Join(d, "body"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		os.RemoveAll(d)
-		s.admissions[AdmissionIOError]++
-		return nil, &AdmissionError{Reason: AdmissionIOError, Cause: err}
+		return nil, s.failAdmissionLocked(d, charge, err)
 	}
 	if err = f.Chmod(0o600); err != nil {
 		f.Close()
-		os.RemoveAll(d)
-		s.admissions[AdmissionIOError]++
-		return nil, &AdmissionError{Reason: AdmissionIOError, Cause: err}
+		return nil, s.failAdmissionLocked(d, charge, err)
 	}
 	fill := &Fill{store: s, meta: meta, dir: d, file: f, hash: sha256.New(), charge: charge, deadline: time.Now().Add(s.fillTimeout), timerDone: make(chan struct{}), completed: make(chan struct{})}
 	s.fills[meta.Key] = fill
@@ -265,12 +264,8 @@ func (f *Fill) finish(cause error) error {
 	}
 	delete(f.store.fills, f.meta.Key)
 	f.store.reserved -= f.charge
-	// Failed cleanup must not allow the occupied space to be admitted again.
-	// Surfacing failedSlots and the leaked-byte total in Stats for operator
-	// observability is intentionally deferred to a later slice (finding #5).
 	if removeErr != nil {
-		f.store.bytes += f.charge
-		f.store.failedSlots++
+		f.store.retainCleanupLocked(f.dir, f.charge)
 	}
 	f.store.mu.Unlock()
 	f.done = true
@@ -292,10 +287,8 @@ func (f *Fill) supersedeTombstone(dest string) error {
 	defer f.store.mu.Unlock()
 	e, ok := f.store.entries[f.meta.Key]
 	if !ok {
-		// No mapped entry: dest is either absent or an unindexed leftover a prior
-		// removal already accounted for. Clear any stray directory so the rename
-		// can proceed; a missing path makes RemoveAll a no-op.
-		return os.RemoveAll(dest)
+		// Retire any failed publication's cleanup record before reusing dest.
+		return f.store.removeCleanupLocked(dest)
 	}
 	if !e.invalid {
 		return errors.New("cache fill destination occupied by a valid entry")
