@@ -10,13 +10,13 @@ The plan owns scope and design; this log tracks progress and upcoming work.
   4 — concurrency and operational hardening.
 - **In progress:** None. Buildkite CI maintenance is implemented, validated, and
   independently reviewed.
-- **Next:** Observe the first hosted build after publishing the CI branch.
-  No shared Buildkite settings changes are needed.
+- **Next:** Review and merge the `ci/buildkite` branch when ready.
+  The first hosted build passed; no shared Buildkite settings changes were needed.
 
 ## Buildkite CI (maintenance, not a plan slice)
 
-- **Status:** Complete — implementation, validation, and paired review finished;
-  implementation commit link follows after commit creation.
+- **Status:** [Complete](https://github.com/buildkite/oci-accelerator/commit/6a7c21f25339f43319d41c7abfbf4715ef63ce72)
+  — implementation, validation, and paired review finished; pushed on `ci/buildkite`.
 - **Scope:** Parallel formatting/vet/build/config, test, and race-test jobs on
   the existing `hosted` queue, in Go 1.27.1 Docker containers. No releases or
   deployments; Amp-dependent acceptance remains explicitly manual.
@@ -26,7 +26,9 @@ The plan owns scope and design; this log tracks progress and upcoming work.
   Go CI image on Linux amd64. All seven packages passed; example validation printed
   `configuration validated`. Buildkite Agent v4.0.1 dry-run parsing with
   `--reject-parse-warnings` passed using a dummy token and unreachable endpoint.
-  Shell syntax and diff whitespace checks passed. Hosted execution is not yet verified.
+  Shell syntax and diff whitespace checks passed. The automatic hosted
+  [Buildkite build #2](https://buildkite.com/buildkite/oci-accelerator/builds/2)
+  passed: bootstrap and all three CI jobs exited 0.
 - **Review:** Paired read-only snapshot reviews and final follow-up reviews found
   no actionable issues. The final snapshot includes the container-tested VCS stamp
   fix. Code-only reviewers received filtered source/test/config/diff bundles without
