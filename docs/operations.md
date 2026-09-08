@@ -245,6 +245,32 @@ never delete an established CA to repair startup. To replace a CA, stop the prox
 old CA securely, configure a new absent directory, start the proxy, verify the new fingerprint,
 redistribute `ca.crt`, and remove old client trust. Rotation is not automatic.
 
+## Docker in Amp orbs
+
+Amp runs `.agents/setup` when preparing a fresh orb. It installs checksum-verified
+Go 1.27.1, C build tools for race-enabled tests, and Docker Engine if missing, and
+downloads Go module dependencies. Re-running it is safe:
+
+```sh
+.agents/setup
+go version
+```
+
+Start Docker as a supervised service, not from setup or a background shell:
+
+```sh
+amp orb services ensure
+sudo docker info
+```
+
+The daemon uses only a local Unix socket; do not expose it through a portal.
+Use `sudo docker` for daemon operations. If it is not ready, inspect
+`amp orb service logs docker-daemon`. Amp supervises the daemon across CLI
+updates and orb pause/resume; no custom resume hook is needed.
+
+Registry credentials belong to the Docker client, never the setup script or a
+shared orb snapshot. Setup does not install a proxy CA into Docker's trust store.
+
 ## Repeatable checks
 
 Run the standard deterministic checks first:

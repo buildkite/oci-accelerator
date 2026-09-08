@@ -32,28 +32,7 @@ start the proxy, verify/install its public CA, and configure Docker Engine.
 The default listener is loopback-only. Do not expose it publicly: there is no
 proxy-user authentication, and unconfigured CONNECT destinations are opaque tunnels.
 
-## Development in Amp orbs
-
-Amp runs `.agents/setup` when preparing a fresh orb. It installs checksum-verified
-Go 1.27.1, C build tools for race-enabled tests, and Docker Engine if missing.
-It downloads Go module dependencies. Re-running it is safe:
-
-```sh
-.agents/setup
-go version
-```
-
-Start Docker as a supervised service, not from setup or a background shell:
-
-```sh
-amp orb services ensure
-sudo docker info
-```
-
-The daemon uses only a local Unix socket; do not expose it through a portal.
-Use `sudo docker` for daemon operations. If it is not ready, inspect
-`amp orb service logs docker-daemon`. Amp supervises the daemon across CLI
-updates and orb pause/resume; no custom resume hook is needed.
+## Testing
 
 Run the baseline checks:
 
@@ -63,21 +42,11 @@ go test -race ./...
 go vet ./...
 ```
 
-Registry credentials belong to the Docker client, never the setup script or a
-shared orb snapshot. Setup does not install a proxy CA into Docker's trust store.
-
-Real Docker acceptance is opt-in and uses fresh isolated daemon state:
-
-```sh
-OCI_ACCELERATOR_E2E=1 go test -v ./integration \
-  -run TestDockerPullThroughCompiledProxy -count=1 -timeout=5m
-```
-
-It validates CA rejection/trust, authenticated cold/warm/restart pulls, exact image
-digests, fresh upstream GETs, reduced warm layer bytes, and persistent CA identity
-using local fixtures—not public registries.
-See the [guide](docs/operations.md#repeatable-checks) for prerequisites,
-public-registry, fault and load checks, and limitations.
+Real Docker acceptance is opt-in and uses fresh isolated daemon state with local
+fixtures. See the [operating guide](docs/operations.md#repeatable-checks)
+for commands, prerequisites, cleanup, tested versions, and limitations.
+Amp orb development, including the supervised Docker daemon, is covered in the
+[operating guide](docs/operations.md#docker-in-amp-orbs).
 
 ## Buildkite CI
 
