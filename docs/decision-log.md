@@ -1,5 +1,17 @@
 # Implementation decisions
 
+## Proxy review follow-up (maintenance)
+
+- Fix findings from a deep `internal/proxy/` review on branch `fix/proxy-findings`
+  as independent local commits; do not push. Order lowest-risk to highest-risk.
+- A (#14): make production `manifestMediaTypes` the single source of truth and have
+  tests reference it. Kept a plain package-private slice rather than a map or a
+  copy-returning accessor: four entries, read-only usage, package-internal — a map
+  would be over-engineering and a slice reads as the canonical list. Behavior is
+  unchanged (exact string match on the `mime.ParseMediaType` base type). Also removed
+  a second parallel copy in `TestManifestMetadataAdmission` (the exact drift #14
+  targets) surfaced by code-only review.
+
 ## Slice 1 authorization
 
 - Implement 1a–1e autonomously, with per-subslice commits and independent review.

@@ -12,6 +12,23 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 - **Next:** The authorized run is complete. Deferred features require separate
   scope approval; there are no unresolved verification blockers for slices 3–4.
 
+## Proxy review follow-up (maintenance, not a plan slice)
+
+Fixes for findings from a deep review of `internal/proxy/`. Each item is an
+independent local commit on branch `fix/proxy-findings`; not pushed. Reasons are
+recorded in the [decision log](decision-log.md).
+
+| Item | Finding | Status |
+| --- | --- | --- |
+| A. Dedupe manifest media-type list | #14 duplicated allowlist in prod and tests | Complete — `manifestMediaTypes` is the single source of truth; tests reference it. |
+| B. Clarify `rawCONNECTValid` | #11 misleading true-on-non-CONNECT | Pending |
+| C. Simplify `fillingBody.Read` ordering | #1 fragile triple nil-check | Pending |
+| D. Internal redirect-refusal reasons | #13 `errRedirect` collapses causes | Pending |
+| E. Non-STW heap gauge | #6 `ReadMemStats` STW on every scrape | Pending |
+| F. `-race` CONNECT sniffing coverage | #9 unsynchronized `rawOK`/`checked` | Pending |
+| G. Cache-effectiveness measurement | #4/#5 Vary/digest conservatism | Pending (investigate-first) |
+| H. Shutdown reader-leak race | #2 hard-timeout leaves reader pinned | Pending |
+
 ## Completed groundwork
 
 - Requirements and architecture agreed and recorded in the approved plan.

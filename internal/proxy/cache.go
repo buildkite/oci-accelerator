@@ -80,16 +80,23 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 	return cache.Metadata{Key: hex.EncodeToString(sum[:]), Digest: object.digest, Size: resp.ContentLength, MediaType: media[0]}, true
 }
 
+// manifestMediaTypes is the canonical set of OCI and Docker manifest media
+// types the cache will store. It is the single source of truth; tests must
+// reference it rather than maintaining a parallel copy.
+var manifestMediaTypes = []string{
+	"application/vnd.oci.image.manifest.v1+json",
+	"application/vnd.oci.image.index.v1+json",
+	"application/vnd.docker.distribution.manifest.v2+json",
+	"application/vnd.docker.distribution.manifest.list.v2+json",
+}
+
 func manifestMediaType(mediaType string) bool {
-	switch mediaType {
-	case "application/vnd.oci.image.manifest.v1+json",
-		"application/vnd.oci.image.index.v1+json",
-		"application/vnd.docker.distribution.manifest.v2+json",
-		"application/vnd.docker.distribution.manifest.list.v2+json":
-		return true
-	default:
-		return false
+	for _, known := range manifestMediaTypes {
+		if mediaType == known {
+			return true
+		}
 	}
+	return false
 }
 
 func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted, mayWait bool, stats *requestStats) (*http.Response, bool) {

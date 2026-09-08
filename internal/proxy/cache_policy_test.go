@@ -62,13 +62,7 @@ func TestBlobMetadataRejectsUnsupportedRequests(t *testing.T) {
 }
 
 func TestManifestMetadataAdmission(t *testing.T) {
-	mediaTypes := []string{
-		"application/vnd.oci.image.manifest.v1+json",
-		"application/vnd.oci.image.index.v1+json",
-		"application/vnd.docker.distribution.manifest.v2+json",
-		"application/vnd.docker.distribution.manifest.list.v2+json",
-	}
-	for _, mediaType := range mediaTypes {
+	for _, mediaType := range manifestMediaTypes {
 		t.Run(mediaType, func(t *testing.T) {
 			req, resp := cachePolicyFixture()
 			req.URL.Path = "/v2/team/image/manifests/" + testBlobDigest
@@ -203,5 +197,26 @@ func TestBlobMetadataKeyIsolation(t *testing.T) {
 	}
 	if strings.Contains(base, "secret") || len(base) != 64 {
 		t.Fatalf("cache key exposes raw header data: %q", base)
+	}
+}
+
+func TestManifestMediaTypeMatchesCanonicalListExactly(t *testing.T) {
+	for _, mediaType := range manifestMediaTypes {
+		if !manifestMediaType(mediaType) {
+			t.Errorf("manifestMediaType(%q) = false, want true", mediaType)
+		}
+	}
+	for _, mediaType := range []string{
+		"",
+		"application/json",
+		"application/vnd.oci.image.manifest.v1+json ",
+		"Application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.oci.image.manifest.v2+json",
+		"application/vnd.docker.distribution.manifest.v1+json",
+		"application/octet-stream",
+	} {
+		if manifestMediaType(mediaType) {
+			t.Errorf("manifestMediaType(%q) = true, want false", mediaType)
+		}
 	}
 }

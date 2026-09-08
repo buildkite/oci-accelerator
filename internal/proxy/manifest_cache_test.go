@@ -14,13 +14,6 @@ import (
 	"ampcode.com/buildkite/docker-accelerator/internal/cache"
 )
 
-var manifestMediaTypes = []string{
-	"application/vnd.oci.image.manifest.v1+json",
-	"application/vnd.oci.image.index.v1+json",
-	"application/vnd.docker.distribution.manifest.v2+json",
-	"application/vnd.docker.distribution.manifest.list.v2+json",
-}
-
 func manifestURL(repository, body string) string {
 	return fmt.Sprintf("/v2/%s/manifests/sha256:%x", repository, sha256.Sum256([]byte(body)))
 }
