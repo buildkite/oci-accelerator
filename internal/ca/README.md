@@ -37,7 +37,8 @@ window) and enforces strict on-disk file types and permissions
 Returns a currently valid leaf certificate for a DNS name or IP address, signing
 a new 24-hour leaf when the cache has no entry (or the cached one is within one
 hour of expiry); the leaf's validity is capped at the CA's own expiry. The cache
-evicts oldest-first once `maxLeaves` is reached.
+evicts the least recently used entry once `maxLeaves` is reached; every cache
+hit and renewal refreshes an entry's recency.
 
 ### `(*Authority) CertificatePath() string`
 

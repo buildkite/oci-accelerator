@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -76,6 +77,106 @@ func TestLeavesVerifyAndCacheIsBounded(t *testing.T) {
 	}
 	if len(a.leaves) != 2 {
 		t.Fatalf("cache size = %d", len(a.leaves))
+	}
+}
+
+func TestCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "ca"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Certificate("a.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Certificate("b.example"); err != nil {
+		t.Fatal(err)
+	}
+	// Touch "a" so "b" becomes least recently used, then overflow the cache.
+	if _, err := a.Certificate("a.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Certificate("c.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.leaves["b.example"]; ok {
+		t.Fatal("least recently used entry was not evicted")
+	}
+	for _, host := range []string{"a.example", "c.example"} {
+		if _, ok := a.leaves[host]; !ok {
+			t.Fatalf("recently used entry %q was evicted", host)
+		}
+	}
+	if a.order.Len() != len(a.leaves) || len(a.leaves) != 2 {
+		t.Fatalf("cache desync: order=%d leaves=%d", a.order.Len(), len(a.leaves))
+	}
+}
+
+func TestRenewalRefreshesRecency(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "ca"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := a.Certificate("x.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Certificate("y.example"); err != nil {
+		t.Fatal(err)
+	}
+	// Force "x" into the renewal branch. Renewal must move it to most-recently
+	// used, so the next overflow evicts "y" rather than "x".
+	x.Leaf.NotAfter = time.Now().Add(leafRenewal)
+	renewed, err := a.Certificate("x.example")
+	if err != nil || renewed == x {
+		t.Fatalf("near-expiry leaf was not renewed: %v", err)
+	}
+	if _, err := a.Certificate("z.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.leaves["y.example"]; ok {
+		t.Fatal("renewal did not refresh recency: least recently used entry survived")
+	}
+	if _, ok := a.leaves["x.example"]; !ok {
+		t.Fatal("renewed entry was evicted despite being most recently used")
+	}
+}
+
+func TestCapacityOneRenewal(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "ca"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := a.Certificate("only.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Leaf.NotAfter = time.Now().Add(leafRenewal)
+	second, err := a.Certificate("only.example")
+	if err != nil || second == first {
+		t.Fatalf("sole entry was not renewed: %v", err)
+	}
+	if a.order.Len() != 1 || len(a.leaves) != 1 {
+		t.Fatalf("cache desync at capacity 1: order=%d leaves=%d", a.order.Len(), len(a.leaves))
+	}
+}
+
+func TestCacheBackingStoreStaysBounded(t *testing.T) {
+	const maxLeaves = 4
+	a, err := Open(filepath.Join(t.TempDir(), "ca"), maxLeaves)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 200; i++ {
+		host := fmt.Sprintf("host-%d.example", i)
+		if _, err := a.Certificate(host); err != nil {
+			t.Fatalf("Certificate(%q): %v", host, err)
+		}
+		if a.order.Len() > maxLeaves || len(a.leaves) > maxLeaves {
+			t.Fatalf("cache exceeded bound: order=%d leaves=%d", a.order.Len(), len(a.leaves))
+		}
+		if a.order.Len() != len(a.leaves) {
+			t.Fatalf("cache desync: order=%d leaves=%d", a.order.Len(), len(a.leaves))
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package ca
 
 import (
+	"container/list"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -19,13 +20,25 @@ import (
 
 const leafRenewal = time.Hour
 
-type leafCache struct {
-	mu     sync.Mutex
-	leaves map[string]*tls.Certificate
-	order  []string
+// leafEntry is stored as the Value of each list element so eviction can locate
+// its map key without a reverse lookup.
+type leafEntry struct {
+	host string
+	cert *tls.Certificate
 }
 
-func newLeafCache() leafCache { return leafCache{leaves: make(map[string]*tls.Certificate)} }
+// leafCache is a bounded least-recently-used cache of per-host leaf
+// certificates. order.Front() is the least recently used entry and
+// order.Back() the most recently used; leaves maps each host to its element.
+type leafCache struct {
+	mu     sync.Mutex
+	leaves map[string]*list.Element
+	order  *list.List
+}
+
+func newLeafCache() leafCache {
+	return leafCache{leaves: make(map[string]*list.Element), order: list.New()}
+}
 
 // Certificate returns a currently valid certificate for a DNS name or IP address.
 func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
@@ -40,21 +53,30 @@ func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 	host = parsed.Host()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if cached := a.leaves[host]; cached != nil && cached.Leaf != nil && cached.Leaf.NotAfter.Sub(now) > leafRenewal {
-		return cached, nil
+	if elem := a.leaves[host]; elem != nil {
+		entry := elem.Value.(*leafEntry)
+		if entry.cert.Leaf != nil && entry.cert.Leaf.NotAfter.Sub(now) > leafRenewal {
+			a.order.MoveToBack(elem)
+			return entry.cert, nil
+		}
+		leaf, err := a.makeLeaf(host, now)
+		if err != nil {
+			return nil, err
+		}
+		entry.cert = leaf
+		a.order.MoveToBack(elem)
+		return leaf, nil
 	}
 	leaf, err := a.makeLeaf(host, now)
 	if err != nil {
 		return nil, err
 	}
-	if _, exists := a.leaves[host]; !exists {
-		if len(a.leaves) == a.maxLeaves {
-			delete(a.leaves, a.order[0])
-			a.order = a.order[1:]
-		}
-		a.order = append(a.order, host)
+	if a.order.Len() >= a.maxLeaves {
+		oldest := a.order.Front()
+		delete(a.leaves, oldest.Value.(*leafEntry).host)
+		a.order.Remove(oldest)
 	}
-	a.leaves[host] = leaf
+	a.leaves[host] = a.order.PushBack(&leafEntry{host: host, cert: leaf})
 	return leaf, nil
 }
 
@@ -92,8 +114,10 @@ func (a *Authority) makeLeaf(host string, now time.Time) (*tls.Certificate, erro
 	if err != nil {
 		return nil, err
 	}
-	pair.Leaf, err = x509.ParseCertificate(der)
-	return &pair, err
+	if pair.Leaf, err = x509.ParseCertificate(der); err != nil {
+		return nil, err
+	}
+	return &pair, nil
 }
 
 func randomSerial() (*big.Int, error) {
