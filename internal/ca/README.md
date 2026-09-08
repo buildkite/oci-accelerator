@@ -52,6 +52,23 @@ rejects loading another user's installation, including when running as root,
 rather than relying on permission bits alone. These checks do not validate
 every ancestor in the path; operators must keep the containing path trusted.
 
+#### Orphaned initialization directories
+
+Initialization stages the certificate and private key in a private `.ca-init-*`
+directory under the CA's parent, then atomically renames it into place. Normal
+returns clean up unused staging directories, but a crash or SIGKILL can bypass
+that cleanup. A leftover staging directory does not prevent later startup and
+is never automatically adopted or removed.
+
+For manual cleanup, stop all processes that can initialize a CA in that parent
+and keep them stopped during inspection and removal. Inspect only that trusted
+parent, identify orphan `.ca-init-*` directories, and remove those directories
+by their exact paths. Do not remove the configured CA directory or run a broad
+wildcard deletion. Staging directories may contain private keys: retain their
+restrictive permissions and do not print or copy their contents. Automatic
+cleanup is intentionally avoided because a staging directory may belong to
+another active initializer.
+
 ### `(*Authority) Certificate(host string) (*tls.Certificate, error)`
 
 Returns a currently valid leaf certificate for a DNS name or IP address, signing
@@ -62,6 +79,10 @@ already expiring with the CA is reused even during that final hour: renewing
 cannot extend its lifetime. An invalid CA always prevents issuance and reuse.
 The cache evicts the least recently used entry once `maxLeaves` is reached;
 every cache hit and renewal refreshes an entry's recency.
+
+Returned certificates are shared with the cache and other callers. Treat the
+certificate and all nested data (including `Leaf`, certificate bytes, and the
+private key) as read-only. No defensive copies are made.
 
 ### `(*Authority) CertificatePath() string`
 

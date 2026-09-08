@@ -107,12 +107,11 @@ func initialize(dir string) error {
 		return err
 	}
 	// Publish atomically. Concurrent initializers each stage their own CA and
-	// race this rename. rename(2) into an existing directory fails (with
-	// ENOTEMPTY once a competitor has populated the destination, and with
-	// EEXIST for an empty destination on some platforms such as macOS), so at
-	// most one initializer creates dir. This makes initialization crash-safe
-	// without a persistent on-disk lock that a killed process would leak: the
-	// only durable artifact is a fully staged CA moved into place in one step.
+	// race this rename. A published CA makes the destination non-empty, so a
+	// competing rename fails rather than replacing it. Publication never exposes
+	// a partial CA and needs no persistent lock. A crash or SIGKILL can bypass
+	// deferred cleanup and leave a private staging directory behind; see README.md
+	// for manual cleanup while all initializers are stopped.
 	if err := os.Rename(stage, dir); err != nil {
 		// A losing initializer adopts the winner's CA. Rename can also fail for
 		// reasons unrelated to a competitor (permission, I/O, cross-device), so
@@ -137,11 +136,10 @@ func publishedCA(dir string) bool {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {
 		return false
 	}
-	if _, err := readRegular(filepath.Join(dir, certName), 0o644); err != nil {
+	if err := checkRegular(filepath.Join(dir, certName), 0o644); err != nil {
 		return false
 	}
-	_, err = readRegular(filepath.Join(dir, keyName), 0o600)
-	return err == nil
+	return checkRegular(filepath.Join(dir, keyName), 0o600) == nil
 }
 
 func checkParent(parent string) error {
@@ -198,7 +196,15 @@ func newCA(now time.Time) ([]byte, *ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	t := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "Docker Accelerator CA"}, NotBefore: now.Add(-time.Minute), NotAfter: now.AddDate(10, 0, 0), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature}
+	t := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "Docker Accelerator CA"},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.AddDate(10, 0, 0),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+	}
 	der, err := x509.CreateCertificate(rand.Reader, t, t, &key.PublicKey, key)
 	return der, key, err
 }
@@ -244,15 +250,22 @@ func load(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 // owner-only public certificate) is accepted while any broader access, such as
 // group- or world-write on the key, is rejected.
 func readRegular(path string, maxPerm os.FileMode) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
+	if err := checkRegular(path, maxPerm); err != nil {
 		return nil, err
 	}
+	return os.ReadFile(path)
+}
+
+func checkRegular(path string, maxPerm os.FileMode) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&^maxPerm != 0 {
-		return nil, errors.New("file has insecure type or permissions")
+		return errors.New("file has insecure type or permissions")
 	}
 	if !ownedByCurrentUser(info) {
-		return nil, errors.New("file must be owned by the current user")
+		return errors.New("file must be owned by the current user")
 	}
-	return os.ReadFile(path)
+	return nil
 }

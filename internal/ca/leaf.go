@@ -43,6 +43,9 @@ func newLeafCache() leafCache {
 }
 
 // Certificate returns a currently valid certificate for a DNS name or IP address.
+// The returned certificate is shared with the cache and other callers. Callers
+// must not modify it or any nested data, including Leaf, certificate bytes, and
+// the private key.
 func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 	parsed, err := hostport.Parse(host, "443")
 	if err != nil || parsed.Port() != "443" {
@@ -104,7 +107,14 @@ func (a *Authority) makeLeaf(host string, now time.Time) (*tls.Certificate, erro
 	if !notAfter.After(now) {
 		return nil, errors.New("CA expires too soon to issue a leaf")
 	}
-	t := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: host}, NotBefore: now.Add(-time.Minute), NotAfter: notAfter, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	t := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: host},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		t.IPAddresses = []net.IP{ip}
 	} else {
