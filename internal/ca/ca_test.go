@@ -235,24 +235,36 @@ func TestLeafReuseRenewalAndCALimit(t *testing.T) {
 }
 
 func TestConcurrentInitializationNeverOverwrites(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ca")
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "ca")
 	const count = 20
 	results := make(chan *Authority, count)
 	var wg sync.WaitGroup
 	for i := 0; i < count; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); a, _ := Open(dir, 1); results <- a }()
+		go func() {
+			defer wg.Done()
+			a, err := Open(dir, 1)
+			if err != nil {
+				// Every concurrent opener must succeed: the winner publishes
+				// the CA and losers adopt it. None may fail now that there is
+				// no persistent initialization lock to contend on.
+				t.Errorf("concurrent Open failed: %v", err)
+			}
+			results <- a
+		}()
 	}
 	wg.Wait()
 	close(results)
 	var fingerprint string
 	for a := range results {
-		if a != nil {
-			if fingerprint == "" {
-				fingerprint = a.Fingerprint()
-			} else if a.Fingerprint() != fingerprint {
-				t.Fatal("concurrent initialization rotated CA")
-			}
+		if a == nil {
+			continue
+		}
+		if fingerprint == "" {
+			fingerprint = a.Fingerprint()
+		} else if a.Fingerprint() != fingerprint {
+			t.Fatal("concurrent initialization rotated CA")
 		}
 	}
 	if fingerprint == "" {
@@ -261,6 +273,106 @@ func TestConcurrentInitializationNeverOverwrites(t *testing.T) {
 	a, err := Open(dir, 1)
 	if err != nil || a.Fingerprint() != fingerprint {
 		t.Fatalf("published CA changed: %v", err)
+	}
+	// Losing initializers must clean up their staging directories, and no
+	// initialization lock may be left behind.
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "ca" {
+			t.Fatalf("leftover artifact in parent: %q", e.Name())
+		}
+	}
+}
+
+func TestConcurrentInitializeAllSucceed(t *testing.T) {
+	// Exercise the rename contention directly: Open short-circuits to load once
+	// dir exists, so calling initialize from every goroutine is what forces the
+	// losing-initializer adopt branch to run.
+	dir := filepath.Join(t.TempDir(), "ca")
+	const count = 20
+	var wg sync.WaitGroup
+	errs := make([]error, count)
+	start := make(chan struct{})
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = initialize(dir)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("initialize %d: %v", i, err)
+		}
+	}
+	a, err := Open(dir, 1)
+	if err != nil {
+		t.Fatalf("published CA is not loadable: %v", err)
+	}
+	if a.Fingerprint() == "" {
+		t.Fatal("empty fingerprint")
+	}
+	// Exactly one CA is published and every loser cleaned up its staging dir.
+	entries, err := os.ReadDir(filepath.Dir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(dir) {
+		t.Fatalf("leftover artifacts in parent: %v", entries)
+	}
+}
+
+func TestInitializeSurfacesRenameFailureForNonCADir(t *testing.T) {
+	// A pre-existing non-empty directory that is not a published CA must make
+	// initialize surface the rename failure rather than falsely adopt it. A
+	// non-empty destination fails rename identically on Linux (ENOTEMPTY) and
+	// macOS (EEXIST), so this exercises the surface branch portably.
+	dir := filepath.Join(t.TempDir(), "ca")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(dir, "stray")
+	if err := os.WriteFile(stray, []byte("not a CA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initialize(dir); err == nil {
+		t.Fatal("adopted a non-CA directory as a published CA")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "stray" {
+		t.Fatalf("pre-existing directory was modified: %v", entries)
+	}
+}
+
+func TestInitializeSurfacesForShapeValidButInvalidCA(t *testing.T) {
+	// A directory whose files have CA-like names and permissions but garbage
+	// contents is shape-valid, so publishedCA adopts it; Open must still fail
+	// closed because load re-validates contents. This documents that adoption
+	// defers content validation to load and never yields a bad Authority.
+	dir := filepath.Join(t.TempDir(), "ca")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, certName), []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, keyName), []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initialize(dir); err != nil {
+		t.Fatalf("shape-valid dir should be adopted by initialize: %v", err)
+	}
+	if _, err := Open(dir, 1); err == nil {
+		t.Fatal("Open accepted a shape-valid but invalid CA")
 	}
 }
 
