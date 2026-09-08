@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -35,10 +36,8 @@ func pinnedTombstone(t *testing.T, s *Store, m Metadata, body string) *Reader {
 	return held
 }
 
-// Test 1: Begin re-admits an invalidated-but-pinned entry. Previously Begin
-// returned AdmissionExisting because the tombstone remained mapped. After the
-// fix Begin succeeds, the held Reader still returns the OLD bytes, and after the
-// new fill commits Stats.Bytes equals exactly the new entry's charge.
+// Replacing an invalid entry preserves old readers and releases the old charge
+// only after those readers close.
 func TestBeginReadmitsPinnedInvalidEntry(t *testing.T) {
 	s := openTest(t, 1<<20)
 	m := testMeta("readmit", "original")
@@ -111,12 +110,11 @@ func TestReadmitIndexIntegrityAcrossOverwrite(t *testing.T) {
 	}
 	read(t, s, fresh, "brandnew")
 
-	// The superseding Commit detaches the tombstone and reclaims its charge under
-	// s.mu, so only the new entry's charge is accounted even while the old reader
-	// is still pinned. Closing that reader must not subtract the charge again.
+	// Unlinked bodies still occupy space until their final readers close.
 	wantBytes := fresh.Size + metadataReservation
-	if st := s.Stats(); st.Bytes != wantBytes {
-		t.Fatalf("Stats.Bytes before old-reader close = %d, want %d (new charge only)", st.Bytes, wantBytes)
+	withOld := wantBytes + m.Size + metadataReservation
+	if st := s.Stats(); st.Bytes != withOld {
+		t.Fatalf("Stats.Bytes before old-reader close = %d, want %d", st.Bytes, withOld)
 	}
 	if err := held.Close(); err != nil {
 		t.Fatal(err)
@@ -128,6 +126,102 @@ func TestReadmitIndexIntegrityAcrossOverwrite(t *testing.T) {
 		t.Fatalf("Stats.Bytes after old-reader close = %d, want %d (no double subtract)", st.Bytes, wantBytes)
 	}
 	read(t, s, fresh, "brandnew")
+}
+
+func TestDetachedReadersRetainCapacity(t *testing.T) {
+	const charge = metadataReservation + 4
+	s := openTest(t, 2*charge)
+	m := testMeta("retained", "aaaa")
+	held := pinnedTombstone(t, s, m, "aaaa")
+	defer held.Close()
+	put(t, s, m, "aaaa")
+	current, err := s.Get(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	next := testMeta("next", "bbbb")
+	f, err := s.Begin(next)
+	if f != nil {
+		f.Abort()
+	}
+	var admission *AdmissionError
+	if !errors.As(err, &admission) || admission.Reason != AdmissionCapacity {
+		t.Fatalf("admission with detached and current readers = %v", err)
+	}
+	if st := s.Stats(); st.Bytes != 2*charge || st.Readers != 2 || st.Evictions != 0 {
+		t.Fatalf("detached reader lost accounting: %+v", st)
+	}
+	got, err := io.ReadAll(held)
+	if err != nil || string(got) != "aaaa" {
+		t.Fatalf("detached body = %q, %v", got, err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.Stats(); st.Bytes != charge || st.Readers != 1 {
+		t.Fatalf("detached reader did not reclaim exactly once: %+v", st)
+	}
+	put(t, s, next, "bbbb")
+	read(t, s, m, "aaaa")
+	read(t, s, next, "bbbb")
+}
+
+func TestAbortedReplacementRetainsDetachedCharge(t *testing.T) {
+	s := openTest(t, 1<<20)
+	m := testMeta("aborted-replacement", "aaaa")
+	held := pinnedTombstone(t, s, m, "aaaa")
+	defer held.Close()
+	f, err := s.Begin(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stop at the publication boundary after detaching the old directory.
+	if err := f.supersedeTombstone(filepath.Join(s.dir, m.Key)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.Stats(); st.Bytes != m.Size+metadataReservation || st.Reserved != 0 || st.Entries != 0 {
+		t.Fatalf("aborted replacement dropped detached charge: %+v", st)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.Stats(); st.Bytes != 0 || st.Readers != 0 {
+		t.Fatalf("detached charge not reclaimed: %+v", st)
+	}
+}
+
+func TestCloseWaitsForDetachedReader(t *testing.T) {
+	s := openTest(t, 1<<20)
+	m := testMeta("close-detached", "aaaa")
+	held := pinnedTombstone(t, s, m, "aaaa")
+	defer held.Close()
+	put(t, s, m, "aaaa")
+	if err := s.Close(); err == nil {
+		t.Fatal("Close succeeded with a detached reader")
+	}
+	if second, err := Open(s.dir, s.max); err == nil {
+		second.Close()
+		t.Fatal("lock released with a detached reader")
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(s.dir, s.max)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	read(t, second, m, "aaaa")
 }
 
 // Test 3: Completion consistency. While the tombstone is pinned and a re-Begin

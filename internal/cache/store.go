@@ -81,10 +81,7 @@ type entry struct {
 	pins     int
 	verified bool
 	invalid  bool
-	// reclaimed guards this entry's charge against a double subtraction from
-	// s.bytes. A tombstone can be reclaimed by whichever of unpin, Begin (C1),
-	// or a superseding Commit reaches it first; the flag makes that subtraction
-	// idempotent so late readers only drop their pin.
+	// Charges are reclaimed once, after directory removal and the final unpin.
 	reclaimed bool
 }
 
@@ -343,11 +340,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64) bool {
 		}
 		if os.RemoveAll(e.dir) == nil {
 			delete(s.entries, e.meta.Key)
-			// Mark reclaimed so the invariant "every path that detaches an entry
-			// from the map reclaims its charge exactly once" holds uniformly; a
-			// later unpin of the same object then only drops its pin. An
-			// unpinned invalid tombstone can be a victim here, and no future
-			// unpin would otherwise observe that its charge was already dropped.
+			// Eviction only selects unpinned entries, so their charge is free.
 			e.reclaimed = true
 			s.bytes -= e.charge
 			s.evictions++
@@ -365,18 +358,15 @@ func (s *Store) Close() error {
 	s.mu.Lock()
 	s.closed = true
 	fs := make([]*Fill, 0, len(s.fills))
-	pins := 0
+	readers := s.readers // Includes readers of detached entries.
 	for _, f := range s.fills {
 		fs = append(fs, f)
-	}
-	for _, e := range s.entries {
-		pins += e.pins
 	}
 	s.mu.Unlock()
 	for _, f := range fs {
 		_ = f.Abort()
 	}
-	if pins != 0 {
+	if readers != 0 {
 		return errors.New("cache has active readers")
 	}
 	return s.releaseLock()

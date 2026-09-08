@@ -304,7 +304,9 @@ func (f *Fill) supersedeTombstone(dest string) error {
 		return err
 	}
 	delete(f.store.entries, f.meta.Key)
-	if !e.reclaimed {
+	// Unlinking does not free the body while readers hold its inode open.
+	// A detached pinned entry retains its charge until its final unpin.
+	if e.pins == 0 && !e.reclaimed {
 		e.reclaimed = true
 		f.store.bytes -= e.charge
 	}
