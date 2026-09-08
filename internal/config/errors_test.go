@@ -74,6 +74,12 @@ ca_dir: ca
 		{"required registries", "ca_dir: ca\ncache: {dir: cache}\n", []string{"registries", "at least one authority"}},
 		{"required CA", "registries: [registry.example]\ncache: {dir: cache}\n", []string{"ca_dir", "non-blank directory path"}},
 		{"required cache", base, []string{"cache.dir", "non-blank directory path"}},
+		{"NUL CA directory", `registries: [registry.example]
+ca_dir: "sensitive-value\0suffix"
+cache: {dir: cache}
+`, []string{"ca_dir", "must not contain NUL"}},
+		{"NUL cache directory", base + `cache: {dir: "sensitive-value\0suffix"}
+`, []string{"cache.dir", "must not contain NUL"}},
 		{"string type", `registries: [registry.example]
 ca_dir: true
 cache: {dir: cache}

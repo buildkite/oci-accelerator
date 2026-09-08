@@ -18,8 +18,14 @@ func validate(raw rawConfig, base string) (Config, error) {
 	if strings.TrimSpace(string(raw.CADir)) == "" {
 		return Config{}, fmt.Errorf("%w: ca_dir: must be a non-blank directory path", ErrInvalid)
 	}
+	if strings.ContainsRune(string(raw.CADir), 0) {
+		return Config{}, fmt.Errorf("%w: ca_dir: must not contain NUL", ErrInvalid)
+	}
 	if strings.TrimSpace(string(raw.Cache.Dir)) == "" {
 		return Config{}, fmt.Errorf("%w: cache.dir: must be a non-blank directory path", ErrInvalid)
+	}
+	if strings.ContainsRune(string(raw.Cache.Dir), 0) {
+		return Config{}, fmt.Errorf("%w: cache.dir: must not contain NUL", ErrInvalid)
 	}
 	listen, err := canonicalBindAddress(string(raw.Listen), false)
 	if err != nil {
