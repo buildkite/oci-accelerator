@@ -83,13 +83,14 @@ type diskMetadata struct {
 	Committed int64 `json:"committed"`
 }
 type entry struct {
-	meta     Metadata
-	dir      string
-	charge   int64
-	last     int64
-	pins     int
-	verified bool
-	invalid  bool
+	meta      Metadata
+	dir       string
+	charge    int64
+	last      int64
+	pins      int
+	verified  bool
+	verifying chan struct{} // Non-nil while one Get verifies; guarded by Store.mu.
+	invalid   bool
 	// Charges are reclaimed once, after directory removal and the final unpin.
 	reclaimed bool
 }

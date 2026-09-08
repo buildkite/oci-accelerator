@@ -20,24 +20,47 @@ type Reader struct {
 }
 
 func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
-	if !validMeta(meta) || ctx.Err() != nil {
+	if !validMeta(meta) {
 		return nil, ErrMiss
 	}
-	s.mu.Lock()
-	if s.closed {
+	for {
+		if ctx.Err() != nil {
+			return nil, ErrMiss
+		}
+		s.mu.Lock()
+		e := s.entries[meta.Key]
+		if s.closed || e == nil || e.meta != meta || e.invalid {
+			s.mu.Unlock()
+			return nil, ErrMiss
+		}
+		need := !e.verified
+		if need && e.verifying != nil {
+			done := e.verifying
+			s.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ErrMiss
+			case <-done:
+				// Recheck the entry: a canceled verifier permits takeover;
+				// corruption, replacement, or shutdown may instead mean a miss.
+				continue
+			}
+		}
+		if need {
+			e.verifying = make(chan struct{})
+		}
+		e.pins++
+		s.readers++
 		s.mu.Unlock()
-		return nil, ErrMiss
+		r, err := s.openReader(ctx, e, need)
+		if need {
+			s.mu.Lock()
+			close(e.verifying)
+			e.verifying = nil
+			s.mu.Unlock()
+		}
+		return r, err
 	}
-	e := s.entries[meta.Key]
-	if e == nil || e.meta != meta || e.invalid {
-		s.mu.Unlock()
-		return nil, ErrMiss
-	}
-	e.pins++
-	s.readers++
-	need := !e.verified
-	s.mu.Unlock()
-	return s.openReader(ctx, e, need)
 }
 
 // openReader takes ownership of a pin acquired under s.mu. On success the
