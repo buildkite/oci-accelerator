@@ -24,7 +24,7 @@ recorded in the [decision log](decision-log.md).
 | B. Clarify `rawCONNECTValid` | #11 misleading true-on-non-CONNECT | Complete (2b11ee9) — renamed to `rawCONNECTAcceptable` with accurate doc and direct unit tests; behavior unchanged. |
 | C. Simplify `fillingBody.Read` ordering | #1 fragile triple nil-check | Complete (1af87d8) — early-return structure, behavior-equivalent (both reviews approved); new direct unit tests. |
 | D. Internal redirect-refusal reasons | #13 `errRedirect` collapses causes | Complete (9af93ef) — four errRedirect-wrapping dial reasons logged at DEBUG; client 502 and security boundary unchanged. |
-| E. Non-STW heap gauge | #6 `ReadMemStats` STW on every scrape | Complete — heap_alloc_bytes now sourced from runtime/metrics (non-STW); name/TYPE unchanged. |
+| E. Non-STW heap gauge | #6 `ReadMemStats` STW on every scrape | Complete (2fb127a) — heap_alloc_bytes now sourced from runtime/metrics (non-STW); name/TYPE unchanged. |
 | F. `-race` CONNECT sniffing coverage | #9 unsynchronized `rawOK`/`checked` | Pending |
 | G. Cache-effectiveness measurement | #4/#5 Vary/digest conservatism | Pending (investigate-first) |
 | H. Shutdown reader-leak race | #2 hard-timeout leaves reader pinned | Pending |
