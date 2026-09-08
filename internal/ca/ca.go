@@ -46,16 +46,17 @@ func Open(dir string, maxLeaves int) (*Authority, error) {
 	}
 	dir = filepath.Clean(dir)
 	info, err := os.Lstat(dir)
-	if errors.Is(err, os.ErrNotExist) {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
 		if err := initialize(dir); err != nil {
 			return nil, fmt.Errorf("initialize CA: %w", err)
 		}
-	} else if err != nil {
+	case err != nil:
 		return nil, fmt.Errorf("inspect CA directory: %w", err)
-	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
-		return nil, errors.New("CA directory must be a non-symlink directory with mode 0700")
-	} else if !ownedByCurrentUser(info) {
-		return nil, errors.New("CA directory must be owned by the current user")
+	default:
+		if err := checkCADir(info); err != nil {
+			return nil, err
+		}
 	}
 	if err := checkParent(filepath.Dir(dir)); err != nil {
 		return nil, err
@@ -141,6 +142,18 @@ func publishedCA(dir string) bool {
 		return false
 	}
 	return checkRegular(filepath.Join(dir, keyName), 0o600) == nil
+}
+
+// checkCADir verifies that an existing CA directory is a non-symlink directory
+// with mode 0700 owned by the current user.
+func checkCADir(info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return errors.New("CA directory must be a non-symlink directory with mode 0700")
+	}
+	if !ownedByCurrentUser(info) {
+		return errors.New("CA directory must be owned by the current user")
+	}
+	return nil
 }
 
 func checkParent(parent string) error {
