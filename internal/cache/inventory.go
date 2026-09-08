@@ -45,7 +45,7 @@ func (s *Store) inventory() error {
 			if err != nil {
 				return err
 			}
-			if e == nil || e.charge > s.max || s.evictLocked(e.charge, 1, e.last) != nil {
+			if e == nil || e.charge > s.max || s.evictLocked(e.charge, 1, e.last, 0) != nil {
 				if err := os.RemoveAll(p); err != nil {
 					return err
 				}

@@ -930,7 +930,7 @@ func TestFailedAdmissionDoesNotEvictInsufficientVictims(t *testing.T) {
 	put(t, s, b, body)
 	s.entries[a.Key].last = 1
 	s.entries[b.Key].last = 3
-	if err := s.evictLocked(2*metadataReservation, 0, 2); err != ErrBypass {
+	if err := s.evictLocked(2*metadataReservation, 0, 2, 0); err != ErrBypass {
 		t.Fatalf("eviction without enough eligible space = %v", err)
 	}
 	read(t, s, a, "a")

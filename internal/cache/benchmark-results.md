@@ -32,7 +32,7 @@ TMPDIR=/dev/shm setpriv --inh-caps=-all --ambient-caps=-all \
 rm /tmp/cache-benchmark.test
 ```
 
-## Results
+## Before the eviction budget
 
 Ranges below are the minimum and maximum **mean hit latency across three runs**,
 not percentiles. Each hit includes opening, reading, and closing its own reader.
@@ -53,8 +53,40 @@ All cases passed, including actual permission-denied assertions. A separate
 1,000-entry benchmark run with the race detector, two repetitions and a 100 ms
 target also passed; race-instrumented timings are excluded above.
 
-## Pending decision
+## Eight-attempt admission budget
 
-The measurements support addressing admission contention, particularly repeated
-failed removals. No eviction-attempt budget, LRU structure change, or locking
-change is implemented. Those remain a separate user decision after these results.
+The approved follow-up limits each Begin's eviction phase to eight victim
+directory-removal attempts. The existing cleanup retry batch is separate, and
+startup eviction remains uncapped. This bounds attempts, not elapsed time or
+the number of filesystem syscalls inside a directory removal.
+
+Before deleting anything, admission checks whether the selected batch could
+free enough capacity. If not, it reports AdmissionCapacity without removing
+useful entries. A large fill needing more than eight small victims can therefore
+continue bypassing until other cache activity creates enough space; retries do
+not gradually empty the cache for it. Actual removal failures still preserve the
+first filesystem cause as AdmissionIOError, without releasing failed charges.
+
+A shared timestamp/key cursor advances after failed or deferred batches so later
+admissions can reach other candidates. It survives fitting admissions and the
+cursor entry becoming pinned or disappearing, and resets on successful eviction.
+This is deliberately best-effort LRU across batches: after deferral, an unrelated
+admission can evict a newer candidate instead of restarting at older victims.
+Strict LRU or per-request cursor tracking was not added.
+
+The unchanged benchmark was repeated on the same tmpfs setup, three runs each.
+The 100,000-entry failed-removal column again uses the longer 10-second runs.
+
+| Entries | Hit only | Successful admissions | Failed removals |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 4.05–4.12 µs | 154–163 µs | 167–184 µs |
+| 10,000 | 4.02–4.18 µs | 161–170 µs | 192–233 µs |
+| 100,000 | 4.03–4.13 µs | 1.44–1.48 ms | 2.00–2.08 ms |
+
+At 100,000 entries, the longer failed-removal runs completed 6,020, 5,790 and
+4,966 hits. Observed maximum hit latencies were 68.7, 60.3 and 73.0 ms, versus
+3.10–3.25 seconds before the budget. All benchmark assertions passed.
+
+Index scanning and sorting still run under the store mutex. The budget removes
+the all-victims deletion stall but does not eliminate admission contention or
+establish a latency guarantee. No LRU data-structure or locking change was made.

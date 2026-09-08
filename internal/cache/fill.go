@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const evictionAttemptLimit = 8 // Maximum victim-directory removals per Begin.
+
 var errFillExpired = errors.New("cache fill expired")
 
 type Fill struct {
@@ -76,7 +78,7 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	// Retry a bounded batch before eviction. Failed or deferred cleanups
 	// keep their bytes and slots charged against admission limits.
 	s.retryCleanupsLocked()
-	if err := s.evictLocked(charge, 1, math.MaxInt64); err != nil {
+	if err := s.evictLocked(charge, 1, math.MaxInt64, evictionAttemptLimit); err != nil {
 		if errors.Is(err, ErrBypass) {
 			s.admissions[AdmissionCapacity]++
 			return nil, &AdmissionError{Reason: AdmissionCapacity}

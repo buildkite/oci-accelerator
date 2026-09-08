@@ -119,8 +119,11 @@ type Store struct {
 	admissions                                      [AdmissionReasonCount]int64
 	entries                                         map[string]*entry
 	fills                                           map[string]*Fill
-	lock                                            *os.File
-	closed                                          bool
+	// Resume after this (last, key) position even if its entry disappears or pins.
+	evictionAfterLast int64
+	evictionAfter     string
+	lock              *os.File
+	closed            bool
 }
 
 type Limits struct {
@@ -233,13 +236,15 @@ func add(a, b int64) (int64, bool) {
 }
 
 // before prevents an older startup candidate from evicting newer entries.
-// ErrBypass means insufficient eligible capacity. If removal failures prevent
-// admission, return the first filesystem error, keeping error storage bounded.
-func (s *Store) evictLocked(need int64, needSlots int, before int64) error {
+// maxAttempts bounds admission eviction; zero leaves startup eviction uncapped.
+// ErrBypass means insufficient eligible capacity in this batch. If removal
+// failures prevent admission, return the first filesystem error.
+func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts int) error {
 	fits := func() bool {
 		return need <= s.max-s.bytes-s.reserved && len(s.entries)+len(s.fills)+len(s.failedCleanups)+needSlots <= s.maxEntries
 	}
 	if fits() {
+		// A fitting admission must not reset another request's deferred batch.
 		return nil
 	}
 	var es []*entry
@@ -255,12 +260,45 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64) error {
 	if available < need || availableSlots < needSlots {
 		return ErrBypass
 	}
-	sort.Slice(es, func(i, j int) bool { return es[i].last < es[j].last })
+	sort.Slice(es, func(i, j int) bool {
+		if es[i].last == es[j].last {
+			return es[i].meta.Key < es[j].meta.Key
+		}
+		return es[i].last < es[j].last
+	})
+	start, count := 0, len(es)
+	if maxAttempts > 0 {
+		count = min(count, maxAttempts)
+		if s.evictionAfter != "" {
+			for i, e := range es {
+				if e.last > s.evictionAfterLast || e.last == s.evictionAfterLast && e.meta.Key > s.evictionAfter {
+					start = i
+					break
+				}
+			}
+		}
+		// Do not remove useful entries when even a fully successful batch
+		// cannot admit the fill. Resume later so blocked or small victims
+		// cannot permanently hide a usable victim beyond this batch.
+		available = s.max - s.bytes - s.reserved
+		availableSlots = s.maxEntries - len(s.entries) - len(s.fills) - len(s.failedCleanups)
+		for i := range count {
+			available += es[(start+i)%len(es)].charge
+			availableSlots++
+		}
+		last := es[(start+count-1)%len(es)]
+		s.evictionAfterLast, s.evictionAfter = last.last, last.meta.Key
+		if available < need || availableSlots < needSlots {
+			return ErrBypass
+		}
+	}
 	var removeErr error
-	for _, e := range es {
+	for i := range count {
 		if fits() {
+			s.evictionAfter = ""
 			return nil
 		}
+		e := es[(start+i)%len(es)]
 		if err := os.RemoveAll(e.dir); err == nil {
 			delete(s.entries, e.meta.Key)
 			// Eviction only selects unpinned entries, so their charge is free.
@@ -272,6 +310,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64) error {
 		}
 	}
 	if fits() {
+		s.evictionAfter = ""
 		return nil
 	}
 	return removeErr
