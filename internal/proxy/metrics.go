@@ -6,6 +6,7 @@ import (
 	"runtime"
 	runtimemetrics "runtime/metrics"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,12 @@ import (
 // runtime/metrics avoids the stop-the-world pause that runtime.ReadMemStats
 // imposes on every scrape.
 const heapObjectsMetric = "/memory/classes/heap/objects:bytes"
+
+// Finite histogram bounds, shared by classification and scrape labels.
+var requestDurationBounds = [...]time.Duration{
+	10 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond,
+	250 * time.Millisecond, 500 * time.Millisecond, time.Second, 5 * time.Second,
+}
 
 // heapAllocBytes returns the live heap-object bytes without stopping the world.
 func heapAllocBytes() uint64 {
@@ -39,7 +46,7 @@ type metrics struct {
 	rejects                        map[string]uint64
 	upstream                       uint64
 	upstreamBytes, downstreamBytes uint64
-	durations                      [8]uint64
+	durations                      [len(requestDurationBounds) + 1]uint64
 	durationSum                    float64
 	activeRequests, activeWaits    int64
 }
@@ -51,7 +58,7 @@ func newMetrics() *metrics {
 type metricsSnapshot struct {
 	requests, statuses, cache, fills, waits, fallback, rejects map[string]uint64
 	upstream, upstreamBytes, downstreamBytes                   uint64
-	durations                                                  [8]uint64
+	durations                                                  [len(requestDurationBounds) + 1]uint64
 	durationSum                                                float64
 	activeRequests, activeWaits                                int64
 }
@@ -103,23 +110,40 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeMap("docker_accelerator_waits_total", "outcome", m.waits)
 	writeMap("docker_accelerator_fallbacks_total", "outcome", m.fallback)
 	writeMap("docker_accelerator_cache_rejections_total", "reason", m.rejects)
-	for _, name := range []string{"upstream_get_attempts_total", "upstream_body_bytes_total", "downstream_bytes_total", "cache_evictions_total", "store_fill_success_total", "store_fill_failure_total", "store_fill_abort_total", "store_fill_expiry_total", "cache_admissions_total"} {
-		fmt.Fprintf(&b, "# TYPE docker_accelerator_%s counter\n", name)
+	writeScalar := func(name, kind string, value any) {
+		fmt.Fprintf(&b, "# TYPE docker_accelerator_%s %s\ndocker_accelerator_%s %d\n", name, kind, name, value)
 	}
-	for _, name := range []string{"active_requests", "active_waits", "active_connections", "cache_entries", "cache_fills", "cache_bytes", "cache_reserved_bytes", "cache_readers", "heap_alloc_bytes", "goroutines"} {
-		fmt.Fprintf(&b, "# TYPE docker_accelerator_%s gauge\n", name)
-	}
-	fmt.Fprintf(&b, "docker_accelerator_upstream_get_attempts_total %d\ndocker_accelerator_upstream_body_bytes_total %d\ndocker_accelerator_downstream_bytes_total %d\ndocker_accelerator_active_requests %d\ndocker_accelerator_active_waits %d\ndocker_accelerator_active_connections %d\n", m.upstream, m.upstreamBytes, m.downstreamBytes, m.activeRequests, m.activeWaits, p.connectionCount())
-	fmt.Fprintf(&b, "docker_accelerator_cache_entries %d\ndocker_accelerator_cache_fills %d\ndocker_accelerator_cache_bytes %d\ndocker_accelerator_cache_reserved_bytes %d\ndocker_accelerator_cache_readers %d\ndocker_accelerator_cache_evictions_total %d\ndocker_accelerator_store_fill_success_total %d\ndocker_accelerator_store_fill_failure_total %d\ndocker_accelerator_store_fill_abort_total %d\ndocker_accelerator_store_fill_expiry_total %d\ndocker_accelerator_heap_alloc_bytes %d\ndocker_accelerator_goroutines %d\n", cs.Entries, cs.Fills, cs.Bytes, cs.Reserved, cs.Readers, cs.Evictions, cs.FillSuccess, cs.FillFailure, cs.FillAbort, cs.FillExpiry, heapAlloc, runtime.NumGoroutine())
+	writeScalar("upstream_get_attempts_total", "counter", m.upstream)
+	writeScalar("upstream_body_bytes_total", "counter", m.upstreamBytes)
+	writeScalar("downstream_bytes_total", "counter", m.downstreamBytes)
+	writeScalar("active_requests", "gauge", m.activeRequests)
+	writeScalar("active_waits", "gauge", m.activeWaits)
+	writeScalar("active_connections", "gauge", p.connectionCount())
+	writeScalar("cache_entries", "gauge", cs.Entries)
+	writeScalar("cache_fills", "gauge", cs.Fills)
+	writeScalar("cache_bytes", "gauge", cs.Bytes)
+	writeScalar("cache_reserved_bytes", "gauge", cs.Reserved)
+	writeScalar("cache_readers", "gauge", cs.Readers)
+	writeScalar("cache_evictions_total", "counter", cs.Evictions)
+	writeScalar("store_fill_success_total", "counter", cs.FillSuccess)
+	writeScalar("store_fill_failure_total", "counter", cs.FillFailure)
+	writeScalar("store_fill_abort_total", "counter", cs.FillAbort)
+	writeScalar("store_fill_expiry_total", "counter", cs.FillExpiry)
+	writeScalar("heap_alloc_bytes", "gauge", heapAlloc)
+	writeScalar("goroutines", "gauge", runtime.NumGoroutine())
+	b.WriteString("# TYPE docker_accelerator_cache_admissions_total counter\n")
 	for reason := cache.AdmissionReason(0); reason < cache.AdmissionReasonCount; reason++ {
 		fmt.Fprintf(&b, "docker_accelerator_cache_admissions_total{reason=%q} %d\n", reason.String(), cs.Admissions[reason])
 	}
-	bounds := []string{"0.01", "0.05", "0.1", "0.25", "0.5", "1", "5", "+Inf"}
 	b.WriteString("# TYPE docker_accelerator_request_duration_seconds histogram\n")
 	var cumulative uint64
 	for i, count := range m.durations {
 		cumulative += count
-		fmt.Fprintf(&b, "docker_accelerator_request_duration_seconds_bucket{le=%q} %d\n", bounds[i], cumulative)
+		label := "+Inf"
+		if i < len(requestDurationBounds) {
+			label = strconv.FormatFloat(requestDurationBounds[i].Seconds(), 'g', -1, 64)
+		}
+		fmt.Fprintf(&b, "docker_accelerator_request_duration_seconds_bucket{le=%q} %d\n", label, cumulative)
 	}
 	fmt.Fprintf(&b, "docker_accelerator_request_duration_seconds_count %d\ndocker_accelerator_request_duration_seconds_sum %g\n", cumulative, m.durationSum)
 	_, _ = fmt.Fprint(w, b.String())
@@ -159,9 +183,8 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 	}
 	m.upstreamBytes += uint64(s.upstreamBytes)
 	m.downstreamBytes += uint64(downstream)
-	bounds := []time.Duration{.01e9, .05e9, .1e9, .25e9, .5e9, 1e9, 5e9}
 	i := 0
-	for i < len(bounds) && d > bounds[i] {
+	for i < len(requestDurationBounds) && d > requestDurationBounds[i] {
 		i++
 	}
 	m.durations[i]++

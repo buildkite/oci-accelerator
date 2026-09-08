@@ -267,6 +267,36 @@ func TestMetricsHistogramStatusAndOutcomeCounts(t *testing.T) {
 	}
 }
 
+func TestMetricsHistogramBoundaryObservations(t *testing.T) {
+	boundaries := []time.Duration{10 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 5 * time.Second}
+	labels := []string{"0.01", "0.05", "0.1", "0.25", "0.5", "1", "5"}
+	p := &Proxy{metrics: newMetrics(), conns: make(map[*trackedConn]struct{})}
+	p.metrics.activeRequests = int64(3 * len(boundaries))
+	for _, boundary := range boundaries {
+		for _, duration := range []time.Duration{boundary - time.Nanosecond, boundary, boundary + time.Nanosecond} {
+			p.metrics.finish(&requestStats{}, "complete", http.StatusOK, duration, 0)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	p.MetricsHandler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	body := w.Body.String()
+	for i, label := range labels {
+		want := fmt.Sprintf("docker_accelerator_request_duration_seconds_bucket{le=%q} %d\n", label, 3*i+2)
+		if !strings.Contains(body, want) {
+			t.Errorf("missing histogram sample %q\n%s", strings.TrimSpace(want), body)
+		}
+	}
+	for _, want := range []string{
+		`docker_accelerator_request_duration_seconds_bucket{le="+Inf"} 21` + "\n",
+		"docker_accelerator_request_duration_seconds_count 21\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing histogram sample %q\n%s", strings.TrimSpace(want), body)
+		}
+	}
+}
+
 func TestStatusClassIsBounded(t *testing.T) {
 	for status, want := range map[int]string{99: "other", 100: "1xx", 299: "2xx", 399: "3xx", 499: "4xx", 599: "5xx", 600: "other"} {
 		if got := statusClass(status); got != want {
