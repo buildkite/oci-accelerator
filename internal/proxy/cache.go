@@ -180,16 +180,28 @@ type fillingBody struct {
 	stats *requestStats
 }
 
+// Read mirrors the upstream stream into the cache fill without ever altering the
+// bytes or error the reverse proxy sees. Once the fill has ended (b.fill == nil)
+// every branch below is skipped, so the upstream stream continues untouched.
 func (b *fillingBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
-	if b.fill != nil && b.ctx.Err() != nil {
-		b.abort("aborted")
+	if b.fill == nil {
+		return n, err
 	}
-	if b.fill != nil && n > 0 {
+	// A canceled request must never publish a partially mirrored object, so drop
+	// the fill before writing anything and treat the request as aborted.
+	if b.ctx.Err() != nil {
+		b.abort("aborted")
+		return n, err
+	}
+	if n > 0 {
 		if _, e := b.fill.Write(p[:n]); e != nil {
 			b.abort("failed")
 		}
 	}
+	// Only a clean EOF on a still-live request may commit; anything else abandons
+	// the fill. The write above may already have aborted, so re-check b.fill, and
+	// re-check the context in case it was canceled while this Read was in flight.
 	if b.fill != nil && err != nil {
 		if err == io.EOF && b.ctx.Err() == nil {
 			b.stats.fill = "stored"

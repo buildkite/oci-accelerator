@@ -25,6 +25,17 @@
   both false branches (unparseable target in a three-part line, unparseable/missing/
   duplicate Host, target/port mismatch).
 
+- C (#1): restructure `fillingBody.Read` with early returns (fill already ended;
+  context canceled) instead of three scattered `b.fill != nil` guards. Kept the
+  logic exactly equivalent, including the `err == io.EOF && b.ctx.Err() == nil`
+  re-check in the commit branch, so cancellation racing an in-flight Read still
+  aborts rather than commits. The cache must never alter the bytes/errors the
+  reverse proxy sees, never commit a canceled or truncated body, and abort on
+  write failure or non-EOF error; all preserved. Added filling_body_test.go with
+  a non-truncating scriptedReader driving commit, pre-cancel abort, non-EOF abort,
+  oversize write failure, Close abort, a trailing zero-byte EOF, and a byte-level
+  round trip through Store.Get.
+
 ## Slice 1 authorization
 
 - Implement 1a–1e autonomously, with per-subslice commits and independent review.
