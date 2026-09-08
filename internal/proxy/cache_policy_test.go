@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -207,6 +208,16 @@ func TestBlobMetadataKeyIsolation(t *testing.T) {
 }
 
 func TestManifestMediaTypeMatchesCanonicalListExactly(t *testing.T) {
+	want := []string{
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.oci.image.index.v1+json",
+		"application/vnd.docker.distribution.manifest.v2+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json",
+	}
+	if !slices.Equal(manifestMediaTypes, want) {
+		t.Fatalf("manifestMediaTypes = %q, want %q", manifestMediaTypes, want)
+	}
+
 	for _, mediaType := range manifestMediaTypes {
 		if !manifestMediaType(mediaType) {
 			t.Errorf("manifestMediaType(%q) = false, want true", mediaType)

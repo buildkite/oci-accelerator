@@ -10,19 +10,25 @@ import (
 	"mime"
 	"net/http"
 	"strings"
-	"time"
 
 	"ampcode.com/buildkite/docker-accelerator/internal/cache"
 	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
 )
 
-type requestStats struct {
-	cache, fill         string
-	wait, fallback      string
-	admission           string
-	reject              string
-	upstreamBytes       int64
+// requestPolicy preserves the original request's cache decisions before the
+// reverse proxy strips hop-by-hop headers. Store it by value, separately from
+// mutable statistics: instrumentation must not determine caching behavior.
+type requestPolicy struct {
 	eligible, cacheable bool
+}
+type policyKey struct{}
+
+type requestStats struct {
+	cache, fill    string
+	wait, fallback string
+	admission      string
+	reject         string
+	upstreamBytes  int64
 }
 type statsKey struct{}
 
@@ -91,8 +97,8 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 }
 
 // manifestMediaTypes is the canonical set of OCI and Docker manifest media
-// types the cache will store. It is the single source of truth; tests must
-// reference it rather than maintaining a parallel copy.
+// types the cache will store. Tests independently pin the supported formats
+// while sharing this list for reusable protocol fixtures.
 var manifestMediaTypes = []string{
 	"application/vnd.oci.image.manifest.v1+json",
 	"application/vnd.oci.image.index.v1+json",
@@ -143,36 +149,7 @@ func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted
 	stats.cache = "miss"
 	if mayWait && p.cfg.Cache.FillWaitTimeout > 0 {
 		if completed, active := p.cache.Completion(meta); active {
-			resp.Body.Close()
-			if p.metrics != nil {
-				p.metrics.mu.Lock()
-				p.metrics.activeWaits++
-				p.metrics.mu.Unlock()
-				defer func() { p.metrics.mu.Lock(); p.metrics.activeWaits--; p.metrics.mu.Unlock() }()
-			}
-			timer := time.NewTimer(p.cfg.Cache.FillWaitTimeout)
-			defer timer.Stop()
-			select {
-			case <-completed:
-				stats.wait = "complete"
-				if body, err := p.cache.Get(req.Context(), meta); err == nil {
-					resp.Body = body
-					stats.cache = "wait_hit"
-					return resp, false, nil
-				}
-			case <-req.Context().Done():
-				stats.wait = "canceled"
-				return nil, false, req.Context().Err()
-			case <-timer.C:
-				stats.wait = "timeout"
-			}
-			// Completion or timeout can race cancellation. Do not request a new
-			// upstream GET when cancellation is already observable.
-			if err := req.Context().Err(); err != nil {
-				return nil, false, err
-			}
-			stats.fallback = "retry"
-			return nil, true, nil
+			return p.waitForFill(req.Context(), resp, meta, completed, stats)
 		}
 	}
 	if req.Context().Err() != nil {

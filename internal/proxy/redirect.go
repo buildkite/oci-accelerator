@@ -41,12 +41,16 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	object, eligible := immutableObjectRequest(req)
 	stats, _ := req.Context().Value(statsKey{}).(*requestStats)
 	if stats == nil {
-		stats = &requestStats{cache: "bypass", eligible: eligible, cacheable: eligible}
+		stats = &requestStats{cache: "bypass"}
+	}
+	policy, ok := req.Context().Value(policyKey{}).(requestPolicy)
+	if !ok {
+		policy = requestPolicy{eligible: eligible, cacheable: eligible}
 	}
 	// Preserve original bypass decisions even if Connection header stripping
 	// removes a Range, conditional, or no-store header from the outgoing request.
-	eligible = eligible && stats.eligible
-	permitted := eligible && stats.cacheable
+	eligible = eligible && policy.eligible
+	permitted := eligible && policy.cacheable
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
 	for hops := 0; ; hops++ {

@@ -68,9 +68,9 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		p.metrics.activeRequests++
 		p.metrics.mu.Unlock()
 		object, eligible := immutableObjectRequest(r)
-		stats.eligible = eligible
-		stats.cacheable = eligible && cacheHeaders(r.Header, object.digest)
-		r = r.WithContext(context.WithValue(r.Context(), statsKey{}, stats))
+		policy := requestPolicy{eligible: eligible, cacheable: eligible && cacheHeaders(r.Header, object.digest)}
+		ctx := context.WithValue(r.Context(), policyKey{}, policy)
+		r = r.WithContext(context.WithValue(ctx, statsKey{}, stats))
 		lw := &loggingWriter{ResponseWriter: w, status: http.StatusOK, idleTimeout: p.cfg.IdleTimeout}
 		defer func() {
 			outcome := "aborted"
