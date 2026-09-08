@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -147,6 +149,136 @@ func TestShutdownForceClosesUpstreamAndPumpsWithinDeadline(t *testing.T) {
 	assertLifecycleClosed(t, client, "client")
 	assertLifecycleClosed(t, upstream, "upstream")
 	eventuallyLifecycle(t, time.Second, func() bool { return lifecycleConnCount(p) == 0 }, "relay pumps exited")
+}
+
+func TestShutdownJoinsHalfClosedTunnel(t *testing.T) {
+	origin := listen(t)
+	accepted := make(chan net.Conn, 1)
+	go func() { c, _ := origin.Accept(); accepted <- c }()
+	p, addr := start(t, config.Config{MaxConnections: 2, DialTimeout: time.Second, ResponseHeaderTimeout: time.Second, IdleTimeout: time.Minute})
+	client, _ := connectLifecycle(t, addr, origin.Addr().String(), []byte("request"))
+	upstream := <-accepted
+	t.Cleanup(func() { upstream.Close() })
+	if err := client.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	_ = upstream.SetReadDeadline(time.Now().Add(time.Second))
+	if body, err := io.ReadAll(upstream); err != nil || string(body) != "request" {
+		t.Fatalf("half-closed request = %q, %v", body, err)
+	}
+	// The client-to-upstream pump has sent FIN. The other pump is waiting for
+	// this silent upstream, so closing only the client cannot release it.
+	p.mu.Lock()
+	var proxyUpstream net.Conn
+	for conn := range p.tunnels {
+		proxyUpstream = conn
+	}
+	p.mu.Unlock()
+	if proxyUpstream == nil {
+		t.Fatal("upstream tunnel was not tracked")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- p.Shutdown(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Shutdown = %v", err)
+		}
+	case <-time.After(time.Second):
+		upstream.Close()
+		<-done
+		t.Fatal("Shutdown did not release the half-closed tunnel")
+	}
+	p.mu.Lock()
+	tunnels := len(p.tunnels)
+	p.mu.Unlock()
+	if tunnels != 0 || lifecycleConnCount(p) != 0 {
+		t.Fatal("Shutdown returned before tunnel cleanup")
+	}
+	_ = proxyUpstream.SetReadDeadline(time.Now())
+	if _, err := proxyUpstream.Read(make([]byte, 1)); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("proxy upstream still open after Shutdown: %v", err)
+	}
+}
+
+type shutdownLogWriter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *shutdownLogWriter) Write(b []byte) (int, error) {
+	close(w.started)
+	<-w.release
+	return len(b), nil
+}
+
+func TestShutdownWaitsForHandlerAfterForcedClose(t *testing.T) {
+	for _, alreadyClosed := range []bool{false, true} {
+		name := "active connection"
+		if alreadyClosed {
+			name = "connection already removed"
+		}
+		t.Run(name, func(t *testing.T) {
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, "ok")
+			}))
+			defer origin.Close()
+			p, _, client := interceptFixture(t, origin, nil, true)
+			logs := &shutdownLogWriter{started: make(chan struct{}), release: make(chan struct{})}
+			p.logger = slog.New(slog.NewTextHandler(logs, nil))
+			// Unblock the handler even if an assertion fails before normal release.
+			defer func() {
+				select {
+				case <-logs.release:
+				default:
+					close(logs.release)
+				}
+			}()
+			requestDone := make(chan struct{})
+			go func() {
+				defer close(requestDone)
+				resp, err := client.Get(origin.URL + "/v2/")
+				if err == nil {
+					_, _ = io.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
+				}
+			}()
+			waitFor(t, logs.started, "handler blocked in logger")
+			if alreadyClosed {
+				p.closeAll()
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			done := make(chan error, 1)
+			go func() { done <- p.Shutdown(ctx) }()
+			eventuallyLifecycle(t, time.Second, func() bool {
+				return lifecycleConnCount(p) == 0
+			}, "forced client closure")
+			// Exceed the former five-second grace period on the forced-close
+			// path; even then Shutdown must wait for actual handler completion.
+			wait := 5200 * time.Millisecond
+			if alreadyClosed {
+				wait = 50 * time.Millisecond
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("Shutdown returned while handler was blocked: %v", err)
+			case <-time.After(wait):
+			}
+			close(logs.release)
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("Shutdown = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Shutdown did not finish after handler release")
+			}
+			waitFor(t, requestDone, "request completion")
+		})
+	}
 }
 
 func dialLifecycle(t *testing.T, addr string) net.Conn {
