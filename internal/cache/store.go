@@ -186,7 +186,16 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 		lf.Close()
 		return nil, err
 	}
-	s := &Store{dir: dir, max: limits.MaxBytes, maxFills: limits.MaxFills, maxEntries: limits.MaxEntries, fillTimeout: limits.FillTimeout, entries: make(map[string]*entry), fills: make(map[string]*Fill), lock: lf}
+	s := &Store{
+		dir:         dir,
+		max:         limits.MaxBytes,
+		maxFills:    limits.MaxFills,
+		maxEntries:  limits.MaxEntries,
+		fillTimeout: limits.FillTimeout,
+		entries:     make(map[string]*entry),
+		fills:       make(map[string]*Fill),
+		lock:        lf,
+	}
 	if err := s.inventory(); err != nil {
 		s.releaseLock()
 		return nil, err
@@ -323,7 +332,21 @@ func (s *Store) Stats() Stats {
 	for _, pending := range s.failedCleanups {
 		cleanupBytes += pending.charge
 	}
-	return Stats{Bytes: s.bytes, Reserved: s.reserved, Entries: len(s.entries), Fills: len(s.fills), Evictions: s.evictions, Readers: s.readers, FillSuccess: s.fillSuccess, FillFailure: s.fillFailure, FillAbort: s.fillAbort, FillExpiry: s.fillExpiry, Admissions: s.admissions, CleanupBytes: cleanupBytes, CleanupSlots: len(s.failedCleanups)}
+	return Stats{
+		Bytes:        s.bytes,
+		Reserved:     s.reserved,
+		Entries:      len(s.entries),
+		Fills:        len(s.fills),
+		Evictions:    s.evictions,
+		Readers:      s.readers,
+		FillSuccess:  s.fillSuccess,
+		FillFailure:  s.fillFailure,
+		FillAbort:    s.fillAbort,
+		FillExpiry:   s.fillExpiry,
+		Admissions:   s.admissions,
+		CleanupBytes: cleanupBytes,
+		CleanupSlots: len(s.failedCleanups),
+	}
 }
 
 // Close permanently rejects new work and attempts to abort every active fill,

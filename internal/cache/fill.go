@@ -102,7 +102,17 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		f.Close()
 		return nil, s.failAdmissionLocked(d, charge, err)
 	}
-	fill := &Fill{store: s, meta: meta, dir: d, file: f, hash: sha256.New(), charge: charge, deadline: time.Now().Add(s.fillTimeout), timerDone: make(chan struct{}), completed: make(chan struct{})}
+	fill := &Fill{
+		store:     s,
+		meta:      meta,
+		dir:       d,
+		file:      f,
+		hash:      sha256.New(),
+		charge:    charge,
+		deadline:  time.Now().Add(s.fillTimeout),
+		timerDone: make(chan struct{}),
+		completed: make(chan struct{}),
+	}
 	s.fills[meta.Key] = fill
 	s.admissions[AdmissionAccepted]++
 	s.reserved += charge
@@ -208,7 +218,13 @@ func (f *Fill) Commit() error {
 	}
 	delete(f.store.fills, f.meta.Key)
 	f.store.reserved -= f.charge
-	f.store.entries[f.meta.Key] = &entry{meta: f.meta, dir: dest, charge: f.charge, last: time.Now().UnixNano(), verified: true}
+	f.store.entries[f.meta.Key] = &entry{
+		meta:     f.meta,
+		dir:      dest,
+		charge:   f.charge,
+		last:     time.Now().UnixNano(),
+		verified: true, // Just hash-verified during Commit; Readers can skip re-verification.
+	}
 	f.store.bytes += f.charge
 	f.store.fillSuccess++
 	f.store.mu.Unlock()
