@@ -11,6 +11,30 @@ import (
 	"testing/synctest"
 )
 
+func TestAdmissionReasonFormatting(t *testing.T) {
+	names := []string{"accepted", "invalid", "oversized", "existing", "fill_limit", "capacity", "closed", "io_error"}
+	if len(names) != int(AdmissionReasonCount) {
+		t.Fatal("update the expected admission reason names")
+	}
+	for value := 0; value <= 255; value++ {
+		reason := AdmissionReason(value)
+		want := fmt.Sprintf("unknown(%d)", value)
+		if value < len(names) {
+			want = names[value]
+		}
+		if got := reason.String(); got != want {
+			t.Fatalf("reason %d = %q, want %q", value, got, want)
+		}
+		err := &AdmissionError{Reason: reason, Cause: os.ErrPermission}
+		if got := err.Error(); got != "cache admission refused: "+want+": "+os.ErrPermission.Error() {
+			t.Fatalf("reason %d error = %q", value, got)
+		}
+		if !errors.Is(err, ErrBypass) || !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("reason %d lost error classification", value)
+		}
+	}
+}
+
 func TestEvictionFailureAdmissionCause(t *testing.T) {
 	requireUnprivilegedTest(t)
 	for _, mode := range []string{"all-fail", "later-victim-succeeds", "pinned"} {

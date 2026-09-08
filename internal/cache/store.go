@@ -39,7 +39,11 @@ const (
 )
 
 func (r AdmissionReason) String() string {
-	return [...]string{"accepted", "invalid", "oversized", "existing", "fill_limit", "capacity", "closed", "io_error"}[r]
+	names := [...]string{"accepted", "invalid", "oversized", "existing", "fill_limit", "capacity", "closed", "io_error"}
+	if int(r) >= len(names) {
+		return fmt.Sprintf("unknown(%d)", uint8(r))
+	}
+	return names[r]
 }
 
 type AdmissionError struct {
