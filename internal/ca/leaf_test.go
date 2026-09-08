@@ -1,12 +1,55 @@
 package ca
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestLeafTLSHandshake(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "ca"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := a.Certificate("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(a.cert)
+	for _, version := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
+		t.Run(tls.VersionName(version), func(t *testing.T) {
+			serverConn, clientConn := net.Pipe()
+			defer serverConn.Close()
+			defer clientConn.Close()
+			server := tls.Server(serverConn, &tls.Config{
+				Certificates: []tls.Certificate{*leaf}, MinVersion: version, MaxVersion: version,
+			})
+			client := tls.Client(clientConn, &tls.Config{
+				RootCAs: roots, ServerName: "example.com", MinVersion: version, MaxVersion: version,
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			serverResult := make(chan error, 1)
+			go func() { serverResult <- server.HandshakeContext(ctx) }()
+			clientErr := client.HandshakeContext(ctx)
+			if clientErr != nil {
+				cancel()
+			}
+			serverErr := <-serverResult
+			if clientErr != nil || serverErr != nil {
+				t.Fatalf("handshake: client=%v server=%v", clientErr, serverErr)
+			}
+			if len(client.ConnectionState().VerifiedChains) == 0 {
+				t.Fatal("handshake did not verify certificate chain")
+			}
+		})
+	}
+}
 
 func TestLeafClockRollback(t *testing.T) {
 	for _, capped := range []bool{false, true} {

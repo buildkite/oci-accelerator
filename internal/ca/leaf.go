@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/pem"
 	"errors"
 	"math/big"
 	"net"
@@ -113,18 +112,13 @@ func (a *Authority) makeLeaf(host string, now time.Time) (*tls.Certificate, erro
 	if err != nil {
 		return nil, err
 	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	leaf, err := x509.ParseCertificate(der)
 	if err != nil {
 		return nil, err
 	}
-	pair, err := tls.X509KeyPair(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
-	if err != nil {
-		return nil, err
-	}
-	if pair.Leaf, err = x509.ParseCertificate(der); err != nil {
-		return nil, err
-	}
-	return &pair, nil
+	// The certificate was created with this key's public half, so no PEM
+	// round trip or external key-pair validation is needed.
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
 }
 
 func randomSerial() (*big.Int, error) {
