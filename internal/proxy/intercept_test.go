@@ -314,6 +314,38 @@ func TestInterceptAuthorityTargetsAndMethods(t *testing.T) {
 	shutdown(t, p)
 }
 
+func TestInterceptGeneralOPTIONSIsValidated(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer origin.Close()
+	p, proxyAddr, client := interceptFixture(t, origin, nil, true)
+	host := strings.TrimPrefix(origin.URL, "https://")
+	conn, _ := connectLifecycle(t, proxyAddr.Host, host, nil)
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	tlsConn := tls.Client(conn, &tls.Config{ServerName: "127.0.0.1", RootCAs: client.Transport.(*http.Transport).TLSClientConfig.RootCAs})
+	defer tlsConn.Close()
+	if _, err := io.WriteString(tlsConn, "OPTIONS * HTTP/1.1\r\nHost: other.invalid\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodOptions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusBadRequest || !resp.Close || string(body) != "invalid request target\n" {
+		t.Fatalf("OPTIONS status=%d close=%v body=%q err=%v", resp.StatusCode, resp.Close, body, err)
+	}
+	if _, err := reader.ReadByte(); err != io.EOF {
+		t.Fatalf("connection after OPTIONS: %v, want EOF", err)
+	}
+	awaitNoActiveRequests(t, p)
+	if hits.Load() != 0 || p.metrics.snapshot().statuses["4xx"] != 1 {
+		t.Fatal("OPTIONS bypassed validation or request instrumentation")
+	}
+}
+
 func TestInterceptSNIMismatchRejectedBeforeOrigin(t *testing.T) {
 	var hits atomic.Int32
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
@@ -580,12 +612,7 @@ func startSignedProxy(t *testing.T, cfg config.Config, signer *ca.Authority, log
 		output = logs
 	}
 	p := New(cfg, signer, slog.New(slog.NewTextHandler(output, nil)), nil)
-	go func() { _ = p.Serve(l) }()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = p.Shutdown(ctx)
-	})
+	serveProxy(t, p, l)
 	return p, l.Addr().String()
 }
 

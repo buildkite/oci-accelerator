@@ -9,6 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +40,28 @@ func TestRefusalClosesConnectionBeforeSecondCONNECT(t *testing.T) {
 		t.Fatalf("unexpected second response: %s", second.Status)
 	}
 	shutdown(t, p)
+}
+
+func TestGeneralOPTIONSClosesBeforeSubsequentCONNECT(t *testing.T) {
+	_, addr := start(t, config.Config{MaxConnections: 2, ResponseHeaderTimeout: time.Second, IdleTimeout: time.Second})
+	conn := dialLifecycle(t, addr)
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	reader := bufio.NewReader(conn)
+	if _, err := io.WriteString(conn, "OPTIONS * HTTP/1.1\r\nHost: proxy.invalid\r\n\r\nCONNECT registry.invalid:443 HTTP/1.1\r\nHost: other.invalid:443\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodOptions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusMethodNotAllowed || !resp.Close || string(body) != "method not allowed\n" {
+		t.Fatalf("OPTIONS status=%d close=%v body=%q err=%v", resp.StatusCode, resp.Close, body, err)
+	}
+	if _, err := reader.ReadByte(); err != io.EOF {
+		t.Fatalf("connection after OPTIONS: %v, want EOF without a CONNECT response", err)
+	}
 }
 
 func TestUpstreamFINReachesClientWhileClientWriteRemainsOpen(t *testing.T) {
@@ -359,4 +384,60 @@ func waitUntil(timeout time.Duration, condition func() bool) bool {
 		time.Sleep(time.Millisecond)
 	}
 	return condition()
+}
+
+type failedAcceptListener struct{ net.Listener }
+
+func (l failedAcceptListener) Accept() (net.Conn, error) {
+	return nil, errors.New("injected accept failure")
+}
+
+func TestProxyHelperReportsLifecycleErrors(t *testing.T) {
+	const modeEnv = "DOCKER_ACCELERATOR_PROXY_HELPER_TEST"
+	switch os.Getenv(modeEnv) {
+	case "serve":
+		p := New(config.Config{MaxConnections: 1}, nil, nil, nil)
+		done := serveProxy(t, p, failedAcceptListener{listen(t)})
+		waitFor(t, done, "injected accept failure")
+		return // cleanup must fail this subprocess on Serve's error
+	case "shutdown":
+		// Keep a pre-header connection open through proxy cleanup. Register
+		// client cleanup first so it runs after the helper's shutdown check.
+		var conn net.Conn
+		t.Cleanup(func() {
+			if conn != nil {
+				conn.Close()
+			}
+		})
+		p, addr := start(t, config.Config{MaxConnections: 1, ResponseHeaderTimeout: time.Minute})
+		var err error
+		conn, err = net.DialTimeout("tcp", addr, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eventuallyLifecycle(t, time.Second, func() bool { return lifecycleConnCount(p) == 1 }, "accepted pre-header connection")
+		return // cleanup must fail this subprocess on Shutdown's deadline
+	}
+	// Use subprocesses to verify the helper actually fails testing.T, rather
+	// than mocking a second reporting API that ordinary tests do not use.
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ mode, want string }{
+		{"serve", "Serve: injected accept failure"},
+		{"shutdown", "Shutdown: context deadline exceeded"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestProxyHelperReportsLifecycleErrors$")
+			cmd.Env = append(os.Environ(), modeEnv+"="+tc.mode)
+			output, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(output), tc.want) {
+				t.Fatalf("helper subprocess: err=%v output=%s, want test failure containing %q", err, output, tc.want)
+			}
+		})
+	}
 }

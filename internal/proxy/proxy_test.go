@@ -195,15 +195,45 @@ func TestRawCONNECTAcceptable(t *testing.T) {
 		{"unparseable host", "CONNECT example.com:443 HTTP/1.1\r\nHost: @@@", false},
 		{"missing host header", "CONNECT example.com:443 HTTP/1.1\r\nUser-Agent: x", false},
 		{"duplicate host header", "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nHost: example.com:443", false},
-		{"non-connect method deferred", "GET / HTTP/1.1\r\nHost: example.com", true},
-		{"wrong word count deferred", "CONNECT not a target HTTP/1.1\r\nHost: example.com:443", true},
-		{"irregular spacing deferred to net/http", "CONNECT  example.com:443 HTTP/1.1\r\nHost: other.example:443", true},
-		{"malformed first line deferred", "garbage line without three parts", true},
-		{"empty first line deferred", "", true},
+		{"non-connect method", "GET / HTTP/1.1\r\nHost: example.com", false},
+		{"wrong word count", "CONNECT not a target HTTP/1.1\r\nHost: example.com:443", false},
+		{"irregular spacing", "CONNECT  example.com:443 HTTP/1.1\r\nHost: other.example:443", false},
+		{"malformed first line", "garbage line without three parts", false},
+		{"empty first line", "", false},
+		{"LF request line", "CONNECT example.com:443 HTTP/1.1\nHost: other.example:443", false},
+		{"LF header line", "CONNECT example.com:443 HTTP/1.1\r\nX-Test: x\nHost: other.example:443", false},
+		{"folded header", "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\tother.example", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := rawCONNECTAcceptable([]byte(tc.head)); got != tc.want {
 				t.Fatalf("rawCONNECTAcceptable(%q) = %v, want %v", tc.head, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCONNECTRejectsAmbiguousWireSyntax(t *testing.T) {
+	authority, _ := hostport.Parse("registry.invalid:443", "443")
+	_, addr := start(t, config.Config{Registries: []hostport.HostPort{authority}, MaxConnections: 4, ResponseHeaderTimeout: time.Second})
+	for _, head := range []string{
+		"CONNECT registry.invalid:443 HTTP/1.1\nHost: other.invalid:443",
+		"CONNECT registry.invalid:443 HTTP/1.1\nHost: registry.invalid:443",
+		"CONNECT registry.invalid:443 HTTP/1.1\r\nX-Test: x\nHost: other.invalid:443",
+		"CONNECT  registry.invalid:443 HTTP/1.1\r\nHost: other.invalid:443",
+	} {
+		t.Run(head, func(t *testing.T) {
+			conn := dialLifecycle(t, addr)
+			_ = conn.SetDeadline(time.Now().Add(time.Second))
+			if _, err := io.WriteString(conn, head+"\r\n\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest || !resp.Close {
+				t.Fatalf("status=%d close=%v, want 400 and close", resp.StatusCode, resp.Close)
 			}
 		})
 	}
@@ -272,9 +302,37 @@ func start(t *testing.T, cfg config.Config) (*Proxy, string) {
 	t.Helper()
 	l := listen(t)
 	p := New(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
-	go func() { _ = p.Serve(l) }()
-	t.Cleanup(func() { shutdown(t, p) })
+	serveProxy(t, p, l)
 	return p, l.Addr().String()
+}
+
+// serveProxy owns the serving goroutine and checks both lifecycle results.
+func serveProxy(t *testing.T, p *Proxy, l net.Listener) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	var serveErr error
+	go func() {
+		serveErr = p.Serve(l)
+		p.mu.Lock()
+		closing := p.closing
+		p.mu.Unlock()
+		if serveErr == nil && !closing {
+			serveErr = fmt.Errorf("Serve returned before Shutdown")
+		}
+		close(done)
+	}()
+	t.Cleanup(func() {
+		shutdown(t, p)
+		select {
+		case <-done:
+			if serveErr != nil {
+				t.Errorf("Serve: %v", serveErr)
+			}
+		case <-time.After(time.Second):
+			t.Error("Serve did not return after Shutdown")
+		}
+	})
+	return done
 }
 
 func shutdown(t *testing.T, p *Proxy) {
