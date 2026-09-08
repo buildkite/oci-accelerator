@@ -1,5 +1,100 @@
 # Implementation decisions
 
+## Proxy review follow-up (maintenance)
+
+- Fix findings from a deep `internal/proxy/` review on branch `fix/proxy-findings`
+  as independent local commits; do not push. Order lowest-risk to highest-risk.
+- A (#14): make production `manifestMediaTypes` the single source of truth and have
+  tests reference it. Kept a plain package-private slice rather than a map or a
+  copy-returning accessor: four entries, read-only usage, package-internal — a map
+  would be over-engineering and a slice reads as the canonical list. Behavior is
+  unchanged (exact string match on the `mime.ParseMediaType` base type). Also removed
+  a second parallel copy in `TestManifestMetadataAdmission` (the exact drift #14
+  targets) surfaced by code-only review.
+
+- B (#11): rename `rawCONNECTValid` to `rawCONNECTAcceptable` with a doc comment
+  stating its true contract — it returns false only for a syntactic single-space
+  CONNECT request line whose target/Host is unparseable or disagrees, and true
+  ("nothing to reject at the raw level") otherwise. Behavior is unchanged; the
+  raw sniff is defense-in-depth ahead of net/http, which itself rejects malformed
+  request-line spacing before ServeHTTP runs (verified), with validateCONNECT as
+  the authoritative target/Host agreement check. Kept the single-space
+  `strings.Split` as-is rather than tightening it: deferring irregular spacing is
+  safe because net/http rejects it, so changing it would alter behavior for no
+  security gain. Added TestRawCONNECTAcceptable covering the deferral cases and
+  both false branches (unparseable target in a three-part line, unparseable/missing/
+  duplicate Host, target/port mismatch).
+
+- C (#1): restructure `fillingBody.Read` with early returns (fill already ended;
+  context canceled) instead of three scattered `b.fill != nil` guards. Kept the
+  logic exactly equivalent, including the `err == io.EOF && b.ctx.Err() == nil`
+  re-check in the commit branch, so cancellation racing an in-flight Read still
+  aborts rather than commits. The cache must never alter the bytes/errors the
+  reverse proxy sees, never commit a canceled or truncated body, and abort on
+  write failure or non-EOF error; all preserved. Added filling_body_test.go with
+  a non-truncating scriptedReader driving commit, pre-cancel abort, non-EOF abort,
+  oversize write failure, Close abort, a trailing zero-byte EOF, and a byte-level
+  round trip through Store.Get.
+
+- D (#13): give `dialUpstream` four internal refusal reasons (unparseable address,
+  resolution failure, forbidden address, connection failure), each wrapping
+  errRedirect via `fmt.Errorf("%w: ...")` so `errors.Is(err, errRedirect)` and the
+  client-facing 502 are unchanged. A `refuseDial` helper logs the reason at DEBUG
+  with only the upstream authority — never resolved IPs, credentials, or client
+  data — consistent with the existing request log. The security boundary is
+  untouched: validation still precedes any dial and the host is never re-resolved.
+  Chose log-only reasons (no client-facing metric) as agreed. Per review, log the
+  reason as a structured error value rather than its string, and give each subtest
+  a fresh Proxy to remove shared-state/order coupling.
+
+- E (#6): source the `docker_accelerator_heap_alloc_bytes` gauge from
+  `runtime/metrics` (`/memory/classes/heap/objects:bytes`) instead of
+  `runtime.ReadMemStats(&mem).Alloc`, removing a stop-the-world pause on every
+  scrape. Go documents that metric as equivalent to `MemStats.HeapAlloc`/`Alloc`,
+  so the reported value is materially the same live-heap-objects figure; the
+  metric name and TYPE are unchanged so dashboards keep working. Alias the import
+  as `runtimemetrics` to avoid colliding with the package's own `metrics` type,
+  and return 0 if the metric is ever unsupported (KindBad) rather than panicking.
+  `runtime.NumGoroutine()` (already non-STW) is retained.
+
+- F (#9): the concern that trackedConn.rawOK/checked are read in ServeHTTP without
+  synchronizing against the write in trackedConn.Read is not a real race: net/http
+  reads a connection's request head (running Read, completing the sniff) and then
+  dispatches ServeHTTP on the same connection goroutine, so the two accesses are
+  ordered by program order. Confirmed no production change is needed; a reviewer
+  empirically verified `-race` does instrument those fields. Added
+  TestConcurrentCONNECTSniffingIsRaceFree as a regression guard: many simultaneous
+  CONNECTs (valid to a signer-less configured registry -> 503, mismatched Host ->
+  400) run under `-race` and would fail if a future change moved the rawOK read or
+  write onto another goroutine. It targets the sniff path, not slot contention.
+
+- G (#4/#5): investigate-first. Do not change the caching decision; add a
+  measurement counter instead. Refactor `cacheHeaders` into `cacheHeaderRejection`
+  (single source of truth returning "", "no_store", "vary", "digest_mismatch"),
+  keeping `cacheHeaders` derived and behavior identical. On the bypass path record
+  only "vary" or "digest_mismatch" into requestStats.reject for eligible objects,
+  and expose `cache_rejections_total{reason=...}` plus a "reject" log field. The
+  counter is deliberately an upper bound (headers would reject, regardless of any
+  other independent bypass cause) — accurate enough to size the cache-effectiveness
+  question before deciding whether to relax the rules in a future, separately
+  approved change. Labels stay a fixed two-value enum; no host/digest/path leaks.
+
+- H (#2): a hard-timeout Shutdown could return while a cache-hit request was
+  still in flight, leaving its `*cache.Reader` pinned when the CLI's deferred
+  `store.Close()` ran, so Close failed with "cache has active readers".
+  Investigation showed the originally-planned "drain until p.conns is empty"
+  approach is insufficient: p.conns tracks client-socket liveness, and closeAll
+  removes a conn on the shutdown goroutine before the intercept goroutine unwinds
+  inner.Serve, which is where the reader closes. Switched (with approval) to a
+  sync.WaitGroup: intercept does Add(1) under p.mu while closing is false (so it
+  is ordered before Shutdown's Wait) and Done after inner.Serve returns, by which
+  point the reverse proxy has closed the reader. Shutdown waits on it — unbounded
+  on the graceful path (already drained) and bounded by a 5s grace after closeAll
+  on the timeout path so a wedged upstream cannot hang shutdown. Added
+  shutdown_reader_test.go, a probabilistic reproducer (fails a majority of runs
+  without the fix, passes consistently with it) asserting store.Close succeeds
+  after a hard-timeout Shutdown with a pinned cache reader.
+
 ## Slice 1 authorization
 
 - Implement 1a–1e autonomously, with per-subslice commits and independent review.

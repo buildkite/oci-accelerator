@@ -20,33 +20,43 @@ type requestStats struct {
 	cache, fill         string
 	wait, fallback      string
 	admission           string
+	reject              string
 	upstreamBytes       int64
 	eligible, cacheable bool
 }
 type statsKey struct{}
 
-func cacheHeaders(h http.Header, digest string) bool {
+// cacheHeaderRejection reports why the headers forbid caching, or "" if they
+// permit it. The checks and their order are the single source of truth for the
+// caching decision; cacheHeaders is derived from it. The returned reason is a
+// fixed, low-cardinality label used only for diagnostics — it never changes the
+// decision itself.
+func cacheHeaderRejection(h http.Header, digest string) string {
 	for _, value := range h.Values("Cache-Control") {
 		for _, directive := range strings.Split(value, ",") {
 			name, _, _ := strings.Cut(directive, "=")
 			if strings.EqualFold(strings.TrimSpace(name), "no-store") {
-				return false
+				return "no_store"
 			}
 		}
 	}
 	for _, value := range h.Values("Vary") {
 		for _, name := range strings.Split(value, ",") {
 			if !strings.EqualFold(strings.TrimSpace(name), "Accept") {
-				return false
+				return "vary"
 			}
 		}
 	}
 	for _, value := range h.Values("Docker-Content-Digest") {
 		if value != digest {
-			return false
+			return "digest_mismatch"
 		}
 	}
-	return true
+	return ""
+}
+
+func cacheHeaders(h http.Header, digest string) bool {
+	return cacheHeaderRejection(h, digest) == ""
 }
 
 func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, bool) {
@@ -80,16 +90,23 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 	return cache.Metadata{Key: hex.EncodeToString(sum[:]), Digest: object.digest, Size: resp.ContentLength, MediaType: media[0]}, true
 }
 
+// manifestMediaTypes is the canonical set of OCI and Docker manifest media
+// types the cache will store. It is the single source of truth; tests must
+// reference it rather than maintaining a parallel copy.
+var manifestMediaTypes = []string{
+	"application/vnd.oci.image.manifest.v1+json",
+	"application/vnd.oci.image.index.v1+json",
+	"application/vnd.docker.distribution.manifest.v2+json",
+	"application/vnd.docker.distribution.manifest.list.v2+json",
+}
+
 func manifestMediaType(mediaType string) bool {
-	switch mediaType {
-	case "application/vnd.oci.image.manifest.v1+json",
-		"application/vnd.oci.image.index.v1+json",
-		"application/vnd.docker.distribution.manifest.v2+json",
-		"application/vnd.docker.distribution.manifest.list.v2+json":
-		return true
-	default:
-		return false
+	for _, known := range manifestMediaTypes {
+		if mediaType == known {
+			return true
+		}
 	}
+	return false
 }
 
 func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted, mayWait bool, stats *requestStats) (*http.Response, bool) {
@@ -99,6 +116,19 @@ func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted
 	}
 	meta, ok := objectMetadata(req, resp)
 	if !ok {
+		// The request was eligible and permitted, yet the object is not cacheable.
+		// Record when the upstream response's Vary or Docker-Content-Digest header
+		// would reject caching so operators can measure cache-effectiveness loss
+		// from CDN header conventions. This is an upper bound: the response may
+		// also be uncacheable for an independent reason (e.g. Content-Encoding),
+		// so a recorded reason means "these headers would reject", not "these
+		// headers are the sole blocker". Uses the request's object digest (meta is
+		// empty on a miss) and does not change the bypass decision.
+		if object, eligible := immutableObjectRequest(req); eligible {
+			if reason := cacheHeaderRejection(resp.Header, object.digest); reason == "vary" || reason == "digest_mismatch" {
+				stats.reject = reason
+			}
+		}
 		return resp, false
 	}
 	if body, err := p.cache.Get(req.Context(), meta); err == nil {
@@ -173,16 +203,28 @@ type fillingBody struct {
 	stats *requestStats
 }
 
+// Read mirrors the upstream stream into the cache fill without ever altering the
+// bytes or error the reverse proxy sees. Once the fill has ended (b.fill == nil)
+// every branch below is skipped, so the upstream stream continues untouched.
 func (b *fillingBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
-	if b.fill != nil && b.ctx.Err() != nil {
-		b.abort("aborted")
+	if b.fill == nil {
+		return n, err
 	}
-	if b.fill != nil && n > 0 {
+	// A canceled request must never publish a partially mirrored object, so drop
+	// the fill before writing anything and treat the request as aborted.
+	if b.ctx.Err() != nil {
+		b.abort("aborted")
+		return n, err
+	}
+	if n > 0 {
 		if _, e := b.fill.Write(p[:n]); e != nil {
 			b.abort("failed")
 		}
 	}
+	// Only a clean EOF on a still-live request may commit; anything else abandons
+	// the fill. The write above may already have aborted, so re-check b.fill, and
+	// re-check the context in case it was canceled while this Read was in flight.
 	if b.fill != nil && err != nil {
 		if err == io.EOF && b.ctx.Err() == nil {
 			b.stats.fill = "stored"

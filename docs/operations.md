@@ -178,6 +178,13 @@ Metric names start with `docker_accelerator_`:
   `upstream_get_attempts_total` includes redirects and both fallback attempts;
   `upstream_body_bytes_total` counts consumed bytes, not wire read-ahead.
   Body byte counters are recorded on request completion, not continuously mid-stream.
+- `cache_rejections_total{reason=...}`: diagnostic counter for eligible immutable
+  objects the upstream response headers keep out of the cache: `vary` (a `Vary`
+  header naming anything other than `Accept`) or `digest_mismatch` (a
+  `Docker-Content-Digest` disagreeing with the requested digest). It is an upper
+  bound — the response may also be uncacheable for another reason — and is
+  intended to measure cache-effectiveness loss from CDN header conventions. It
+  does not affect the caching decision.
 - `cache_admissions_total{reason=...}`: accepted, invalid, oversized, existing,
   fill_limit, capacity, closed, or io_error. `store_fill_*_total` records actual
   success, failure, abort and expiry transitions, including idle-fill expiry.

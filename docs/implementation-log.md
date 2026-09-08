@@ -12,6 +12,23 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 - **Next:** The authorized run is complete. Deferred features require separate
   scope approval; there are no unresolved verification blockers for slices 3–4.
 
+## Proxy review follow-up (maintenance, not a plan slice)
+
+Fixes for findings from a deep review of `internal/proxy/`. Each item is an
+independent local commit on branch `fix/proxy-findings`; not pushed. Reasons are
+recorded in the [decision log](decision-log.md).
+
+| Item | Finding | Status |
+| --- | --- | --- |
+| A. Dedupe manifest media-type list | #14 duplicated allowlist in prod and tests | Complete (6095ff8) — `manifestMediaTypes` is the single source of truth; tests reference it. |
+| B. Clarify `rawCONNECTValid` | #11 misleading true-on-non-CONNECT | Complete (2b11ee9) — renamed to `rawCONNECTAcceptable` with accurate doc and direct unit tests; behavior unchanged. |
+| C. Simplify `fillingBody.Read` ordering | #1 fragile triple nil-check | Complete (1af87d8) — early-return structure, behavior-equivalent (both reviews approved); new direct unit tests. |
+| D. Internal redirect-refusal reasons | #13 `errRedirect` collapses causes | Complete (9af93ef) — four errRedirect-wrapping dial reasons logged at DEBUG; client 502 and security boundary unchanged. |
+| E. Non-STW heap gauge | #6 `ReadMemStats` STW on every scrape | Complete (2fb127a) — heap_alloc_bytes now sourced from runtime/metrics (non-STW); name/TYPE unchanged. |
+| F. `-race` CONNECT sniffing coverage | #9 unsynchronized `rawOK`/`checked` | Complete (b24e5d8) — no real race (same-goroutine happens-before); added concurrent `-race` regression guard. No production change. |
+| G. Cache-effectiveness measurement | #4/#5 Vary/digest conservatism | Complete (b015ca1) — added `cache_rejections_total{reason=vary\|digest_mismatch}` upper-bound diagnostic; caching decision unchanged. |
+| H. Shutdown reader-leak race | #2 hard-timeout leaves reader pinned | Complete (45954c1) — Shutdown drains active intercepts via a WaitGroup so cache readers close before store.Close; both reviews approved. |
+
 ## Completed groundwork
 
 - Requirements and architecture agreed and recorded in the approved plan.

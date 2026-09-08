@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	runtimemetrics "runtime/metrics"
 	"sort"
 	"strings"
 	"sync"
@@ -11,6 +12,21 @@ import (
 
 	"ampcode.com/buildkite/docker-accelerator/internal/cache"
 )
+
+// heapObjectsMetric is the live heap-object byte count. Reading it via
+// runtime/metrics avoids the stop-the-world pause that runtime.ReadMemStats
+// imposes on every scrape.
+const heapObjectsMetric = "/memory/classes/heap/objects:bytes"
+
+// heapAllocBytes returns the live heap-object bytes without stopping the world.
+func heapAllocBytes() uint64 {
+	samples := []runtimemetrics.Sample{{Name: heapObjectsMetric}}
+	runtimemetrics.Read(samples)
+	if samples[0].Value.Kind() != runtimemetrics.KindUint64 {
+		return 0
+	}
+	return samples[0].Value.Uint64()
+}
 
 type metrics struct {
 	mu                             sync.Mutex
@@ -20,6 +36,7 @@ type metrics struct {
 	fills                          map[string]uint64
 	waits                          map[string]uint64
 	fallback                       map[string]uint64
+	rejects                        map[string]uint64
 	upstream                       uint64
 	upstreamBytes, downstreamBytes uint64
 	durations                      [8]uint64
@@ -28,26 +45,25 @@ type metrics struct {
 }
 
 func newMetrics() *metrics {
-	return &metrics{requests: map[string]uint64{}, statuses: map[string]uint64{}, cache: map[string]uint64{}, fills: map[string]uint64{}, waits: map[string]uint64{}, fallback: map[string]uint64{}}
+	return &metrics{requests: map[string]uint64{}, statuses: map[string]uint64{}, cache: map[string]uint64{}, fills: map[string]uint64{}, waits: map[string]uint64{}, fallback: map[string]uint64{}, rejects: map[string]uint64{}}
 }
 
 type metricsSnapshot struct {
-	requests, statuses, cache, fills, waits, fallback map[string]uint64
-	upstream, upstreamBytes, downstreamBytes          uint64
-	durations                                         [8]uint64
-	durationSum                                       float64
-	activeRequests, activeWaits                       int64
+	requests, statuses, cache, fills, waits, fallback, rejects map[string]uint64
+	upstream, upstreamBytes, downstreamBytes                   uint64
+	durations                                                  [8]uint64
+	durationSum                                                float64
+	activeRequests, activeWaits                                int64
 }
 
 func (p *Proxy) MetricsHandler() http.Handler { return http.HandlerFunc(p.writeMetrics) }
 
 func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	p.metrics.mu.Lock()
-	m := metricsSnapshot{requests: cloneMap(p.metrics.requests), statuses: cloneMap(p.metrics.statuses), cache: cloneMap(p.metrics.cache), fills: cloneMap(p.metrics.fills), waits: cloneMap(p.metrics.waits), fallback: cloneMap(p.metrics.fallback), upstream: p.metrics.upstream, upstreamBytes: p.metrics.upstreamBytes, downstreamBytes: p.metrics.downstreamBytes, durations: p.metrics.durations, durationSum: p.metrics.durationSum, activeRequests: p.metrics.activeRequests, activeWaits: p.metrics.activeWaits}
+	m := metricsSnapshot{requests: cloneMap(p.metrics.requests), statuses: cloneMap(p.metrics.statuses), cache: cloneMap(p.metrics.cache), fills: cloneMap(p.metrics.fills), waits: cloneMap(p.metrics.waits), fallback: cloneMap(p.metrics.fallback), rejects: cloneMap(p.metrics.rejects), upstream: p.metrics.upstream, upstreamBytes: p.metrics.upstreamBytes, downstreamBytes: p.metrics.downstreamBytes, durations: p.metrics.durations, durationSum: p.metrics.durationSum, activeRequests: p.metrics.activeRequests, activeWaits: p.metrics.activeWaits}
 	p.metrics.mu.Unlock()
 	cs := cacheStats(p)
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
+	heapAlloc := heapAllocBytes()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	var b strings.Builder
 	writeMap := func(name, label string, values map[string]uint64) {
@@ -67,6 +83,7 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeMap("docker_accelerator_fills_total", "outcome", m.fills)
 	writeMap("docker_accelerator_waits_total", "outcome", m.waits)
 	writeMap("docker_accelerator_fallbacks_total", "outcome", m.fallback)
+	writeMap("docker_accelerator_cache_rejections_total", "reason", m.rejects)
 	for _, name := range []string{"upstream_get_attempts_total", "upstream_body_bytes_total", "downstream_bytes_total", "cache_evictions_total", "store_fill_success_total", "store_fill_failure_total", "store_fill_abort_total", "store_fill_expiry_total", "cache_admissions_total"} {
 		fmt.Fprintf(&b, "# TYPE docker_accelerator_%s counter\n", name)
 	}
@@ -74,7 +91,7 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(&b, "# TYPE docker_accelerator_%s gauge\n", name)
 	}
 	fmt.Fprintf(&b, "docker_accelerator_upstream_get_attempts_total %d\ndocker_accelerator_upstream_body_bytes_total %d\ndocker_accelerator_downstream_bytes_total %d\ndocker_accelerator_active_requests %d\ndocker_accelerator_active_waits %d\ndocker_accelerator_active_connections %d\n", m.upstream, m.upstreamBytes, m.downstreamBytes, m.activeRequests, m.activeWaits, p.connectionCount())
-	fmt.Fprintf(&b, "docker_accelerator_cache_entries %d\ndocker_accelerator_cache_fills %d\ndocker_accelerator_cache_bytes %d\ndocker_accelerator_cache_reserved_bytes %d\ndocker_accelerator_cache_readers %d\ndocker_accelerator_cache_evictions_total %d\ndocker_accelerator_store_fill_success_total %d\ndocker_accelerator_store_fill_failure_total %d\ndocker_accelerator_store_fill_abort_total %d\ndocker_accelerator_store_fill_expiry_total %d\ndocker_accelerator_heap_alloc_bytes %d\ndocker_accelerator_goroutines %d\n", cs.Entries, cs.Fills, cs.Bytes, cs.Reserved, cs.Readers, cs.Evictions, cs.FillSuccess, cs.FillFailure, cs.FillAbort, cs.FillExpiry, mem.Alloc, runtime.NumGoroutine())
+	fmt.Fprintf(&b, "docker_accelerator_cache_entries %d\ndocker_accelerator_cache_fills %d\ndocker_accelerator_cache_bytes %d\ndocker_accelerator_cache_reserved_bytes %d\ndocker_accelerator_cache_readers %d\ndocker_accelerator_cache_evictions_total %d\ndocker_accelerator_store_fill_success_total %d\ndocker_accelerator_store_fill_failure_total %d\ndocker_accelerator_store_fill_abort_total %d\ndocker_accelerator_store_fill_expiry_total %d\ndocker_accelerator_heap_alloc_bytes %d\ndocker_accelerator_goroutines %d\n", cs.Entries, cs.Fills, cs.Bytes, cs.Reserved, cs.Readers, cs.Evictions, cs.FillSuccess, cs.FillFailure, cs.FillAbort, cs.FillExpiry, heapAlloc, runtime.NumGoroutine())
 	for reason := cache.AdmissionReason(0); reason < cache.AdmissionReasonCount; reason++ {
 		fmt.Fprintf(&b, "docker_accelerator_cache_admissions_total{reason=%q} %d\n", reason.String(), cs.Admissions[reason])
 	}
@@ -117,6 +134,9 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 	}
 	if s.fallback != "" {
 		m.fallback[s.fallback]++
+	}
+	if s.reject != "" {
+		m.rejects[s.reject]++
 	}
 	m.upstreamBytes += uint64(s.upstreamBytes)
 	m.downstreamBytes += uint64(downstream)
