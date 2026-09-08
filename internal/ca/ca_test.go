@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -79,6 +80,106 @@ func TestLeavesVerifyAndCacheIsBounded(t *testing.T) {
 	}
 }
 
+func TestCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "ca"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Certificate("a.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Certificate("b.example"); err != nil {
+		t.Fatal(err)
+	}
+	// Touch "a" so "b" becomes least recently used, then overflow the cache.
+	if _, err := a.Certificate("a.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Certificate("c.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.leaves["b.example"]; ok {
+		t.Fatal("least recently used entry was not evicted")
+	}
+	for _, host := range []string{"a.example", "c.example"} {
+		if _, ok := a.leaves[host]; !ok {
+			t.Fatalf("recently used entry %q was evicted", host)
+		}
+	}
+	if a.order.Len() != len(a.leaves) || len(a.leaves) != 2 {
+		t.Fatalf("cache desync: order=%d leaves=%d", a.order.Len(), len(a.leaves))
+	}
+}
+
+func TestRenewalRefreshesRecency(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "ca"), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := a.Certificate("x.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Certificate("y.example"); err != nil {
+		t.Fatal(err)
+	}
+	// Force "x" into the renewal branch. Renewal must move it to most-recently
+	// used, so the next overflow evicts "y" rather than "x".
+	x.Leaf.NotAfter = time.Now().Add(leafRenewal)
+	renewed, err := a.Certificate("x.example")
+	if err != nil || renewed == x {
+		t.Fatalf("near-expiry leaf was not renewed: %v", err)
+	}
+	if _, err := a.Certificate("z.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.leaves["y.example"]; ok {
+		t.Fatal("renewal did not refresh recency: least recently used entry survived")
+	}
+	if _, ok := a.leaves["x.example"]; !ok {
+		t.Fatal("renewed entry was evicted despite being most recently used")
+	}
+}
+
+func TestCapacityOneRenewal(t *testing.T) {
+	a, err := Open(filepath.Join(t.TempDir(), "ca"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := a.Certificate("only.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Leaf.NotAfter = time.Now().Add(leafRenewal)
+	second, err := a.Certificate("only.example")
+	if err != nil || second == first {
+		t.Fatalf("sole entry was not renewed: %v", err)
+	}
+	if a.order.Len() != 1 || len(a.leaves) != 1 {
+		t.Fatalf("cache desync at capacity 1: order=%d leaves=%d", a.order.Len(), len(a.leaves))
+	}
+}
+
+func TestCacheBackingStoreStaysBounded(t *testing.T) {
+	const maxLeaves = 4
+	a, err := Open(filepath.Join(t.TempDir(), "ca"), maxLeaves)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 200; i++ {
+		host := fmt.Sprintf("host-%d.example", i)
+		if _, err := a.Certificate(host); err != nil {
+			t.Fatalf("Certificate(%q): %v", host, err)
+		}
+		if a.order.Len() > maxLeaves || len(a.leaves) > maxLeaves {
+			t.Fatalf("cache exceeded bound: order=%d leaves=%d", a.order.Len(), len(a.leaves))
+		}
+		if a.order.Len() != len(a.leaves) {
+			t.Fatalf("cache desync: order=%d leaves=%d", a.order.Len(), len(a.leaves))
+		}
+	}
+}
+
 func TestCertificateConcurrent(t *testing.T) {
 	a, err := Open(filepath.Join(t.TempDir(), "ca"), 4)
 	if err != nil {
@@ -134,24 +235,36 @@ func TestLeafReuseRenewalAndCALimit(t *testing.T) {
 }
 
 func TestConcurrentInitializationNeverOverwrites(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ca")
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "ca")
 	const count = 20
 	results := make(chan *Authority, count)
 	var wg sync.WaitGroup
 	for i := 0; i < count; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); a, _ := Open(dir, 1); results <- a }()
+		go func() {
+			defer wg.Done()
+			a, err := Open(dir, 1)
+			if err != nil {
+				// Every concurrent opener must succeed: the winner publishes
+				// the CA and losers adopt it. None may fail now that there is
+				// no persistent initialization lock to contend on.
+				t.Errorf("concurrent Open failed: %v", err)
+			}
+			results <- a
+		}()
 	}
 	wg.Wait()
 	close(results)
 	var fingerprint string
 	for a := range results {
-		if a != nil {
-			if fingerprint == "" {
-				fingerprint = a.Fingerprint()
-			} else if a.Fingerprint() != fingerprint {
-				t.Fatal("concurrent initialization rotated CA")
-			}
+		if a == nil {
+			continue
+		}
+		if fingerprint == "" {
+			fingerprint = a.Fingerprint()
+		} else if a.Fingerprint() != fingerprint {
+			t.Fatal("concurrent initialization rotated CA")
 		}
 	}
 	if fingerprint == "" {
@@ -161,6 +274,170 @@ func TestConcurrentInitializationNeverOverwrites(t *testing.T) {
 	if err != nil || a.Fingerprint() != fingerprint {
 		t.Fatalf("published CA changed: %v", err)
 	}
+	// Losing initializers must clean up their staging directories, and no
+	// initialization lock may be left behind.
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "ca" {
+			t.Fatalf("leftover artifact in parent: %q", e.Name())
+		}
+	}
+}
+
+func TestConcurrentInitializeAllSucceed(t *testing.T) {
+	// Exercise the rename contention directly: Open short-circuits to load once
+	// dir exists, so calling initialize from every goroutine is what forces the
+	// losing-initializer adopt branch to run.
+	dir := filepath.Join(t.TempDir(), "ca")
+	const count = 20
+	var wg sync.WaitGroup
+	errs := make([]error, count)
+	start := make(chan struct{})
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = initialize(dir)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("initialize %d: %v", i, err)
+		}
+	}
+	a, err := Open(dir, 1)
+	if err != nil {
+		t.Fatalf("published CA is not loadable: %v", err)
+	}
+	if a.Fingerprint() == "" {
+		t.Fatal("empty fingerprint")
+	}
+	// Exactly one CA is published and every loser cleaned up its staging dir.
+	entries, err := os.ReadDir(filepath.Dir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(dir) {
+		t.Fatalf("leftover artifacts in parent: %v", entries)
+	}
+}
+
+func TestInitializeSurfacesRenameFailureForNonCADir(t *testing.T) {
+	// A pre-existing non-empty directory that is not a published CA must make
+	// initialize surface the rename failure rather than falsely adopt it. A
+	// non-empty destination fails rename identically on Linux (ENOTEMPTY) and
+	// macOS (EEXIST), so this exercises the surface branch portably.
+	dir := filepath.Join(t.TempDir(), "ca")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(dir, "stray")
+	if err := os.WriteFile(stray, []byte("not a CA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initialize(dir); err == nil {
+		t.Fatal("adopted a non-CA directory as a published CA")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "stray" {
+		t.Fatalf("pre-existing directory was modified: %v", entries)
+	}
+}
+
+func TestInitializeSurfacesForShapeValidButInvalidCA(t *testing.T) {
+	// A directory whose files have CA-like names and permissions but garbage
+	// contents is shape-valid, so publishedCA adopts it; Open must still fail
+	// closed because load re-validates contents. This documents that adoption
+	// defers content validation to load and never yields a bad Authority.
+	dir := filepath.Join(t.TempDir(), "ca")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, certName), []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, keyName), []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initialize(dir); err != nil {
+		t.Fatalf("shape-valid dir should be adopted by initialize: %v", err)
+	}
+	if _, err := Open(dir, 1); err == nil {
+		t.Fatal("Open accepted a shape-valid but invalid CA")
+	}
+}
+
+func TestCertificatePermissionBounds(t *testing.T) {
+	// The public certificate may be stricter than 0644 but never broader.
+	for _, mode := range []os.FileMode{0o644, 0o640, 0o600, 0o400} {
+		t.Run("accept-"+mode.String(), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "ca")
+			if _, err := Open(dir, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(dir, certName), mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(dir, 1); err != nil {
+				t.Fatalf("rejected safe certificate mode %v: %v", mode, err)
+			}
+		})
+	}
+	for _, mode := range []os.FileMode{0o646, 0o664, 0o666, 0o755} {
+		t.Run("reject-"+mode.String(), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "ca")
+			if _, err := Open(dir, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(dir, certName), mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(dir, 1); err == nil {
+				t.Fatalf("accepted overly permissive certificate mode %v", mode)
+			}
+		})
+	}
+}
+
+func TestKeyPermissionStaysStrict(t *testing.T) {
+	// The private key must never grant any access beyond the owner, including
+	// read, write, and execute bits for group and other.
+	for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o660, 0o610, 0o601, 0o602} {
+		t.Run("reject-"+mode.String(), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "ca")
+			if _, err := Open(dir, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(dir, keyName), mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(dir, 1); err == nil {
+				t.Fatalf("accepted key with group/world access, mode %v", mode)
+			}
+		})
+	}
+	// A key stricter than 0600 (owner read-only) is still accepted.
+	t.Run("accept-0400", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "ca")
+		if _, err := Open(dir, 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(dir, keyName), 0o400); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(dir, 1); err != nil {
+			t.Fatalf("rejected owner-only key mode 0400: %v", err)
+		}
+	})
 }
 
 func TestExistingBadStatesFailWithoutWrites(t *testing.T) {

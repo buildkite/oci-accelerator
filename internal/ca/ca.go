@@ -82,16 +82,6 @@ func initialize(dir string) error {
 			return errors.New("CA parent must be owned by the current user")
 		}
 	}
-	lock := dir + ".lock"
-	if err := os.Mkdir(lock, 0o700); err != nil {
-		return fmt.Errorf("acquire initialization lock (remove a stale lock only after verifying no initialization is active): %w", err)
-	}
-	defer os.Remove(lock)
-	if _, err := os.Lstat(dir); err == nil {
-		return errors.New("CA path appeared during initialization")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	stage, err := os.MkdirTemp(parent, ".ca-init-")
 	if err != nil {
 		return err
@@ -117,15 +107,42 @@ func initialize(dir string) error {
 	if err := syncDir(stage); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(dir); err == nil {
-		return errors.New("CA path appeared during initialization")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
+	// Publish atomically. Concurrent initializers each stage their own CA and
+	// race this rename. rename(2) into an existing directory fails (with
+	// ENOTEMPTY once a competitor has populated the destination, and with
+	// EEXIST for an empty destination on some platforms such as macOS), so at
+	// most one initializer creates dir. This makes initialization crash-safe
+	// without a persistent on-disk lock that a killed process would leak: the
+	// only durable artifact is a fully staged CA moved into place in one step.
 	if err := os.Rename(stage, dir); err != nil {
+		// A losing initializer adopts the winner's CA. Rename can also fail for
+		// reasons unrelated to a competitor (permission, I/O, cross-device), so
+		// only treat the error as a lost race when dir is now a complete,
+		// correctly permissioned installation; otherwise surface the failure.
+		// Content validity is deliberately deferred to the caller's load, which
+		// re-parses the certificate and key and fails closed on bad material.
+		if publishedCA(dir) {
+			return syncDir(parent)
+		}
 		return err
 	}
 	return syncDir(parent)
+}
+
+// publishedCA reports whether dir already holds both CA files with the on-disk
+// types and permissions Open requires, so a losing initializer can adopt an
+// already-published CA instead of masking an unrelated rename failure. It
+// checks structure and permissions only; the caller's load validates contents.
+func publishedCA(dir string) bool {
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		return false
+	}
+	if _, err := readRegular(filepath.Join(dir, certName), 0o644); err != nil {
+		return false
+	}
+	_, err = readRegular(filepath.Join(dir, keyName), 0o600)
+	return err == nil
 }
 
 func syncDir(path string) error {
@@ -203,12 +220,17 @@ func load(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	return cert, key, nil
 }
 
-func readRegular(path string, mode os.FileMode) ([]byte, error) {
+// readRegular reads path only when it is a regular file whose permission bits
+// grant no more access than maxPerm. Bits set in maxPerm are permitted but not
+// required, so a stricter mode (for example an owner-only public certificate)
+// is accepted while any broader access, such as group- or world-write on the
+// key, is rejected.
+func readRegular(path string, maxPerm os.FileMode) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != mode {
+	if !info.Mode().IsRegular() || info.Mode().Perm()&^maxPerm != 0 {
 		return nil, errors.New("file has insecure type or permissions")
 	}
 	return os.ReadFile(path)
