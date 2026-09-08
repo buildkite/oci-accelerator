@@ -74,7 +74,7 @@ func parseStrictInt(node *yaml.Node) (int64, bool, error) {
 	if node.Tag != "!!int" {
 		return 0, false, ErrInvalid
 	}
-	if !isDecimalMagnitude(node.Value) {
+	if !hasNoLeadingZero(node.Value) {
 		return 0, false, ErrInvalid
 	}
 	v, err := strconv.ParseInt(node.Value, 10, 64)
@@ -84,14 +84,9 @@ func parseStrictInt(node *yaml.Node) (int64, bool, error) {
 	return v, false, nil
 }
 
-// isDecimalMagnitude reports whether s is a plain base-10 integer literal with no
-// redundant leading zero in its magnitude. strconv.ParseInt(_, 10, 64) accepts
-// leading-zero forms such as "017" as decimal 17, which would silently reinterpret
-// a value the operator wrote as octal. Rejecting a magnitude that has more than one
-// digit and begins with '0' keeps decoding strictly decimal, matching the doc
-// comment and the recorded decision. A bare "0" (or "+0"/"-0") still parses and is
-// rejected later by the >0 range check.
-func isDecimalMagnitude(s string) bool {
+// hasNoLeadingZero rejects redundant leading zeros after an optional sign.
+// strconv.ParseInt separately validates the digits and range.
+func hasNoLeadingZero(s string) bool {
 	if len(s) > 0 && (s[0] == '+' || s[0] == '-') {
 		s = s[1:]
 	}
@@ -201,8 +196,14 @@ func Load(path string) (Config, error) {
 
 func defaults() rawConfig {
 	return rawConfig{
-		Listen:                "127.0.0.1:3128",
-		Cache:                 rawCache{MaxBytes: strictInt64(DefaultCacheMaxBytes), MaxFills: strictInt(DefaultCacheMaxFills), MaxEntries: strictInt(DefaultCacheMaxEntries), FillTimeout: duration(DefaultCacheFillTimeout), FillWaitTimeout: nonNegativeDuration(DefaultCacheFillWaitTimeout)},
+		Listen: "127.0.0.1:3128",
+		Cache: rawCache{
+			MaxBytes:        strictInt64(DefaultCacheMaxBytes),
+			MaxFills:        strictInt(DefaultCacheMaxFills),
+			MaxEntries:      strictInt(DefaultCacheMaxEntries),
+			FillTimeout:     duration(DefaultCacheFillTimeout),
+			FillWaitTimeout: nonNegativeDuration(DefaultCacheFillWaitTimeout),
+		},
 		DialTimeout:           duration(10 * time.Second),
 		TLSHandshakeTimeout:   duration(10 * time.Second),
 		ResponseHeaderTimeout: duration(30 * time.Second),
@@ -241,13 +242,26 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}
 
 	return Config{
-		Listen: listen, MetricsListen: metricsListen, Registries: registries, RedirectAllowlist: redirectAllowlist,
-		CADir:       resolve(base, raw.CADir),
-		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: int64(raw.Cache.MaxBytes), MaxFills: int(raw.Cache.MaxFills), MaxEntries: int(raw.Cache.MaxEntries), FillTimeout: time.Duration(raw.Cache.FillTimeout), FillWaitTimeout: time.Duration(raw.Cache.FillWaitTimeout)},
-		DialTimeout: time.Duration(raw.DialTimeout), TLSHandshakeTimeout: time.Duration(raw.TLSHandshakeTimeout),
-		ResponseHeaderTimeout: time.Duration(raw.ResponseHeaderTimeout), IdleTimeout: time.Duration(raw.IdleTimeout),
-		ShutdownTimeout: time.Duration(raw.ShutdownTimeout), MaxConnections: int(raw.MaxConnections),
-		MaxLeafCertificates: int(raw.MaxLeafCertificates),
+		Listen:            listen,
+		MetricsListen:     metricsListen,
+		Registries:        registries,
+		RedirectAllowlist: redirectAllowlist,
+		CADir:             resolve(base, raw.CADir),
+		Cache: Cache{
+			Dir:             resolve(base, raw.Cache.Dir),
+			MaxBytes:        int64(raw.Cache.MaxBytes),
+			MaxFills:        int(raw.Cache.MaxFills),
+			MaxEntries:      int(raw.Cache.MaxEntries),
+			FillTimeout:     time.Duration(raw.Cache.FillTimeout),
+			FillWaitTimeout: time.Duration(raw.Cache.FillWaitTimeout),
+		},
+		DialTimeout:           time.Duration(raw.DialTimeout),
+		TLSHandshakeTimeout:   time.Duration(raw.TLSHandshakeTimeout),
+		ResponseHeaderTimeout: time.Duration(raw.ResponseHeaderTimeout),
+		IdleTimeout:           time.Duration(raw.IdleTimeout),
+		ShutdownTimeout:       time.Duration(raw.ShutdownTimeout),
+		MaxConnections:        int(raw.MaxConnections),
+		MaxLeafCertificates:   int(raw.MaxLeafCertificates),
 	}, nil
 }
 
