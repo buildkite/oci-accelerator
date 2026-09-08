@@ -63,6 +63,11 @@ var completedNotification = func() <-chan struct{} {
 	return c
 }()
 
+// Metadata describes an immutable object representation. The caller supplies a
+// lowercase, 64-hex-character Key identifying that representation, including its
+// digest and media type. Size must agree with the digest-verified object's size.
+// Get requires all fields to match; Begin refuses an existing valid key even
+// when other fields differ. Inconsistent metadata never replaces a valid entry.
 type Metadata struct {
 	Key, Digest string
 	Size        int64

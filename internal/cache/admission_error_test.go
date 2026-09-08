@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,40 @@ import (
 	"testing"
 	"testing/synctest"
 )
+
+func TestSizeMismatchDoesNotReplaceValidEntry(t *testing.T) {
+	s := openTest(t, 1<<20)
+	meta := testMeta("immutable", "body")
+	put(t, s, meta, "body")
+	for _, size := range []int64{meta.Size - 1, meta.Size + 1} {
+		mismatch := meta
+		mismatch.Size = size
+		want := s.Stats()
+		want.Admissions[AdmissionExisting]++
+		if r, err := s.Get(context.Background(), mismatch); err != ErrMiss {
+			if r != nil {
+				_ = r.Close()
+			}
+			t.Fatalf("Get mismatching size = %v", err)
+		}
+		if _, ok := s.Completion(mismatch); ok {
+			t.Fatal("mismatching entry reported complete")
+		}
+		f, err := s.Begin(mismatch)
+		if f != nil {
+			_ = f.Abort()
+			t.Fatal("mismatching size admitted over a valid entry")
+		}
+		var admission *AdmissionError
+		if !errors.Is(err, ErrBypass) || !errors.As(err, &admission) || admission.Reason != AdmissionExisting || admission.Cause != nil {
+			t.Fatalf("Begin mismatching size = %v", err)
+		}
+		if got := s.Stats(); got != want {
+			t.Fatalf("mismatch changed cache accounting: got %+v, want %+v", got, want)
+		}
+		read(t, s, meta, "body")
+	}
+}
 
 func TestAdmissionErrorPreservesCause(t *testing.T) {
 	pathErr := &os.PathError{Op: "mkdir", Path: "cache/.fill-test", Err: os.ErrPermission}
