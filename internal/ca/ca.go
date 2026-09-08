@@ -220,12 +220,17 @@ func load(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	return cert, key, nil
 }
 
-func readRegular(path string, mode os.FileMode) ([]byte, error) {
+// readRegular reads path only when it is a regular file whose permission bits
+// grant no more access than maxPerm. Bits set in maxPerm are permitted but not
+// required, so a stricter mode (for example an owner-only public certificate)
+// is accepted while any broader access, such as group- or world-write on the
+// key, is rejected.
+func readRegular(path string, maxPerm os.FileMode) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != mode {
+	if !info.Mode().IsRegular() || info.Mode().Perm()&^maxPerm != 0 {
 		return nil, errors.New("file has insecure type or permissions")
 	}
 	return os.ReadFile(path)

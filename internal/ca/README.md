@@ -29,8 +29,11 @@ Loads the CA in `dir`, creating it only when `dir` does not yet exist.
 `maxLeaves` bounds the in-memory leaf cache. On every startup `Open`
 re-parses and re-validates the root certificate and key
 (PEM type, `IsCA`, key usage, self-signature, curve, key/cert pairing, validity
-window) and enforces strict on-disk file types and permissions
-(`ca.crt` `0644`, `ca.key` `0600`, directory `0700`, no symlinks).
+window) and enforces strict on-disk file types and permissions. Each file
+must be a regular file granting no access beyond its baseline (`ca.crt` at
+most `0644`, `ca.key` at most `0600`); stricter modes are accepted but broader
+ones are rejected. The directory must be `0700` with no symlinks. `Open`
+creates the CA with `ca.crt` `0644` and `ca.key` `0600`.
 
 ### `(*Authority) Certificate(host string) (*tls.Certificate, error)`
 

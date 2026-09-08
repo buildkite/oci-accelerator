@@ -376,6 +376,70 @@ func TestInitializeSurfacesForShapeValidButInvalidCA(t *testing.T) {
 	}
 }
 
+func TestCertificatePermissionBounds(t *testing.T) {
+	// The public certificate may be stricter than 0644 but never broader.
+	for _, mode := range []os.FileMode{0o644, 0o640, 0o600, 0o400} {
+		t.Run("accept-"+mode.String(), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "ca")
+			if _, err := Open(dir, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(dir, certName), mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(dir, 1); err != nil {
+				t.Fatalf("rejected safe certificate mode %v: %v", mode, err)
+			}
+		})
+	}
+	for _, mode := range []os.FileMode{0o646, 0o664, 0o666, 0o755} {
+		t.Run("reject-"+mode.String(), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "ca")
+			if _, err := Open(dir, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(dir, certName), mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(dir, 1); err == nil {
+				t.Fatalf("accepted overly permissive certificate mode %v", mode)
+			}
+		})
+	}
+}
+
+func TestKeyPermissionStaysStrict(t *testing.T) {
+	// The private key must never grant any access beyond the owner, including
+	// read, write, and execute bits for group and other.
+	for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o660, 0o610, 0o601, 0o602} {
+		t.Run("reject-"+mode.String(), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "ca")
+			if _, err := Open(dir, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(dir, keyName), mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(dir, 1); err == nil {
+				t.Fatalf("accepted key with group/world access, mode %v", mode)
+			}
+		})
+	}
+	// A key stricter than 0600 (owner read-only) is still accepted.
+	t.Run("accept-0400", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "ca")
+		if _, err := Open(dir, 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(dir, keyName), 0o400); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(dir, 1); err != nil {
+			t.Fatalf("rejected owner-only key mode 0400: %v", err)
+		}
+	})
+}
+
 func TestExistingBadStatesFailWithoutWrites(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "ca")
