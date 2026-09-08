@@ -1,0 +1,170 @@
+package config
+
+import (
+	"fmt"
+	"net"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+)
+
+func validate(raw rawConfig, base string) (Config, error) {
+	if len(raw.Registries) == 0 {
+		return Config{}, fmt.Errorf("%w: registries: must contain at least one authority", ErrInvalid)
+	}
+	if strings.TrimSpace(string(raw.CADir)) == "" {
+		return Config{}, fmt.Errorf("%w: ca_dir: must be a non-blank directory path", ErrInvalid)
+	}
+	if strings.TrimSpace(string(raw.Cache.Dir)) == "" {
+		return Config{}, fmt.Errorf("%w: cache.dir: must be a non-blank directory path", ErrInvalid)
+	}
+	listen, err := canonicalBindAddress(string(raw.Listen), false)
+	if err != nil {
+		return Config{}, fmt.Errorf("listen: %w", err)
+	}
+	metricsListen := string(raw.MetricsListen)
+	if metricsListen != "" {
+		metricsListen, err = canonicalBindAddress(metricsListen, true)
+		if err != nil {
+			return Config{}, fmt.Errorf("metrics_listen: %w", err)
+		}
+	}
+	for _, limit := range []struct {
+		field string
+		value int64
+	}{
+		{"cache.max_bytes", int64(raw.Cache.MaxBytes)},
+		{"cache.max_fills", int64(raw.Cache.MaxFills)},
+		{"cache.max_entries", int64(raw.Cache.MaxEntries)},
+		{"max_connections", int64(raw.MaxConnections)},
+		{"max_leaf_certificates", int64(raw.MaxLeafCertificates)},
+	} {
+		if limit.value <= 0 {
+			return Config{}, fmt.Errorf("%w: %s: must be positive", ErrInvalid, limit.field)
+		}
+	}
+	for _, timeout := range []struct {
+		field string
+		value duration
+	}{
+		{"dial_timeout", raw.DialTimeout},
+		{"tls_handshake_timeout", raw.TLSHandshakeTimeout},
+		{"response_header_timeout", raw.ResponseHeaderTimeout},
+		{"idle_timeout", raw.IdleTimeout},
+		{"shutdown_timeout", raw.ShutdownTimeout},
+		{"cache.fill_timeout", raw.Cache.FillTimeout},
+	} {
+		if timeout.value <= 0 {
+			return Config{}, fmt.Errorf("%w: %s: must be positive", ErrInvalid, timeout.field)
+		}
+	}
+	if raw.Cache.FillWaitTimeout < 0 {
+		return Config{}, fmt.Errorf("%w: cache.fill_wait_timeout: must be non-negative", ErrInvalid)
+	}
+	registries, err := parseAuthorities(raw.Registries)
+	if err != nil {
+		return Config{}, fmt.Errorf("registries: %w", err)
+	}
+	redirectAllowlist, err := parseAuthorities(raw.RedirectAllowlist)
+	if err != nil {
+		return Config{}, fmt.Errorf("redirect_allowlist: %w", err)
+	}
+
+	return Config{
+		Listen:            listen,
+		MetricsListen:     metricsListen,
+		Registries:        registries,
+		RedirectAllowlist: redirectAllowlist,
+		CADir:             resolve(base, string(raw.CADir)),
+		Cache: Cache{
+			Dir:             resolve(base, string(raw.Cache.Dir)),
+			MaxBytes:        int64(raw.Cache.MaxBytes),
+			MaxFills:        int(raw.Cache.MaxFills),
+			MaxEntries:      int(raw.Cache.MaxEntries),
+			FillTimeout:     time.Duration(raw.Cache.FillTimeout),
+			FillWaitTimeout: time.Duration(raw.Cache.FillWaitTimeout),
+		},
+		DialTimeout:           time.Duration(raw.DialTimeout),
+		TLSHandshakeTimeout:   time.Duration(raw.TLSHandshakeTimeout),
+		ResponseHeaderTimeout: time.Duration(raw.ResponseHeaderTimeout),
+		IdleTimeout:           time.Duration(raw.IdleTimeout),
+		ShutdownTimeout:       time.Duration(raw.ShutdownTimeout),
+		MaxConnections:        int(raw.MaxConnections),
+		MaxLeafCertificates:   int(raw.MaxLeafCertificates),
+	}, nil
+}
+
+// canonicalBindAddress validates a host:port bind address and returns its
+// canonical form. The port is parsed once, range-checked, and re-emitted without
+// leading zeros. An empty host (":3128") and a wildcard host ("0.0.0.0"/"[::]")
+// are preserved verbatim so they remain valid net.Listen targets; any other host
+// is canonicalized by hostport.Canonicalize (lowercase, trailing-dot stripped,
+// IP literals normalized). When loopback is true the address must bind an
+// explicit loopback IP literal with no zone, matching the metrics endpoint's
+// constraints.
+func canonicalBindAddress(address string, loopback bool) (string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", fmt.Errorf("%w: must be a host:port address", ErrInvalid)
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNumber == 0 {
+		return "", fmt.Errorf("%w: port must be an integer from 1 to 65535", ErrInvalid)
+	}
+	normalizedPort := strconv.FormatUint(portNumber, 10)
+
+	if loopback {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() || strings.Contains(host, "%") {
+			return "", fmt.Errorf("%w: host must be a loopback IP literal without a zone", ErrInvalid)
+		}
+		return net.JoinHostPort(ip.String(), normalizedPort), nil
+	}
+
+	canonicalHost := host
+	if host != "" {
+		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+			// Preserve wildcard binds ("0.0.0.0"/"::") verbatim.
+		} else {
+			canonicalHost, err = hostport.Canonicalize(host)
+			if err != nil {
+				return "", fmt.Errorf("%w: host must be a valid hostname or IP literal", ErrInvalid)
+			}
+		}
+	}
+	return net.JoinHostPort(canonicalHost, normalizedPort), nil
+}
+
+// parseAuthorities canonicalizes each element, rejecting the whole list if any
+// element is missing. A YAML null list element decodes to a nil pointer (a bare
+// []string would silently drop it), so a nil element is a typo that would narrow
+// the registry or allowlist set and must fail rather than be skipped.
+func parseAuthorities(texts []*strictString) ([]hostport.HostPort, error) {
+	authorities := make([]hostport.HostPort, len(texts))
+	seen := make(map[string]bool, len(texts))
+	for i, text := range texts {
+		if text == nil {
+			return nil, fmt.Errorf("%w: element %d: must not be null", ErrInvalid, i+1)
+		}
+		a, err := hostport.Parse(string(*text), "443")
+		if err != nil {
+			return nil, fmt.Errorf("%w: element %d: must be a hostname or IP literal with an optional port, without credentials", ErrInvalid, i+1)
+		}
+		if seen[a.String()] {
+			return nil, fmt.Errorf("%w: element %d: duplicate authority", ErrInvalid, i+1)
+		}
+		seen[a.String()] = true
+		authorities[i] = a
+	}
+	return authorities, nil
+}
+
+func resolve(base, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Clean(filepath.Join(base, path))
+}
