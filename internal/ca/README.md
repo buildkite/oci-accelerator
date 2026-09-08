@@ -3,8 +3,9 @@
 `ca` manages the proxy's persistent certificate authority (CA) and the
 short-lived leaf certificates it signs. A client (for example the Docker
 daemon) trusts this single self-signed root once; the proxy then mints a leaf
-certificate per intercepted host on demand so the proxy can terminate TLS for 
-whichever registries a Docker client happens to contact.
+certificate per intercepted host on demand so the proxy can terminate TLS for
+explicitly configured registry authorities. Other CONNECT destinations remain
+opaque tunnels without CA-issued certificates.
 
 This package is Unix-only, enforced by `//go:build unix` constraints. Its
 filesystem checks require Unix ownership and permission semantics; Windows
@@ -15,9 +16,8 @@ is not supported.
 A TLS certificate is only valid for the hostname(s) named in it. When the proxy
 intercepts a client connection to, for example, `registry-1.docker.io`, it must
 present a certificate whose SAN matches that host, chaining up to a CA the
-client already trusts. The proxy cannot know every upstream host in advance, so
-instead of one shared certificate it dynamically signs a short-lived leaf per
-host with the trusted root. This is the standard forward-proxy CA pattern.
+client already trusts. Issuing leaves on demand keeps root identity independent
+of the configured registry list and avoids generating unused certificates.
 
 ## Files
 
@@ -59,9 +59,8 @@ package generates, rather than merely being capable of signing certificates:
 
 These checks establish compatibility, not which program generated the CA.
 Subject names, keys, serial numbers, key identifiers, and valid timestamps may
-differ between installations. Existing package-generated CAs remain compatible;
-externally supplied CAs outside this profile now fail to load, without replacing
-their files. Validation errors identify the failing check and preserve underlying
+differ between installations. CAs outside this profile fail to load without
+replacing their files. Validation errors identify the failing check and preserve underlying
 parsing or signature errors without including certificate or private-key contents.
 
 On both creation and reopening, the immediate parent must be a non-symlink
@@ -74,7 +73,8 @@ every ancestor in the path; operators must keep the containing path trusted.
 #### Orphaned initialization directories
 
 Initialization stages the certificate and private key in a private `.ca-init-*`
-directory under the CA's parent, then atomically renames it into place. Normal
+directory under the CA's parent, then atomically renames it into place. Concurrent
+initializers adopt the valid published winner; there is no persistent CA lock. Normal
 returns clean up unused staging directories, but a crash or SIGKILL can bypass
 that cleanup. A leftover staging directory does not prevent later startup and
 is never automatically adopted or removed.
