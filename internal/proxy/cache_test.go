@@ -382,7 +382,11 @@ func TestFillCancellationAndCacheFailurePreserveTransfer(t *testing.T) {
 			if mode == "shutdown" {
 				ctx, done := context.WithTimeout(context.Background(), 10*time.Millisecond)
 				defer done()
-				p.Shutdown(ctx)
+				// Upstream idle expiry may have already aborted the stream;
+				// otherwise this deadline forces it closed.
+				if err := p.Shutdown(ctx); err != nil && err != context.DeadlineExceeded {
+					t.Fatalf("Shutdown = %v, want nil or deadline exceeded", err)
+				}
 			}
 			if mode == "cancel" || mode == "shutdown" {
 				select {

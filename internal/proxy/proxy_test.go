@@ -302,9 +302,37 @@ func start(t *testing.T, cfg config.Config) (*Proxy, string) {
 	t.Helper()
 	l := listen(t)
 	p := New(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
-	go func() { _ = p.Serve(l) }()
-	t.Cleanup(func() { shutdown(t, p) })
+	serveProxy(t, p, l)
 	return p, l.Addr().String()
+}
+
+// serveProxy owns the serving goroutine and checks both lifecycle results.
+func serveProxy(t *testing.T, p *Proxy, l net.Listener) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	var serveErr error
+	go func() {
+		serveErr = p.Serve(l)
+		p.mu.Lock()
+		closing := p.closing
+		p.mu.Unlock()
+		if serveErr == nil && !closing {
+			serveErr = fmt.Errorf("Serve returned before Shutdown")
+		}
+		close(done)
+	}()
+	t.Cleanup(func() {
+		shutdown(t, p)
+		select {
+		case <-done:
+			if serveErr != nil {
+				t.Errorf("Serve: %v", serveErr)
+			}
+		case <-time.After(time.Second):
+			t.Error("Serve did not return after Shutdown")
+		}
+	})
+	return done
 }
 
 func shutdown(t *testing.T, p *Proxy) {

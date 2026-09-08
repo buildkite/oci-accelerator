@@ -612,12 +612,7 @@ func startSignedProxy(t *testing.T, cfg config.Config, signer *ca.Authority, log
 		output = logs
 	}
 	p := New(cfg, signer, slog.New(slog.NewTextHandler(output, nil)), nil)
-	go func() { _ = p.Serve(l) }()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = p.Shutdown(ctx)
-	})
+	serveProxy(t, p, l)
 	return p, l.Addr().String()
 }
 

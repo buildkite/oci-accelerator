@@ -62,7 +62,7 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 	}
 	p := New(cfg, signer, slog.New(slog.NewTextHandler(io.Discard, nil)), store)
 	l := listen(t)
-	go func() { _ = p.Serve(l) }()
+	serveProxy(t, p, l)
 	addr := l.Addr().String()
 
 	originRoots := x509.NewCertPool()
