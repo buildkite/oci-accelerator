@@ -47,7 +47,14 @@ func TestLoadRejectsNonStringRawFields(t *testing.T) {
 }
 
 func TestLoadAcceptsQuotedRawStrings(t *testing.T) {
-	path := writeConfig(t, "listen: '127.0.0.1:3128'\nmetrics_listen: \"127.0.0.1:9090\"\nregistries: ['registry.example']\nredirect_allowlist: [\"cdn.example\"]\nca_dir: '123'\ncache:\n  dir: \"true\"\n")
+	path := writeConfig(t, `listen: '127.0.0.1:3128'
+metrics_listen: "127.0.0.1:9090"
+registries: ['registry.example']
+redirect_allowlist: ["cdn.example"]
+ca_dir: '123'
+cache:
+  dir: "true"
+`)
 	c, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -62,26 +69,103 @@ func TestLoadAcceptsQuotedRawStrings(t *testing.T) {
 }
 
 func TestLoadAcceptsRawStringAliases(t *testing.T) {
-	tests := []struct{ name, config string }{
-		{"listen", "cache: {dir: &value '127.0.0.1:3128'}\nlisten: *value\nregistries: [registry.example]\nca_dir: ca\n"},
-		{"metrics_listen", "cache: {dir: &value '127.0.0.1:9090'}\nmetrics_listen: *value\nregistries: [registry.example]\nca_dir: ca\n"},
-		{"ca_dir", "cache: {dir: &value 'ca'}\nca_dir: *value\nregistries: [registry.example]\n"},
-		{"cache.dir", "ca_dir: &value 'cache'\ncache: {dir: *value}\nregistries: [registry.example]\n"},
-		{"registries element", "ca_dir: &value 'registry.example'\nregistries: [*value]\n"},
-		{"redirect_allowlist element", "ca_dir: &value 'cdn.example'\nregistries: [registry.example]\nredirect_allowlist: [*value]\n"},
+	tests := []struct {
+		name, config string
+		check        func(*testing.T, Config, string)
+	}{
+		{
+			name: "listen",
+			config: `cache: {dir: &value '127.0.0.1:4128'}
+listen: *value
+registries: [registry.example]
+ca_dir: ca
+`,
+			check: func(t *testing.T, c Config, _ string) {
+				assertEqual(t, "Listen", c.Listen, "127.0.0.1:4128")
+			},
+		},
+		{
+			name: "metrics_listen",
+			config: `cache: {dir: &value '127.0.0.1:9090'}
+metrics_listen: *value
+registries: [registry.example]
+ca_dir: ca
+`,
+			check: func(t *testing.T, c Config, _ string) {
+				assertEqual(t, "MetricsListen", c.MetricsListen, "127.0.0.1:9090")
+			},
+		},
+		{
+			name: "ca_dir",
+			config: `cache: {dir: &value 'ca'}
+ca_dir: *value
+registries: [registry.example]
+`,
+			check: func(t *testing.T, c Config, base string) {
+				assertEqual(t, "CADir", c.CADir, filepath.Join(base, "ca"))
+			},
+		},
+		{
+			name: "cache.dir",
+			config: `ca_dir: &value 'cache'
+cache: {dir: *value}
+registries: [registry.example]
+`,
+			check: func(t *testing.T, c Config, base string) {
+				assertEqual(t, "Cache.Dir", c.Cache.Dir, filepath.Join(base, "cache"))
+			},
+		},
+		{
+			name: "registries element",
+			config: `ca_dir: &value 'registry.example'
+cache: {dir: cache}
+registries: [*value, registry-two.example]
+`,
+			check: func(t *testing.T, c Config, _ string) {
+				if len(c.Registries) != 2 {
+					t.Fatalf("Registries = %v, want two entries", c.Registries)
+				}
+				assertEqual(t, "Registries[0]", c.Registries[0].String(), "registry.example")
+				assertEqual(t, "Registries[1]", c.Registries[1].String(), "registry-two.example")
+			},
+		},
+		{
+			name: "redirect_allowlist element",
+			config: `ca_dir: &value 'cdn.example'
+cache: {dir: cache}
+registries: [registry.example]
+redirect_allowlist: [*value, cdn-two.example]
+`,
+			check: func(t *testing.T, c Config, _ string) {
+				if len(c.RedirectAllowlist) != 2 {
+					t.Fatalf("RedirectAllowlist = %v, want two entries", c.RedirectAllowlist)
+				}
+				assertEqual(t, "RedirectAllowlist[0]", c.RedirectAllowlist[0].String(), "cdn.example")
+				assertEqual(t, "RedirectAllowlist[1]", c.RedirectAllowlist[1].String(), "cdn-two.example")
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := Load(writeConfig(t, test.config)); err != nil {
+			path := writeConfig(t, test.config)
+			c, err := Load(path)
+			if err != nil {
 				t.Fatalf("Load rejected string alias: %v", err)
 			}
+			test.check(t, c, filepath.Dir(path))
 		})
 	}
 }
 
 func TestLoadRawStringNullBehavior(t *testing.T) {
 	t.Run("optional fields preserve defaults", func(t *testing.T) {
-		c, err := Load(writeConfig(t, "listen: null\nmetrics_listen: null\ncache: {dir: null}\nredirect_allowlist: null\nregistries: [registry.example]\nca_dir: ca\n"))
+		c, err := Load(writeConfig(t, `listen: null
+metrics_listen: null
+cache: {dir: null}
+redirect_allowlist: null
+registries: [registry.example]
+ca_dir: ca
+`))
 		if err != nil {
 			t.Fatal(err)
 		}
