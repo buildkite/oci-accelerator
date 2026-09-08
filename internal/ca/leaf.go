@@ -1,3 +1,5 @@
+//go:build unix
+
 package ca
 
 import (
@@ -8,7 +10,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/pem"
 	"errors"
 	"math/big"
 	"net"
@@ -34,28 +35,35 @@ type leafCache struct {
 	mu     sync.Mutex
 	leaves map[string]*list.Element
 	order  *list.List
+	now    func() time.Time
 }
 
 func newLeafCache() leafCache {
-	return leafCache{leaves: make(map[string]*list.Element), order: list.New()}
+	return leafCache{leaves: make(map[string]*list.Element), order: list.New(), now: time.Now}
 }
 
 // Certificate returns a currently valid certificate for a DNS name or IP address.
 func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
-	now := time.Now()
-	if now.Before(a.cert.NotBefore) || !now.Before(a.cert.NotAfter) {
-		return nil, errors.New("CA certificate is not currently valid")
-	}
 	parsed, err := hostport.Parse(host, "443")
 	if err != nil || parsed.Port() != "443" {
 		return nil, errors.New("invalid certificate host")
 	}
 	host = parsed.Host()
+	// Deliberately keep signing under the cache lock: one lock bounds issuance
+	// and avoids duplicate work. Misses block unrelated hits; defer separate
+	// issuance locking until measurements show meaningful contention.
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := a.now()
+	if now.Before(a.cert.NotBefore) || !now.Before(a.cert.NotAfter) {
+		return nil, errors.New("CA certificate is not currently valid")
+	}
 	if elem := a.leaves[host]; elem != nil {
 		entry := elem.Value.(*leafEntry)
-		if entry.cert.Leaf != nil && entry.cert.Leaf.NotAfter.Sub(now) > leafRenewal {
+		cert := entry.cert.Leaf
+		// Renewing a valid leaf already capped at CA expiry cannot extend its life.
+		if cert != nil && !now.Before(cert.NotBefore) && now.Before(cert.NotAfter) &&
+			(cert.NotAfter.Sub(now) > leafRenewal || cert.NotAfter.Equal(a.cert.NotAfter)) {
 			a.order.MoveToBack(elem)
 			return entry.cert, nil
 		}
@@ -106,18 +114,13 @@ func (a *Authority) makeLeaf(host string, now time.Time) (*tls.Certificate, erro
 	if err != nil {
 		return nil, err
 	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	leaf, err := x509.ParseCertificate(der)
 	if err != nil {
 		return nil, err
 	}
-	pair, err := tls.X509KeyPair(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
-	if err != nil {
-		return nil, err
-	}
-	if pair.Leaf, err = x509.ParseCertificate(der); err != nil {
-		return nil, err
-	}
-	return &pair, nil
+	// The certificate was created with this key's public half, so no PEM
+	// round trip or external key-pair validation is needed.
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
 }
 
 func randomSerial() (*big.Int, error) {

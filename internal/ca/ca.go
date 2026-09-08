@@ -1,4 +1,7 @@
-// Package ca manages the proxy's persistent certificate authority and leaf certificates.
+//go:build unix
+
+// Package ca manages the proxy's persistent certificate authority and leaf
+// certificates on Unix systems.
 package ca
 
 import (
@@ -14,7 +17,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 )
@@ -35,6 +37,8 @@ type Authority struct {
 }
 
 // Open loads the CA in dir, creating it only when dir does not exist.
+// Its parent directory must already exist; the operator is responsible for
+// provisioning that parent and ensuring its durability before calling Open.
 func Open(dir string, maxLeaves int) (*Authority, error) {
 	if dir == "" || maxLeaves <= 0 {
 		return nil, errors.New("CA directory and a positive leaf limit are required")
@@ -49,6 +53,11 @@ func Open(dir string, maxLeaves int) (*Authority, error) {
 		return nil, fmt.Errorf("inspect CA directory: %w", err)
 	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		return nil, errors.New("CA directory must be a non-symlink directory with mode 0700")
+	} else if !ownedByCurrentUser(info) {
+		return nil, errors.New("CA directory must be owned by the current user")
+	}
+	if err := checkParent(filepath.Dir(dir)); err != nil {
+		return nil, err
 	}
 
 	cert, key, err := load(dir)
@@ -69,18 +78,8 @@ func (a *Authority) Fingerprint() string {
 
 func initialize(dir string) error {
 	parent := filepath.Dir(dir)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
+	if err := checkParent(parent); err != nil {
 		return err
-	}
-	parentInfo, err := os.Lstat(parent)
-	if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || parentInfo.Mode().Perm()&0o022 != 0 {
-		return errors.New("CA parent must be a non-symlink owner-controlled directory")
-	}
-	if runtime.GOOS != "windows" {
-		stat, ok := parentInfo.Sys().(*syscall.Stat_t)
-		if !ok || int(stat.Uid) != os.Geteuid() {
-			return errors.New("CA parent must be owned by the current user")
-		}
 	}
 	stage, err := os.MkdirTemp(parent, ".ca-init-")
 	if err != nil {
@@ -130,12 +129,12 @@ func initialize(dir string) error {
 }
 
 // publishedCA reports whether dir already holds both CA files with the on-disk
-// types and permissions Open requires, so a losing initializer can adopt an
-// already-published CA instead of masking an unrelated rename failure. It
-// checks structure and permissions only; the caller's load validates contents.
+// types, permissions, and ownership Open requires, so a losing initializer can
+// adopt an already-published CA instead of masking an unrelated rename failure.
+// It checks filesystem metadata only; the caller's load validates contents.
 func publishedCA(dir string) bool {
 	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {
 		return false
 	}
 	if _, err := readRegular(filepath.Join(dir, certName), 0o644); err != nil {
@@ -143,6 +142,25 @@ func publishedCA(dir string) bool {
 	}
 	_, err = readRegular(filepath.Join(dir, keyName), 0o600)
 	return err == nil
+}
+
+func checkParent(parent string) error {
+	info, err := os.Lstat(parent)
+	if err != nil {
+		return fmt.Errorf("inspect CA parent: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 {
+		return errors.New("CA parent must be a non-symlink owner-controlled directory")
+	}
+	if !ownedByCurrentUser(info) {
+		return errors.New("CA parent must be owned by the current user")
+	}
+	return nil
+}
+
+func ownedByCurrentUser(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Geteuid()
 }
 
 func syncDir(path string) error {
@@ -220,11 +238,11 @@ func load(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	return cert, key, nil
 }
 
-// readRegular reads path only when it is a regular file whose permission bits
-// grant no more access than maxPerm. Bits set in maxPerm are permitted but not
-// required, so a stricter mode (for example an owner-only public certificate)
-// is accepted while any broader access, such as group- or world-write on the
-// key, is rejected.
+// readRegular reads path only when it is a regular file owned by the current
+// user whose permission bits grant no more access than maxPerm. Bits set in
+// maxPerm are permitted but not required, so a stricter mode (for example an
+// owner-only public certificate) is accepted while any broader access, such as
+// group- or world-write on the key, is rejected.
 func readRegular(path string, maxPerm os.FileMode) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -232,6 +250,9 @@ func readRegular(path string, maxPerm os.FileMode) ([]byte, error) {
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&^maxPerm != 0 {
 		return nil, errors.New("file has insecure type or permissions")
+	}
+	if !ownedByCurrentUser(info) {
+		return nil, errors.New("file must be owned by the current user")
 	}
 	return os.ReadFile(path)
 }

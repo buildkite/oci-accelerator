@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,12 +10,8 @@ import (
 	"testing"
 )
 
-// pinnedTombstone stores meta, opens a still-held Reader that pins the entry,
-// then removes the body file and triggers a second Get. That second Get fails
-// os.Open, marks the entry invalid, and unpins only its own pin, leaving an
-// invalid+mapped entry that the first Reader keeps pinned. The held Reader's
-// file descriptor still points at the original inode, so it continues to return
-// the original bytes even though the path was unlinked.
+// pinnedTombstone invalidates an entry by unlinking its body and attempting
+// another Get. The returned reader still pins and can read the original inode.
 func pinnedTombstone(t *testing.T, s *Store, m Metadata, body string) *Reader {
 	t.Helper()
 	put(t, s, m, body)
@@ -35,10 +32,8 @@ func pinnedTombstone(t *testing.T, s *Store, m Metadata, body string) *Reader {
 	return held
 }
 
-// Test 1: Begin re-admits an invalidated-but-pinned entry. Previously Begin
-// returned AdmissionExisting because the tombstone remained mapped. After the
-// fix Begin succeeds, the held Reader still returns the OLD bytes, and after the
-// new fill commits Stats.Bytes equals exactly the new entry's charge.
+// Replacing an invalid entry preserves old readers and releases the old charge
+// only after those readers close.
 func TestBeginReadmitsPinnedInvalidEntry(t *testing.T) {
 	s := openTest(t, 1<<20)
 	m := testMeta("readmit", "original")
@@ -80,10 +75,8 @@ func TestBeginReadmitsPinnedInvalidEntry(t *testing.T) {
 	read(t, s, fresh, "replacement")
 }
 
-// Test 2: index integrity across the commit-overwrite. After re-admit+commit
-// while the old reader is still held, s.entries[key] must already point at the
-// new entry and a fresh Get must return the new bytes. Dropping the old reader
-// must not double-subtract or delete the new entry.
+// Fresh readers see the replacement immediately; closing an old reader must
+// neither remove the new directory nor subtract the new entry's charge.
 func TestReadmitIndexIntegrityAcrossOverwrite(t *testing.T) {
 	s := openTest(t, 1<<20)
 	m := testMeta("integrity", "original")
@@ -111,12 +104,11 @@ func TestReadmitIndexIntegrityAcrossOverwrite(t *testing.T) {
 	}
 	read(t, s, fresh, "brandnew")
 
-	// The superseding Commit detaches the tombstone and reclaims its charge under
-	// s.mu, so only the new entry's charge is accounted even while the old reader
-	// is still pinned. Closing that reader must not subtract the charge again.
+	// Unlinked bodies still occupy space until their final readers close.
 	wantBytes := fresh.Size + metadataReservation
-	if st := s.Stats(); st.Bytes != wantBytes {
-		t.Fatalf("Stats.Bytes before old-reader close = %d, want %d (new charge only)", st.Bytes, wantBytes)
+	withOld := wantBytes + m.Size + metadataReservation
+	if st := s.Stats(); st.Bytes != withOld {
+		t.Fatalf("Stats.Bytes before old-reader close = %d, want %d", st.Bytes, withOld)
 	}
 	if err := held.Close(); err != nil {
 		t.Fatal(err)
@@ -130,9 +122,103 @@ func TestReadmitIndexIntegrityAcrossOverwrite(t *testing.T) {
 	read(t, s, fresh, "brandnew")
 }
 
-// Test 3: Completion consistency. While the tombstone is pinned and a re-Begin
-// is active for the same key, Completion must report the active new fill
-// (non-nil channel, ok==true), not treat the key as absent.
+func TestDetachedReadersRetainCapacity(t *testing.T) {
+	const charge = metadataReservation + 4
+	s := openTest(t, 2*charge)
+	m := testMeta("retained", "aaaa")
+	held := pinnedTombstone(t, s, m, "aaaa")
+	defer held.Close()
+	put(t, s, m, "aaaa")
+	current, err := s.Get(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	next := testMeta("next", "bbbb")
+	f, err := s.Begin(next)
+	if f != nil {
+		f.Abort()
+	}
+	var admission *AdmissionError
+	if !errors.As(err, &admission) || admission.Reason != AdmissionCapacity {
+		t.Fatalf("admission with detached and current readers = %v", err)
+	}
+	if st := s.Stats(); st.Bytes != 2*charge || st.Readers != 2 || st.Evictions != 0 {
+		t.Fatalf("detached reader lost accounting: %+v", st)
+	}
+	got, err := io.ReadAll(held)
+	if err != nil || string(got) != "aaaa" {
+		t.Fatalf("detached body = %q, %v", got, err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.Stats(); st.Bytes != charge || st.Readers != 1 {
+		t.Fatalf("detached reader did not reclaim exactly once: %+v", st)
+	}
+	put(t, s, next, "bbbb")
+	read(t, s, m, "aaaa")
+	read(t, s, next, "bbbb")
+}
+
+func TestAbortedReplacementRetainsDetachedCharge(t *testing.T) {
+	s := openTest(t, 1<<20)
+	m := testMeta("aborted-replacement", "aaaa")
+	held := pinnedTombstone(t, s, m, "aaaa")
+	defer held.Close()
+	f, err := s.Begin(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stop at the publication boundary after detaching the old directory.
+	if err := f.supersedeTombstone(filepath.Join(s.dir, m.Key)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.Stats(); st.Bytes != m.Size+metadataReservation || st.Reserved != 0 || st.Entries != 0 {
+		t.Fatalf("aborted replacement dropped detached charge: %+v", st)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.Stats(); st.Bytes != 0 || st.Readers != 0 {
+		t.Fatalf("detached charge not reclaimed: %+v", st)
+	}
+}
+
+func TestCloseWaitsForDetachedReader(t *testing.T) {
+	s := openTest(t, 1<<20)
+	m := testMeta("close-detached", "aaaa")
+	held := pinnedTombstone(t, s, m, "aaaa")
+	defer held.Close()
+	put(t, s, m, "aaaa")
+	if err := s.Close(); err == nil {
+		t.Fatal("Close succeeded with a detached reader")
+	}
+	if second, err := Open(s.dir, s.max); err == nil {
+		second.Close()
+		t.Fatal("lock released with a detached reader")
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(s.dir, s.max)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	read(t, second, m, "aaaa")
+}
+
+// A pinned invalid entry must not hide its replacement fill from Completion.
 func TestCompletionReportsActiveFillOverTombstone(t *testing.T) {
 	s := openTest(t, 1<<20)
 	m := testMeta("completion-tomb", "original")
@@ -169,16 +255,8 @@ func TestCompletionReportsActiveFillOverTombstone(t *testing.T) {
 	}
 }
 
-// Test 4: C1 reclamation, genuinely exercising the Begin removal branch. To keep
-// an unpinned invalid tombstone mapped past the last unpin, the store directory
-// is made read-only before the final Close so unpin's os.RemoveAll fails and
-// leaves the tombstone (invalid, pins==0) in the map. Restoring write permission
-// lets the subsequent Begin's C1 retry succeed, dropping the slot and reclaiming
-// the charge so Stats returns to baseline before the new fill's own charge.
-//
-// Limitation: a tombstone whose removal fails permanently (never removable) is
-// not portably reproducible; that fall-through relies on Change A plus
-// identity-aware unpin/eviction, covered by the pinned-tombstone tests above.
+// Deny directory removal on the final unpin, then restore permissions so Begin
+// can reclaim the retained entry before staging its replacement.
 func TestBeginReclaimsUnpinnedTombstone(t *testing.T) {
 	s := openTest(t, 1<<20)
 	m := testMeta("reclaim", "original")
@@ -215,7 +293,7 @@ func TestBeginReclaimsUnpinnedTombstone(t *testing.T) {
 		t.Fatalf("baseline %d != tombstone charge %d", baseline, tombstoneCharge)
 	}
 
-	// Restore write permission; Begin's C1 retry must now reclaim the tombstone.
+	// Restore write permission; Begin must now reclaim the invalid entry.
 	if err := os.Chmod(s.dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +305,7 @@ func TestBeginReclaimsUnpinnedTombstone(t *testing.T) {
 		t.Fatalf("Begin after unpinned tombstone = %v", err)
 	}
 	if s.entries[m.Key] != nil {
-		t.Fatal("C1 did not detach the tombstone before staging the fill")
+		t.Fatal("Begin did not detach the invalid entry before staging the fill")
 	}
 	if _, err := io.WriteString(f, "renewed"); err != nil {
 		t.Fatal(err)
@@ -242,14 +320,8 @@ func TestBeginReclaimsUnpinnedTombstone(t *testing.T) {
 	read(t, s, fresh, "renewed")
 }
 
-// Test 5 (regression): closing the old reader concurrently with the superseding
-// Commit must never destroy the new entry's directory. The tombstone shares the
-// new entry's on-disk path, so if Commit did not detach the tombstone from the
-// map before renaming (leaving a window where unpin/eviction could RemoveAll the
-// destination), the closing reader could delete the freshly published content.
-// supersedeTombstone closes that window structurally by detaching under s.mu
-// before the rename; this exercises the interleaving as a stress/regression
-// guard. Run under -race to surface any reintroduced timing window.
+// Exercise concurrent close and replacement publication repeatedly: an old
+// reader's final unpin must never remove the newly published directory.
 func TestReadmitCommitReaderCloseRace(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		s, err := Open(filepath.Join(t.TempDir(), "cache"), 1<<20)

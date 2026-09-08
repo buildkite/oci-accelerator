@@ -37,6 +37,13 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 	s.readers++
 	need := !e.verified
 	s.mu.Unlock()
+	return s.openReader(ctx, e, need)
+}
+
+// openReader takes ownership of a pin acquired under s.mu. On success the
+// Reader owns that pin; every failure closes the file and releases the pin.
+func (s *Store) openReader(ctx context.Context, e *entry, need bool) (*Reader, error) {
+	meta := e.meta
 	f, err := os.Open(e.dir + "/body")
 	if err != nil {
 		s.invalidate(e)
@@ -85,11 +92,17 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 			s.unpin(e)
 			return nil, ErrMiss
 		}
-		s.mu.Lock()
-		e.verified = true
-		s.mu.Unlock()
 	}
 	s.mu.Lock()
+	// The path may have been replaced since selection. Only the same valid
+	// entry can lend its verification state to this open descriptor.
+	if s.entries[meta.Key] != e || e.invalid {
+		s.mu.Unlock()
+		f.Close()
+		s.unpin(e)
+		return nil, ErrMiss
+	}
+	e.verified = true
 	e.last = time.Now().UnixNano()
 	s.mu.Unlock()
 	return &Reader{store: s, entry: e, file: f}, nil
@@ -108,14 +121,8 @@ func (s *Store) unpin(e *entry) {
 	if !e.invalid || e.pins != 0 {
 		return
 	}
-	// After Change A a re-admitted fill can commit a new entry onto this key,
-	// which shares the same on-disk directory path. Only remove the directory
-	// when the map still points at this tombstone: otherwise a superseding
-	// Commit already renamed the new entry onto that path (and detached this
-	// tombstone), so removing it would destroy live content. When we do still
-	// own the slot, remove the directory and drop the map entry. The charge is
-	// reclaimed at most once across unpin, Begin (C1), and a superseding Commit,
-	// guarded by e.reclaimed; a new entry accounts for its own charge at commit.
+	// Detached entries no longer own their directory path: it may now contain
+	// a replacement. Their body charge is retained until this final unpin.
 	if cur, ok := s.entries[e.meta.Key]; ok && cur == e {
 		if os.RemoveAll(e.dir) != nil {
 			return
