@@ -35,6 +35,13 @@ most `0644`, `ca.key` at most `0600`); stricter modes are accepted but broader
 ones are rejected. The directory must be `0700` with no symlinks. `Open`
 creates the CA with `ca.crt` `0644` and `ca.key` `0600`.
 
+On both creation and reopening, the immediate parent must be a non-symlink
+directory with no group or other write access. The parent, CA directory, and
+both files must be owned by the process's effective user. This deliberately
+rejects loading another user's installation, including when running as root,
+rather than relying on permission bits alone. These checks do not validate
+every ancestor in the path; operators must keep the containing path trusted.
+
 ### `(*Authority) Certificate(host string) (*tls.Certificate, error)`
 
 Returns a currently valid leaf certificate for a DNS name or IP address, signing
