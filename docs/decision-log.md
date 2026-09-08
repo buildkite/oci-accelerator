@@ -57,6 +57,17 @@
   and return 0 if the metric is ever unsupported (KindBad) rather than panicking.
   `runtime.NumGoroutine()` (already non-STW) is retained.
 
+- F (#9): the concern that trackedConn.rawOK/checked are read in ServeHTTP without
+  synchronizing against the write in trackedConn.Read is not a real race: net/http
+  reads a connection's request head (running Read, completing the sniff) and then
+  dispatches ServeHTTP on the same connection goroutine, so the two accesses are
+  ordered by program order. Confirmed no production change is needed; a reviewer
+  empirically verified `-race` does instrument those fields. Added
+  TestConcurrentCONNECTSniffingIsRaceFree as a regression guard: many simultaneous
+  CONNECTs (valid to a signer-less configured registry -> 503, mismatched Host ->
+  400) run under `-race` and would fail if a future change moved the rawOK read or
+  write onto another goroutine. It targets the sniff path, not slot contention.
+
 ## Slice 1 authorization
 
 - Implement 1a–1e autonomously, with per-subslice commits and independent review.
