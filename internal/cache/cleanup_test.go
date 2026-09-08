@@ -45,6 +45,7 @@ func abandonFill(t *testing.T, s *Store, meta Metadata, published bool) string {
 }
 
 func TestAdmissionRetriesFailedCleanup(t *testing.T) {
+	requireUnprivilegedTest(t)
 	const charge = metadataReservation + 4
 	for _, limit := range []string{"slots", "bytes"} {
 		for _, state := range []string{"staging", "published", "removed"} {
@@ -105,6 +106,7 @@ func TestAdmissionRetriesFailedCleanup(t *testing.T) {
 }
 
 func TestCommitRetiresCleanupBeforeReusingPath(t *testing.T) {
+	requireUnprivilegedTest(t)
 	const charge = metadataReservation + 4
 	s := openTest(t, 3*charge)
 	meta := testMeta("reused-cleanup", "body")
@@ -134,6 +136,7 @@ func TestCommitRetiresCleanupBeforeReusingPath(t *testing.T) {
 }
 
 func TestConcurrentCleanupRetriesReclaimOnce(t *testing.T) {
+	requireUnprivilegedTest(t)
 	const charge = metadataReservation + 4
 	s := openTest(t, charge)
 	meta := testMeta("concurrent-cleanup", "body")
@@ -166,6 +169,7 @@ func TestConcurrentCleanupRetriesReclaimOnce(t *testing.T) {
 }
 
 func TestFailedAdmissionCleanupIsRetained(t *testing.T) {
+	requireUnprivilegedTest(t)
 	s := openTest(t, metadataReservation)
 	dir, err := os.MkdirTemp(s.dir, ".fill-")
 	if err != nil {

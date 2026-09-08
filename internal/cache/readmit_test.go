@@ -258,6 +258,7 @@ func TestCompletionReportsActiveFillOverTombstone(t *testing.T) {
 // Deny directory removal on the final unpin, then restore permissions so Begin
 // can reclaim the retained entry before staging its replacement.
 func TestBeginReclaimsUnpinnedTombstone(t *testing.T) {
+	requireUnprivilegedTest(t)
 	s := openTest(t, 1<<20)
 	m := testMeta("reclaim", "original")
 
