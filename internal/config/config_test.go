@@ -120,6 +120,66 @@ func TestLoadRejectsInvalidRedirectAllowlist(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsNonIntegerNumericLimits(t *testing.T) {
+	tests := []string{
+		"cache: {max_bytes: 1.9}",
+		"cache: {max_bytes: 1.0}",
+		"cache: {max_fills: \"7\"}",
+		"cache: {max_fills: 1.5}",
+		"cache: {max_entries: 1.5}",
+		"max_connections: true",
+		"max_connections: 1.5",
+		"max_leaf_certificates: 1.5",
+		// Non-decimal integer forms are !!int but not decimal; rejected for clarity.
+		"cache: {max_bytes: 0xff}",
+		"cache: {max_bytes: 0o17}",
+		"cache: {max_bytes: 017}",
+		"cache: {max_bytes: 1_000}",
+		// A non-decimal form on a strictInt field exercises the shared parse path.
+		"max_connections: 0o17",
+		// A genuinely !!int value above MaxInt64 hits the decimal ParseInt range
+		// error. A 20+ digit literal instead resolves to !!float and is rejected
+		// earlier by the tag guard, so it would not cover this branch.
+		"cache: {max_bytes: 9223372036854775808}",
+	}
+	for _, entry := range tests {
+		input := "registries: [example.com]\nca_dir: ca\n" + entry + "\n"
+		if _, err := Load(writeConfig(t, input)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Load(%q) unexpectedly returned %v", entry, err)
+		}
+	}
+}
+
+func TestLoadPreservesDefaultForNullNumericLimit(t *testing.T) {
+	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {max_fills: null}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cache.MaxFills != DefaultCacheMaxFills {
+		t.Fatalf("max_fills null should preserve default: %d", c.Cache.MaxFills)
+	}
+}
+
+func TestLoadAcceptsLargeValidInteger(t *testing.T) {
+	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {max_bytes: 34359738368}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cache.MaxBytes != 34359738368 {
+		t.Fatalf("max_bytes: %d", c.Cache.MaxBytes)
+	}
+}
+
+func TestLoadAcceptsSignedInteger(t *testing.T) {
+	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {max_fills: +7}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cache.MaxFills != 7 {
+		t.Fatalf("max_fills +7 should load as 7: %d", c.Cache.MaxFills)
+	}
+}
+
 func TestLoadRejectsInvalid(t *testing.T) {
 	tests := []string{
 		"ca_dir: ca\n",                // registries required

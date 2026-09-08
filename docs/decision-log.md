@@ -255,3 +255,31 @@
   rename. Preserve any previous successful report on a failed run; operators use
   a fresh report directory and the test exit status, not file existence, as evidence.
   Do not silently delete previously collected results.
+
+## Config validation hardening (post-slice-4 maintenance)
+
+Three independent bug fixes outside the numbered plan. Each tightens validation to
+match slice 1a's documented intent — reject malformed configuration — without
+changing any security boundary or agreed scope.
+
+### Reject non-integer scalars for numeric limits
+
+- A YAML float silently truncated into the integer limit fields (`max_bytes`,
+  `max_fills`, `max_entries`, `max_connections`, `max_leaf_certificates`): the
+  scalar was decoded as a plain `int`, so `1.9` loaded as `1`. Only `duration`
+  guarded its scalar tag.
+- Add strict tagged integer types (`strictInt64`, `strictInt`) mirroring
+  `duration.UnmarshalYAML`: a `!!null` node preserves the default, any non-`!!int`
+  tag is rejected, and the value is parsed with decimal `strconv.ParseInt`, making
+  overflow rejection explicit.
+- Restrict accepted `!!int` forms to canonical decimal. The library tags `0xff`,
+  `0o17`, `017`, and `1_000` as `!!int` but with a `node.Value` that base-10
+  `ParseInt` rejects — except `017`, which base-10 parses as `17`. Silently
+  reinterpreting an operator's `017` (octal 15) as decimal 17 is itself a trap, so
+  `isDecimalMagnitude` also rejects a leading-zero magnitude. Legitimate config is
+  decimal; this favours a clear error over a surprising reinterpretation.
+- Keep the existing `> 0` range checks as defense-in-depth. Convert back to
+  `int64`/`int` only when building `Config`. The int64→int narrowing in `strictInt`
+  is a no-op on the 64-bit build target (int spans the validated int64 range);
+  32-bit builds, not a deployment target, are documented as out of scope rather
+  than guarded with untestable code.
