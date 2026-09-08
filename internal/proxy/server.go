@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"ampcode.com/buildkite/docker-accelerator/internal/ca"
 	"ampcode.com/buildkite/docker-accelerator/internal/cache"
@@ -31,6 +32,7 @@ type Proxy struct {
 	cache        *cache.Store
 	destinations map[string]struct{}
 	lookupIP     func(context.Context, string) ([]net.IPAddr, error)
+	dialIP       func(context.Context, string, string) (net.Conn, error)
 	metrics      *metrics
 
 	mu       sync.Mutex
@@ -62,6 +64,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 	p.destinations = make(map[string]struct{})
 	p.cache = store
 	p.lookupIP = net.DefaultResolver.LookupIPAddr
+	p.dialIP = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
 	transport.DialContext = p.dialUpstream
 	for _, registry := range cfg.Registries {
 		p.configured[registry.String()] = struct{}{}

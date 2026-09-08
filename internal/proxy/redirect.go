@@ -171,8 +171,16 @@ func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.
 			return nil, p.refuseDial(a.String(), errDialForbidden)
 		}
 	}
-	for _, ip := range ips {
-		conn, err := (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), a.Port()))
+	deadline, _ := ctx.Deadline() // WithTimeout above always supplies a deadline.
+	for i, ip := range ips {
+		if ctx.Err() != nil {
+			break
+		}
+		// Reserve a share for each remaining address. Recompute after every
+		// failure so time unused by a fast refusal remains available to others.
+		attempt, cancelAttempt := context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(ips)-i))
+		conn, err := p.dialIP(attempt, network, net.JoinHostPort(ip.IP.String(), a.Port()))
+		cancelAttempt()
 		if err == nil {
 			return &idleReadWriteConn{Conn: conn, timeout: p.cfg.IdleTimeout}, nil
 		}
