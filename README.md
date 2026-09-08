@@ -16,9 +16,12 @@ expose resource use and fixed request/cache outcomes.
   ownership, and design rationale.
 - [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
   recovery, and repeatable acceptance checks.
-- [CA package](internal/ca/README.md) and [cache package](internal/cache/README.md):
-  internal contracts, with [cache benchmarks](internal/cache/benchmarks.md) for
-  performance investigation.
+- Package guides map the code and internal contracts:
+  [proxy](internal/proxy/README.md), [ca](internal/ca/README.md),
+  [cache](internal/cache/README.md), [config](internal/config/README.md),
+  [hostport](internal/hostport/README.md), and the
+  [command](cmd/oci-accelerator/README.md), with
+  [cache benchmarks](internal/cache/benchmarks.md) for performance investigation.
 - [Working rules](AGENTS.md): contribution, review, and verification requirements.
 
 ## Build and configure
