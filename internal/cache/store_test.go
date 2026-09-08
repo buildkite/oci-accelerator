@@ -434,9 +434,12 @@ func read(t *testing.T, s *Store, m Metadata, want string) {
 		t.Fatal(err)
 	}
 	got, err := io.ReadAll(r)
-	r.Close()
+	closeErr := r.Close()
 	if err != nil || string(got) != want {
 		t.Fatalf("body=%q err=%v", got, err)
+	}
+	if closeErr != nil {
+		t.Fatalf("close reader: %v", closeErr)
 	}
 }
 func TestFillReadRestart(t *testing.T) {
@@ -505,52 +508,116 @@ func TestFillFailuresNeverPublish(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			completed, ok := s.Completion(m)
+			if !ok {
+				t.Fatal("active fill has no completion notification")
+			}
+			var terminalErr error
+			wantFailures, wantAborts := int64(1), int64(0)
 			switch mode {
 			case "short":
-				io.WriteString(f, "ab")
+				if _, err := io.WriteString(f, "ab"); err != nil {
+					t.Fatal(err)
+				}
+				terminalErr = f.Commit()
+				if terminalErr == nil || !strings.Contains(terminalErr.Error(), "cache fill verification failed") {
+					t.Fatalf("Commit = %v, want verification failure", terminalErr)
+				}
 			case "digest":
-				io.WriteString(f, "xxxx")
+				if _, err := io.WriteString(f, "xxxx"); err != nil {
+					t.Fatal(err)
+				}
+				terminalErr = f.Commit()
+				if terminalErr == nil || !strings.Contains(terminalErr.Error(), "cache fill verification failed") {
+					t.Fatalf("Commit = %v, want verification failure", terminalErr)
+				}
 			case "overlong":
-				if _, err = io.WriteString(f, "abcde"); err == nil {
-					t.Fatal("overflow accepted")
+				_, terminalErr = io.WriteString(f, "abcde")
+				if terminalErr == nil || !strings.Contains(terminalErr.Error(), "cache fill exceeds declared size") {
+					t.Fatalf("Write = %v, want oversize failure", terminalErr)
 				}
 			case "write":
-				f.file.Close()
-				if _, err = io.WriteString(f, "abcd"); err == nil {
-					t.Fatal("closed write accepted")
+				if err := f.file.Close(); err != nil {
+					t.Fatal(err)
+				}
+				_, terminalErr = io.WriteString(f, "abcd")
+				if !errors.Is(terminalErr, os.ErrClosed) {
+					t.Fatalf("Write = %v, want os.ErrClosed", terminalErr)
 				}
 			case "sync":
-				io.WriteString(f, "abcd")
-				f.file.Close()
+				if _, err := io.WriteString(f, "abcd"); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.file.Close(); err != nil {
+					t.Fatal(err)
+				}
+				terminalErr = f.Commit()
+				var pathErr *os.PathError
+				if !errors.Is(terminalErr, os.ErrClosed) || !errors.As(terminalErr, &pathErr) || pathErr.Op != "sync" {
+					t.Fatalf("Commit = %v, want a sync error on the closed file", terminalErr)
+				}
 			case "metadata":
-				io.WriteString(f, "abcd")
-				os.Mkdir(filepath.Join(f.dir, "meta"), 0o700)
+				if _, err := io.WriteString(f, "abcd"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(f.dir, "meta"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				terminalErr = f.Commit()
+				if !errors.Is(terminalErr, os.ErrExist) {
+					t.Fatalf("Commit = %v, want os.ErrExist", terminalErr)
+				}
 			case "abort":
-				io.WriteString(f, "ab")
-				f.Abort()
+				if _, err := io.WriteString(f, "abcd"); err != nil {
+					t.Fatal(err)
+				}
+				terminalErr = f.Abort()
+				if terminalErr != nil {
+					t.Fatalf("Abort = %v", terminalErr)
+				}
+				wantFailures, wantAborts = 0, 1
 			case "close":
-				io.WriteString(f, "ab")
-				s.Close()
+				if _, err := io.WriteString(f, "abcd"); err != nil {
+					t.Fatal(err)
+				}
+				terminalErr = s.Close()
+				if terminalErr != nil {
+					t.Fatalf("Close = %v", terminalErr)
+				}
+				wantFailures, wantAborts = 0, 1
 			case "disk-full":
-				f.file.Close()
+				if err := f.file.Close(); err != nil {
+					t.Fatal(err)
+				}
 				f.file, err = os.OpenFile("/dev/full", os.O_WRONLY, 0)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err = io.WriteString(f, "abcd"); err == nil {
-					t.Fatal("disk-full write accepted")
+				_, terminalErr = io.WriteString(f, "abcd")
+				if !errors.Is(terminalErr, syscall.ENOSPC) {
+					t.Fatalf("Write = %v, want ENOSPC", terminalErr)
 				}
 			}
-			if err := f.Commit(); err == nil {
-				t.Fatal("invalid fill committed")
+			if err := f.Commit(); !errors.Is(err, os.ErrClosed) {
+				t.Fatalf("Commit after terminal operation = %v, want os.ErrClosed", err)
 			}
-			f.Abort()
+			if err := f.Abort(); err != nil {
+				t.Fatalf("Abort after terminal operation = %v", err)
+			}
+			if !f.done {
+				t.Fatal("terminal operation did not mark fill done")
+			}
+			select {
+			case <-completed:
+			default:
+				t.Fatal("terminal operation did not notify completion")
+			}
 			select {
 			case <-f.timerDone:
 			default:
 				t.Fatal("terminal failure retained timer")
 			}
-			if stats := s.Stats(); stats.Entries != 0 || stats.Fills != 0 || stats.Reserved != 0 || stats.Bytes != 0 {
+			if stats := s.Stats(); stats.Entries != 0 || stats.Fills != 0 || stats.Reserved != 0 || stats.Bytes != 0 || stats.FillFailure != wantFailures || stats.FillAbort != wantAborts || stats.FillSuccess != 0 {
 				t.Fatalf("leaked %+v", stats)
 			}
 			names, err := os.ReadDir(s.dir)
@@ -630,23 +697,39 @@ func TestRecoveryAndCorruption(t *testing.T) {
 			s := openTest(t, 1<<20)
 			m := testMeta("key", "abcd")
 			put(t, s, m, "abcd")
-			s.Close()
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
 			d := filepath.Join(s.dir, m.Key)
 			switch mode {
 			case "body-missing":
-				os.Remove(filepath.Join(d, "body"))
+				if err := os.Remove(filepath.Join(d, "body")); err != nil {
+					t.Fatal(err)
+				}
 			case "short":
-				os.Truncate(filepath.Join(d, "body"), 2)
+				if err := os.Truncate(filepath.Join(d, "body"), 2); err != nil {
+					t.Fatal(err)
+				}
 			case "corrupt":
-				os.WriteFile(filepath.Join(d, "body"), []byte("xxxx"), 0o600)
+				if err := os.WriteFile(filepath.Join(d, "body"), []byte("xxxx"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			case "meta-missing":
-				os.Remove(filepath.Join(d, "meta"))
+				if err := os.Remove(filepath.Join(d, "meta")); err != nil {
+					t.Fatal(err)
+				}
 			case "meta-invalid":
-				os.WriteFile(filepath.Join(d, "meta"), []byte("invalid"), 0o600)
+				if err := os.WriteFile(filepath.Join(d, "meta"), []byte("invalid"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			case "meta-huge":
-				os.Truncate(filepath.Join(d, "meta"), 1<<30)
+				if err := os.Truncate(filepath.Join(d, "meta"), 1<<30); err != nil {
+					t.Fatal(err)
+				}
 			case "temporary":
-				os.Rename(d, filepath.Join(s.dir, ".fill-abandoned"))
+				if err := os.Rename(d, filepath.Join(s.dir, ".fill-abandoned")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			s2, err := Open(s.dir, s.max)
 			if err != nil {
@@ -668,12 +751,16 @@ func TestMissingLiveEntryRefillsAndCancelledVerification(t *testing.T) {
 	s := openTest(t, 1<<20)
 	m := testMeta("key", "abcd")
 	put(t, s, m, "abcd")
-	os.Remove(filepath.Join(s.dir, m.Key, "body"))
+	if err := os.Remove(filepath.Join(s.dir, m.Key, "body")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.Get(context.Background(), m); err != ErrMiss {
 		t.Fatal("missing body hit")
 	}
 	put(t, s, m, "abcd")
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 	s2, err := Open(s.dir, s.max)
 	if err != nil {
 		t.Fatal(err)
