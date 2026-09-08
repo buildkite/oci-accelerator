@@ -24,8 +24,12 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 	return s.get(ctx, meta, nil, nil)
 }
 
-// get's callbacks are nil in production. They are per-call test seams for
-// pausing after verification begins and immediately before a verifier wait.
+// get looks up a committed entry and returns a Reader that owns a fresh pin.
+// An unverified entry is verified once under a single-flight guard: the first
+// caller claims e.verifying, later callers wait on that channel and then retry
+// the lookup, since the verifier may have invalidated or the entry may have
+// been replaced. The callbacks are nil in production and are per-call test
+// seams for pausing after verification begins and immediately before a wait.
 func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, beforeWait func()) (*Reader, error) {
 	if !validMeta(meta) {
 		return nil, ErrMiss
@@ -89,34 +93,10 @@ func (s *Store) openReader(ctx context.Context, e *entry, need bool, afterVerifi
 		return nil, ErrMiss
 	}
 	if need {
-		h := sha256.New()
-		buf := make([]byte, 128*1024)
-		for {
-			if err = ctx.Err(); err != nil {
-				break
-			}
-			var n int
-			n, err = f.Read(buf)
-			if afterVerificationRead != nil {
-				afterVerificationRead()
-				afterVerificationRead = nil
-			}
-			if n > 0 {
-				_, _ = h.Write(buf[:n])
-			}
-			if errors.Is(err, io.EOF) {
-				err = nil
-				break
-			}
-			if err != nil {
-				break
-			}
-		}
-		if err == nil && "sha256:"+hex.EncodeToString(h.Sum(nil)) != meta.Digest {
-			err = errors.New("digest mismatch")
-		}
-		if err != nil {
+		if err = verifyBody(ctx, f, meta.Digest, afterVerificationRead); err != nil {
 			f.Close()
+			// A cancellation leaves the entry intact for a later verifier;
+			// any other failure retires this corrupt or unreadable generation.
 			if ctx.Err() != nil {
 				s.unpin(e)
 			} else {
@@ -144,6 +124,42 @@ func (s *Store) openReader(ctx context.Context, e *entry, need bool, afterVerifi
 	s.mu.Unlock()
 	return &Reader{store: s, entry: e, file: f, remaining: meta.Size}, nil
 }
+
+// verifyBody streams r, hashing it, and reports whether its SHA-256 matches
+// digest. It returns ctx.Err() if the context is canceled mid-read.
+// afterVerificationRead, when non-nil, is a test seam invoked once after the
+// first read. It reads r to EOF but does not close or rewind it.
+func verifyBody(ctx context.Context, r io.Reader, digest string, afterVerificationRead func()) error {
+	h := sha256.New()
+	buf := make([]byte, 128*1024)
+	var err error
+	for {
+		if err = ctx.Err(); err != nil {
+			break
+		}
+		var n int
+		n, err = r.Read(buf)
+		if afterVerificationRead != nil {
+			afterVerificationRead()
+			afterVerificationRead = nil
+		}
+		if n > 0 {
+			_, _ = h.Write(buf[:n])
+		}
+		if errors.Is(err, io.EOF) {
+			err = nil
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
+	if err == nil && "sha256:"+hex.EncodeToString(h.Sum(nil)) != digest {
+		err = errors.New("digest mismatch")
+	}
+	return err
+}
+
 func (s *Store) invalidate(e *entry) {
 	s.mu.Lock()
 	e.invalid = true

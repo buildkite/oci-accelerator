@@ -282,23 +282,18 @@ func add(a, b int64) (int64, bool) {
 // failures prevent admission, return the first filesystem error.
 func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts int) error {
 	fits := func() bool {
-		return need <= s.max-s.bytes-s.reserved && len(s.entries)+len(s.fills)+len(s.failedCleanups)+needSlots <= s.maxEntries
+		free, freeSlots := s.freeCapacityLocked()
+		return need <= free && needSlots <= freeSlots
 	}
 	if fits() {
 		// A fitting admission must not reset another request's deferred batch.
 		return nil
 	}
-	var candidates []*entry
-	available := s.max - s.bytes - s.reserved
-	availableSlots := s.maxEntries - len(s.entries) - len(s.fills) - len(s.failedCleanups)
-	for _, e := range s.entries {
-		if e.pins == 0 && e.last <= before {
-			candidates = append(candidates, e)
-			available += e.charge
-			availableSlots++
-		}
-	}
-	if available < need || availableSlots < needSlots {
+
+	// Gather unpinned candidates no newer than before, and check that removing
+	// all of them could even satisfy the request before disturbing anything.
+	candidates := s.evictionCandidatesLocked(before)
+	if !s.batchSuffices(candidates, need, needSlots) {
 		return ErrBypass
 	}
 	sort.Slice(candidates, func(i, j int) bool {
@@ -307,32 +302,28 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 		}
 		return candidates[i].last < candidates[j].last
 	})
+
+	// Select the batch to remove. Admission eviction (maxAttempts > 0) removes at
+	// most maxAttempts victims per call, resuming from the recorded cursor. The
+	// sufficiency gate above guarantees at least one candidate here, so count >= 1
+	// and the batch indexing below cannot go out of range or divide by zero.
 	start, count := 0, len(candidates)
 	if maxAttempts > 0 {
 		count = min(count, maxAttempts)
-		if s.evictionAfter != "" {
-			for i, e := range candidates {
-				if e.last > s.evictionAfterLast || e.last == s.evictionAfterLast && e.meta.Key > s.evictionAfter {
-					start = i
-					break
-				}
-			}
-		}
-		// Do not remove useful entries when even a fully successful batch
-		// cannot admit the fill. Resume later so blocked or small victims
+		start = s.resumeStart(candidates)
+		batch := batchAt(candidates, start, count)
+		// Do not remove useful entries when even a fully successful batch cannot
+		// admit the fill. Record where to resume so blocked or small victims
 		// cannot permanently hide a usable victim beyond this batch.
-		available = s.max - s.bytes - s.reserved
-		availableSlots = s.maxEntries - len(s.entries) - len(s.fills) - len(s.failedCleanups)
-		for i := range count {
-			available += candidates[(start+i)%len(candidates)].charge
-			availableSlots++
-		}
-		last := candidates[(start+count-1)%len(candidates)]
+		last := batch[len(batch)-1]
 		s.evictionAfterLast, s.evictionAfter = last.last, last.meta.Key
-		if available < need || availableSlots < needSlots {
+		if !s.batchSuffices(batch, need, needSlots) {
 			return ErrBypass
 		}
 	}
+
+	// Remove victims until the request fits. A failed removal is retried later;
+	// its charge stays booked, so keep the first error only if nothing frees up.
 	var removeErr error
 	for i := range count {
 		if fits() {
@@ -355,6 +346,59 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 		return nil
 	}
 	return removeErr
+}
+
+// freeCapacityLocked reports the currently unused bytes and entry slots.
+func (s *Store) freeCapacityLocked() (bytes int64, slots int) {
+	return s.max - s.bytes - s.reserved, s.maxEntries - len(s.entries) - len(s.fills) - len(s.failedCleanups)
+}
+
+// evictionCandidatesLocked returns the unpinned entries eligible for removal:
+// those last accessed no later than before.
+func (s *Store) evictionCandidatesLocked(before int64) []*entry {
+	var candidates []*entry
+	for _, e := range s.entries {
+		if e.pins == 0 && e.last <= before {
+			candidates = append(candidates, e)
+		}
+	}
+	return candidates
+}
+
+// batchSuffices reports whether removing every entry in batch would free enough
+// capacity for the request, adding their reclaimable charge and slots to the
+// current free capacity.
+func (s *Store) batchSuffices(batch []*entry, need int64, needSlots int) bool {
+	available, availableSlots := s.freeCapacityLocked()
+	for _, e := range batch {
+		available += e.charge
+		availableSlots++
+	}
+	return available >= need && availableSlots >= needSlots
+}
+
+// resumeStart returns the index in candidates at which to resume, honoring the
+// recorded (last, key) eviction cursor; zero when there is no cursor.
+func (s *Store) resumeStart(candidates []*entry) int {
+	if s.evictionAfter == "" {
+		return 0
+	}
+	for i, e := range candidates {
+		if e.last > s.evictionAfterLast || e.last == s.evictionAfterLast && e.meta.Key > s.evictionAfter {
+			return i
+		}
+	}
+	return 0
+}
+
+// batchAt returns the count entries beginning at start, wrapping around the
+// candidates slice.
+func batchAt(candidates []*entry, start, count int) []*entry {
+	batch := make([]*entry, count)
+	for i := range count {
+		batch[i] = candidates[(start+i)%len(candidates)]
+	}
+	return batch
 }
 
 func (s *Store) Stats() Stats {
