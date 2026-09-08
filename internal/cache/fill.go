@@ -68,11 +68,9 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		s.admissions[AdmissionFillLimit]++
 		return nil, &AdmissionError{Reason: AdmissionFillLimit}
 	}
-	// Retry abandoned directories before evicting useful entries. Failed
-	// retries keep their bytes and slots charged against admission limits.
-	for dir := range s.failedCleanups {
-		_ = s.removeCleanupLocked(dir)
-	}
+	// Retry a bounded batch before eviction. Failed or deferred cleanups
+	// keep their bytes and slots charged against admission limits.
+	s.retryCleanupsLocked()
 	if !s.evictLocked(charge, 1, math.MaxInt64) {
 		s.admissions[AdmissionCapacity]++
 		return nil, &AdmissionError{Reason: AdmissionCapacity}

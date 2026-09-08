@@ -2,6 +2,7 @@
 package cache
 
 import (
+	"container/list"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -101,7 +102,8 @@ type Store struct {
 	max                                             int64
 	maxFills, maxEntries                            int
 	fillTimeout                                     time.Duration
-	failedCleanups                                  map[string]int64
+	failedCleanups                                  map[string]cleanup
+	cleanupQueue                                    list.List
 	bytes, reserved                                 int64
 	evictions                                       int64
 	readers                                         int
@@ -363,8 +365,8 @@ func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var cleanupBytes int64
-	for _, charge := range s.failedCleanups {
-		cleanupBytes += charge
+	for _, pending := range s.failedCleanups {
+		cleanupBytes += pending.charge
 	}
 	return Stats{Bytes: s.bytes, Reserved: s.reserved, Entries: len(s.entries), Fills: len(s.fills), Evictions: s.evictions, Readers: s.readers, FillSuccess: s.fillSuccess, FillFailure: s.fillFailure, FillAbort: s.fillAbort, FillExpiry: s.fillExpiry, Admissions: s.admissions, CleanupBytes: cleanupBytes, CleanupSlots: len(s.failedCleanups)}
 }
