@@ -36,17 +36,31 @@ func Parse(text, defaultPort string) (HostPort, error) {
 	portNumber, _ := strconv.Atoi(port)
 	port = strconv.Itoa(portNumber)
 
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	if host == "" || strings.Contains(host, ":") && net.ParseIP(host) == nil {
-		return HostPort{}, ErrInvalid
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		host = ip.String()
-	} else if looksLikeIPv4(host) || !validHostname(host) {
-		return HostPort{}, ErrInvalid
+	host, err = Canonicalize(host)
+	if err != nil {
+		return HostPort{}, err
 	}
 
 	return HostPort{host: host, port: port}, nil
+}
+
+// Canonicalize returns the canonical form of a bare host: lowercased, with a
+// single trailing dot removed, IP literals rewritten to their canonical text via
+// net.ParseIP, and hostnames validated by the same label rules Parse enforces. It
+// returns ErrInvalid for an empty host, an IPv4 written in a non-canonical form,
+// or a hostname with an invalid label. It does not accept or strip a port.
+func Canonicalize(host string) (string, error) {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" || strings.Contains(host, ":") && net.ParseIP(host) == nil {
+		return "", ErrInvalid
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String(), nil
+	}
+	if looksLikeIPv4(host) || !validHostname(host) {
+		return "", ErrInvalid
+	}
+	return host, nil
 }
 
 func split(text string) (string, string, error) {

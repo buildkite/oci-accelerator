@@ -309,3 +309,70 @@
 - Verification note: `TestFillFailuresNeverPublish/disk-full` requires the Linux
   `/dev/full` device, which is absent on darwin; that subtest fails on the
   untouched baseline as well and is unrelated to this change.
+
+## Config validation hardening (post-slice-4 maintenance)
+
+Three independent bug fixes outside the numbered plan. Each tightens validation to
+match slice 1a's documented intent — reject malformed configuration — without
+changing any security boundary or agreed scope.
+
+### Reject non-integer scalars for numeric limits
+
+- A YAML float silently truncated into the integer limit fields (`max_bytes`,
+  `max_fills`, `max_entries`, `max_connections`, `max_leaf_certificates`): the
+  scalar was decoded as a plain `int`, so `1.9` loaded as `1`. Only `duration`
+  guarded its scalar tag.
+- Add strict tagged integer types (`strictInt64`, `strictInt`) mirroring
+  `duration.UnmarshalYAML`: a `!!null` node preserves the default, any non-`!!int`
+  tag is rejected, and the value is parsed with decimal `strconv.ParseInt`, making
+  overflow rejection explicit.
+- Restrict accepted `!!int` forms to canonical decimal. The library tags `0xff`,
+  `0o17`, `017`, and `1_000` as `!!int` but with a `node.Value` that base-10
+  `ParseInt` rejects — except `017`, which base-10 parses as `17`. Silently
+  reinterpreting an operator's `017` (octal 15) as decimal 17 is itself a trap, so
+  `isDecimalMagnitude` also rejects a leading-zero magnitude. Legitimate config is
+  decimal; this favours a clear error over a surprising reinterpretation.
+- Keep the existing `> 0` range checks as defense-in-depth. Convert back to
+  `int64`/`int` only when building `Config`. The int64→int narrowing in `strictInt`
+  is a no-op on the 64-bit build target (int spans the validated int64 range);
+  32-bit builds, not a deployment target, are documented as out of scope rather
+  than guarded with untestable code.
+
+### Reject null entries in registries and the redirect allowlist
+
+- A `!!null` element in `registries` or `redirect_allowlist` was silently dropped:
+  decoding into `[]string` skips nulls before `parseAuthorities` runs, so
+  `registries: [example.com, null]` loaded a single registry with no error. A typo
+  that quietly narrows the trusted registry or redirect set is exactly the kind of
+  misconfiguration validation must reject.
+- Decode both lists into `[]*string`, where a YAML null element becomes a nil
+  pointer that the decoder preserves. `parseAuthorities` now rejects a nil element
+  with `ErrInvalid` and otherwise dereferences and calls `hostport.Parse(_, "443")`
+  exactly as before, so an empty string still fails as an invalid authority and the
+  canonicalization and duplicate checks are unchanged.
+- Errors continue to surface only `ErrInvalid`, never the offending element, so a
+  redirect destination or registry name cannot leak through a configuration error.
+
+### Canonicalize listen and metrics bind addresses
+
+- `listen: 'EXAMPLE.com.:3128'` was accepted but `Config.Listen` stored the raw
+  string, inconsistent with the canonicalized `Registries`. `validate` also parsed
+  the port twice and gated host validation on `host != ""`, so the port was never
+  normalized and the two code paths could diverge.
+- Extract the host canonicalization already inside `hostport.Parse` into an
+  exported `hostport.Canonicalize`, and have `Parse` call it so its observable
+  behavior is unchanged (all existing hostport tests pass verbatim). This gives the
+  config package the same lowercase, trailing-dot, and IP-literal canonicalization
+  the registry list uses, from one source of truth.
+- Replace the duplicated listen handling with a single `canonicalBindAddress`:
+  split once, range-check the port, re-emit it without leading zeros, and rebuild
+  with `net.JoinHostPort` so `127.0.0.1:03128` becomes `127.0.0.1:3128`. The host is
+  canonicalized only when it is neither empty nor a wildcard, detected with
+  `net.ParseIP(host).IsUnspecified()` (covers `0.0.0.0` and `::`). Empty (`:3128`)
+  and wildcard (`0.0.0.0:3128`, `[::]:3128`) binds are preserved verbatim because
+  `main.go` passes `Listen`/`MetricsListen` straight to `net.Listen`, so they must
+  remain valid tcp bind targets.
+- Apply the same routine to `MetricsListen` while keeping its stricter rule: the
+  host must be an explicit loopback IP literal with no `%` zone. Canonicalizing the
+  loopback literal and normalizing its port keeps metrics consistent with `listen`
+  without loosening the loopback-only guarantee.

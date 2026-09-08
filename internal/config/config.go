@@ -54,6 +54,74 @@ type Cache struct {
 type duration time.Duration
 type nonNegativeDuration time.Duration
 
+// strictInt64 and strictInt reject any scalar that is not a decimal YAML integer,
+// mirroring duration's tag guard so that a float, quoted string, or boolean cannot
+// silently truncate into a numeric limit. A null scalar preserves the default. On
+// the 64-bit build target, int spans the full int64 range parseStrictInt validates,
+// so no in-range value is narrowed when converting strictInt; 32-bit builds, where
+// a value above MaxInt could wrap, are out of scope.
+type strictInt64 int64
+type strictInt int
+
+// parseStrictInt decodes node as a decimal YAML integer. It returns (0, true) for a
+// null node so callers can preserve their default, and ErrInvalid for any non-!!int
+// tag or a value that decimal strconv.ParseInt cannot represent (including overflow
+// and non-decimal integer forms such as 0x, 0o, 0-prefixed octal, and underscores).
+func parseStrictInt(node *yaml.Node) (int64, bool, error) {
+	if node.Tag == "!!null" {
+		return 0, true, nil
+	}
+	if node.Tag != "!!int" {
+		return 0, false, ErrInvalid
+	}
+	if !isDecimalMagnitude(node.Value) {
+		return 0, false, ErrInvalid
+	}
+	v, err := strconv.ParseInt(node.Value, 10, 64)
+	if err != nil {
+		return 0, false, ErrInvalid
+	}
+	return v, false, nil
+}
+
+// isDecimalMagnitude reports whether s is a plain base-10 integer literal with no
+// redundant leading zero in its magnitude. strconv.ParseInt(_, 10, 64) accepts
+// leading-zero forms such as "017" as decimal 17, which would silently reinterpret
+// a value the operator wrote as octal. Rejecting a magnitude that has more than one
+// digit and begins with '0' keeps decoding strictly decimal, matching the doc
+// comment and the recorded decision. A bare "0" (or "+0"/"-0") still parses and is
+// rejected later by the >0 range check.
+func isDecimalMagnitude(s string) bool {
+	if len(s) > 0 && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	return len(s) == 1 || (len(s) > 1 && s[0] != '0')
+}
+
+func (n *strictInt64) UnmarshalYAML(node *yaml.Node) error {
+	v, isNull, err := parseStrictInt(node)
+	if err != nil {
+		return err
+	}
+	if isNull {
+		return nil
+	}
+	*n = strictInt64(v)
+	return nil
+}
+
+func (n *strictInt) UnmarshalYAML(node *yaml.Node) error {
+	v, isNull, err := parseStrictInt(node)
+	if err != nil {
+		return err
+	}
+	if isNull {
+		return nil
+	}
+	*n = strictInt(v)
+	return nil
+}
+
 func (d *duration) UnmarshalYAML(node *yaml.Node) error {
 	if node.Tag == "!!null" {
 		return nil
@@ -85,26 +153,26 @@ func (d *nonNegativeDuration) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type rawConfig struct {
-	Listen                string   `yaml:"listen"`
-	MetricsListen         string   `yaml:"metrics_listen"`
-	Registries            []string `yaml:"registries"`
-	RedirectAllowlist     []string `yaml:"redirect_allowlist"`
-	CADir                 string   `yaml:"ca_dir"`
-	Cache                 rawCache `yaml:"cache"`
-	DialTimeout           duration `yaml:"dial_timeout"`
-	TLSHandshakeTimeout   duration `yaml:"tls_handshake_timeout"`
-	ResponseHeaderTimeout duration `yaml:"response_header_timeout"`
-	IdleTimeout           duration `yaml:"idle_timeout"`
-	ShutdownTimeout       duration `yaml:"shutdown_timeout"`
-	MaxConnections        int      `yaml:"max_connections"`
-	MaxLeafCertificates   int      `yaml:"max_leaf_certificates"`
+	Listen                string    `yaml:"listen"`
+	MetricsListen         string    `yaml:"metrics_listen"`
+	Registries            []*string `yaml:"registries"`
+	RedirectAllowlist     []*string `yaml:"redirect_allowlist"`
+	CADir                 string    `yaml:"ca_dir"`
+	Cache                 rawCache  `yaml:"cache"`
+	DialTimeout           duration  `yaml:"dial_timeout"`
+	TLSHandshakeTimeout   duration  `yaml:"tls_handshake_timeout"`
+	ResponseHeaderTimeout duration  `yaml:"response_header_timeout"`
+	IdleTimeout           duration  `yaml:"idle_timeout"`
+	ShutdownTimeout       duration  `yaml:"shutdown_timeout"`
+	MaxConnections        strictInt `yaml:"max_connections"`
+	MaxLeafCertificates   strictInt `yaml:"max_leaf_certificates"`
 }
 
 type rawCache struct {
 	Dir             string              `yaml:"dir"`
-	MaxBytes        int64               `yaml:"max_bytes"`
-	MaxFills        int                 `yaml:"max_fills"`
-	MaxEntries      int                 `yaml:"max_entries"`
+	MaxBytes        strictInt64         `yaml:"max_bytes"`
+	MaxFills        strictInt           `yaml:"max_fills"`
+	MaxEntries      strictInt           `yaml:"max_entries"`
 	FillTimeout     duration            `yaml:"fill_timeout"`
 	FillWaitTimeout nonNegativeDuration `yaml:"fill_wait_timeout"`
 }
@@ -134,7 +202,7 @@ func Load(path string) (Config, error) {
 func defaults() rawConfig {
 	return rawConfig{
 		Listen:                "127.0.0.1:3128",
-		Cache:                 rawCache{MaxBytes: DefaultCacheMaxBytes, MaxFills: DefaultCacheMaxFills, MaxEntries: DefaultCacheMaxEntries, FillTimeout: duration(DefaultCacheFillTimeout), FillWaitTimeout: nonNegativeDuration(DefaultCacheFillWaitTimeout)},
+		Cache:                 rawCache{MaxBytes: strictInt64(DefaultCacheMaxBytes), MaxFills: strictInt(DefaultCacheMaxFills), MaxEntries: strictInt(DefaultCacheMaxEntries), FillTimeout: duration(DefaultCacheFillTimeout), FillWaitTimeout: nonNegativeDuration(DefaultCacheFillWaitTimeout)},
 		DialTimeout:           duration(10 * time.Second),
 		TLSHandshakeTimeout:   duration(10 * time.Second),
 		ResponseHeaderTimeout: duration(30 * time.Second),
@@ -146,21 +214,17 @@ func defaults() rawConfig {
 }
 
 func validate(raw rawConfig, base string) (Config, error) {
-	host, port, err := net.SplitHostPort(raw.Listen)
-	portNumber, portErr := strconv.ParseUint(port, 10, 16)
-	if err != nil || portErr != nil || portNumber == 0 || len(raw.Registries) == 0 || strings.TrimSpace(raw.CADir) == "" {
+	if len(raw.Registries) == 0 || strings.TrimSpace(raw.CADir) == "" {
 		return Config{}, ErrInvalid
 	}
-	if host != "" {
-		if _, err := hostport.Parse(net.JoinHostPort(host, port), ""); err != nil {
-			return Config{}, ErrInvalid
-		}
+	listen, err := canonicalBindAddress(raw.Listen, false)
+	if err != nil {
+		return Config{}, ErrInvalid
 	}
-	if raw.MetricsListen != "" {
-		host, port, err := net.SplitHostPort(raw.MetricsListen)
-		portNumber, portErr := strconv.ParseUint(port, 10, 16)
-		ip := net.ParseIP(host)
-		if err != nil || portErr != nil || portNumber == 0 || ip == nil || !ip.IsLoopback() || strings.Contains(host, "%") {
+	metricsListen := raw.MetricsListen
+	if metricsListen != "" {
+		metricsListen, err = canonicalBindAddress(raw.MetricsListen, true)
+		if err != nil {
 			return Config{}, ErrInvalid
 		}
 	}
@@ -177,21 +241,69 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}
 
 	return Config{
-		Listen: raw.Listen, MetricsListen: raw.MetricsListen, Registries: registries, RedirectAllowlist: redirectAllowlist,
+		Listen: listen, MetricsListen: metricsListen, Registries: registries, RedirectAllowlist: redirectAllowlist,
 		CADir:       resolve(base, raw.CADir),
-		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: raw.Cache.MaxBytes, MaxFills: raw.Cache.MaxFills, MaxEntries: raw.Cache.MaxEntries, FillTimeout: time.Duration(raw.Cache.FillTimeout), FillWaitTimeout: time.Duration(raw.Cache.FillWaitTimeout)},
+		Cache:       Cache{Dir: resolve(base, raw.Cache.Dir), MaxBytes: int64(raw.Cache.MaxBytes), MaxFills: int(raw.Cache.MaxFills), MaxEntries: int(raw.Cache.MaxEntries), FillTimeout: time.Duration(raw.Cache.FillTimeout), FillWaitTimeout: time.Duration(raw.Cache.FillWaitTimeout)},
 		DialTimeout: time.Duration(raw.DialTimeout), TLSHandshakeTimeout: time.Duration(raw.TLSHandshakeTimeout),
 		ResponseHeaderTimeout: time.Duration(raw.ResponseHeaderTimeout), IdleTimeout: time.Duration(raw.IdleTimeout),
-		ShutdownTimeout: time.Duration(raw.ShutdownTimeout), MaxConnections: raw.MaxConnections,
-		MaxLeafCertificates: raw.MaxLeafCertificates,
+		ShutdownTimeout: time.Duration(raw.ShutdownTimeout), MaxConnections: int(raw.MaxConnections),
+		MaxLeafCertificates: int(raw.MaxLeafCertificates),
 	}, nil
 }
 
-func parseAuthorities(texts []string) ([]hostport.HostPort, error) {
+// canonicalBindAddress validates a host:port bind address and returns its
+// canonical form. The port is parsed once, range-checked, and re-emitted without
+// leading zeros. An empty host (":3128") and a wildcard host ("0.0.0.0"/"[::]")
+// are preserved verbatim so they remain valid net.Listen targets; any other host
+// is canonicalized by hostport.Canonicalize (lowercase, trailing-dot stripped,
+// IP literals normalized). When loopback is true the address must bind an
+// explicit loopback IP literal with no zone, matching the metrics endpoint's
+// constraints.
+func canonicalBindAddress(address string, loopback bool) (string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", ErrInvalid
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNumber == 0 {
+		return "", ErrInvalid
+	}
+	normalizedPort := strconv.FormatUint(portNumber, 10)
+
+	if loopback {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() || strings.Contains(host, "%") {
+			return "", ErrInvalid
+		}
+		return net.JoinHostPort(ip.String(), normalizedPort), nil
+	}
+
+	canonicalHost := host
+	if host != "" {
+		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+			// Preserve wildcard binds ("0.0.0.0"/"::") verbatim.
+		} else {
+			canonicalHost, err = hostport.Canonicalize(host)
+			if err != nil {
+				return "", ErrInvalid
+			}
+		}
+	}
+	return net.JoinHostPort(canonicalHost, normalizedPort), nil
+}
+
+// parseAuthorities canonicalizes each element, rejecting the whole list if any
+// element is missing. A YAML null list element decodes to a nil pointer (a bare
+// []string would silently drop it), so a nil element is a typo that would narrow
+// the registry or allowlist set and must fail rather than be skipped.
+func parseAuthorities(texts []*string) ([]hostport.HostPort, error) {
 	authorities := make([]hostport.HostPort, len(texts))
 	seen := make(map[string]bool, len(texts))
 	for i, text := range texts {
-		a, err := hostport.Parse(text, "443")
+		if text == nil {
+			return nil, ErrInvalid
+		}
+		a, err := hostport.Parse(*text, "443")
 		if err != nil || seen[a.String()] {
 			return nil, ErrInvalid
 		}

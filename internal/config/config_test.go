@@ -120,6 +120,132 @@ func TestLoadRejectsInvalidRedirectAllowlist(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsNullListElements(t *testing.T) {
+	tests := []string{
+		"registries: [example.com, null]",
+		"registries: [null]",
+		"registries: ['']",
+		"registries: [example.com]\nredirect_allowlist: [cdn.example, null]",
+	}
+	for _, entry := range tests {
+		input := "ca_dir: ca\n" + entry + "\n"
+		_, err := Load(writeConfig(t, input))
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("Load(%q) unexpectedly returned %v", entry, err)
+		}
+		if err != nil && (strings.Contains(err.Error(), "cdn.example") || strings.Contains(err.Error(), "example.com")) {
+			t.Errorf("error leaked list input: %v", err)
+		}
+	}
+}
+
+func TestLoadCanonicalizesListen(t *testing.T) {
+	tests := map[string]string{
+		"EXAMPLE.com.:3128":   "example.com:3128",
+		"[2001:0DB8::1]:3128": "[2001:db8::1]:3128",
+		"127.0.0.1:03128":     "127.0.0.1:3128",
+		":3128":               ":3128",
+		"0.0.0.0:3128":        "0.0.0.0:3128",
+		"[::]:3128":           "[::]:3128",
+		"127.0.0.1:3128":      "127.0.0.1:3128",
+	}
+	for input, want := range tests {
+		c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\nlisten: '"+input+"'\n"))
+		if err != nil {
+			t.Errorf("Load(listen=%q) returned %v", input, err)
+			continue
+		}
+		if c.Listen != want {
+			t.Errorf("Load(listen=%q) = %q, want %q", input, c.Listen, want)
+		}
+	}
+}
+
+func TestLoadRejectsInvalidListen(t *testing.T) {
+	invalid := []string{
+		"Host_Underscore:3128",
+		"a..b:3128",
+		"bad host:3128",
+		"127.0.0.1:99999",
+		"127.0.0.1:",
+	}
+	for _, input := range invalid {
+		if _, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\nlisten: '"+input+"'\n")); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Load(listen=%q) unexpectedly returned %v", input, err)
+		}
+	}
+}
+
+func TestLoadCanonicalizesMetricsListen(t *testing.T) {
+	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\nmetrics_listen: '127.0.0.1:09090'\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MetricsListen != "127.0.0.1:9090" {
+		t.Fatalf("metrics_listen = %q, want 127.0.0.1:9090", c.MetricsListen)
+	}
+}
+
+func TestLoadRejectsNonIntegerNumericLimits(t *testing.T) {
+	tests := []string{
+		"cache: {max_bytes: 1.9}",
+		"cache: {max_bytes: 1.0}",
+		"cache: {max_fills: \"7\"}",
+		"cache: {max_fills: 1.5}",
+		"cache: {max_entries: 1.5}",
+		"max_connections: true",
+		"max_connections: 1.5",
+		"max_leaf_certificates: 1.5",
+		// Non-decimal integer forms are !!int but not decimal; rejected for clarity.
+		"cache: {max_bytes: 0xff}",
+		"cache: {max_bytes: 0o17}",
+		"cache: {max_bytes: 017}",
+		"cache: {max_bytes: 1_000}",
+		// A non-decimal form on a strictInt field exercises the shared parse path.
+		"max_connections: 0o17",
+		// A genuinely !!int value above MaxInt64 hits the decimal ParseInt range
+		// error. A 20+ digit literal instead resolves to !!float and is rejected
+		// earlier by the tag guard, so it would not cover this branch.
+		"cache: {max_bytes: 9223372036854775808}",
+	}
+	for _, entry := range tests {
+		input := "registries: [example.com]\nca_dir: ca\n" + entry + "\n"
+		if _, err := Load(writeConfig(t, input)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Load(%q) unexpectedly returned %v", entry, err)
+		}
+	}
+}
+
+func TestLoadPreservesDefaultForNullNumericLimit(t *testing.T) {
+	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {max_fills: null}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cache.MaxFills != DefaultCacheMaxFills {
+		t.Fatalf("max_fills null should preserve default: %d", c.Cache.MaxFills)
+	}
+}
+
+func TestLoadAcceptsLargeValidInteger(t *testing.T) {
+	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {max_bytes: 34359738368}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cache.MaxBytes != 34359738368 {
+		t.Fatalf("max_bytes: %d", c.Cache.MaxBytes)
+	}
+}
+
+func TestLoadAcceptsSignedInteger(t *testing.T) {
+	c, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {max_fills: +7}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cache.MaxFills != 7 {
+		t.Fatalf("max_fills +7 should load as 7: %d", c.Cache.MaxFills)
+	}
+}
+
 func TestLoadRejectsInvalid(t *testing.T) {
 	tests := []string{
 		"ca_dir: ca\n",                // registries required
@@ -128,6 +254,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"registries: [example.com]\nregistries: [other.example]\nca_dir: ca\n",
 		"registries: [example.com, EXAMPLE.COM:443]\nca_dir: ca\n",
 		"registries: [user:pass@example.com]\nca_dir: ca\n",
+		"registries: ['']\nca_dir: ca\n",
 		"registries: [example.com]\nca_dir: ca\ndial_timeout: 0s\n",
 		"registries: [example.com]\nca_dir: ca\nmax_connections: 0\n",
 		"registries: [example.com]\nca_dir: ca\ncache: {max_fills: 0}\n",

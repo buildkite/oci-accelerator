@@ -283,6 +283,33 @@ Not a numbered plan slice; a self-contained bug fix confined to `internal/cache`
   environment-only `TestFillFailuresNeverPublish/disk-full` (needs Linux
   `/dev/full`, absent on darwin; fails on the untouched baseline too).
 
+## Post-slice-4 maintenance: config validation hardening
+
+Three independent configuration-validation bug fixes outside the numbered plan,
+each tightening slice 1a's documented "reject malformed configuration" intent
+without changing any security boundary or agreed scope. Each is a self-contained
+commit; the [decision log](decision-log.md) records the reasoning. `test`, `-race`,
+and `vet` passed for `internal/config` and `internal/hostport` on every commit;
+`config.example.yaml` still loads unchanged. The pre-existing, environment-only
+`internal/cache` `TestFillFailuresNeverPublish/disk-full` failure on darwin (opens
+`/dev/full`, absent on macOS) is unrelated to these fixes and was confirmed to fail
+identically on the pre-change tree. Each subslice had paired independent reviews
+(one plan-aware, one filtered code-only); the code-only review used a filtered
+source/test/diff bundle and cannot fully isolate ambient guidance.
+
+- [Reject non-integer numeric limits](https://ampcode.com/@buildkite/docker-accelerator/commit/1845ccefb78877b0bf1f661ef6058b1e18aa6cec):
+  strict tagged integer types stop a YAML float, string, or boolean silently
+  truncating into `max_bytes`/`max_fills`/`max_entries`/`max_connections`/
+  `max_leaf_certificates`; decimal-only parsing also rejects `017`/`0x`/`0o`/`_`.
+- [Reject null entries in registries and the redirect allowlist](https://ampcode.com/@buildkite/docker-accelerator/commit/d3cc4efbae27abb9df87ca58dca12f6fb970f466):
+  decoding into `[]*string` surfaces a null list element as a nil pointer that is
+  rejected rather than silently dropped, so a typo cannot narrow the trust set.
+- [Canonicalize listen and metrics addresses](https://ampcode.com/@buildkite/docker-accelerator/commit/29e5dcc37f275d6b193ab4205f2a4103af355b0a):
+  an exported `hostport.Canonicalize` (reused by `hostport.Parse` with unchanged
+  behavior) canonicalizes the stored `Listen`/`MetricsListen` host and normalizes
+  the port once, while preserving empty and wildcard binds as valid `net.Listen`
+  targets.
+
 ## Keeping this log current
 
 - Update the current status and affected rows as work starts, finishes, or is
