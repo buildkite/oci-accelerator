@@ -8,10 +8,31 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
   2 — authorized digest-blob caching; 3 — digest manifests and compatibility;
   4 — concurrency and operational hardening.
-- **In progress:** None. OCI Accelerator rename is implemented, validated, and
-  independently reviewed; delivery is local only.
-- **Next:** User rehomes the repository to `github.com/buildkite/oci-accelerator`.
-  No hosted project, remote, or push changes are part of this task.
+- **In progress:** None. Buildkite CI maintenance is implemented, validated, and
+  independently reviewed.
+- **Next:** Review and merge the `ci/buildkite` branch when ready.
+  The first hosted build passed; no shared Buildkite settings changes were needed.
+
+## Buildkite CI (maintenance, not a plan slice)
+
+- **Status:** [Complete](https://github.com/buildkite/oci-accelerator/commit/6a7c21f25339f43319d41c7abfbf4715ef63ce72)
+  — implementation, validation, and paired review finished; pushed on `ci/buildkite`.
+- **Scope:** Parallel formatting/vet/build/config, test, and race-test jobs on
+  the existing `hosted` queue, in Go 1.27.1 Docker containers. No releases or
+  deployments; Amp-dependent acceptance remains explicitly manual.
+- **Validation:** `bash .buildkite/check.sh` (gofmt, vet, build, example `--check`),
+  `go test -count=1 -timeout=10m ./...`, and
+  `go test -race -count=1 -timeout=10m ./...` passed locally and inside the exact
+  Go CI image on Linux amd64. All seven packages passed; example validation printed
+  `configuration validated`. Buildkite Agent v4.0.1 dry-run parsing with
+  `--reject-parse-warnings` passed using a dummy token and unreachable endpoint.
+  Shell syntax and diff whitespace checks passed. The automatic hosted
+  [Buildkite build #2](https://buildkite.com/buildkite/oci-accelerator/builds/2)
+  passed: bootstrap and all three CI jobs exited 0.
+- **Review:** Paired read-only snapshot reviews and final follow-up reviews found
+  no actionable issues. The final snapshot includes the container-tested VCS stamp
+  fix. Code-only reviewers received filtered source/test/config/diff bundles without
+  docs or Git history; ambient guidance remained visible, so isolation was not total.
 
 ## Project rename (maintenance, not a plan slice)
 

@@ -1,0 +1,36 @@
+agents:
+  queue: hosted
+
+steps:
+  - label: ":go: Format, vet, and build"
+    key: checks
+    command: "bash .buildkite/check.sh"
+    timeout_in_minutes: 10
+    plugins:
+      - docker#v5.14.0:
+          image: golang:1.27.1-bookworm
+          environment:
+            - GOTOOLCHAIN=local
+            - CGO_ENABLED=1
+
+  - label: ":go: Tests"
+    key: tests
+    command: "go test -count=1 -timeout=10m ./..."
+    timeout_in_minutes: 15
+    plugins:
+      - docker#v5.14.0:
+          image: golang:1.27.1-bookworm
+          environment:
+            - GOTOOLCHAIN=local
+            - CGO_ENABLED=1
+
+  - label: ":go: Race tests"
+    key: race
+    command: "go test -race -count=1 -timeout=10m ./..."
+    timeout_in_minutes: 15
+    plugins:
+      - docker#v5.14.0:
+          image: golang:1.27.1-bookworm
+          environment:
+            - GOTOOLCHAIN=local
+            - CGO_ENABLED=1

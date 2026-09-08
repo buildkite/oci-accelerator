@@ -1,5 +1,26 @@
 # Implementation decisions
 
+## Buildkite CI (maintenance)
+
+- Use the existing `oci-accelerator` pipeline's repository-upload bootstrap and
+  Open Source cluster `hosted` queue, verified through the Buildkite API. Its
+  bootstrap is managed in `buildkite/saas-iac`; do not duplicate or modify it here.
+- Run formatting/vet/build/example validation, default tests, and race tests as
+  three independent bounded jobs. Pin the Docker plugin to v5.14.0 and use
+  `golang:1.27.1-bookworm` to match the module/orb toolchain with a C compiler.
+  Keep container environment forwarding narrow and prevent auto toolchain upgrades.
+  No extra linter, release artifacts, deployment, or shared cache is needed.
+- Container verification reproduced Git's dubious-ownership failure during Go's
+  automatic VCS stamping. Disable stamping only for the disposable validation
+  binary (`-buildvcs=false`); do not add Git safe-directory exceptions or change
+  production build instructions. Agent v4's local dry-run also requires a token;
+  document a dummy token plus unreachable endpoint so no credential is needed.
+- Do not wire opt-in acceptance into a hosted job that cannot run it: the existing
+  Docker, public, fault, and load harnesses depend on `amp orb service`, not merely
+  a Docker socket. Retain their manual orb workflow and state the coverage gap.
+  Porting service supervision is separate test-harness work, not a CI prerequisite
+  for the existing default suite. Production/security behavior is unchanged.
+
 ## Project rename (maintenance)
 
 - Full clean-break rename to OCI Accelerator: command `oci-accelerator`, module
