@@ -155,8 +155,8 @@ func (d *nonNegativeDuration) UnmarshalYAML(node *yaml.Node) error {
 type rawConfig struct {
 	Listen                string    `yaml:"listen"`
 	MetricsListen         string    `yaml:"metrics_listen"`
-	Registries            []string  `yaml:"registries"`
-	RedirectAllowlist     []string  `yaml:"redirect_allowlist"`
+	Registries            []*string `yaml:"registries"`
+	RedirectAllowlist     []*string `yaml:"redirect_allowlist"`
 	CADir                 string    `yaml:"ca_dir"`
 	Cache                 rawCache  `yaml:"cache"`
 	DialTimeout           duration  `yaml:"dial_timeout"`
@@ -255,11 +255,18 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}, nil
 }
 
-func parseAuthorities(texts []string) ([]hostport.HostPort, error) {
+// parseAuthorities canonicalizes each element, rejecting the whole list if any
+// element is missing. A YAML null list element decodes to a nil pointer (a bare
+// []string would silently drop it), so a nil element is a typo that would narrow
+// the registry or allowlist set and must fail rather than be skipped.
+func parseAuthorities(texts []*string) ([]hostport.HostPort, error) {
 	authorities := make([]hostport.HostPort, len(texts))
 	seen := make(map[string]bool, len(texts))
 	for i, text := range texts {
-		a, err := hostport.Parse(text, "443")
+		if text == nil {
+			return nil, ErrInvalid
+		}
+		a, err := hostport.Parse(*text, "443")
 		if err != nil || seen[a.String()] {
 			return nil, ErrInvalid
 		}

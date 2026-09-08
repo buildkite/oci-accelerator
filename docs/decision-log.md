@@ -283,3 +283,18 @@ changing any security boundary or agreed scope.
   is a no-op on the 64-bit build target (int spans the validated int64 range);
   32-bit builds, not a deployment target, are documented as out of scope rather
   than guarded with untestable code.
+
+### Reject null entries in registries and the redirect allowlist
+
+- A `!!null` element in `registries` or `redirect_allowlist` was silently dropped:
+  decoding into `[]string` skips nulls before `parseAuthorities` runs, so
+  `registries: [example.com, null]` loaded a single registry with no error. A typo
+  that quietly narrows the trusted registry or redirect set is exactly the kind of
+  misconfiguration validation must reject.
+- Decode both lists into `[]*string`, where a YAML null element becomes a nil
+  pointer that the decoder preserves. `parseAuthorities` now rejects a nil element
+  with `ErrInvalid` and otherwise dereferences and calls `hostport.Parse(_, "443")`
+  exactly as before, so an empty string still fails as an invalid authority and the
+  canonicalization and duplicate checks are unchanged.
+- Errors continue to surface only `ErrInvalid`, never the offending element, so a
+  redirect destination or registry name cannot leak through a configuration error.

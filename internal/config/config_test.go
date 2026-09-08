@@ -120,6 +120,25 @@ func TestLoadRejectsInvalidRedirectAllowlist(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsNullListElements(t *testing.T) {
+	tests := []string{
+		"registries: [example.com, null]",
+		"registries: [null]",
+		"registries: ['']",
+		"registries: [example.com]\nredirect_allowlist: [cdn.example, null]",
+	}
+	for _, entry := range tests {
+		input := "ca_dir: ca\n" + entry + "\n"
+		_, err := Load(writeConfig(t, input))
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("Load(%q) unexpectedly returned %v", entry, err)
+		}
+		if err != nil && (strings.Contains(err.Error(), "cdn.example") || strings.Contains(err.Error(), "example.com")) {
+			t.Errorf("error leaked list input: %v", err)
+		}
+	}
+}
+
 func TestLoadRejectsNonIntegerNumericLimits(t *testing.T) {
 	tests := []string{
 		"cache: {max_bytes: 1.9}",
@@ -188,6 +207,7 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"registries: [example.com]\nregistries: [other.example]\nca_dir: ca\n",
 		"registries: [example.com, EXAMPLE.COM:443]\nca_dir: ca\n",
 		"registries: [user:pass@example.com]\nca_dir: ca\n",
+		"registries: ['']\nca_dir: ca\n",
 		"registries: [example.com]\nca_dir: ca\ndial_timeout: 0s\n",
 		"registries: [example.com]\nca_dir: ca\nmax_connections: 0\n",
 		"registries: [example.com]\nca_dir: ca\ncache: {max_fills: 0}\n",
