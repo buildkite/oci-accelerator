@@ -4,15 +4,21 @@ A standalone Go explicit HTTPS proxy for Docker Engine, with selective registry
 TLS interception, persistent CA identity, and authorized SHA-256 blob and
 digest-manifest caching. Every cached delivery still requires a successful upstream
 GET. Tags remain uncached; there is no offline fallback or request-rate-limit avoidance.
-See the [implementation plan](docs/plans/https-registry-cache.md).
-Track completed and upcoming slices in the [implementation log](docs/implementation-log.md).
+Docker Engine on Linux is the validated client; the proxy uses generic Registry
+HTTP API V2 behavior rather than provider-specific routing.
 
 Concurrent fills have byte, entry, writer and lifetime bounds. Independently
 authorized followers can wait briefly for the same fill; timeout uses one fresh
 upstream GET, not stale authorization. Optional loopback-only Prometheus metrics
-expose resource use and fixed request/cache outcomes. See the
-[load evidence](docs/operations.md#concurrent-load-acceptance) for measured
-cold/warm/restart behavior, coalescing tradeoffs, and repeatable checks.
+expose resource use and fixed request/cache outcomes.
+
+- [Architecture](docs/architecture.md): request flow, security boundaries, cache
+  ownership, and design rationale.
+- [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
+  recovery, and repeatable acceptance checks.
+- [CA package](internal/ca/README.md) and [cache benchmarks](internal/cache/benchmarks.md):
+  internal contracts and performance investigation.
+- [Working rules](AGENTS.md): contribution, review, and verification requirements.
 
 ## Build and configure
 
@@ -30,7 +36,7 @@ proxy-user authentication, and unconfigured CONNECT destinations are opaque tunn
 
 Amp runs `.agents/setup` when preparing a fresh orb. It installs checksum-verified
 Go 1.27.1, C build tools for race-enabled tests, and Docker Engine if missing.
-It downloads module dependencies once `go.mod` exists. Re-running it is safe:
+It downloads Go module dependencies. Re-running it is safe:
 
 ```sh
 .agents/setup
@@ -70,15 +76,15 @@ OCI_ACCELERATOR_E2E=1 go test -v ./integration \
 It validates CA rejection/trust, authenticated cold/warm/restart pulls, exact image
 digests, fresh upstream GETs, reduced warm layer bytes, and persistent CA identity
 using local fixtures—not public registries.
-See the [guide](docs/operations.md#acceptance-evidence-and-repeatable-checks) for
-prerequisites, cleanup, tested versions, and limitations.
+See the [guide](docs/operations.md#repeatable-checks) for prerequisites,
+public-registry, fault and load checks, and limitations.
 
 ## Buildkite CI
 
 The [Buildkite pipeline](https://buildkite.com/buildkite/oci-accelerator) uploads
-[`.buildkite/pipeline.yml`](.buildkite/pipeline.yml) using its existing
+[`.buildkite/pipeline.yml`](.buildkite/pipeline.yml) using a
 `buildkite-agent pipeline upload` bootstrap. Bootstrap settings are managed in
-`buildkite/saas-iac`; no Buildkite UI changes are needed for this file.
+`buildkite/saas-iac`; this repository owns the uploaded job definitions.
 
 Three independent jobs run on the Open Source cluster's Linux `hosted` queue:
 
@@ -97,10 +103,11 @@ containers, or mounted Docker socket inside the test container. Job environments
 are not broadly forwarded into containers. Test results are not reused from Go's
 test cache. Jobs have explicit timeouts and failures are not automatically retried.
 
-Docker, public-registry, fault, and load acceptance remain manual opt-in checks:
-their current harness uses `amp orb service` and cannot run on ordinary hosted
+Docker, public-registry, fault, and load acceptance are manual opt-in checks:
+their harness uses `amp orb service` and cannot run on ordinary hosted
 agents. CI runs the default local-fixture suite, **not** those acceptance matrices.
-Use the orb commands above and in the operating guide for that additional coverage.
+Use the orb commands above and the [operating guide](docs/operations.md#repeatable-checks)
+for that additional coverage.
 
 To reproduce CI locally with Go 1.27.1 and a C compiler, run from the repo root:
 
@@ -119,12 +126,3 @@ BUILDKITE_AGENT_ACCESS_TOKEN=local-dry-run-only \
 BUILDKITE_AGENT_ENDPOINT=http://127.0.0.1:1 \
 buildkite-agent pipeline upload --dry-run --reject-parse-warnings .buildkite/pipeline.yml
 ```
-
-## Project rename
-
-Formerly Docker Accelerator. The Go module is now
-`github.com/buildkite/oci-accelerator`; the binary, metrics, and test environment
-variables use the OCI Accelerator name without compatibility aliases. See the
-[migration notes](docs/operations.md#upgrading-from-docker-accelerator).
-This is a name change, not expanded client support: Docker Engine remains the
-validated client.

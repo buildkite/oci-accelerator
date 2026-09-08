@@ -23,9 +23,9 @@
   subagents that did not implement it. Both must review the same source, tests,
   and code-diff snapshot. This two-review gate does not apply to routine editorial
   changes outside implementation subslices.
-- Give the first reviewer repository and plan context. Ask it to identify
+- Give the first reviewer repository and task context. Ask it to identify
   problems, mistakes, regressions, and design issues across the changes and
-  their surrounding code, and assess the implementation against the plan.
+  their surrounding code, and assess the implementation against the agreed scope.
 - Focus the second reviewer only on code quality, logic, bugs, and design.
   Provide a filtered workspace or input bundle containing source, tests,
   fixtures, build/module files, and code diffs, but no documentation or Git
@@ -43,27 +43,6 @@
   during review must receive follow-up independent review under the same context
   rules before committing the completed subslice or moving on.
 
-## Implementation log
-
-- Maintain `docs/implementation-log.md` so the user can see which slices and
-  subslices are completed, in progress, and coming up next.
-- Update it as work progresses and sequencing changes. Keep it concise and
-  human-readable; mark work complete only after implementation, validation,
-  and independent review are finished.
-- When updating the log, link each completed subslice to the commit or commits
-  that implement it. Use actual commit links once the commits exist.
-- Add the implementation commit's link afterward in a log-only commit or the
-  next commit; this does not violate one implementation commit per subslice.
-  Do not amend commits to chase a self-referencing commit hash.
-
-## Decision log
-
-- While implementing each subslice, maintain `docs/decision-log.md`, creating it
-  when implementation begins. Record the decisions made and why, and include
-  the relevant entries in the associated implementation commit.
-- Keep entries concise and human-readable; avoid transcripts, routine command
-  logs, and repeated plan text.
-
 ## Simple, idiomatic Go
 
 - Prefer the standard library. Add dependencies, interfaces, wrappers, and
@@ -77,8 +56,8 @@
 - Format Go changes with `gofmt`. Before completing an implementation subslice,
   run `go test ./...`, `go test -race ./...`, and `go vet ./...`.
 - Add regression tests for bugs. Report blocked or failing checks honestly.
-- If a required check fails or cannot run, record the blocker in the
-  implementation log and keep the subslice incomplete. Do not advance past it
+- If a required check fails or cannot run, report the blocker to the user
+  and keep the subslice incomplete. Do not advance past it
   until the blocker is resolved or the user explicitly grants an exception.
 
 ## Behavioral tests
@@ -94,7 +73,7 @@
 - Never disable upstream TLS verification, log credentials, or forward
   credentials across origins.
 - Changes to these security boundaries require explicit design approval.
-  See [the implementation plan](docs/plans/https-registry-cache.md) for detailed
+  See [the architecture guide](docs/architecture.md) for detailed
   protocol rules.
 
 ## Bounded resources and safe failure
@@ -107,8 +86,11 @@
 
 ## Documentation alignment
 
-- Update the plan, configuration examples, and operating instructions when
+- Keep documentation about the current code, not its delivery history. Update
+  architecture, design rationale, configuration examples, and operating instructions when
   behavior changes.
+- Keep reproducible verification commands and current limitations. Do not maintain
+  implementation/decision logs, completed-slice narratives, or superseded alternatives.
 - Ask before materially changing agreed scope or security guarantees; do not
   quietly substitute a different design.
 
@@ -118,7 +100,4 @@
   completed commits only in the local checkout.
 - Give every commit a readable summary of the changes it implements in the
   commit body, and summarize those changes when reporting the commit to the user.
-- Include the plan's slice/subslice identifier in implementation commit titles,
-  for example `feat(1a): add validated YAML configuration`. Do not invent slice
-  numbers for documentation or maintenance outside the implementation plan.
 - Do not add Amp branding or attribution to commit subjects, bodies, or trailers.

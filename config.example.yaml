@@ -8,7 +8,7 @@ registries:
 # Optional private HTTPS storage destinations; does not enable interception.
 redirect_allowlist: []
 ca_dir: ./data/ca
-# Omit dir for forwarding-only mode. Limit includes in-progress reservations.
+# Required private cache directory. Limit includes in-progress reservations.
 cache:
   dir: ./data/cache
   max_bytes: 34359738368
