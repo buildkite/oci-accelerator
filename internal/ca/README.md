@@ -45,10 +45,13 @@ every ancestor in the path; operators must keep the containing path trusted.
 ### `(*Authority) Certificate(host string) (*tls.Certificate, error)`
 
 Returns a currently valid leaf certificate for a DNS name or IP address, signing
-a new 24-hour leaf when the cache has no entry (or the cached one is within one
-hour of expiry); the leaf's validity is capped at the CA's own expiry. The cache
-evicts the least recently used entry once `maxLeaves` is reached; every cache
-hit and renewal refreshes an entry's recency.
+a new 24-hour leaf when the cache has no entry, the cached leaf is not currently
+valid (including after a clock rollback), or it is within one hour of expiry.
+The leaf's validity is capped at the CA's own expiry. A currently valid leaf
+already expiring with the CA is reused even during that final hour: renewing
+cannot extend its lifetime. An invalid CA always prevents issuance and reuse.
+The cache evicts the least recently used entry once `maxLeaves` is reached;
+every cache hit and renewal refreshes an entry's recency.
 
 ### `(*Authority) CertificatePath() string`
 
