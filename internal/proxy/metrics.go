@@ -36,6 +36,7 @@ type metrics struct {
 	fills                          map[string]uint64
 	waits                          map[string]uint64
 	fallback                       map[string]uint64
+	rejects                        map[string]uint64
 	upstream                       uint64
 	upstreamBytes, downstreamBytes uint64
 	durations                      [8]uint64
@@ -44,22 +45,22 @@ type metrics struct {
 }
 
 func newMetrics() *metrics {
-	return &metrics{requests: map[string]uint64{}, statuses: map[string]uint64{}, cache: map[string]uint64{}, fills: map[string]uint64{}, waits: map[string]uint64{}, fallback: map[string]uint64{}}
+	return &metrics{requests: map[string]uint64{}, statuses: map[string]uint64{}, cache: map[string]uint64{}, fills: map[string]uint64{}, waits: map[string]uint64{}, fallback: map[string]uint64{}, rejects: map[string]uint64{}}
 }
 
 type metricsSnapshot struct {
-	requests, statuses, cache, fills, waits, fallback map[string]uint64
-	upstream, upstreamBytes, downstreamBytes          uint64
-	durations                                         [8]uint64
-	durationSum                                       float64
-	activeRequests, activeWaits                       int64
+	requests, statuses, cache, fills, waits, fallback, rejects map[string]uint64
+	upstream, upstreamBytes, downstreamBytes                   uint64
+	durations                                                  [8]uint64
+	durationSum                                                float64
+	activeRequests, activeWaits                                int64
 }
 
 func (p *Proxy) MetricsHandler() http.Handler { return http.HandlerFunc(p.writeMetrics) }
 
 func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	p.metrics.mu.Lock()
-	m := metricsSnapshot{requests: cloneMap(p.metrics.requests), statuses: cloneMap(p.metrics.statuses), cache: cloneMap(p.metrics.cache), fills: cloneMap(p.metrics.fills), waits: cloneMap(p.metrics.waits), fallback: cloneMap(p.metrics.fallback), upstream: p.metrics.upstream, upstreamBytes: p.metrics.upstreamBytes, downstreamBytes: p.metrics.downstreamBytes, durations: p.metrics.durations, durationSum: p.metrics.durationSum, activeRequests: p.metrics.activeRequests, activeWaits: p.metrics.activeWaits}
+	m := metricsSnapshot{requests: cloneMap(p.metrics.requests), statuses: cloneMap(p.metrics.statuses), cache: cloneMap(p.metrics.cache), fills: cloneMap(p.metrics.fills), waits: cloneMap(p.metrics.waits), fallback: cloneMap(p.metrics.fallback), rejects: cloneMap(p.metrics.rejects), upstream: p.metrics.upstream, upstreamBytes: p.metrics.upstreamBytes, downstreamBytes: p.metrics.downstreamBytes, durations: p.metrics.durations, durationSum: p.metrics.durationSum, activeRequests: p.metrics.activeRequests, activeWaits: p.metrics.activeWaits}
 	p.metrics.mu.Unlock()
 	cs := cacheStats(p)
 	heapAlloc := heapAllocBytes()
@@ -82,6 +83,7 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeMap("docker_accelerator_fills_total", "outcome", m.fills)
 	writeMap("docker_accelerator_waits_total", "outcome", m.waits)
 	writeMap("docker_accelerator_fallbacks_total", "outcome", m.fallback)
+	writeMap("docker_accelerator_cache_rejections_total", "reason", m.rejects)
 	for _, name := range []string{"upstream_get_attempts_total", "upstream_body_bytes_total", "downstream_bytes_total", "cache_evictions_total", "store_fill_success_total", "store_fill_failure_total", "store_fill_abort_total", "store_fill_expiry_total", "cache_admissions_total"} {
 		fmt.Fprintf(&b, "# TYPE docker_accelerator_%s counter\n", name)
 	}
@@ -132,6 +134,9 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 	}
 	if s.fallback != "" {
 		m.fallback[s.fallback]++
+	}
+	if s.reject != "" {
+		m.rejects[s.reject]++
 	}
 	m.upstreamBytes += uint64(s.upstreamBytes)
 	m.downstreamBytes += uint64(downstream)

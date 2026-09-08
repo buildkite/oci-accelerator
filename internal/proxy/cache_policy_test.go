@@ -1,9 +1,15 @@
 package proxy
 
 import (
+	"context"
+	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"ampcode.com/buildkite/docker-accelerator/internal/cache"
 )
 
 const testBlobDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -218,5 +224,82 @@ func TestManifestMediaTypeMatchesCanonicalListExactly(t *testing.T) {
 		if manifestMediaType(mediaType) {
 			t.Errorf("manifestMediaType(%q) = true, want false", mediaType)
 		}
+	}
+}
+
+func TestCacheHeaderRejectionAgreesWithCacheHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		header     http.Header
+		wantReason string
+	}{
+		{"cacheable empty", http.Header{}, ""},
+		{"cacheable vary accept", http.Header{"Vary": {"Accept"}}, ""},
+		{"cacheable matching digest", http.Header{"Docker-Content-Digest": {testBlobDigest}}, ""},
+		{"no store", http.Header{"Cache-Control": {"no-store"}}, "no_store"},
+		{"vary accept and encoding", http.Header{"Vary": {"Accept, Accept-Encoding"}}, "vary"},
+		{"vary other", http.Header{"Vary": {"Cookie"}}, "vary"},
+		{"digest mismatch", http.Header{"Docker-Content-Digest": {"sha256:" + strings.Repeat("b", 64)}}, "digest_mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := cacheHeaderRejection(tc.header, testBlobDigest)
+			if reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
+			}
+			if got, want := cacheHeaders(tc.header, testBlobDigest), tc.wantReason == ""; got != want {
+				t.Fatalf("cacheHeaders = %v, but reason %q implies %v", got, reason, want)
+			}
+		})
+	}
+}
+
+func TestCachedResponseRecordsVaryAndDigestBypassReasons(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mutate     func(http.Header)
+		wantReason string
+	}{
+		{
+			name:       "vary",
+			mutate:     func(h http.Header) { h.Set("Vary", "Accept, Accept-Encoding") },
+			wantReason: "vary",
+		},
+		{
+			name:       "digest mismatch",
+			mutate:     func(h http.Header) { h.Set("Docker-Content-Digest", "sha256:"+strings.Repeat("c", 64)) },
+			wantReason: "digest_mismatch",
+		},
+		{
+			name:       "no reason for plain uncacheable",
+			mutate:     func(h http.Header) { h.Set("Cache-Control", "no-store") },
+			wantReason: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := cache.OpenWithLimits(filepath.Join(t.TempDir(), "cache"), cache.Limits{MaxBytes: 1 << 20, MaxFills: 4, MaxEntries: 8, FillTimeout: time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			p := &Proxy{cache: store}
+			req, resp := cachePolicyFixture()
+			req = req.WithContext(context.Background())
+			resp.Body = io.NopCloser(strings.NewReader("abc"))
+			tc.mutate(resp.Header)
+			stats := &requestStats{}
+			got, retry := p.cachedResponse(req, resp, true, false, stats)
+			if got == nil || retry {
+				t.Fatalf("cachedResponse = (%v, %v), want the upstream response passed through", got, retry)
+			}
+			if stats.reject != tc.wantReason {
+				t.Fatalf("stats.reject = %q, want %q", stats.reject, tc.wantReason)
+			}
+			// The upstream body must be untouched by the bypass.
+			body, _ := io.ReadAll(got.Body)
+			got.Body.Close()
+			if string(body) != "abc" {
+				t.Fatalf("bypass altered upstream body: %q", body)
+			}
+		})
 	}
 }

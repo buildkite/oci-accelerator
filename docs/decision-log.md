@@ -68,6 +68,17 @@
   400) run under `-race` and would fail if a future change moved the rawOK read or
   write onto another goroutine. It targets the sniff path, not slot contention.
 
+- G (#4/#5): investigate-first. Do not change the caching decision; add a
+  measurement counter instead. Refactor `cacheHeaders` into `cacheHeaderRejection`
+  (single source of truth returning "", "no_store", "vary", "digest_mismatch"),
+  keeping `cacheHeaders` derived and behavior identical. On the bypass path record
+  only "vary" or "digest_mismatch" into requestStats.reject for eligible objects,
+  and expose `cache_rejections_total{reason=...}` plus a "reject" log field. The
+  counter is deliberately an upper bound (headers would reject, regardless of any
+  other independent bypass cause) — accurate enough to size the cache-effectiveness
+  question before deciding whether to relax the rules in a future, separately
+  approved change. Labels stay a fixed two-value enum; no host/digest/path leaks.
+
 ## Slice 1 authorization
 
 - Implement 1a–1e autonomously, with per-subslice commits and independent review.

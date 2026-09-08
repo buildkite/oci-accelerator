@@ -20,33 +20,43 @@ type requestStats struct {
 	cache, fill         string
 	wait, fallback      string
 	admission           string
+	reject              string
 	upstreamBytes       int64
 	eligible, cacheable bool
 }
 type statsKey struct{}
 
-func cacheHeaders(h http.Header, digest string) bool {
+// cacheHeaderRejection reports why the headers forbid caching, or "" if they
+// permit it. The checks and their order are the single source of truth for the
+// caching decision; cacheHeaders is derived from it. The returned reason is a
+// fixed, low-cardinality label used only for diagnostics — it never changes the
+// decision itself.
+func cacheHeaderRejection(h http.Header, digest string) string {
 	for _, value := range h.Values("Cache-Control") {
 		for _, directive := range strings.Split(value, ",") {
 			name, _, _ := strings.Cut(directive, "=")
 			if strings.EqualFold(strings.TrimSpace(name), "no-store") {
-				return false
+				return "no_store"
 			}
 		}
 	}
 	for _, value := range h.Values("Vary") {
 		for _, name := range strings.Split(value, ",") {
 			if !strings.EqualFold(strings.TrimSpace(name), "Accept") {
-				return false
+				return "vary"
 			}
 		}
 	}
 	for _, value := range h.Values("Docker-Content-Digest") {
 		if value != digest {
-			return false
+			return "digest_mismatch"
 		}
 	}
-	return true
+	return ""
+}
+
+func cacheHeaders(h http.Header, digest string) bool {
+	return cacheHeaderRejection(h, digest) == ""
 }
 
 func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, bool) {
@@ -106,6 +116,19 @@ func (p *Proxy) cachedResponse(req *http.Request, resp *http.Response, permitted
 	}
 	meta, ok := objectMetadata(req, resp)
 	if !ok {
+		// The request was eligible and permitted, yet the object is not cacheable.
+		// Record when the upstream response's Vary or Docker-Content-Digest header
+		// would reject caching so operators can measure cache-effectiveness loss
+		// from CDN header conventions. This is an upper bound: the response may
+		// also be uncacheable for an independent reason (e.g. Content-Encoding),
+		// so a recorded reason means "these headers would reject", not "these
+		// headers are the sole blocker". Uses the request's object digest (meta is
+		// empty on a miss) and does not change the bypass decision.
+		if object, eligible := immutableObjectRequest(req); eligible {
+			if reason := cacheHeaderRejection(resp.Header, object.digest); reason == "vary" || reason == "digest_mismatch" {
+				stats.reject = reason
+			}
+		}
 		return resp, false
 	}
 	if body, err := p.cache.Get(req.Context(), meta); err == nil {
