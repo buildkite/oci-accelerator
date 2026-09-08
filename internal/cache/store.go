@@ -81,6 +81,11 @@ type entry struct {
 	pins     int
 	verified bool
 	invalid  bool
+	// reclaimed guards this entry's charge against a double subtraction from
+	// s.bytes. A tombstone can be reclaimed by whichever of unpin, Begin (C1),
+	// or a superseding Commit reaches it first; the flag makes that subtraction
+	// idempotent so late readers only drop their pin.
+	reclaimed bool
 }
 
 type Store struct {
@@ -338,6 +343,12 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64) bool {
 		}
 		if os.RemoveAll(e.dir) == nil {
 			delete(s.entries, e.meta.Key)
+			// Mark reclaimed so the invariant "every path that detaches an entry
+			// from the map reclaims its charge exactly once" holds uniformly; a
+			// later unpin of the same object then only drops its pin. An
+			// unpinned invalid tombstone can be a victim here, and no future
+			// unpin would otherwise observe that its charge was already dropped.
+			e.reclaimed = true
 			s.bytes -= e.charge
 			s.evictions++
 		}

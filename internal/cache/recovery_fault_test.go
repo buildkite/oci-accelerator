@@ -199,6 +199,46 @@ func TestProcessCrashRecovery(t *testing.T) {
 	}
 }
 
+// assertBeginAdmitsPinnedTombstone deterministically reproduces the concurrent
+// corrupt-reader window on an isolated store: one reader keeps a corrupt entry
+// pinned while a second Get invalidates it, leaving an invalid+pinned tombstone.
+// A Begin for that key during the window must be admitted for re-fill rather than
+// refused with AdmissionExisting, which is the thundering-herd wedge this fix
+// removes. Kept on a dedicated store so it does not perturb the caller's slot
+// and eviction accounting.
+func assertBeginAdmitsPinnedTombstone(t *testing.T) {
+	t.Helper()
+	s := openTest(t, 1<<20)
+	corrupt := testMeta("corrupt-window", "same")
+	put(t, s, corrupt, "same")
+	held, err := s.Get(context.Background(), corrupt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(s.dir, corrupt.Key, "body")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(context.Background(), corrupt); err != ErrMiss {
+		t.Fatalf("invalidating Get during pinned window = %v", err)
+	}
+	if e := s.entries[corrupt.Key]; e == nil || !e.invalid || e.pins != 1 {
+		t.Fatalf("expected invalid pinned tombstone, got %+v", e)
+	}
+	refill, err := s.Begin(corrupt)
+	if err != nil {
+		t.Fatalf("Begin over invalid pinned tombstone = %v, want admission", err)
+	}
+	if err := refill.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, corrupt.Key)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("tombstone not reclaimed after abort and unpin: %v", err)
+	}
+}
+
 func TestConcurrentRestartCorruption(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cache")
 	bad, valid := testMeta("bad", "same"), testMeta("valid", "good")
@@ -247,6 +287,9 @@ func TestConcurrentRestartCorruption(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, bad.Key)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("corrupt entry not cleaned after final unpin: %v", err)
 	}
+
+	assertBeginAdmitsPinnedTombstone(t)
+
 	other := testMeta("other", "stay")
 	put(t, s, other, "stay")
 	otherReader, err := s.Get(context.Background(), other)

@@ -44,9 +44,26 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		s.admissions[AdmissionClosed]++
 		return nil, &AdmissionError{Reason: AdmissionClosed}
 	}
-	if _, ok := s.entries[meta.Key]; ok {
+	if e, ok := s.entries[meta.Key]; ok && !e.invalid {
 		s.admissions[AdmissionExisting]++
 		return nil, &AdmissionError{Reason: AdmissionExisting}
+	} else if ok && e.pins == 0 {
+		// The same-key entry is an unpinned invalid tombstone: no reader will
+		// ever call unpin to reclaim it. Retry removal here, under the held
+		// s.mu, so its slot and charge are freed before evictLocked/admission of
+		// the new fill. On a persistent removal failure, fall through to Change A
+		// semantics: the fill supersedes s.entries[key] at commit, which detaches
+		// this tombstone and reclaims its bytes. The charge was added when the
+		// entry was live and never removed at invalidation; the reclaimed guard
+		// keeps that subtraction to exactly once. No concurrent mutation is
+		// possible while s.mu is held, so this map slot still holds e.
+		if os.RemoveAll(e.dir) == nil {
+			delete(s.entries, meta.Key)
+			if !e.reclaimed {
+				e.reclaimed = true
+				s.bytes -= e.charge
+			}
+		}
 	}
 	if _, ok := s.fills[meta.Key]; ok {
 		s.admissions[AdmissionExisting]++
@@ -168,6 +185,17 @@ func (f *Fill) Commit() error {
 		return f.finish(errFillExpired)
 	}
 	dest := filepath.Join(f.store.dir, f.meta.Key)
+	// A same-key invalid tombstone that is still reader-pinned keeps its
+	// directory at dest after Change A re-admitted this fill, and os.Rename will
+	// not replace a non-empty directory. Detach and remove that tombstone
+	// atomically under s.mu before the rename: once it is out of the map, no
+	// concurrent unpin or eviction can RemoveAll(dest) and destroy the content
+	// this fill is about to publish. Readers still holding the old body keep
+	// their open descriptors after the unlink. If removal fails, fail the fill
+	// rather than renaming onto an occupied directory.
+	if err = f.supersedeTombstone(dest); err != nil {
+		return f.finish(err)
+	}
 	if err = os.Rename(f.dir, dest); err != nil {
 		return f.finish(err)
 	}
@@ -238,6 +266,8 @@ func (f *Fill) finish(cause error) error {
 	delete(f.store.fills, f.meta.Key)
 	f.store.reserved -= f.charge
 	// Failed cleanup must not allow the occupied space to be admitted again.
+	// Surfacing failedSlots and the leaked-byte total in Stats for operator
+	// observability is intentionally deferred to a later slice (finding #5).
 	if removeErr != nil {
 		f.store.bytes += f.charge
 		f.store.failedSlots++
@@ -246,6 +276,39 @@ func (f *Fill) finish(cause error) error {
 	f.done = true
 	close(f.completed)
 	return cause
+}
+
+// supersedeTombstone atomically clears a same-key invalid tombstone occupying
+// dest so this fill's Commit rename can proceed without racing a concurrent
+// unpin or eviction. Holding s.mu across the map detach, charge reclamation, and
+// directory removal guarantees that once the tombstone leaves the map no other
+// path can RemoveAll(dest); the just-renamed content is therefore safe until the
+// fill installs its own entry. Only an invalid tombstone can occupy dest here:
+// Begin refuses admission while a valid same-key entry exists, and the fills map
+// forbids a competing fill. If a valid entry unexpectedly occupies the key, or
+// its removal fails, this fails closed so Commit does not overwrite live data.
+func (f *Fill) supersedeTombstone(dest string) error {
+	f.store.mu.Lock()
+	defer f.store.mu.Unlock()
+	e, ok := f.store.entries[f.meta.Key]
+	if !ok {
+		// No mapped entry: dest is either absent or an unindexed leftover a prior
+		// removal already accounted for. Clear any stray directory so the rename
+		// can proceed; a missing path makes RemoveAll a no-op.
+		return os.RemoveAll(dest)
+	}
+	if !e.invalid {
+		return errors.New("cache fill destination occupied by a valid entry")
+	}
+	if err := os.RemoveAll(e.dir); err != nil {
+		return err
+	}
+	delete(f.store.entries, f.meta.Key)
+	if !e.reclaimed {
+		e.reclaimed = true
+		f.store.bytes -= e.charge
+	}
+	return nil
 }
 
 func (s *Store) refuse(reason AdmissionReason, cause error) error {

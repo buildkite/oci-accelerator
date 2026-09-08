@@ -255,3 +255,57 @@
   rename. Preserve any previous successful report on a failed run; operators use
   a fresh report directory and the test exit status, not file existence, as evidence.
   Do not silently delete previously collected results.
+
+## Maintenance — re-admit invalidated entries and reclaim tombstones
+
+- `Get`, `Completion`, and `Begin` disagreed about an entry marked `invalid` but
+  still mapped (removal only happens in `unpin` once `pins==0` and `os.RemoveAll`
+  succeeds). `Get`/`Completion` treated it as absent while `Begin`'s bare map
+  membership test refused re-admission with `AdmissionExisting`, wedging the
+  natural `Get`→`Completion`→`Begin` path used by `internal/proxy/cache.go` and
+  causing a thundering herd with no caller able to re-admit. This is a bug fix
+  outside the numbered implementation plan; scope is limited to `internal/cache`.
+- Change A: `Begin` now treats an invalid tombstone as absent (`ok && !e.invalid`),
+  realigning it with `Get`/`Completion`.
+- Change B: `unpin` is identity-aware. Both the on-disk `os.RemoveAll(e.dir)` and
+  the map delete happen only when the slot still points at this tombstone, because
+  a superseding fill shares the same key-directory path and removing it would
+  destroy the new entry's files. The charge reclamation (`s.bytes -= e.charge`) is
+  made idempotent by an `entry.reclaimed` flag: the tombstone's charge was added
+  when it was live and never removed at invalidation, so it must be reclaimed
+  exactly once — by whichever of `unpin`, `Begin` (C1), or a superseding `Commit`
+  reaches it first. A removal failure leaves the charge in place for a later
+  retry, matching prior behavior.
+- Change C1: before staging a new fill, `Begin` reclaims a same-key unpinned
+  invalid tombstone by retrying `os.RemoveAll` and, on success, dropping the slot
+  and reclaiming its charge under the already-held `s.mu`. On persistent failure
+  it does not error; it falls through to Change A so the fill overwrites at commit
+  and later unpin/eviction reclaims the bytes. This closes the budget-leak window
+  on the re-request-after-invalidation path and frees the slot/bytes before the
+  subsequent `evictLocked`/admission.
+- Commit rename hardening (required by Change A): a still-pinned invalid tombstone
+  keeps its directory at the destination key, and `os.Rename` will not replace a
+  non-empty directory. An early design cleared the destination but left the
+  tombstone mapped, which both independent reviews flagged as a data-loss race: the
+  rename and the map install ran in separate `s.mu` critical sections, so a
+  concurrent `unpin`/eviction could `os.RemoveAll(dest)` between them and delete the
+  just-published content (the identity guard protects the map slot, not the on-disk
+  path a rename has repointed). The fix (`supersedeTombstone`) detaches the
+  tombstone from the map, reclaims its charge (guarded), and removes its directory
+  atomically under `s.mu` before the rename. Once the tombstone leaves the map no
+  other path targets `dest`, so the unlocked rename is safe. It fails closed if a
+  valid entry unexpectedly occupies the key or if removal fails. Readers holding
+  the old body keep their open descriptors after the unlink and still serve the
+  original bytes. `TestReadmitCommitReaderCloseRace` stresses this interleaving
+  under `-race`.
+- Reviewer follow-up (invariant uniformity): `evictLocked` now sets
+  `entry.reclaimed = true` when it removes an entry, so "every path that detaches
+  an entry from the map reclaims its charge exactly once" holds for eviction too.
+  Eviction only selects `pins == 0` victims, so no later unpin can observe the
+  entry; the flag is defensive and does not change accounting or eviction choice.
+- Finding #5 deferral: surfacing `failedSlots` and leaked-byte totals in `Stats`
+  for operator observability is intentionally deferred to a later slice. A code
+  comment marks the deferral near the `failedSlots` bookkeeping in `fill.go`.
+- Verification note: `TestFillFailuresNeverPublish/disk-full` requires the Linux
+  `/dev/full` device, which is absent on darwin; that subtest fails on the
+  untouched baseline as well and is unrelated to this change.

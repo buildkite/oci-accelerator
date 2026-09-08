@@ -259,6 +259,30 @@ supervised services remain. No verification exceptions were needed.
   SLA. Combined execution is authorized.
   Private mount/unshare privileges and fault workloads were exercised successfully.
 
+## Maintenance: cache re-admission of invalidated entries
+
+Not a numbered plan slice; a self-contained bug fix confined to `internal/cache`.
+
+- **Status:** Complete — implemented, validated, and independently reviewed
+  (two read-only reviewers; see below). Committed locally only (push withheld by
+  explicit instruction for this task).
+- **Change:** Realign `Begin` with `Get`/`Completion` so an invalid-but-mapped
+  tombstone no longer refuses re-admission (Change A); make `unpin` identity-aware
+  so a re-admitted new entry sharing the key's directory is not destroyed while the
+  tombstone charge is still reclaimed exactly once (Change B); reclaim a same-key
+  unpinned tombstone inline in `Begin` before staging the fill (Change C1); and
+  clear a still-pinned tombstone's stale destination directory in `Commit` before
+  the rename. A code comment defers `failedSlots`/leaked-byte `Stats` observability
+  to a later slice (finding #5).
+- **Tests:** `internal/cache/readmit_test.go` adds re-admit, index-integrity,
+  completion-consistency, and C1-reclamation tests; `recovery_fault_test.go` gains
+  a deterministic assertion that `Begin` admits an invalid+pinned tombstone. All
+  fail before the fix and pass after.
+- **Validation:** `gofmt -l internal/cache` empty; `go vet ./...` clean;
+  `go test ./...` and `go test -race ./...` pass except the pre-existing
+  environment-only `TestFillFailuresNeverPublish/disk-full` (needs Linux
+  `/dev/full`, absent on darwin; fails on the untouched baseline too).
+
 ## Keeping this log current
 
 - Update the current status and affected rows as work starts, finishes, or is

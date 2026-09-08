@@ -105,8 +105,25 @@ func (s *Store) unpin(e *entry) {
 	defer s.mu.Unlock()
 	e.pins--
 	s.readers--
-	if e.invalid && e.pins == 0 && os.RemoveAll(e.dir) == nil {
+	if !e.invalid || e.pins != 0 {
+		return
+	}
+	// After Change A a re-admitted fill can commit a new entry onto this key,
+	// which shares the same on-disk directory path. Only remove the directory
+	// when the map still points at this tombstone: otherwise a superseding
+	// Commit already renamed the new entry onto that path (and detached this
+	// tombstone), so removing it would destroy live content. When we do still
+	// own the slot, remove the directory and drop the map entry. The charge is
+	// reclaimed at most once across unpin, Begin (C1), and a superseding Commit,
+	// guarded by e.reclaimed; a new entry accounts for its own charge at commit.
+	if cur, ok := s.entries[e.meta.Key]; ok && cur == e {
+		if os.RemoveAll(e.dir) != nil {
+			return
+		}
 		delete(s.entries, e.meta.Key)
+	}
+	if !e.reclaimed {
+		e.reclaimed = true
 		s.bytes -= e.charge
 	}
 }
