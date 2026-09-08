@@ -25,7 +25,10 @@ func TestRunRequiresConfig(t *testing.T) {
 func TestRunValidatesConfigWithoutLeakingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	secret := "password-do-not-print"
-	if err := os.WriteFile(path, []byte("registries: [user:"+secret+"@example.com]\nca_dir: ca\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`registries: [user:`+secret+`@example.com]
+ca_dir: ca
+cache: {dir: cache}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
@@ -38,7 +41,10 @@ func TestRunValidatesConfigWithoutLeakingIt(t *testing.T) {
 func TestRunSuccess(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "config.yaml")
-	if err := os.WriteFile(path, []byte("registries: [example.com]\nca_dir: ca\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`registries: [example.com]
+ca_dir: ca
+cache: {dir: cache}
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer

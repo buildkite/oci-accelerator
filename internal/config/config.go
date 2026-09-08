@@ -176,18 +176,27 @@ type rawCache struct {
 func Load(path string) (Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("open configuration: %w", err)
+		return Config{}, fmt.Errorf("read configuration: %w", err)
 	}
 	defer f.Close()
 
 	raw := defaults()
-	dec := yaml.NewDecoder(f)
+	reader := &readErrorTracker{Reader: f}
+	dec := yaml.NewDecoder(reader)
 	dec.KnownFields(true)
-	if err := dec.Decode(&raw); err != nil {
+	err = dec.Decode(&raw)
+	if reader.err != nil {
+		return Config{}, fmt.Errorf("read configuration: %w", reader.err)
+	}
+	if err != nil {
 		return Config{}, safeDecodeError(err)
 	}
 	var extra yaml.Node
-	if err := dec.Decode(&extra); err == nil {
+	err = dec.Decode(&extra)
+	if reader.err != nil {
+		return Config{}, fmt.Errorf("read configuration: %w", reader.err)
+	}
+	if err == nil {
 		return Config{}, fmt.Errorf("%w: expected exactly one YAML document", ErrInvalid)
 	} else if err != io.EOF {
 		return Config{}, safeDecodeError(err)
@@ -221,6 +230,9 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}
 	if strings.TrimSpace(string(raw.CADir)) == "" {
 		return Config{}, fmt.Errorf("%w: ca_dir: must be a non-blank directory path", ErrInvalid)
+	}
+	if strings.TrimSpace(string(raw.Cache.Dir)) == "" {
+		return Config{}, fmt.Errorf("%w: cache.dir: must be a non-blank directory path", ErrInvalid)
 	}
 	listen, err := canonicalBindAddress(string(raw.Listen), false)
 	if err != nil {
@@ -364,7 +376,7 @@ func parseAuthorities(texts []*strictString) ([]hostport.HostPort, error) {
 }
 
 func resolve(base, path string) string {
-	if path == "" || filepath.IsAbs(path) {
+	if filepath.IsAbs(path) {
 		return path
 	}
 	return filepath.Clean(filepath.Join(base, path))

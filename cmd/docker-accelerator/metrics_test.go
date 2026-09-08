@@ -68,7 +68,13 @@ func TestMetricsListenerRoutingAndLifetime(t *testing.T) {
 				metricsAddress = availableAddress(t)
 			}
 			path := filepath.Join(root, "config.yaml")
-			if err := os.WriteFile(path, []byte(fmt.Sprintf("listen: %s\nmetrics_listen: %q\nregistries: [example.com]\nca_dir: ca\nshutdown_timeout: 100ms\n", proxyAddress, metricsAddress)), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(fmt.Sprintf(`listen: %s
+metrics_listen: %q
+registries: [example.com]
+ca_dir: ca
+cache: {dir: cache}
+shutdown_timeout: 100ms
+`, proxyAddress, metricsAddress)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithCancel(context.Background())

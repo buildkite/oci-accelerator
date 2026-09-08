@@ -11,16 +11,25 @@ func TestLoadRejectsNonStringRawFields(t *testing.T) {
 		name   string
 		config func(string) string
 	}{
-		{"listen", func(v string) string { return "listen: " + v + "\nregistries: [registry.example]\nca_dir: ca\n" }},
-		{"metrics_listen", func(v string) string {
-			return "metrics_listen: " + v + "\nregistries: [registry.example]\nca_dir: ca\n"
+		{"listen", func(v string) string { return validConfig + "listen: " + v + "\n" }},
+		{"metrics_listen", func(v string) string { return validConfig + "metrics_listen: " + v + "\n" }},
+		{"ca_dir", func(v string) string {
+			return `registries: [registry.example]
+cache: {dir: cache}
+ca_dir: ` + v + "\n"
 		}},
-		{"ca_dir", func(v string) string { return "registries: [registry.example]\nca_dir: " + v + "\n" }},
-		{"cache.dir", func(v string) string { return "registries: [registry.example]\nca_dir: ca\ncache:\n  dir: " + v + "\n" }},
-		{"registries element", func(v string) string { return "registries: [" + v + "]\nca_dir: ca\n" }},
-		{"redirect_allowlist element", func(v string) string {
-			return "registries: [registry.example]\nredirect_allowlist: [" + v + "]\nca_dir: ca\n"
+		{"cache.dir", func(v string) string {
+			return `registries: [registry.example]
+ca_dir: ca
+cache:
+  dir: ` + v + "\n"
 		}},
+		{"registries element", func(v string) string {
+			return `ca_dir: ca
+cache: {dir: cache}
+registries: [` + v + "]\n"
+		}},
+		{"redirect_allowlist element", func(v string) string { return validConfig + "redirect_allowlist: [" + v + "]\n" }},
 	}
 	values := []struct{ name, yaml string }{
 		{"bool", "true"},
@@ -159,26 +168,36 @@ redirect_allowlist: [*value, cdn-two.example]
 
 func TestLoadRawStringNullBehavior(t *testing.T) {
 	t.Run("optional fields preserve defaults", func(t *testing.T) {
-		c, err := Load(writeConfig(t, `listen: null
+		path := writeConfig(t, `listen: null
 metrics_listen: null
-cache: {dir: null}
+cache: {dir: cache}
 redirect_allowlist: null
 registries: [registry.example]
 ca_dir: ca
-`))
+`)
+		c, err := Load(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		assertEqual(t, "Listen", c.Listen, "127.0.0.1:3128")
 		assertEqual(t, "MetricsListen", c.MetricsListen, "")
-		assertEqual(t, "Cache.Dir", c.Cache.Dir, "")
+		assertEqual(t, "Cache.Dir", c.Cache.Dir, filepath.Join(filepath.Dir(path), "cache"))
 		assertEqual(t, "RedirectAllowlist length", len(c.RedirectAllowlist), 0)
 	})
 	for _, test := range []struct{ name, config string }{
-		{"ca_dir required", "ca_dir: null\nregistries: [registry.example]\n"},
-		{"registries required", "ca_dir: ca\nregistries: null\n"},
-		{"registry null element", "ca_dir: ca\nregistries: [null]\n"},
-		{"redirect null element", "ca_dir: ca\nregistries: [registry.example]\nredirect_allowlist: [null]\n"},
+		{"ca_dir required", `ca_dir: null
+registries: [registry.example]
+cache: {dir: cache}
+`},
+		{"registries required", `ca_dir: ca
+registries: null
+cache: {dir: cache}
+`},
+		{"registry null element", `ca_dir: ca
+registries: [null]
+cache: {dir: cache}
+`},
+		{"redirect null element", validConfig + "redirect_allowlist: [null]\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := Load(writeConfig(t, test.config)); !errors.Is(err, ErrInvalid) {

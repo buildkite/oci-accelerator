@@ -9,6 +9,21 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// YAML turns reader errors into parser messages, losing their identity. Keep the
+// original read error so Load can distinguish I/O failures from invalid YAML.
+type readErrorTracker struct {
+	io.Reader
+	err error
+}
+
+func (r *readErrorTracker) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err != nil && err != io.EOF && r.err == nil {
+		r.err = err
+	}
+	return n, err
+}
+
 // Reasons passed here are fixed messages, never configuration values.
 func invalidNode(node *yaml.Node, reason string) error {
 	return fmt.Errorf("%w at line %d: %s", ErrInvalid, node.Line, reason)
