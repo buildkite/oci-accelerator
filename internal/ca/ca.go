@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	certName = "ca.crt"
-	keyName  = "ca.key"
+	certName   = "ca.crt"
+	keyName    = "ca.key"
+	caKeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature
 )
 
 // Authority is a persistent CA with a bounded in-memory leaf cache.
@@ -198,12 +199,13 @@ func newCA(now time.Time) ([]byte, *ecdsa.PrivateKey, error) {
 	}
 	t := &x509.Certificate{
 		SerialNumber:          serial,
+		SignatureAlgorithm:    x509.ECDSAWithSHA256,
 		Subject:               pkix.Name{CommonName: "Docker Accelerator CA"},
 		NotBefore:             now.Add(-time.Minute),
 		NotAfter:              now.AddDate(10, 0, 0),
 		IsCA:                  true,
 		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		KeyUsage:              caKeyUsage,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, t, t, &key.PublicKey, key)
 	return der, key, err
@@ -223,16 +225,25 @@ func load(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 		return nil, nil, errors.New("invalid CA certificate PEM")
 	}
 	cert, err := x509.ParseCertificate(cb.Bytes)
-	if err != nil || !cert.IsCA || !cert.BasicConstraintsValid || cert.KeyUsage&x509.KeyUsageCertSign == 0 || cert.CheckSignatureFrom(cert) != nil {
-		return nil, nil, errors.New("invalid CA certificate")
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse CA certificate: %w", err)
+	}
+	if err := validateCAProfile(cert); err != nil {
+		return nil, nil, err
+	}
+	if err := cert.CheckSignatureFrom(cert); err != nil {
+		return nil, nil, fmt.Errorf("verify CA self-signature: %w", err)
 	}
 	kb, rest := pem.Decode(keyPEM)
 	if kb == nil || kb.Type != "EC PRIVATE KEY" || len(rest) != 0 {
 		return nil, nil, errors.New("invalid CA key PEM")
 	}
 	key, err := x509.ParseECPrivateKey(kb.Bytes)
-	if err != nil || key.Curve != elliptic.P256() {
-		return nil, nil, errors.New("invalid CA private key")
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse CA private key: %w", err)
+	}
+	if key.Curve != elliptic.P256() {
+		return nil, nil, errors.New("CA private key must use P-256")
 	}
 	if !key.PublicKey.Equal(cert.PublicKey) {
 		return nil, nil, errors.New("CA certificate and key do not match")

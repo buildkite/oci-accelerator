@@ -23,6 +23,7 @@ host with the trusted root. This is the standard forward-proxy CA pattern.
 
 - `ca.go` — root CA lifecycle: create-on-first-use, load, and validate the root
   certificate and key on disk.
+- `profile.go` — accepted root CA algorithms, constraints, and extensions.
 - `leaf.go` — per-host leaf issuance and a bounded in-memory leaf cache.
 
 ## Public interface
@@ -44,6 +45,24 @@ must be a regular file granting no access beyond its baseline (`ca.crt` at
 most `0644`, `ca.key` at most `0600`); stricter modes are accepted but broader
 ones are rejected. The directory must be `0700` with no symlinks. `Open`
 creates the CA with `ca.crt` `0644` and `ca.key` `0600`.
+
+Loaded certificates must match the cryptographic and extension profile this
+package generates, rather than merely being capable of signing certificates:
+
+- X.509 version 3, ECDSA P-256 public/private keys, and ECDSA-SHA256 signatures.
+- Self-issued (matching issuer and subject) and self-signed, with valid CA basic
+  constraints and no path-length constraint.
+- Exactly the digital-signature, certificate-signing, and CRL-signing key usages.
+- Exactly three extensions: critical key usage and basic constraints, and a
+  non-critical, 20-byte subject key identifier. Name constraints, extended key
+  usages (including server authentication), and all other extensions are rejected.
+
+These checks establish compatibility, not which program generated the CA.
+Subject names, keys, serial numbers, key identifiers, and valid timestamps may
+differ between installations. Existing package-generated CAs remain compatible;
+externally supplied CAs outside this profile now fail to load, without replacing
+their files. Validation errors identify the failing check and preserve underlying
+parsing or signature errors without including certificate or private-key contents.
 
 On both creation and reopening, the immediate parent must be a non-symlink
 directory with no group or other write access. The parent, CA directory, and
