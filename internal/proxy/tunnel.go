@@ -181,12 +181,6 @@ func (c *activityConn) Write(b []byte) (int, error) {
 	}
 	return n, err
 }
-func (c *activityConn) CloseWrite() error {
-	if conn, ok := c.Conn.(interface{ CloseWrite() error }); ok {
-		return conn.CloseWrite()
-	}
-	return nil
-}
 
 func copyHalf(wg *sync.WaitGroup, dst io.Writer, src io.Reader, dstConn, srcConn net.Conn, idle time.Duration) {
 	defer wg.Done()
