@@ -12,11 +12,12 @@ import (
 )
 
 type Reader struct {
-	mu     sync.Mutex
-	store  *Store
-	entry  *entry
-	file   *os.File
-	closed bool
+	mu        sync.Mutex
+	store     *Store
+	entry     *entry
+	file      *os.File
+	remaining int64
+	closed    bool
 }
 
 func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
@@ -128,7 +129,7 @@ func (s *Store) openReader(ctx context.Context, e *entry, need bool) (*Reader, e
 	e.verified = true
 	e.last = time.Now().UnixNano()
 	s.mu.Unlock()
-	return &Reader{store: s, entry: e, file: f}, nil
+	return &Reader{store: s, entry: e, file: f, remaining: meta.Size}, nil
 }
 func (s *Store) invalidate(e *entry) {
 	s.mu.Lock()
@@ -163,7 +164,19 @@ func (r *Reader) Read(p []byte) (int, error) {
 	if r.closed {
 		return 0, os.ErrClosed
 	}
-	return r.file.Read(p)
+	n, err := r.file.Read(p)
+	r.remaining -= int64(n)
+	if err == io.EOF && r.remaining > 0 {
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil && err != io.EOF {
+		// Retire only this generation. Keep its pin and charge until Close,
+		// even if a replacement is published before this reader finishes.
+		r.store.mu.Lock()
+		r.entry.invalid = true
+		r.store.mu.Unlock()
+	}
+	return n, err
 }
 func (r *Reader) Close() error {
 	r.mu.Lock()
