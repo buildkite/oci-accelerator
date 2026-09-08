@@ -15,8 +15,9 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 
 ## Project rename (maintenance, not a plan slice)
 
-- **Status:** Complete — implementation, validation, and paired review finished.
-  Commit link is recorded in the following log-only commit; no push or remote changes.
+- **Status:** [Complete](https://ampcode.com/@buildkite/docker-accelerator/commit/23cf829715fa3658b296fd741e6449578ace68eb)
+  — implementation, validation, and paired review finished. Committed locally only;
+  no push or remote changes.
 - **Scope:** Command, module/imports, metrics, test/report environment variables,
   and current documentation use OCI Accelerator with no old-name aliases.
   New CA branding changes; existing trust, state, and Docker behavior do not.
