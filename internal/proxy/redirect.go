@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"time"
@@ -29,6 +30,19 @@ var (
 type registryTransport struct{ p *Proxy }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet {
+		// Count each connection-acquisition attempt, including transport retries
+		// and attempts that fail during DNS, dialing or TLS before sending a GET.
+		// Requests rejected before connection acquisition do not count. Attach
+		// once so redirects and fill-wait retries inherit, not stack, the hook.
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GetConn: func(string) {
+				t.p.metrics.mu.Lock()
+				t.p.metrics.upstream++
+				t.p.metrics.mu.Unlock()
+			},
+		}))
+	}
 	resp, retry, err := t.roundTrip(req, true)
 	if err != nil || !retry {
 		return resp, err
@@ -54,11 +68,6 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
 	for hops := 0; ; hops++ {
-		if current.Method == http.MethodGet {
-			t.p.metrics.mu.Lock()
-			t.p.metrics.upstream++
-			t.p.metrics.mu.Unlock()
-		}
 		resp, err := t.p.transport.RoundTrip(current)
 		if err != nil {
 			return nil, false, err

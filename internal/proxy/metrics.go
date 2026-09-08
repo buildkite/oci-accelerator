@@ -113,6 +113,7 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeScalar := func(name, kind string, value any) {
 		fmt.Fprintf(&b, "# TYPE docker_accelerator_%s %s\ndocker_accelerator_%s %d\n", name, kind, name, value)
 	}
+	b.WriteString("# HELP docker_accelerator_upstream_get_attempts_total GET connection-acquisition attempts, including transport retries and DNS/dial/TLS failures before sending.\n")
 	writeScalar("upstream_get_attempts_total", "counter", m.upstream)
 	writeScalar("upstream_body_bytes_total", "counter", m.upstreamBytes)
 	writeScalar("downstream_bytes_total", "counter", m.downstreamBytes)

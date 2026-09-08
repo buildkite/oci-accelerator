@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"reflect"
 	"strconv"
 	"strings"
@@ -191,6 +192,89 @@ func TestMetricsCountsFailedTransportGET(t *testing.T) {
 	m := p.metrics.snapshot()
 	if resp.StatusCode != 502 || m.upstream != 1 || m.upstreamBytes != 0 || m.statuses["5xx"] != 1 || m.requests["complete"] != 1 {
 		t.Fatalf("failed upstream metrics: %+v status=%d", m, resp.StatusCode)
+	}
+}
+
+func TestMetricsCountsAutomaticTransportRetries(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			var calls atomic.Int32
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer retry-token" {
+					t.Error("retry lost authorization")
+				}
+				if calls.Add(1) == 2 {
+					// The GET on a reused upstream connection is received but
+					// gets no response. Transport must replay it on a new one.
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					conn.Close()
+					return
+				}
+				io.WriteString(w, "retry body")
+			}))
+			defer origin.Close()
+			p, _, client := interceptFixture(t, origin, nil, true)
+			for i := 0; i < 2; i++ {
+				req, _ := http.NewRequest(method, origin.URL+"/v2/", nil)
+				req.Header.Set("Authorization", "Bearer retry-token")
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				wantBody := "retry body"
+				if method == http.MethodHead {
+					wantBody = ""
+				}
+				if err != nil || resp.StatusCode != http.StatusOK || string(body) != wantBody {
+					t.Fatalf("status=%d body=%q err=%v", resp.StatusCode, body, err)
+				}
+			}
+			awaitNoActiveRequests(t, p)
+			wantAttempts := uint64(3)
+			if method == http.MethodHead {
+				wantAttempts = 0
+			}
+			if calls.Load() != 3 || p.metrics.snapshot().upstream != wantAttempts {
+				t.Fatalf("origin calls=%d GET attempts=%d, want 3/%d", calls.Load(), p.metrics.snapshot().upstream, wantAttempts)
+			}
+		})
+	}
+}
+
+func TestMetricsCountsRedirectsWithoutStackingTrace(t *testing.T) {
+	var calls atomic.Int32
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/terminal" {
+			w.Header().Set("Location", "/terminal")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+			return
+		}
+		io.WriteString(w, "terminal body")
+	}))
+	defer origin.Close()
+	p, _, _ := interceptFixture(t, origin, nil, true)
+	var traced atomic.Int32
+	req, _ := http.NewRequest(http.MethodGet, origin.URL+testBlobPath, nil)
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		GetConn: func(string) { traced.Add(1) },
+	}))
+	// Exercise the upstream transport directly to verify an existing trace is
+	// preserved and invoked once per hop, not duplicated when following it.
+	resp, err := (registryTransport{p}).RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || string(body) != "terminal body" || calls.Load() != 2 || traced.Load() != 2 || p.metrics.snapshot().upstream != 2 {
+		t.Fatalf("body=%q err=%v calls=%d trace=%d attempts=%d", body, err, calls.Load(), traced.Load(), p.metrics.snapshot().upstream)
 	}
 }
 
