@@ -28,12 +28,10 @@ func waitFor(t *testing.T, ch <-chan struct{}, what string) {
 
 func waitForFills(t *testing.T, p *Proxy, want int) {
 	t.Helper()
-	deadline := time.Now().Add(waitTestTimeout)
-	for time.Now().Before(deadline) {
-		if p.cache.Stats().Fills == want {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	if waitUntil(waitTestTimeout, func() bool {
+		return p.cache.Stats().Fills == want
+	}) {
+		return
 	}
 	t.Fatalf("timed out waiting for %d active cache fills (got %d)", want, p.cache.Stats().Fills)
 }

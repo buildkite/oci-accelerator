@@ -54,17 +54,32 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	transport := &http.Transport{
-		Proxy: nil, DisableCompression: true, MaxIdleConns: 32, MaxIdleConnsPerHost: 8,
-		MaxConnsPerHost: 16, IdleConnTimeout: cfg.IdleTimeout,
+		Proxy:                  nil,
+		DisableCompression:     true,
+		MaxIdleConns:           32,
+		MaxIdleConnsPerHost:    8,
+		MaxConnsPerHost:        16,
+		IdleConnTimeout:        cfg.IdleTimeout,
 		MaxResponseHeaderBytes: maxHeaderBytes,
-		TLSHandshakeTimeout:    cfg.TLSHandshakeTimeout, ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}},
+		TLSHandshakeTimeout:    cfg.TLSHandshakeTimeout,
+		ResponseHeaderTimeout:  cfg.ResponseHeaderTimeout,
+		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}},
 	}
-	p := &Proxy{cfg: cfg, signer: signer, logger: logger, transport: transport, metrics: newMetrics(), configured: make(map[string]struct{}, len(cfg.Registries)), conns: make(map[*trackedConn]struct{}), tunnels: make(map[net.Conn]struct{}), inners: make(map[*http.Server]struct{})}
-	p.destinations = make(map[string]struct{})
-	p.cache = store
-	p.lookupIP = net.DefaultResolver.LookupIPAddr
-	p.dialIP = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
+	p := &Proxy{
+		cfg:          cfg,
+		signer:       signer,
+		logger:       logger,
+		transport:    transport,
+		cache:        store,
+		metrics:      newMetrics(),
+		configured:   make(map[string]struct{}, len(cfg.Registries)),
+		destinations: make(map[string]struct{}),
+		conns:        make(map[*trackedConn]struct{}),
+		tunnels:      make(map[net.Conn]struct{}),
+		inners:       make(map[*http.Server]struct{}),
+		lookupIP:     net.DefaultResolver.LookupIPAddr,
+		dialIP:       (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext,
+	}
 	transport.DialContext = p.dialUpstream
 	for _, registry := range cfg.Registries {
 		p.configured[registry.String()] = struct{}{}

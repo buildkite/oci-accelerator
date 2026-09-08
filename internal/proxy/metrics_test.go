@@ -17,17 +17,16 @@ import (
 
 func awaitNoActiveRequests(t *testing.T, p *Proxy) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	var active int64
+	if waitUntil(3*time.Second, func() bool {
 		p.metrics.mu.Lock()
-		active := p.metrics.activeRequests
+		active = p.metrics.activeRequests
 		p.metrics.mu.Unlock()
-		if active == 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
+		return active == 0
+	}) {
+		return
 	}
-	t.Fatal("metrics request completion was not recorded")
+	t.Fatalf("metrics request completion was not recorded (got %d active requests)", active)
 }
 
 func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {

@@ -121,8 +121,24 @@ func TestMaxConnectionsBoundsAcceptedMapBeforeHeaders(t *testing.T) {
 	if got := lifecycleConnCount(p); got != 2 {
 		t.Fatalf("accepted map has %d connections, want 2", got)
 	}
+	firstAddr := first.LocalAddr().String()
+	thirdAddr := third.LocalAddr().String()
 	first.Close()
-	eventuallyLifecycle(t, time.Second, func() bool { return lifecycleConnCount(p) == 2 }, "queued connection accepted after slot release")
+	eventuallyLifecycle(t, time.Second, func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		thirdAccepted := false
+		for conn := range p.conns {
+			remote := conn.RemoteAddr().String()
+			if remote == firstAddr {
+				return false
+			}
+			if remote == thirdAddr {
+				thirdAccepted = true
+			}
+		}
+		return len(p.conns) == 2 && thirdAccepted
+	}, "queued connection accepted after first slot release")
 	second.Close()
 	third.Close()
 	shutdown(t, p)
@@ -328,12 +344,19 @@ func lifecycleConnCount(p *Proxy) int {
 
 func eventuallyLifecycle(t *testing.T, timeout time.Duration, condition func() bool, description string) {
 	t.Helper()
+	if waitUntil(timeout, condition) {
+		return
+	}
+	t.Fatalf("timed out waiting for %s", description)
+}
+
+func waitUntil(timeout time.Duration, condition func() bool) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if condition() {
-			return
+			return true
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %s", description)
+	return condition()
 }
