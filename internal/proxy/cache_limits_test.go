@@ -46,9 +46,9 @@ func TestCacheLimitsPreserveUpstreamStream(t *testing.T) {
 				}
 				p := &Proxy{cache: s}
 				stats := &requestStats{}
-				resp, retry := p.cachedResponse(req, response(), true, false, stats)
-				if retry {
-					t.Fatal("unexpected retry with waiting disabled")
+				resp, retry, err := p.cachedResponse(req, response(), true, false, stats)
+				if err != nil || retry || resp == nil {
+					t.Fatalf("cachedResponse = (%v, %v, %v), want response without retry", resp, retry, err)
 				}
 				first := make([]byte, 3)
 				if _, err := io.ReadFull(resp.Body, first); err != nil {

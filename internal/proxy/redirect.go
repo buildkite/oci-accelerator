@@ -60,11 +60,7 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 			return nil, false, err
 		}
 		if !eligible || !redirectStatus(resp.StatusCode) {
-			cached, retry := t.p.cachedResponse(req, resp, permitted, mayWait, stats)
-			if cached == nil && req.Context().Err() != nil {
-				return nil, false, req.Context().Err()
-			}
-			return cached, retry, nil
+			return t.p.cachedResponse(req, resp, permitted, mayWait, stats)
 		}
 		permitted = permitted && cacheHeaders(resp.Header, object.digest)
 		resp.Body.Close()

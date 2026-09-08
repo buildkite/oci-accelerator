@@ -287,9 +287,9 @@ func TestCachedResponseRecordsVaryAndDigestBypassReasons(t *testing.T) {
 			resp.Body = io.NopCloser(strings.NewReader("abc"))
 			tc.mutate(resp.Header)
 			stats := &requestStats{}
-			got, retry := p.cachedResponse(req, resp, true, false, stats)
-			if got == nil || retry {
-				t.Fatalf("cachedResponse = (%v, %v), want the upstream response passed through", got, retry)
+			got, retry, err := p.cachedResponse(req, resp, true, false, stats)
+			if got == nil || retry || err != nil {
+				t.Fatalf("cachedResponse = (%v, %v, %v), want the upstream response passed through", got, retry, err)
 			}
 			if stats.reject != tc.wantReason {
 				t.Fatalf("stats.reject = %q, want %q", stats.reject, tc.wantReason)
