@@ -76,9 +76,13 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	// Retry a bounded batch before eviction. Failed or deferred cleanups
 	// keep their bytes and slots charged against admission limits.
 	s.retryCleanupsLocked()
-	if !s.evictLocked(charge, 1, math.MaxInt64) {
-		s.admissions[AdmissionCapacity]++
-		return nil, &AdmissionError{Reason: AdmissionCapacity}
+	if err := s.evictLocked(charge, 1, math.MaxInt64); err != nil {
+		if errors.Is(err, ErrBypass) {
+			s.admissions[AdmissionCapacity]++
+			return nil, &AdmissionError{Reason: AdmissionCapacity}
+		}
+		s.admissions[AdmissionIOError]++
+		return nil, &AdmissionError{Reason: AdmissionIOError, Cause: err}
 	}
 	d, err := os.MkdirTemp(s.dir, ".fill-")
 	if err != nil {

@@ -11,6 +11,81 @@ import (
 	"testing/synctest"
 )
 
+func TestEvictionFailureAdmissionCause(t *testing.T) {
+	requireUnprivilegedTest(t)
+	for _, mode := range []string{"all-fail", "later-victim-succeeds", "pinned"} {
+		t.Run(mode, func(t *testing.T) {
+			const charge = metadataReservation + 4
+			s := openTest(t, 2*charge)
+			old, next := testMeta("old", "body"), testMeta("next", "body")
+			put(t, s, old, "body")
+			put(t, s, next, "body")
+			for _, meta := range []Metadata{old, next} {
+				if mode == "pinned" {
+					r, err := s.Get(context.Background(), meta)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer r.Close()
+				}
+				if mode == "later-victim-succeeds" && meta == next {
+					continue
+				}
+				dir := s.entries[meta.Key].dir
+				if err := os.Chmod(dir, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := os.Chmod(dir, 0o700); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			s.entries[old.Key].last, s.entries[next.Key].last = 1, 2
+			want := s.Stats()
+			f, err := s.Begin(testMeta("new", "body"))
+			if mode == "later-victim-succeeds" {
+				if err != nil {
+					t.Fatalf("later eviction should admit despite first failure: %v", err)
+				}
+				if err := f.Abort(); err != nil {
+					t.Fatal(err)
+				}
+				if st := s.Stats(); st.Evictions != 1 || st.Bytes != charge || st.Admissions[AdmissionIOError] != 0 {
+					t.Fatalf("successful fallback eviction: %+v", st)
+				}
+				read(t, s, old, "body")
+				return
+			}
+			if f != nil {
+				_ = f.Abort()
+				t.Fatal("admitted without reclaiming capacity")
+			}
+			var admission *AdmissionError
+			if !errors.Is(err, ErrBypass) || !errors.As(err, &admission) {
+				t.Fatalf("Begin = %v", err)
+			}
+			if mode == "all-fail" {
+				var pathErr *os.PathError
+				if admission.Reason != AdmissionIOError || !errors.Is(err, os.ErrPermission) || !errors.As(err, &pathErr) || !strings.HasPrefix(pathErr.Path, s.entries[old.Key].dir) {
+					t.Fatalf("lost first eviction cause: %v", err)
+				}
+				want.Admissions[AdmissionIOError]++
+			} else {
+				if admission.Reason != AdmissionCapacity || admission.Cause != nil {
+					t.Fatalf("pinned capacity misclassified: %v", err)
+				}
+				want.Admissions[AdmissionCapacity]++
+			}
+			if got := s.Stats(); got != want {
+				t.Fatalf("failed eviction changed accounting: got %+v, want %+v", got, want)
+			}
+			read(t, s, old, "body")
+			read(t, s, next, "body")
+		})
+	}
+}
+
 func TestSizeMismatchDoesNotReplaceValidEntry(t *testing.T) {
 	s := openTest(t, 1<<20)
 	meta := testMeta("immutable", "body")

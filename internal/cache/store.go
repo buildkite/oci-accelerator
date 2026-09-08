@@ -307,7 +307,7 @@ func (s *Store) inventory() error {
 				return errors.New("cache entry size overflow")
 			}
 			// Keep the startup index bounded even when capacity was reduced.
-			if charge > s.max || !s.evictLocked(charge, 1, dm.Committed) {
+			if charge > s.max || s.evictLocked(charge, 1, dm.Committed) != nil {
 				if err := os.RemoveAll(p); err != nil {
 					return err
 				}
@@ -330,12 +330,14 @@ func add(a, b int64) (int64, bool) {
 }
 
 // before prevents an older startup candidate from evicting newer entries.
-func (s *Store) evictLocked(need int64, needSlots int, before int64) bool {
+// ErrBypass means insufficient eligible capacity. If removal failures prevent
+// admission, return the first filesystem error, keeping error storage bounded.
+func (s *Store) evictLocked(need int64, needSlots int, before int64) error {
 	fits := func() bool {
 		return need <= s.max-s.bytes-s.reserved && len(s.entries)+len(s.fills)+len(s.failedCleanups)+needSlots <= s.maxEntries
 	}
 	if fits() {
-		return true
+		return nil
 	}
 	var es []*entry
 	available := s.max - s.bytes - s.reserved
@@ -348,22 +350,28 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64) bool {
 		}
 	}
 	if available < need || availableSlots < needSlots {
-		return false
+		return ErrBypass
 	}
 	sort.Slice(es, func(i, j int) bool { return es[i].last < es[j].last })
+	var removeErr error
 	for _, e := range es {
 		if fits() {
-			return true
+			return nil
 		}
-		if os.RemoveAll(e.dir) == nil {
+		if err := os.RemoveAll(e.dir); err == nil {
 			delete(s.entries, e.meta.Key)
 			// Eviction only selects unpinned entries, so their charge is free.
 			e.reclaimed = true
 			s.bytes -= e.charge
 			s.evictions++
+		} else if removeErr == nil {
+			removeErr = err
 		}
 	}
-	return fits()
+	if fits() {
+		return nil
+	}
+	return removeErr
 }
 
 func (s *Store) Stats() Stats {
