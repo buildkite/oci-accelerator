@@ -63,10 +63,7 @@ func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 	}
 	if elem := a.leaves[host]; elem != nil {
 		entry := elem.Value.(*leafEntry)
-		cert := entry.cert.Leaf
-		// Renewing a valid leaf already capped at CA expiry cannot extend its life.
-		if cert != nil && !now.Before(cert.NotBefore) && now.Before(cert.NotAfter) &&
-			(cert.NotAfter.Sub(now) > leafRenewal || cert.NotAfter.Equal(a.cert.NotAfter)) {
+		if a.leafUsable(entry.cert.Leaf, now) {
 			a.order.MoveToBack(elem)
 			return entry.cert, nil
 		}
@@ -89,6 +86,17 @@ func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 	}
 	a.leaves[host] = a.order.PushBack(&leafEntry{host: host, cert: leaf})
 	return leaf, nil
+}
+
+// leafUsable reports whether a cached leaf can be served as-is at now: it must
+// exist, be within its validity window, and either have more than leafRenewal
+// remaining or already be capped at the CA's expiry (renewal cannot extend a
+// leaf already pinned to CA expiry).
+func (a *Authority) leafUsable(cert *x509.Certificate, now time.Time) bool {
+	if cert == nil || now.Before(cert.NotBefore) || !now.Before(cert.NotAfter) {
+		return false
+	}
+	return cert.NotAfter.Sub(now) > leafRenewal || cert.NotAfter.Equal(a.cert.NotAfter)
 }
 
 func (a *Authority) makeLeaf(host string, now time.Time) (*tls.Certificate, error) {

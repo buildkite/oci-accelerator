@@ -93,6 +93,14 @@
   implementation/decision logs, completed-slice narratives, or superseded alternatives.
 - Ask before materially changing agreed scope or security guarantees; do not
   quietly substitute a different design.
+- Give every package-root README (`internal/*/README.md` and
+  `cmd/oci-accelerator/README.md`) the same shape: a `` `import/path` `` title, an
+  intro that links to the relevant `docs/` guide, a `## Files` table, a
+  `## Public interface` section (or `## Usage` for the `main` command), concise
+  conceptual sections, and a closing dependency statement.
+- Keep the authoritative package detail in the README; `docs/` stays narrative and
+  links into it. When trimming a README, preserve anything `docs/` links into and
+  re-check those anchors still resolve rather than moving detail out.
 
 ## Commit messages
 

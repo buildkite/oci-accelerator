@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,41 +17,44 @@ func (s *Store) inventory() error {
 	}
 	defer directory.Close()
 	for {
-		des, readErr := directory.ReadDir(64)
+		dirEntries, readErr := directory.ReadDir(64)
 		if readErr != nil && readErr != io.EOF {
 			return readErr
 		}
-		for _, de := range des {
-			n := de.Name()
-			if n == ".lock" {
+		for _, dirEntry := range dirEntries {
+			name := dirEntry.Name()
+			if name == ".lock" {
 				continue
 			}
-			p := filepath.Join(s.dir, n)
-			if strings.HasPrefix(n, ".fill-") && de.IsDir() {
-				if err := os.RemoveAll(p); err != nil {
+			path := filepath.Join(s.dir, name)
+			// Abandoned staging directories from an interrupted fill are discarded.
+			if strings.HasPrefix(name, ".fill-") && dirEntry.IsDir() {
+				if err := os.RemoveAll(path); err != nil {
 					return err
 				}
 				continue
 			}
-			if len(n) != 64 || !de.IsDir() {
-				return fmt.Errorf("unrecognized cache state %q", n)
-			}
-			if _, err := hex.DecodeString(n); err != nil || n != strings.ToLower(n) {
-				return fmt.Errorf("unrecognized cache state %q", n)
+			// Every other name must be a committed entry: a directory named by a
+			// lowercase-hex key. Anything else is unrecognized on-disk state.
+			if len(name) != keyHexLen || !dirEntry.IsDir() || !isLowerHex(name) {
+				return fmt.Errorf("unrecognized cache state %q", name)
 			}
 
-			e, err := loadInventoryEntry(p, n)
+			entry, err := loadInventoryEntry(path, name)
 			if err != nil {
 				return err
 			}
-			if e == nil || e.charge > s.max || s.evictLocked(e.charge, 1, e.last, 0) != nil {
-				if err := os.RemoveAll(p); err != nil {
+			// Discard entries that are unreadable, oversized, or that will not fit
+			// the current limits. before=entry.last stops an older reload candidate
+			// from evicting newer entries admitted earlier in this scan.
+			if entry == nil || entry.charge > s.max || s.evictLocked(entry.charge, 1, entry.last, 0) != nil {
+				if err := os.RemoveAll(path); err != nil {
 					return err
 				}
 				continue
 			}
-			s.entries[n] = e
-			s.bytes += e.charge
+			s.entries[name] = entry
+			s.bytes += entry.charge
 		}
 		if readErr == io.EOF {
 			return nil
@@ -63,16 +65,16 @@ func (s *Store) inventory() error {
 // loadInventoryEntry validates one committed candidate without modifying disk
 // or Store accounting. A nil entry and nil error identifies discardable state.
 func loadInventoryEntry(path, key string) (*entry, error) {
-	pi, err := os.Lstat(path)
-	if err != nil || pi.Mode().Perm() != 0o700 || !owned(pi) {
+	dirInfo, err := os.Lstat(path)
+	if err != nil || dirInfo.Mode().Perm() != 0o700 || !owned(dirInfo) {
 		return nil, errors.New("insecure cache entry")
 	}
-	d, err := os.Open(path)
+	dir, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	children, readErr := d.ReadDir(3)
-	d.Close()
+	children, readErr := dir.ReadDir(3)
+	dir.Close()
 	if readErr != nil && readErr != io.EOF {
 		return nil, readErr
 	}
@@ -82,34 +84,37 @@ func loadInventoryEntry(path, key string) (*entry, error) {
 		}
 	}
 
+	// An insecure sidecar is a hard error; a missing or oversized one is merely
+	// discardable state (nil, nil), letting the caller reclaim the directory.
 	metaPath := filepath.Join(path, "meta")
-	mi, err := os.Lstat(metaPath)
-	if err == nil && (!mi.Mode().IsRegular() || mi.Mode().Perm() != 0o600 || !owned(mi)) {
+	metaInfo, err := os.Lstat(metaPath)
+	if err == nil && (!metaInfo.Mode().IsRegular() || metaInfo.Mode().Perm() != 0o600 || !owned(metaInfo)) {
 		return nil, errors.New("insecure cache metadata")
 	}
-	if err != nil || mi.Size() > metadataReservation {
+	if err != nil || metaInfo.Size() > metadataReservation {
 		return nil, nil
 	}
-	f, err := os.Open(metaPath)
+	metaFile, err := os.Open(metaPath)
 	if err != nil {
 		return nil, nil
 	}
-	raw, err := io.ReadAll(io.LimitReader(f, metadataReservation+1))
-	f.Close()
+	raw, err := io.ReadAll(io.LimitReader(metaFile, metadataReservation+1))
+	metaFile.Close()
 	if err != nil || len(raw) > int(metadataReservation) {
 		return nil, nil
 	}
-	var dm diskMetadata
-	if json.Unmarshal(raw, &dm) != nil || !validMeta(dm.Metadata) || dm.Key != key {
+	var disk diskMetadata
+	if json.Unmarshal(raw, &disk) != nil || !validMeta(disk.Metadata) || disk.Key != key {
 		return nil, nil
 	}
-	bi, err := os.Lstat(filepath.Join(path, "body"))
-	if err != nil || !bi.Mode().IsRegular() || bi.Mode().Perm() != 0o600 || !owned(bi) || bi.Size() != dm.Size {
+	// The body must be a regular, owner-only file whose size matches the sidecar.
+	bodyInfo, err := os.Lstat(filepath.Join(path, "body"))
+	if err != nil || !bodyInfo.Mode().IsRegular() || bodyInfo.Mode().Perm() != 0o600 || !owned(bodyInfo) || bodyInfo.Size() != disk.Size {
 		return nil, nil
 	}
-	charge, ok := add(dm.Size, metadataReservation)
+	charge, ok := add(disk.Size, metadataReservation)
 	if !ok {
 		return nil, errors.New("cache entry size overflow")
 	}
-	return &entry{meta: dm.Metadata, dir: path, charge: charge, last: dm.Committed}, nil
+	return &entry{meta: disk.Metadata, dir: path, charge: charge, last: disk.Committed}, nil
 }

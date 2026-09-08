@@ -16,8 +16,12 @@ expose resource use and fixed request/cache outcomes.
   ownership, and design rationale.
 - [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
   recovery, and repeatable acceptance checks.
-- [CA package](internal/ca/README.md) and [cache benchmarks](internal/cache/benchmarks.md):
-  internal contracts and performance investigation.
+- Package guides map the code and internal contracts:
+  [proxy](internal/proxy/README.md), [ca](internal/ca/README.md),
+  [cache](internal/cache/README.md), [config](internal/config/README.md),
+  [hostport](internal/hostport/README.md), and the
+  [command](cmd/oci-accelerator/README.md), with
+  [cache benchmarks](internal/cache/benchmarks.md) for performance investigation.
 - [Working rules](AGENTS.md): contribution, review, and verification requirements.
 
 ## Build and configure
@@ -32,28 +36,7 @@ start the proxy, verify/install its public CA, and configure Docker Engine.
 The default listener is loopback-only. Do not expose it publicly: there is no
 proxy-user authentication, and unconfigured CONNECT destinations are opaque tunnels.
 
-## Development in Amp orbs
-
-Amp runs `.agents/setup` when preparing a fresh orb. It installs checksum-verified
-Go 1.27.1, C build tools for race-enabled tests, and Docker Engine if missing.
-It downloads Go module dependencies. Re-running it is safe:
-
-```sh
-.agents/setup
-go version
-```
-
-Start Docker as a supervised service, not from setup or a background shell:
-
-```sh
-amp orb services ensure
-sudo docker info
-```
-
-The daemon uses only a local Unix socket; do not expose it through a portal.
-Use `sudo docker` for daemon operations. If it is not ready, inspect
-`amp orb service logs docker-daemon`. Amp supervises the daemon across CLI
-updates and orb pause/resume; no custom resume hook is needed.
+## Testing
 
 Run the baseline checks:
 
@@ -63,66 +46,14 @@ go test -race ./...
 go vet ./...
 ```
 
-Registry credentials belong to the Docker client, never the setup script or a
-shared orb snapshot. Setup does not install a proxy CA into Docker's trust store.
-
-Real Docker acceptance is opt-in and uses fresh isolated daemon state:
-
-```sh
-OCI_ACCELERATOR_E2E=1 go test -v ./integration \
-  -run TestDockerPullThroughCompiledProxy -count=1 -timeout=5m
-```
-
-It validates CA rejection/trust, authenticated cold/warm/restart pulls, exact image
-digests, fresh upstream GETs, reduced warm layer bytes, and persistent CA identity
-using local fixtures—not public registries.
-See the [guide](docs/operations.md#repeatable-checks) for prerequisites,
-public-registry, fault and load checks, and limitations.
+Real Docker acceptance is opt-in and uses fresh isolated daemon state with local
+fixtures. See the [operating guide](docs/operations.md#repeatable-checks)
+for commands, prerequisites, cleanup, tested versions, and limitations.
+Amp orb development, including the supervised Docker daemon, is covered in the
+[operating guide](docs/operations.md#docker-in-amp-orbs).
 
 ## Buildkite CI
 
-The [Buildkite pipeline](https://buildkite.com/buildkite/oci-accelerator) uploads
-[`.buildkite/pipeline.yml`](.buildkite/pipeline.yml) using a
-`buildkite-agent pipeline upload` bootstrap. Bootstrap settings are managed in
-`buildkite/saas-iac`; this repository owns the uploaded job definitions.
-
-Three independent jobs run on the Open Source cluster's Linux `hosted` queue:
-
-- Check Go formatting (without rewriting files), run `go vet ./...`, build the
-  binary, and validate `config.example.yaml` with `--check`. This temporary build
-  omits VCS stamping so container/checkout ownership differences do not require
-  weakening Git's safe-directory checks.
-- Run `go test -count=1 -timeout=10m ./...`.
-- Run `go test -race -count=1 -timeout=10m ./...`.
-
-Each job uses the Docker plugin and `golang:1.27.1-bookworm`, which supplies Go and
-the C compiler required for race tests. `GOTOOLCHAIN=local` prevents an implicit
-toolchain upgrade; update the image tags alongside `go.mod` and `.agents/setup`.
-Agents need Docker, but no Amp installation, registry credentials, privileged
-containers, or mounted Docker socket inside the test container. Job environments
-are not broadly forwarded into containers. Test results are not reused from Go's
-test cache. Jobs have explicit timeouts and failures are not automatically retried.
-
-Docker, public-registry, fault, and load acceptance are manual opt-in checks:
-their harness uses `amp orb service` and cannot run on ordinary hosted
-agents. CI runs the default local-fixture suite, **not** those acceptance matrices.
-Use the orb commands above and the [operating guide](docs/operations.md#repeatable-checks)
-for that additional coverage.
-
-To reproduce CI locally with Go 1.27.1 and a C compiler, run from the repo root:
-
-```sh
-GOTOOLCHAIN=local CGO_ENABLED=1 bash .buildkite/check.sh
-GOTOOLCHAIN=local CGO_ENABLED=1 go test -count=1 -timeout=10m ./...
-GOTOOLCHAIN=local CGO_ENABLED=1 go test -race -count=1 -timeout=10m ./...
-```
-
-With `buildkite-agent` installed, parse the pipeline without uploading any jobs.
-Agent v4 requires a token even for a local dry run; use this dummy value and an
-unreachable local endpoint, not a real credential:
-
-```sh
-BUILDKITE_AGENT_ACCESS_TOKEN=local-dry-run-only \
-BUILDKITE_AGENT_ENDPOINT=http://127.0.0.1:1 \
-buildkite-agent pipeline upload --dry-run --reject-parse-warnings .buildkite/pipeline.yml
-```
+The Buildkite pipeline runs Go formatting, vet, build, and the deterministic
+test suites on every change. See the [CI guide](.buildkite/README.md) for the
+job breakdown, container image, and how to reproduce and dry-run it locally.

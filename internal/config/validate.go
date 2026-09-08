@@ -15,17 +15,11 @@ func validate(raw rawConfig, base string) (Config, error) {
 	if len(raw.Registries) == 0 {
 		return Config{}, fmt.Errorf("%w: registries: must contain at least one authority", ErrInvalid)
 	}
-	if strings.TrimSpace(string(raw.CADir)) == "" {
-		return Config{}, fmt.Errorf("%w: ca_dir: must be a non-blank directory path", ErrInvalid)
+	if err := validatePath("ca_dir", string(raw.CADir)); err != nil {
+		return Config{}, err
 	}
-	if strings.ContainsRune(string(raw.CADir), 0) {
-		return Config{}, fmt.Errorf("%w: ca_dir: must not contain NUL", ErrInvalid)
-	}
-	if strings.TrimSpace(string(raw.Cache.Dir)) == "" {
-		return Config{}, fmt.Errorf("%w: cache.dir: must be a non-blank directory path", ErrInvalid)
-	}
-	if strings.ContainsRune(string(raw.Cache.Dir), 0) {
-		return Config{}, fmt.Errorf("%w: cache.dir: must not contain NUL", ErrInvalid)
+	if err := validatePath("cache.dir", string(raw.Cache.Dir)); err != nil {
+		return Config{}, err
 	}
 	listen, err := canonicalBindAddress(string(raw.Listen), false)
 	if err != nil {
@@ -101,6 +95,18 @@ func validate(raw rawConfig, base string) (Config, error) {
 		MaxConnections:        int(raw.MaxConnections),
 		MaxLeafCertificates:   int(raw.MaxLeafCertificates),
 	}, nil
+}
+
+// validatePath rejects a directory path that is blank (or whitespace only) or
+// contains a NUL byte, naming the offending field in the error.
+func validatePath(field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%w: %s: must be a non-blank directory path", ErrInvalid, field)
+	}
+	if strings.ContainsRune(value, 0) {
+		return fmt.Errorf("%w: %s: must not contain NUL", ErrInvalid, field)
+	}
+	return nil
 }
 
 // canonicalBindAddress validates a host:port bind address and returns its

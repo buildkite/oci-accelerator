@@ -102,7 +102,17 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		f.Close()
 		return nil, s.failAdmissionLocked(d, charge, err)
 	}
-	fill := &Fill{store: s, meta: meta, dir: d, file: f, hash: sha256.New(), charge: charge, deadline: time.Now().Add(s.fillTimeout), timerDone: make(chan struct{}), completed: make(chan struct{})}
+	fill := &Fill{
+		store:     s,
+		meta:      meta,
+		dir:       d,
+		file:      f,
+		hash:      sha256.New(),
+		charge:    charge,
+		deadline:  time.Now().Add(s.fillTimeout),
+		timerDone: make(chan struct{}),
+		completed: make(chan struct{}),
+	}
 	s.fills[meta.Key] = fill
 	s.admissions[AdmissionAccepted]++
 	s.reserved += charge
@@ -138,6 +148,11 @@ func (f *Fill) Write(p []byte) (int, error) {
 	}
 	return n, e
 }
+
+// Commit verifies the written body against the declared size and digest, then
+// atomically publishes the staged directory as a committed entry. Any failure,
+// including a missed deadline re-checked at each durable step, ends the fill via
+// finish. On success the entry is live and followers waiting on it wake up.
 func (f *Fill) Commit() error {
 	f.mu.Lock()
 	defer f.unlockAndStopIfDone()
@@ -147,6 +162,8 @@ func (f *Fill) Commit() error {
 	if !time.Now().Before(f.deadline) {
 		return f.finish(errFillExpired)
 	}
+
+	// Verify the body, then flush and close it.
 	if f.written != f.meta.Size || "sha256:"+hex.EncodeToString(f.hash.Sum(nil)) != f.meta.Digest {
 		return f.finish(errors.New("cache fill verification failed"))
 	}
@@ -157,9 +174,51 @@ func (f *Fill) Commit() error {
 		return f.finish(err)
 	}
 	f.file = nil
+
+	// Write and flush the metadata sidecar, then flush the staging directory.
+	if err := f.writeMetaSidecar(); err != nil {
+		return f.finish(err)
+	}
+	if err := syncDirectory(f.dir); err != nil {
+		return f.finish(err)
+	}
+	if !time.Now().Before(f.deadline) {
+		return f.finish(errFillExpired)
+	}
+
+	// Publish by renaming the staging directory into place, then flush the parent.
+	// Rename cannot replace a non-empty directory, so retire any prior owner first
+	// so old readers and cleanup retries cannot remove the published path.
+	dest := filepath.Join(f.store.dir, f.meta.Key)
+	if err := f.supersedeTombstone(dest); err != nil {
+		return f.finish(err)
+	}
+	if err := os.Rename(f.dir, dest); err != nil {
+		return f.finish(err)
+	}
+	f.dir = dest
+	if err := syncDirectory(f.store.dir); err != nil {
+		return f.finish(err)
+	}
+	if !time.Now().Before(f.deadline) {
+		return f.finish(errFillExpired)
+	}
+
+	// Record the entry in the store, converting the reservation into charge.
+	if err := f.publishLocked(dest); err != nil {
+		return f.finish(err)
+	}
+	f.done = true
+	close(f.completed)
+	return nil
+}
+
+// writeMetaSidecar writes the encoded metadata to an exclusive meta file in the
+// staging directory, propagating the first error across chmod/write/sync/close.
+func (f *Fill) writeMetaSidecar() error {
 	b, err := encodeMeta(f.meta)
 	if err != nil {
-		return f.finish(err)
+		return err
 	}
 	mf, err := os.OpenFile(filepath.Join(f.dir, "meta"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err == nil {
@@ -176,44 +235,30 @@ func (f *Fill) Commit() error {
 			err = e
 		}
 	}
-	if err != nil {
-		return f.finish(err)
-	}
-	if err = syncDirectory(f.dir); err != nil {
-		return f.finish(err)
-	}
-	if !time.Now().Before(f.deadline) {
-		return f.finish(errFillExpired)
-	}
-	dest := filepath.Join(f.store.dir, f.meta.Key)
-	// Rename cannot replace a non-empty directory. Retire its prior owner
-	// before publishing so old readers and cleanup retries cannot remove it.
-	if err = f.supersedeTombstone(dest); err != nil {
-		return f.finish(err)
-	}
-	if err = os.Rename(f.dir, dest); err != nil {
-		return f.finish(err)
-	}
-	f.dir = dest
-	if err = syncDirectory(f.store.dir); err != nil {
-		return f.finish(err)
-	}
-	if !time.Now().Before(f.deadline) {
-		return f.finish(errFillExpired)
-	}
+	return err
+}
+
+// publishLocked records the committed entry under the store lock, re-checking
+// the deadline one last time. It converts the fill's reservation into the
+// entry's charge. It never returns a non-deadline error.
+func (f *Fill) publishLocked(dest string) error {
 	f.store.mu.Lock()
 	if !time.Now().Before(f.deadline) {
 		f.store.mu.Unlock()
-		return f.finish(errFillExpired)
+		return errFillExpired
 	}
 	delete(f.store.fills, f.meta.Key)
 	f.store.reserved -= f.charge
-	f.store.entries[f.meta.Key] = &entry{meta: f.meta, dir: dest, charge: f.charge, last: time.Now().UnixNano(), verified: true}
+	f.store.entries[f.meta.Key] = &entry{
+		meta:     f.meta,
+		dir:      dest,
+		charge:   f.charge,
+		last:     time.Now().UnixNano(),
+		verified: true, // Just hash-verified during Commit; Readers can skip re-verification.
+	}
 	f.store.bytes += f.charge
 	f.store.fillSuccess++
 	f.store.mu.Unlock()
-	f.done = true
-	close(f.completed)
 	return nil
 }
 func (f *Fill) Abort() error {

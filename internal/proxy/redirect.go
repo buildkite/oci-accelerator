@@ -85,21 +85,29 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 			return nil, false, errRedirect
 		}
 		seen[next.String()] = true
-		out := current.Clone(req.Context())
-		out.URL, out.Host = next, next.Host
-		if !sameOrigin(current.URL, next) {
-			// An allowlist, not a list of known secret header names: custom
-			// registry authentication headers must not reach storage either.
-			out.Header = make(http.Header)
-			for _, name := range []string{"Accept", "Accept-Encoding", "User-Agent"} {
-				if values := current.Header.Values(name); len(values) > 0 {
-					out.Header[name] = append([]string(nil), values...)
-				}
+		current = redirectRequest(req.Context(), current, next)
+	}
+}
+
+// redirectRequest builds the follow-up request for a redirect to next. A
+// same-origin hop keeps the current headers; a cross-origin hop drops all
+// headers except a safe allowlist, so custom registry authentication headers
+// never reach a different origin. Referer is always removed.
+func redirectRequest(ctx context.Context, current *http.Request, next *url.URL) *http.Request {
+	out := current.Clone(ctx)
+	out.URL, out.Host = next, next.Host
+	if !sameOrigin(current.URL, next) {
+		// An allowlist, not a list of known secret header names: custom
+		// registry authentication headers must not reach storage either.
+		out.Header = make(http.Header)
+		for _, name := range []string{"Accept", "Accept-Encoding", "User-Agent"} {
+			if values := current.Header.Values(name); len(values) > 0 {
+				out.Header[name] = append([]string(nil), values...)
 			}
 		}
-		out.Header.Del("Referer")
-		current = out
 	}
+	out.Header.Del("Referer")
+	return out
 }
 
 func redirectStatus(status int) bool {

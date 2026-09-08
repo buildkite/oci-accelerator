@@ -97,16 +97,7 @@ func runWithListen(ctx context.Context, args []string, stdout, stderr io.Writer,
 			return errors.New("cannot listen on configured metrics address")
 		}
 		defer metricsListener.Close()
-		mux := http.NewServeMux()
-		mux.Handle("GET /metrics", p.MetricsHandler())
-		metricsServer := &http.Server{
-			Handler:           mux,
-			ReadHeaderTimeout: cfg.ResponseHeaderTimeout,
-			WriteTimeout:      cfg.ResponseHeaderTimeout,
-			IdleTimeout:       cfg.IdleTimeout,
-			MaxHeaderBytes:    64 << 10,
-			ErrorLog:          log.New(io.Discard, "", 0),
-		}
+		metricsServer := newMetricsServer(cfg, p.MetricsHandler())
 		metricsDone = make(chan struct{})
 		var metricsErr error
 		go func() {
@@ -144,4 +135,19 @@ func runWithListen(ctx context.Context, args []string, stdout, stderr io.Writer,
 	shutdownErr := p.Shutdown(shutdown)
 	<-done
 	return errors.Join(serveErr, shutdownErr)
+}
+
+// newMetricsServer builds the loopback metrics HTTP server, serving handler at
+// GET /metrics with timeouts drawn from cfg and a discarded error log.
+func newMetricsServer(cfg config.Config, handler http.Handler) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", handler)
+	return &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: cfg.ResponseHeaderTimeout,
+		WriteTimeout:      cfg.ResponseHeaderTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    64 << 10,
+		ErrorLog:          log.New(io.Discard, "", 0),
+	}
 }

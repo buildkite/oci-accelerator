@@ -81,38 +81,43 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			p.logger.Info("registry request", "registry", target.String(), "status", lw.status, "duration", time.Since(started), "bytes", lw.bytes, "outcome", outcome,
 				"cache", stats.cache, "fill", stats.fill, "admission", stats.admission, "wait", stats.wait, "fallback", stats.fallback, "reject", stats.reject, "upstream_body_bytes", stats.upstreamBytes)
 		}()
-		if r.RequestURI == "" || !strings.HasPrefix(r.RequestURI, "/") || strings.HasPrefix(r.RequestURI, "//") || r.URL.IsAbs() {
-			refuse(lw, "invalid request target", http.StatusBadRequest)
-			completed = true
-			return
+		if !rejectInvalidRequest(lw, r, target) {
+			rp.ServeHTTP(lw, r)
 		}
-		host, err := hostport.Parse(r.Host, "443")
-		if err != nil || host != target {
-			refuse(lw, "authority mismatch", http.StatusMisdirectedRequest)
-			completed = true
-			return
-		}
-		if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
-			refuse(lw, "request body denied", http.StatusBadRequest)
-			completed = true
-			return
-		}
-		if r.Header.Get("Upgrade") != "" || headerHasToken(r.Header, "Connection", "upgrade") {
-			refuse(lw, "upgrade denied", http.StatusBadRequest)
-			completed = true
-			return
-		}
-		switch r.Method {
-		case http.MethodGet, http.MethodHead, http.MethodOptions:
-		default:
-			lw.Header().Set("Allow", "GET, HEAD, OPTIONS")
-			refuse(lw, "method not allowed", http.StatusMethodNotAllowed)
-			completed = true
-			return
-		}
-		rp.ServeHTTP(lw, r)
 		completed = true
 	})
+}
+
+// rejectInvalidRequest enforces the intercepted-request contract: a rooted
+// origin-form target, the expected authority, no request body, no protocol
+// upgrade, and a read-only method. It writes the refusal and reports true when
+// the request must not reach the reverse proxy.
+func rejectInvalidRequest(lw *loggingWriter, r *http.Request, target hostport.HostPort) bool {
+	switch {
+	case r.RequestURI == "" || !strings.HasPrefix(r.RequestURI, "/") || strings.HasPrefix(r.RequestURI, "//") || r.URL.IsAbs():
+		refuse(lw, "invalid request target", http.StatusBadRequest)
+	case !authorityMatches(r.Host, target):
+		refuse(lw, "authority mismatch", http.StatusMisdirectedRequest)
+	case r.ContentLength != 0 || len(r.TransferEncoding) != 0:
+		refuse(lw, "request body denied", http.StatusBadRequest)
+	case r.Header.Get("Upgrade") != "" || headerHasToken(r.Header, "Connection", "upgrade"):
+		refuse(lw, "upgrade denied", http.StatusBadRequest)
+	case !readOnlyMethod(r.Method):
+		lw.Header().Set("Allow", "GET, HEAD, OPTIONS")
+		refuse(lw, "method not allowed", http.StatusMethodNotAllowed)
+	default:
+		return false
+	}
+	return true
+}
+
+func authorityMatches(requestHost string, target hostport.HostPort) bool {
+	host, err := hostport.Parse(requestHost, "443")
+	return err == nil && host == target
+}
+
+func readOnlyMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 }
 
 type loggingWriter struct {
