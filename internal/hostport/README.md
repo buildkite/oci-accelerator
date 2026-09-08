@@ -47,4 +47,6 @@ default `443` and brackets IPv6 hosts.
 - Hostname labels must be 1–63 characters of `a–z`, `0–9`, or `-`, not starting
   or ending with `-`, with the whole name at most 253 characters.
 
-The package depends only on the standard library.
+## Dependencies
+
+`hostport` depends only on the standard library.

@@ -16,6 +16,58 @@ for performance notes see [benchmarks.md](benchmarks.md).
 | `inventory.go` | Startup scan: discard abandoned `.fill-` directories, validate committed entries, reject unrecognized state |
 | `cleanup.go` | Deferred removal of directories whose deletion failed, charged against the entry and byte budgets |
 
+## Public interface
+
+### `Open(dir string, maxBytes int64) (*Store, error)` · `OpenWithLimits(dir string, limits Limits) (*Store, error)`
+
+Open or create the private cache directory, take its exclusive lock, and scan
+existing entries while discarding abandoned fills. `Open` applies a byte ceiling
+with default slot and fill limits; `OpenWithLimits` sets every `Limits` field.
+
+### `Metadata` · `Limits` · `Stats`
+
+`Metadata` identifies one object (`Key`, a `sha256:` `Digest`, `Size`,
+`MediaType`). `Limits` bounds the store (`MaxBytes`, `MaxFills`, `MaxEntries`,
+`FillTimeout`). `Stats` is a point-in-time snapshot of the accounting counters.
+
+### `(*Store) Begin(meta Metadata) (*Fill, error)`
+
+Admits a key, reserves capacity (evicting if needed), and stages a fill. Fails
+with an `*AdmissionError` when the object cannot be admitted.
+
+### `(*Store) Get(ctx context.Context, meta Metadata) (*Reader, error)`
+
+Pins a committed entry, verifies its body once on first read, and returns a
+`Reader`. Returns `ErrMiss` when the key is absent.
+
+### `(*Store) Completion(meta Metadata) (<-chan struct{}, bool)`
+
+Reports whether a matching fill is in progress and, if so, a channel closed when
+that fill reaches its terminal state, so callers can coalesce onto it.
+
+### `(*Store) Stats() Stats` · `(*Store) Close() error`
+
+`Stats` snapshots the counters. `Close` rejects new work, aborts active fills,
+and releases the lock; it reports an active-reader error and retains the lock
+until every reader is closed.
+
+### `(*Fill) Write(p []byte) (int, error)` · `Commit() error` · `Abort() error`
+
+Stream bytes into a staged fill (hashing and enforcing `Size`), then either
+atomically publish it (`Commit`, after verifying `Size` and `Digest`) or discard
+it (`Abort`). A partial object is never published.
+
+### `(*Reader) Read(p []byte) (int, error)` · `Close() error`
+
+Stream a committed body; a short read before `Size` signals corruption. `Close`
+releases the pin exactly once.
+
+### `AdmissionError` · `AdmissionReason`
+
+`Begin` returns `*AdmissionError` (a `Reason` plus optional `Cause`) when
+admission fails, and it matches `ErrBypass` under `errors.Is`. `AdmissionReason`
+is the bounded enum of refusal reasons, with a `String` for logging.
+
 ## Object lifecycle
 
 A caller supplies `Metadata` (a lowercase-hex `Key`, a `sha256:` `Digest`, the
@@ -88,3 +140,7 @@ The caller that opens a `Store` owns it and must `Close` it. `Close` rejects new
 work and aborts active fills, but does not wait for readers: if any `Reader` is
 still open it retains the filesystem lock and reports an active-reader error, so
 the caller must close all readers and call `Close` again to release the lock.
+
+## Dependencies
+
+`cache` depends only on the standard library.

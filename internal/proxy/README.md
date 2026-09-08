@@ -23,6 +23,33 @@ design rationale, see the
 | `metrics.go` | Prometheus text-format metrics: recording and rendering |
 | `errors.go` | Maps upstream errors to fixed, non-leaking log labels |
 
+## Public interface
+
+### `New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *cache.Store) *Proxy`
+
+Constructs a proxy from resolved configuration, a CA for interception leaves, a
+logger, and an optional cache store (a nil store disables caching). It does not
+bind or serve.
+
+### `(*Proxy) Serve(listener net.Listener) error`
+
+Accepts and handles `CONNECT` connections on `listener` until `Shutdown`.
+
+### `(*Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request)`
+
+The `CONNECT` dispatch entry point (registry interception versus opaque relay).
+Exported to satisfy `http.Handler`; normally driven by `Serve`.
+
+### `(*Proxy) Shutdown(ctx context.Context) error`
+
+Stops accepting, disables intercepted keep-alives, drains in-flight work until
+`ctx` expires, then closes remaining sockets.
+
+### `(*Proxy) MetricsHandler() http.Handler`
+
+Returns the Prometheus text-format handler for the optional loopback metrics
+listener.
+
 ## Request flow
 
 A client issues `CONNECT host:port`. `ServeHTTP` (`tunnel.go`) validates the

@@ -61,3 +61,8 @@ Logs are structured JSON on stderr. The program logs the listen address, the CA
 certificate path, and the CA fingerprint at startup; it is up to operators to
 distribute that certificate to clients. Diagnostics avoid echoing configuration
 values, addresses, or other potentially sensitive input.
+
+## Dependencies
+
+`oci-accelerator` wires `internal/config`, `internal/ca`, `internal/cache`, and
+`internal/proxy` together, and otherwise depends only on the standard library.

@@ -14,6 +14,31 @@ individual settings and operating guidance, see the
 | `scalar.go` | Strict YAML scalar types (`strictString`, `strictInt`, `strictInt64`, `duration`) that reject type coercion |
 | `errors.go` | Read-error tracking and sanitized decode-error messages |
 
+## Public interface
+
+### `Load(path string) (Config, error)`
+
+Opens, strictly decodes, and validates the YAML file at `path`, returning a
+fully resolved `Config`. Read failures, malformed YAML, and semantic violations
+are reported distinctly; every semantic error wraps `ErrInvalid`.
+
+### `Config`
+
+The validated configuration: bind and metrics addresses, registry and
+redirect-allowlist authorities (`hostport.HostPort`), the CA and cache
+directories, the timeout and limit knobs, and a nested `Cache`. Paths are
+resolved and addresses canonicalized before it is returned.
+
+### `Cache`
+
+The cache subsection of `Config`: directory, byte and entry ceilings, fill
+concurrency, and the fill and fill-wait timeouts.
+
+### `ErrInvalid`
+
+Sentinel wrapped by every validation error, so callers can match invalid
+configuration with `errors.Is` without parsing messages.
+
 ## Loading
 
 ```
