@@ -21,7 +21,7 @@ recorded in the [decision log](decision-log.md).
 | Item | Finding | Status |
 | --- | --- | --- |
 | A. Dedupe manifest media-type list | #14 duplicated allowlist in prod and tests | Complete (6095ff8) — `manifestMediaTypes` is the single source of truth; tests reference it. |
-| B. Clarify `rawCONNECTValid` | #11 misleading true-on-non-CONNECT | Complete — renamed to `rawCONNECTAcceptable` with accurate doc and direct unit tests; behavior unchanged. |
+| B. Clarify `rawCONNECTValid` | #11 misleading true-on-non-CONNECT | Complete (2b11ee9) — renamed to `rawCONNECTAcceptable` with accurate doc and direct unit tests; behavior unchanged. |
 | C. Simplify `fillingBody.Read` ordering | #1 fragile triple nil-check | Pending |
 | D. Internal redirect-refusal reasons | #13 `errRedirect` collapses causes | Pending |
 | E. Non-STW heap gauge | #6 `ReadMemStats` STW on every scrape | Pending |
