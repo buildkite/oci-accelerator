@@ -101,10 +101,10 @@ func validate(raw rawConfig, base string) (Config, error) {
 // canonical form. The port is parsed once, range-checked, and re-emitted without
 // leading zeros. An empty host (":3128") and a wildcard host ("0.0.0.0"/"[::]")
 // are preserved verbatim so they remain valid net.Listen targets; any other host
-// is canonicalized by hostport.Canonicalize (lowercase, trailing-dot stripped,
-// IP literals normalized). When loopback is true the address must bind an
-// explicit loopback IP literal with no zone, matching the metrics endpoint's
-// constraints.
+// is validated and canonicalized by hostport.Canonicalize, but a trailing DNS
+// dot is preserved to keep the lookup absolute. When loopback is true the address
+// must bind an explicit loopback IP literal with no zone, matching the metrics
+// endpoint's constraints.
 func canonicalBindAddress(address string, loopback bool) (string, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -132,6 +132,9 @@ func canonicalBindAddress(address string, loopback bool) (string, error) {
 			canonicalHost, err = hostport.Canonicalize(host)
 			if err != nil {
 				return "", fmt.Errorf("%w: host must be a valid hostname or IP literal", ErrInvalid)
+			}
+			if strings.HasSuffix(host, ".") {
+				canonicalHost += "."
 			}
 		}
 	}
