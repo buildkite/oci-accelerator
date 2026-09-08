@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log"
 	"net"
@@ -50,12 +49,13 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			}
 		},
 		ErrorLog: log.New(io.Discard, "", 0),
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			p.logger.Warn("upstream request failed", "registry", target.String(), "reason", upstreamFailure(err))
 			refuse(w, "upstream unavailable", http.StatusBadGateway)
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			if resp.StatusCode == http.StatusSwitchingProtocols {
-				return errors.New("upstream upgrade denied")
+				return errUpgrade
 			}
 			return nil
 		},
