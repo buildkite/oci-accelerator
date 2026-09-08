@@ -66,9 +66,18 @@ func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostpor
 		_ = client.Close()
 		return
 	}
+	// Register under mu, before closing can be observed true, so this Add is
+	// ordered before Shutdown's Wait. Done runs after inner.Serve returns, by
+	// which point any cache reader held as the response body has been closed.
+	p.inflight.Add(1)
 	p.inners[inner] = struct{}{}
 	p.mu.Unlock()
-	defer func() { p.mu.Lock(); delete(p.inners, inner); p.mu.Unlock() }()
+	defer func() {
+		p.mu.Lock()
+		delete(p.inners, inner)
+		p.mu.Unlock()
+		p.inflight.Done()
+	}()
 
 	if _, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
 		err = rw.Flush()

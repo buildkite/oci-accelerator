@@ -79,6 +79,22 @@
   question before deciding whether to relax the rules in a future, separately
   approved change. Labels stay a fixed two-value enum; no host/digest/path leaks.
 
+- H (#2): a hard-timeout Shutdown could return while a cache-hit request was
+  still in flight, leaving its `*cache.Reader` pinned when the CLI's deferred
+  `store.Close()` ran, so Close failed with "cache has active readers".
+  Investigation showed the originally-planned "drain until p.conns is empty"
+  approach is insufficient: p.conns tracks client-socket liveness, and closeAll
+  removes a conn on the shutdown goroutine before the intercept goroutine unwinds
+  inner.Serve, which is where the reader closes. Switched (with approval) to a
+  sync.WaitGroup: intercept does Add(1) under p.mu while closing is false (so it
+  is ordered before Shutdown's Wait) and Done after inner.Serve returns, by which
+  point the reverse proxy has closed the reader. Shutdown waits on it — unbounded
+  on the graceful path (already drained) and bounded by a 5s grace after closeAll
+  on the timeout path so a wedged upstream cannot hang shutdown. Added
+  shutdown_reader_test.go, a probabilistic reproducer (fails a majority of runs
+  without the fix, passes consistently with it) asserting store.Close succeeds
+  after a hard-timeout Shutdown with a pinned cache reader.
+
 ## Slice 1 authorization
 
 - Implement 1a–1e autonomously, with per-subslice commits and independent review.

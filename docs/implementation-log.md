@@ -27,7 +27,7 @@ recorded in the [decision log](decision-log.md).
 | E. Non-STW heap gauge | #6 `ReadMemStats` STW on every scrape | Complete (2fb127a) — heap_alloc_bytes now sourced from runtime/metrics (non-STW); name/TYPE unchanged. |
 | F. `-race` CONNECT sniffing coverage | #9 unsynchronized `rawOK`/`checked` | Complete (b24e5d8) — no real race (same-goroutine happens-before); added concurrent `-race` regression guard. No production change. |
 | G. Cache-effectiveness measurement | #4/#5 Vary/digest conservatism | Complete (b015ca1) — added `cache_rejections_total{reason=vary\|digest_mismatch}` upper-bound diagnostic; caching decision unchanged. |
-| H. Shutdown reader-leak race | #2 hard-timeout leaves reader pinned | Pending |
+| H. Shutdown reader-leak race | #2 hard-timeout leaves reader pinned | Complete — Shutdown drains active intercepts via a WaitGroup so cache readers close before store.Close; both reviews approved. |
 
 ## Completed groundwork
 
