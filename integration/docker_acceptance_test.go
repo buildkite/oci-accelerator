@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/ca"
+	"github.com/buildkite/oci-accelerator/internal/ca"
 )
 
 const (
@@ -80,8 +80,8 @@ func (c *registryCounts) snapshot() (map[string]int, map[string]int64, int, int)
 }
 
 func TestDockerPullThroughCompiledProxy(t *testing.T) {
-	if os.Getenv("DOCKER_ACCELERATOR_E2E") != "1" {
-		t.Skip("set DOCKER_ACCELERATOR_E2E=1 to run the real Docker acceptance test")
+	if os.Getenv("OCI_ACCELERATOR_E2E") != "1" {
+		t.Skip("set OCI_ACCELERATOR_E2E=1 to run the real Docker acceptance test")
 	}
 	requireCommands(t, "docker", "dockerd", "sudo", "amp")
 	if os.Geteuid() != 0 {
@@ -95,8 +95,8 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 	defer origin.Close()
 	authority := origin.Listener.Addr().String()
 
-	bin := filepath.Join(root, "docker-accelerator")
-	run(t, "go", "build", "-o", bin, "../cmd/docker-accelerator")
+	bin := filepath.Join(root, "oci-accelerator")
+	run(t, "go", "build", "-o", bin, "../cmd/oci-accelerator")
 	proxyPort := freePort(t, "127.0.0.1")
 	proxyCA := filepath.Join(root, "proxy-ca")
 	config := filepath.Join(root, "proxy.yaml")
@@ -386,7 +386,7 @@ func deterministicLargePayload() []byte {
 
 func makeImage(t *testing.T) fixtureImage {
 	t.Helper()
-	return makeImageWithPayload(t, []byte("docker-accelerator acceptance\n"))
+	return makeImageWithPayload(t, []byte("oci-accelerator acceptance\n"))
 }
 
 func makeImageWithPayload(t *testing.T, payload []byte) fixtureImage {
@@ -472,7 +472,7 @@ func TestFixtureImage(t *testing.T) {
 	if _, err := io.ReadFull(tr, payload); err != nil {
 		t.Fatal(err)
 	}
-	if h.Name != "proof.txt" || h.Mode != 0o644 || !bytes.Equal(payload, []byte("docker-accelerator acceptance\n")) {
+	if h.Name != "proof.txt" || h.Mode != 0o644 || !bytes.Equal(payload, []byte("oci-accelerator acceptance\n")) {
 		t.Fatalf("tar entry name=%q mode=%#o payload=%q", h.Name, h.Mode, payload)
 	}
 	if _, err := tr.Next(); err != io.EOF {

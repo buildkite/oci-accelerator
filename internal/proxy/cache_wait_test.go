@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 const waitTestTimeout = 3 * time.Second

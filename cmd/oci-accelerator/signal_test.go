@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const shutdownContextHelper = "DOCKER_ACCELERATOR_SHUTDOWN_CONTEXT_HELPER"
+const shutdownContextHelper = "OCI_ACCELERATOR_SHUTDOWN_CONTEXT_HELPER"
 
 func TestShutdownContextStop(t *testing.T) {
 	ctx, stop := shutdownContext()

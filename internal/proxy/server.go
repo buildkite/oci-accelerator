@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/ca"
-	"ampcode.com/buildkite/docker-accelerator/internal/cache"
-	"ampcode.com/buildkite/docker-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/ca"
+	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/config"
 )
 
 const maxHeaderBytes = 64 << 10

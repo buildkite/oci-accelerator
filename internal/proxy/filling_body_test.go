@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache"
 )
 
 // scriptedReader replays a sequence of (bytes, err) steps. Each step's bytes are

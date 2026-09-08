@@ -8,9 +8,30 @@ The plan owns scope and design; this log tracks progress and upcoming work.
 - **Completed implementation slices:** 1 — working explicit proxy and CA lifecycle;
   2 — authorized digest-blob caching; 3 — digest manifests and compatibility;
   4 — concurrency and operational hardening.
-- **In progress:** None. All implementation commits are pushed to `origin/main`.
-- **Next:** The authorized run is complete. Deferred features require separate
-  scope approval; there are no unresolved verification blockers for slices 3–4.
+- **In progress:** None. OCI Accelerator rename is implemented, validated, and
+  independently reviewed; delivery is local only.
+- **Next:** User rehomes the repository to `github.com/buildkite/oci-accelerator`.
+  No hosted project, remote, or push changes are part of this task.
+
+## Project rename (maintenance, not a plan slice)
+
+- **Status:** Complete — implementation, validation, and paired review finished.
+  Commit link is recorded in the following log-only commit; no push or remote changes.
+- **Scope:** Command, module/imports, metrics, test/report environment variables,
+  and current documentation use OCI Accelerator with no old-name aliases.
+  New CA branding changes; existing trust, state, and Docker behavior do not.
+- **Validation:** `go test ./...`, `go test -race ./...`, and `go vet ./...` passed
+  on Linux amd64 / Go 1.27.1; gofmt and diff checks clean. Compiled `--help` prints
+  `Usage: oci-accelerator --config FILE [--check]`; example `--check` prints
+  `configuration validated`. Regression tests cover help, new CA naming, and
+  byte-for-byte certificate/key preservation and trusted leaves for an old-name CA.
+  Opt-in Docker/public/fault/load acceptance was not rerun for this rename.
+- **Review:** Two fresh read-only reviewers found no actionable issues. The
+  code-only review used a filtered source/test/config/module/diff snapshot without
+  docs or Git history; ambient guidance was inherited, so isolation was not total.
+  An optional repository-wide negative-name guard was not added: historical and
+  migration references intentionally retain old names, and the rename audit plus
+  executable tests cover this change without introducing extra machinery.
 
 ## Proxy review follow-up (maintenance, not a plan slice)
 

@@ -10,7 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache"
 )
 
 func TestCacheLimitsPreserveUpstreamStream(t *testing.T) {

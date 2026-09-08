@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/cache"
-	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 // requestPolicy preserves the original request's cache decisions before the

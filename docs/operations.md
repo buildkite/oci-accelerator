@@ -12,10 +12,10 @@ and BuildKit-specific integration are not validated.
 With Go 1.27.1 installed, from the repository root:
 
 ```sh
-go build -o bin/docker-accelerator ./cmd/docker-accelerator
+go build -o bin/oci-accelerator ./cmd/oci-accelerator
 cp config.example.yaml config.local.yaml
-bin/docker-accelerator --config config.local.yaml --check
-bin/docker-accelerator --config config.local.yaml
+bin/oci-accelerator --config config.local.yaml --check
+bin/oci-accelerator --config config.local.yaml
 ```
 
 Edit the registry list before starting. Names have no scheme or path; omitted ports
@@ -29,7 +29,7 @@ In an orb, run the built proxy under supervision instead of the foreground comma
 
 ```sh
 amp orb service start registry-proxy \
-  --command './bin/docker-accelerator --config config.local.yaml'
+  --command './bin/oci-accelerator --config config.local.yaml'
 amp orb service logs registry-proxy
 ```
 
@@ -38,6 +38,26 @@ listener is for Docker on the same host. Serving other hosts requires an explici
 private-interface bind address and firewall restrictions. There is no proxy-user
 authentication. Any reachable user can CONNECT to arbitrary unconfigured hosts and
 ports; opaque tunnels cannot enforce pull-only policy or inspect their application data.
+
+## Upgrading from Docker Accelerator
+
+This rename is a clean break: rebuild `oci-accelerator` and update service commands
+and scripts that invoke `docker-accelerator`. The Go module/import prefix changes
+from `ampcode.com/buildkite/docker-accelerator` to
+`github.com/buildkite/oci-accelerator`. The old command directory is removed.
+
+Update Prometheus queries, dashboards, and alerts from `docker_accelerator_` to
+`oci_accelerator_`. Rename test/report environment variable prefixes from
+`DOCKER_ACCELERATOR_` to `OCI_ACCELERATOR_`, retaining the suffix (including
+`DOCKER_LOAD_REPORT`, which measures Docker Engine). Old metric names are not
+emitted and old environment variables are not read.
+
+Keep the existing configuration, CA directory, and cache directory. Their format,
+paths, and contents do not change. New installations generate an **OCI Accelerator
+CA**; existing certificates, including **Docker Accelerator CA**, are loaded
+unchanged. Do not regenerate the CA or reinstall trust solely for this rename.
+Docker Engine remains the validated client; this adds no client support or
+changes to upstream authorization and TLS policy.
 
 ## CA trust and Docker configuration
 
@@ -170,7 +190,7 @@ zero are rejected. There is no metrics route on the CONNECT listener, public bin
 admin API, or pprof endpoint. Bind failure fails startup. Protect local access and
 do not expose this endpoint through a portal or public reverse proxy.
 
-Metric names start with `docker_accelerator_`:
+Metric names start with `oci_accelerator_`:
 
 - `requests_total`, `request_status_total`, and `request_duration_seconds` histogram:
   completed/aborted outcomes, bounded status classes, and elapsed handler duration.
@@ -272,7 +292,7 @@ Run in an orb with Go, Docker Engine, Amp service management, passwordless sudo,
 and a non-loopback IPv4 interface:
 
 ```sh
-DOCKER_ACCELERATOR_E2E=1 go test -v ./integration \
+OCI_ACCELERATOR_E2E=1 go test -v ./integration \
   -run TestDockerPullThroughCompiledProxy -count=1 -timeout=5m
 ```
 
@@ -307,7 +327,7 @@ behavior, including client-owned bearer refresh and a separately trusted token h
 Multi-platform acceptance is also opt-in:
 
 ```sh
-DOCKER_ACCELERATOR_E2E=1 go test -v ./integration \
+OCI_ACCELERATOR_E2E=1 go test -v ./integration \
   -run TestDockerMultiPlatformThroughCompiledProxy -count=1 -timeout=10m
 ```
 
@@ -336,7 +356,7 @@ or cache-hit savings. Deterministic local fixtures remain authoritative for thos
 | `ghcr.io/fluxcd/source-controller:v1.7.4` | `sha256:16f21ac1795528df80ddef51ccbb14a57b78ea26e66dc8551636ef9a3cec71b3` |
 
 ```sh
-DOCKER_ACCELERATOR_PUBLIC_E2E=1 go test -v ./integration \
+OCI_ACCELERATOR_PUBLIC_E2E=1 go test -v ./integration \
   -run TestDockerPublicRegistriesThroughCompiledProxy -count=1 -timeout=10m
 ```
 
@@ -349,7 +369,7 @@ Network/rate-limit failures fail an explicitly enabled test rather than becoming
 ### Crash and filesystem-exhaustion checks
 
 ```sh
-DOCKER_ACCELERATOR_FAULT_E2E=1 go test -v ./integration \
+OCI_ACCELERATOR_FAULT_E2E=1 go test -v ./integration \
   -run '^TestCache(ENOSPC|Crash)Acceptance$' -count=1 -timeout=10m
 ```
 
@@ -371,9 +391,9 @@ the normal race suite. Do not modify cache files while a proxy is running.
 
 ```sh
 reports=$(mktemp -d)
-DOCKER_ACCELERATOR_LOAD_E2E=1 \
-DOCKER_ACCELERATOR_LOAD_REPORT="$reports/http.json" \
-DOCKER_ACCELERATOR_DOCKER_LOAD_REPORT="$reports/docker.json" \
+OCI_ACCELERATOR_LOAD_E2E=1 \
+OCI_ACCELERATOR_LOAD_REPORT="$reports/http.json" \
+OCI_ACCELERATOR_DOCKER_LOAD_REPORT="$reports/docker.json" \
   go test -v ./integration \
   -run '^(TestBoundedHTTPLoadAcceptance|TestDockerLoadAcceptance)$' \
   -count=1 -timeout=20m

@@ -73,13 +73,13 @@ type loadCounters struct {
 // TestBoundedHTTPLoadAcceptance is deliberately opt-in: its complete source
 // matrix transfers tens of GiB and exercises the production binary and cache.
 func TestBoundedHTTPLoadAcceptance(t *testing.T) {
-	if os.Getenv("DOCKER_ACCELERATOR_LOAD_E2E") != "1" {
-		t.Skip("set DOCKER_ACCELERATOR_LOAD_E2E=1 to run the bounded HTTP load matrix")
+	if os.Getenv("OCI_ACCELERATOR_LOAD_E2E") != "1" {
+		t.Skip("set OCI_ACCELERATOR_LOAD_E2E=1 to run the bounded HTTP load matrix")
 	}
 	requireCommands(t, "amp")
 	root := t.TempDir()
-	bin := filepath.Join(root, "docker-accelerator")
-	run(t, "go", "build", "-o", bin, "../cmd/docker-accelerator")
+	bin := filepath.Join(root, "oci-accelerator")
+	run(t, "go", "build", "-o", bin, "../cmd/oci-accelerator")
 	ip := nonLoopbackIPv4(t)
 	counters := &loadCounters{authed: make(map[string]int64)}
 	origin, originPort, originCA := startNamedTLS(t, root, "load-origin-ca", ip.String(), ip, loadOrigin(counters))
@@ -259,7 +259,7 @@ func runLoadCase(t *testing.T, bin, originCA, authority string, counters *loadCo
 		t.Fatal(err)
 	}
 	base := readProcessLoad(t, pidFile)
-	base.goroutines = int64(beforeMetrics["docker_accelerator_goroutines"])
+	base.goroutines = int64(beforeMetrics["oci_accelerator_goroutines"])
 	counters.mu.Lock()
 	beforeAuth := make(map[string]int64, len(counters.authed))
 	for k, v := range counters.authed {
@@ -302,9 +302,9 @@ func runLoadCase(t *testing.T, bin, originCA, authority string, counters *loadCo
 	if err != nil {
 		t.Fatal(err)
 	}
-	end.goroutines = int64(afterMetrics["docker_accelerator_goroutines"])
+	end.goroutines = int64(afterMetrics["oci_accelerator_goroutines"])
 	gets, body := counters.gets.Load()-beforeGET, counters.body.Load()-beforeBody
-	fallbacks := metricDelta(beforeMetrics, afterMetrics, `docker_accelerator_fallbacks_total{outcome="retry"}`)
+	fallbacks := metricDelta(beforeMetrics, afterMetrics, `oci_accelerator_fallbacks_total{outcome="retry"}`)
 	expectedClients := clients
 	if profile == "entry-cap-churn" {
 		expectedClients += 9
@@ -320,7 +320,7 @@ func runLoadCase(t *testing.T, bin, originCA, authority string, counters *loadCo
 		}
 	}
 	counters.mu.Unlock()
-	waits := metricDelta(beforeMetrics, afterMetrics, `docker_accelerator_cache_total{outcome="wait_hit"}`)
+	waits := metricDelta(beforeMetrics, afterMetrics, `oci_accelerator_cache_total{outcome="wait_hit"}`)
 	if profile == "wait-hit" && (waits <= 0 || fallbacks != 0) {
 		t.Errorf("wait-hit profile: waits=%g fallbacks=%g", waits, fallbacks)
 	}
@@ -333,8 +333,8 @@ func runLoadCase(t *testing.T, bin, originCA, authority string, counters *loadCo
 	if phase == "cold" && gets > int64(2*clients) {
 		t.Errorf("cold origin GETs=%d exceed %d", gets, 2*clients)
 	}
-	if profile == "entry-cap-churn" && (afterMetrics["docker_accelerator_cache_entries"] > 8 || metricDelta(beforeMetrics, afterMetrics, "docker_accelerator_cache_evictions_total") <= 0) {
-		t.Errorf("entry-cap churn missing: entries=%g evictions=%g", afterMetrics["docker_accelerator_cache_entries"], metricDelta(beforeMetrics, afterMetrics, "docker_accelerator_cache_evictions_total"))
+	if profile == "entry-cap-churn" && (afterMetrics["oci_accelerator_cache_entries"] > 8 || metricDelta(beforeMetrics, afterMetrics, "oci_accelerator_cache_evictions_total") <= 0) {
+		t.Errorf("entry-cap churn missing: entries=%g evictions=%g", afterMetrics["oci_accelerator_cache_entries"], metricDelta(beforeMetrics, afterMetrics, "oci_accelerator_cache_evictions_total"))
 	}
 	if end.fds > base.fds+16 {
 		t.Errorf("FDs did not return near baseline: baseline=%d end=%d", base.fds, end.fds)
@@ -344,9 +344,9 @@ func runLoadCase(t *testing.T, bin, originCA, authority string, counters *loadCo
 	}
 	logical, physical := diskUsage(t, cacheDir)
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	r := loadResult{Case: t.Name(), Phase: phase, Profile: profile, Clients: clients, ObjectBytes: size, Distinct: distinct, P50MS: percentile(latencies, .50), P95MS: percentile(latencies, .95), WarmupGETs: warmupGETs, WarmupBodyBytes: warmupBody, OriginGETs: gets, OriginBodyBytes: body, WaitHitDelta: waits, FallbackDelta: fallbacks, LogicalDiskBytes: logical, PhysicalDiskBytes: physical, PeakRSSBytes: peaks.rss, PeakFDs: peaks.fds, PeakHeapBytes: peaks.heap, PeakGoroutines: peaks.goroutines, PeakCacheChargedBytes: peaks.cacheCharged, PeakCacheReservedBytes: peaks.cacheReserved, PeakCacheReservations: peaks.cacheReservations, PeakCacheFills: peaks.fills, PeakCacheEntries: peaks.entries, PeakCacheEntrySlots: peaks.entrySlots, PeakActiveConnections: peaks.connections, BaselineFDs: base.fds, EndFDs: end.fds, BaselineGoroutines: base.goroutines, EndGoroutines: end.goroutines, FinalCacheFills: int64(afterMetrics["docker_accelerator_cache_fills"]), FinalCacheReaders: int64(afterMetrics["docker_accelerator_cache_readers"]), FinalCacheReservedBytes: int64(afterMetrics["docker_accelerator_cache_reserved_bytes"]), FinalActiveRequests: int64(afterMetrics["docker_accelerator_active_requests"]), FinalActiveWaits: int64(afterMetrics["docker_accelerator_active_waits"]), FinalActiveConnections: int64(afterMetrics["docker_accelerator_active_connections"])}
+	r := loadResult{Case: t.Name(), Phase: phase, Profile: profile, Clients: clients, ObjectBytes: size, Distinct: distinct, P50MS: percentile(latencies, .50), P95MS: percentile(latencies, .95), WarmupGETs: warmupGETs, WarmupBodyBytes: warmupBody, OriginGETs: gets, OriginBodyBytes: body, WaitHitDelta: waits, FallbackDelta: fallbacks, LogicalDiskBytes: logical, PhysicalDiskBytes: physical, PeakRSSBytes: peaks.rss, PeakFDs: peaks.fds, PeakHeapBytes: peaks.heap, PeakGoroutines: peaks.goroutines, PeakCacheChargedBytes: peaks.cacheCharged, PeakCacheReservedBytes: peaks.cacheReserved, PeakCacheReservations: peaks.cacheReservations, PeakCacheFills: peaks.fills, PeakCacheEntries: peaks.entries, PeakCacheEntrySlots: peaks.entrySlots, PeakActiveConnections: peaks.connections, BaselineFDs: base.fds, EndFDs: end.fds, BaselineGoroutines: base.goroutines, EndGoroutines: end.goroutines, FinalCacheFills: int64(afterMetrics["oci_accelerator_cache_fills"]), FinalCacheReaders: int64(afterMetrics["oci_accelerator_cache_readers"]), FinalCacheReservedBytes: int64(afterMetrics["oci_accelerator_cache_reserved_bytes"]), FinalActiveRequests: int64(afterMetrics["oci_accelerator_active_requests"]), FinalActiveWaits: int64(afterMetrics["oci_accelerator_active_waits"]), FinalActiveConnections: int64(afterMetrics["oci_accelerator_active_connections"])}
 	t.Logf("LOAD case=%s profile=%s clients=%d bytes=%d distinct=%t p50_ms=%.2f p95_ms=%.2f origin_gets=%d origin_body_bytes=%d disk_logical=%d disk_physical=%d peak_rss=%d peak_fds=%d peak_heap=%d peak_goroutines=%d", r.Case, profile, clients, size, distinct, r.P50MS, r.P95MS, r.OriginGETs, r.OriginBodyBytes, logical, physical, r.PeakRSSBytes, r.PeakFDs, r.PeakHeapBytes, r.PeakGoroutines)
-	t.Logf("AUDIT baseline_fd=%d end_fd=%d baseline_goroutines=%d end_goroutines=%d cache_entries=%g cache_bytes=%g cache_fills=%g active_connections=%g", base.fds, end.fds, base.goroutines, end.goroutines, afterMetrics["docker_accelerator_cache_entries"], afterMetrics["docker_accelerator_cache_bytes"], afterMetrics["docker_accelerator_cache_fills"], afterMetrics["docker_accelerator_active_connections"])
+	t.Logf("AUDIT baseline_fd=%d end_fd=%d baseline_goroutines=%d end_goroutines=%d cache_entries=%g cache_bytes=%g cache_fills=%g active_connections=%g", base.fds, end.fds, base.goroutines, end.goroutines, afterMetrics["oci_accelerator_cache_entries"], afterMetrics["oci_accelerator_cache_bytes"], afterMetrics["oci_accelerator_cache_fills"], afterMetrics["oci_accelerator_active_connections"])
 	return r
 }
 
@@ -510,20 +510,20 @@ func recordLoadSample(pidFile string, m map[string]float64, maxBytes int64, maxE
 	if err != nil {
 		return fmt.Errorf("read sampler fds: %w", err)
 	}
-	charged := int64(m["docker_accelerator_cache_bytes"] + m["docker_accelerator_cache_reserved_bytes"])
-	reservations := int64(m["docker_accelerator_cache_fills"])
-	entrySlots := int64(m["docker_accelerator_cache_entries"] + m["docker_accelerator_cache_fills"])
+	charged := int64(m["oci_accelerator_cache_bytes"] + m["oci_accelerator_cache_reserved_bytes"])
+	reservations := int64(m["oci_accelerator_cache_fills"])
+	entrySlots := int64(m["oci_accelerator_cache_entries"] + m["oci_accelerator_cache_fills"])
 	peaks.rss = max64(peaks.rss, rss)
 	peaks.fds = max64(peaks.fds, int64(len(fds)))
-	peaks.heap = max64(peaks.heap, int64(m["docker_accelerator_heap_alloc_bytes"]))
-	peaks.goroutines = max64(peaks.goroutines, int64(m["docker_accelerator_goroutines"]))
+	peaks.heap = max64(peaks.heap, int64(m["oci_accelerator_heap_alloc_bytes"]))
+	peaks.goroutines = max64(peaks.goroutines, int64(m["oci_accelerator_goroutines"]))
 	peaks.cacheCharged = max64(peaks.cacheCharged, charged)
-	peaks.cacheReserved = max64(peaks.cacheReserved, int64(m["docker_accelerator_cache_reserved_bytes"]))
+	peaks.cacheReserved = max64(peaks.cacheReserved, int64(m["oci_accelerator_cache_reserved_bytes"]))
 	peaks.cacheReservations = max64(peaks.cacheReservations, reservations)
-	peaks.fills = max64(peaks.fills, int64(m["docker_accelerator_cache_fills"]))
-	peaks.entries = max64(peaks.entries, int64(m["docker_accelerator_cache_entries"]))
+	peaks.fills = max64(peaks.fills, int64(m["oci_accelerator_cache_fills"]))
+	peaks.entries = max64(peaks.entries, int64(m["oci_accelerator_cache_entries"]))
 	peaks.entrySlots = max64(peaks.entrySlots, entrySlots)
-	peaks.connections = max64(peaks.connections, int64(m["docker_accelerator_active_connections"]))
+	peaks.connections = max64(peaks.connections, int64(m["oci_accelerator_active_connections"]))
 	if charged > maxBytes || entrySlots > int64(maxEntries) || reservations > int64(maxFills) || peaks.connections > int64(maxConnections) {
 		return fmt.Errorf("bounded-resource gauge exceeded configured limit: %v", m)
 	}
@@ -550,7 +550,7 @@ func fetchLoadMetrics(port int) (map[string]float64, error) {
 	s := bufio.NewScanner(r.Body)
 	for s.Scan() {
 		line := s.Text()
-		if strings.HasPrefix(line, "docker_accelerator_") {
+		if strings.HasPrefix(line, "oci_accelerator_") {
 			f := strings.Fields(line)
 			if len(f) == 2 {
 				v, err := strconv.ParseFloat(f[1], 64)
@@ -564,7 +564,7 @@ func fetchLoadMetrics(port int) (map[string]float64, error) {
 	if err := s.Err(); err != nil {
 		return nil, err
 	}
-	for _, key := range []string{"docker_accelerator_active_requests", "docker_accelerator_active_waits", "docker_accelerator_active_connections", "docker_accelerator_cache_fills", "docker_accelerator_cache_readers", "docker_accelerator_cache_reserved_bytes", "docker_accelerator_cache_bytes", "docker_accelerator_cache_entries", "docker_accelerator_heap_alloc_bytes", "docker_accelerator_goroutines"} {
+	for _, key := range []string{"oci_accelerator_active_requests", "oci_accelerator_active_waits", "oci_accelerator_active_connections", "oci_accelerator_cache_fills", "oci_accelerator_cache_readers", "oci_accelerator_cache_reserved_bytes", "oci_accelerator_cache_bytes", "oci_accelerator_cache_entries", "oci_accelerator_heap_alloc_bytes", "oci_accelerator_goroutines"} {
 		if _, ok := m[key]; !ok {
 			return nil, fmt.Errorf("metrics response missing %s", key)
 		}
@@ -589,7 +589,7 @@ func waitOriginIdle(t *testing.T, c *loadCounters) {
 func waitLoadQuiescent(t *testing.T, port int) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
-	names := []string{"docker_accelerator_active_requests", "docker_accelerator_active_waits", "docker_accelerator_active_connections", "docker_accelerator_cache_fills", "docker_accelerator_cache_readers", "docker_accelerator_cache_reserved_bytes"}
+	names := []string{"oci_accelerator_active_requests", "oci_accelerator_active_waits", "oci_accelerator_active_connections", "oci_accelerator_cache_fills", "oci_accelerator_cache_readers", "oci_accelerator_cache_reserved_bytes"}
 	for time.Now().Before(deadline) {
 		m, e := fetchLoadMetrics(port)
 		ok := e == nil
@@ -634,7 +634,7 @@ func percentile(v []time.Duration, p float64) float64 {
 
 func writeLoadReport(t *testing.T, results []loadResult) {
 	t.Helper()
-	path := os.Getenv("DOCKER_ACCELERATOR_LOAD_REPORT")
+	path := os.Getenv("OCI_ACCELERATOR_LOAD_REPORT")
 	if path == "" || t.Failed() || len(results) != 39 {
 		return
 	}
@@ -672,8 +672,8 @@ func writeLoadJSON(t *testing.T, path string, results any) {
 
 func TestLoadReportPublication(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report.json")
-	t.Setenv("DOCKER_ACCELERATOR_LOAD_REPORT", path)
-	t.Setenv("DOCKER_ACCELERATOR_DOCKER_LOAD_REPORT", path)
+	t.Setenv("OCI_ACCELERATOR_LOAD_REPORT", path)
+	t.Setenv("OCI_ACCELERATOR_DOCKER_LOAD_REPORT", path)
 	writeLoadReport(t, make([]loadResult, 38))
 	writeDockerLoadReport(t, make([]dockerLoadResult, 5))
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

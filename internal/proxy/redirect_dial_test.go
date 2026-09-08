@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/config"
-	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 func TestDialUpstreamSharesRemainingTimeout(t *testing.T) {

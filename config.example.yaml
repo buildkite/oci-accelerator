@@ -1,4 +1,4 @@
-# Docker Accelerator configuration. Relative directories are resolved from this file.
+# OCI Accelerator configuration. Relative directories are resolved from this file.
 listen: 127.0.0.1:3128
 # Optional separate literal-loopback Prometheus endpoint; disabled by default.
 # metrics_listen: 127.0.0.1:9090

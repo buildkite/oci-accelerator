@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 var errRedirect = errors.New("upstream redirect refused")

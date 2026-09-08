@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache"
 )
 
 type closeCallbackBody struct {

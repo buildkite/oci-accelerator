@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/config"
-	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 var testBlobPath = "/v2/team/image/blobs/sha256:" + strings.Repeat("a", 64)

@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/cache"
-	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 func cacheFixture(t *testing.T, origin *httptest.Server, limit int64, logs *bytes.Buffer) (*Proxy, *http.Client) {

@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/ca"
+	"github.com/buildkite/oci-accelerator/internal/ca"
 )
 
 func TestManifestBasicAuthenticationAuthorizesEveryColdAndWarmGET(t *testing.T) {

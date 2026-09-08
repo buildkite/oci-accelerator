@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache"
 )
 
 // waitForFill takes ownership of resp and immediately closes its upstream body.

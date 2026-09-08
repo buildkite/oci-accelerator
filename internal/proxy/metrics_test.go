@@ -286,7 +286,7 @@ func TestMetricsHandlerIsBoundedAndRedacted(t *testing.T) {
 	w := httptest.NewRecorder()
 	p.MetricsHandler().ServeHTTP(w, r)
 	body := w.Body.String()
-	for _, want := range []string{"docker_accelerator_upstream_get_attempts_total 2", `docker_accelerator_requests_total{outcome="complete"} 1`, "docker_accelerator_heap_alloc_bytes"} {
+	for _, want := range []string{"oci_accelerator_upstream_get_attempts_total 2", `oci_accelerator_requests_total{outcome="complete"} 1`, "oci_accelerator_heap_alloc_bytes"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in %s", want, body)
 		}
@@ -309,7 +309,7 @@ func TestHeapAllocBytesGaugeReportsPositiveLiveHeap(t *testing.T) {
 	var value uint64
 	// Match the sample line, not the "# TYPE ... gauge" declaration, by anchoring
 	// on the preceding newline.
-	line := "\ndocker_accelerator_heap_alloc_bytes "
+	line := "\noci_accelerator_heap_alloc_bytes "
 	idx := strings.Index(body, line)
 	if idx < 0 {
 		t.Fatalf("heap_alloc_bytes gauge missing:\n%s", body)
@@ -333,16 +333,16 @@ func TestMetricsHistogramStatusAndOutcomeCounts(t *testing.T) {
 	p.MetricsHandler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
 	body := w.Body.String()
 	for _, want := range []string{
-		"# TYPE docker_accelerator_request_duration_seconds histogram",
-		`docker_accelerator_request_status_total{class="4xx"} 1`,
-		`docker_accelerator_request_status_total{class="other"} 1`,
-		`docker_accelerator_requests_total{outcome="complete"} 1`,
-		`docker_accelerator_requests_total{outcome="aborted"} 1`,
-		`docker_accelerator_request_duration_seconds_bucket{le="0.01"} 0`,
-		`docker_accelerator_request_duration_seconds_bucket{le="0.05"} 1`,
-		`docker_accelerator_request_duration_seconds_bucket{le="+Inf"} 2`,
-		"docker_accelerator_request_duration_seconds_count 2",
-		"docker_accelerator_request_duration_seconds_sum " + strconv.FormatFloat((20*time.Millisecond+6*time.Second).Seconds(), 'g', -1, 64),
+		"# TYPE oci_accelerator_request_duration_seconds histogram",
+		`oci_accelerator_request_status_total{class="4xx"} 1`,
+		`oci_accelerator_request_status_total{class="other"} 1`,
+		`oci_accelerator_requests_total{outcome="complete"} 1`,
+		`oci_accelerator_requests_total{outcome="aborted"} 1`,
+		`oci_accelerator_request_duration_seconds_bucket{le="0.01"} 0`,
+		`oci_accelerator_request_duration_seconds_bucket{le="0.05"} 1`,
+		`oci_accelerator_request_duration_seconds_bucket{le="+Inf"} 2`,
+		"oci_accelerator_request_duration_seconds_count 2",
+		"oci_accelerator_request_duration_seconds_sum " + strconv.FormatFloat((20*time.Millisecond+6*time.Second).Seconds(), 'g', -1, 64),
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing exact metric %q\n%s", want, body)
@@ -365,14 +365,14 @@ func TestMetricsHistogramBoundaryObservations(t *testing.T) {
 	p.MetricsHandler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
 	body := w.Body.String()
 	for i, label := range labels {
-		want := fmt.Sprintf("docker_accelerator_request_duration_seconds_bucket{le=%q} %d\n", label, 3*i+2)
+		want := fmt.Sprintf("oci_accelerator_request_duration_seconds_bucket{le=%q} %d\n", label, 3*i+2)
 		if !strings.Contains(body, want) {
 			t.Errorf("missing histogram sample %q\n%s", strings.TrimSpace(want), body)
 		}
 	}
 	for _, want := range []string{
-		`docker_accelerator_request_duration_seconds_bucket{le="+Inf"} 21` + "\n",
-		"docker_accelerator_request_duration_seconds_count 21\n",
+		`oci_accelerator_request_duration_seconds_bucket{le="+Inf"} 21` + "\n",
+		"oci_accelerator_request_duration_seconds_count 21\n",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing histogram sample %q\n%s", strings.TrimSpace(want), body)

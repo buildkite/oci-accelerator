@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 func TestWarmManifestProtocolBypasses(t *testing.T) {

@@ -1,4 +1,4 @@
-// Package config loads and validates docker-accelerator configuration.
+// Package config loads and validates oci-accelerator configuration.
 package config
 
 import (
@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 	"go.yaml.in/yaml/v3"
 )
 

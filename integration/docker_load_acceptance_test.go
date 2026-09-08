@@ -18,8 +18,8 @@ import (
 // daemons. It is deliberately separate from the ordinary Docker acceptance test
 // because it starts fifteen dockerd instances over its full run.
 func TestDockerLoadAcceptance(t *testing.T) {
-	if os.Getenv("DOCKER_ACCELERATOR_LOAD_E2E") != "1" {
-		t.Skip("set DOCKER_ACCELERATOR_LOAD_E2E=1 to run the Docker load acceptance test")
+	if os.Getenv("OCI_ACCELERATOR_LOAD_E2E") != "1" {
+		t.Skip("set OCI_ACCELERATOR_LOAD_E2E=1 to run the Docker load acceptance test")
 	}
 	requireCommands(t, "docker", "dockerd", "sudo", "amp")
 	if os.Geteuid() != 0 {
@@ -32,8 +32,8 @@ func TestDockerLoadAcceptance(t *testing.T) {
 	defer origin.Close()
 	authority := origin.Listener.Addr().String()
 
-	bin := filepath.Join(root, "docker-accelerator")
-	run(t, "go", "build", "-o", bin, "../cmd/docker-accelerator")
+	bin := filepath.Join(root, "oci-accelerator")
+	run(t, "go", "build", "-o", bin, "../cmd/oci-accelerator")
 	proxyPort := freePort(t, "127.0.0.1")
 	metricsPort := freePort(t, "127.0.0.1")
 	proxyCA := filepath.Join(root, "proxy-ca")
@@ -123,7 +123,7 @@ func TestDockerLoadAcceptance(t *testing.T) {
 				t.Fatal(err)
 			}
 			base := readProcessLoad(t, pidFile)
-			base.goroutines = int64(beforeMetrics["docker_accelerator_goroutines"])
+			base.goroutines = int64(beforeMetrics["oci_accelerator_goroutines"])
 			ctx, cancel := context.WithCancel(context.Background())
 			peaks := loadPeaks{}
 			done, sampleErr, ready := make(chan struct{}), make(chan error, 1), make(chan struct{})
@@ -184,7 +184,7 @@ func TestDockerLoadAcceptance(t *testing.T) {
 				t.Fatal(err)
 			}
 			end := readProcessLoad(t, pidFile)
-			end.goroutines = int64(afterMetrics["docker_accelerator_goroutines"])
+			end.goroutines = int64(afterMetrics["oci_accelerator_goroutines"])
 			if end.fds > base.fds+16 {
 				t.Errorf("FDs did not return near baseline: baseline=%d end=%d", base.fds, end.fds)
 			}
@@ -222,20 +222,20 @@ func TestDockerLoadAcceptance(t *testing.T) {
 				Case: t.Name(), Phase: phase, Profile: "docker", Clients: clients, ObjectBytes: int64(len(image.layer)),
 				P50MS: percentile(latencies, .5), P95MS: percentile(latencies, .95),
 				OriginGETs: int64(afterA[image.layerPath] - beforeA[image.layerPath] + afterA[image.configPath] - beforeA[image.configPath]), OriginBodyBytes: layerBytes + configBytes,
-				WaitHitDelta:     metricDelta(beforeMetrics, afterMetrics, `docker_accelerator_cache_total{outcome="wait_hit"}`),
-				FallbackDelta:    metricDelta(beforeMetrics, afterMetrics, `docker_accelerator_fallbacks_total{outcome="retry"}`),
+				WaitHitDelta:     metricDelta(beforeMetrics, afterMetrics, `oci_accelerator_cache_total{outcome="wait_hit"}`),
+				FallbackDelta:    metricDelta(beforeMetrics, afterMetrics, `oci_accelerator_fallbacks_total{outcome="retry"}`),
 				LogicalDiskBytes: logical, PhysicalDiskBytes: physical,
 				PeakRSSBytes: peaks.rss, PeakFDs: peaks.fds, PeakHeapBytes: peaks.heap, PeakGoroutines: peaks.goroutines,
 				PeakCacheChargedBytes: peaks.cacheCharged, PeakCacheReservedBytes: peaks.cacheReserved, PeakCacheReservations: peaks.cacheReservations,
 				PeakCacheFills: peaks.fills, PeakCacheEntries: peaks.entries, PeakCacheEntrySlots: peaks.entrySlots, PeakActiveConnections: peaks.connections,
 				BaselineFDs: base.fds, EndFDs: end.fds, BaselineGoroutines: base.goroutines, EndGoroutines: end.goroutines,
-				FinalCacheFills: int64(afterMetrics["docker_accelerator_cache_fills"]), FinalCacheReaders: int64(afterMetrics["docker_accelerator_cache_readers"]),
-				FinalCacheReservedBytes: int64(afterMetrics["docker_accelerator_cache_reserved_bytes"]), FinalActiveRequests: int64(afterMetrics["docker_accelerator_active_requests"]),
-				FinalActiveWaits: int64(afterMetrics["docker_accelerator_active_waits"]), FinalActiveConnections: int64(afterMetrics["docker_accelerator_active_connections"]),
+				FinalCacheFills: int64(afterMetrics["oci_accelerator_cache_fills"]), FinalCacheReaders: int64(afterMetrics["oci_accelerator_cache_readers"]),
+				FinalCacheReservedBytes: int64(afterMetrics["oci_accelerator_cache_reserved_bytes"]), FinalActiveRequests: int64(afterMetrics["oci_accelerator_active_requests"]),
+				FinalActiveWaits: int64(afterMetrics["oci_accelerator_active_waits"]), FinalActiveConnections: int64(afterMetrics["oci_accelerator_active_connections"]),
 			}, LayerGETs: afterA[image.layerPath] - beforeA[image.layerPath], ConfigGETs: afterA[image.configPath] - beforeA[image.configPath],
-				CacheHits:     metricDelta(beforeMetrics, afterMetrics, `docker_accelerator_cache_total{outcome="hit"}`),
-				CacheWaitHits: metricDelta(beforeMetrics, afterMetrics, `docker_accelerator_cache_total{outcome="wait_hit"}`),
-				CacheMisses:   metricDelta(beforeMetrics, afterMetrics, `docker_accelerator_cache_total{outcome="miss"}`)}
+				CacheHits:     metricDelta(beforeMetrics, afterMetrics, `oci_accelerator_cache_total{outcome="hit"}`),
+				CacheWaitHits: metricDelta(beforeMetrics, afterMetrics, `oci_accelerator_cache_total{outcome="wait_hit"}`),
+				CacheMisses:   metricDelta(beforeMetrics, afterMetrics, `oci_accelerator_cache_total{outcome="miss"}`)}
 			results = append(results, r)
 			load4eLogPhase(t, r, time.Since(phaseStart), latencies, layerBytes, configBytes, afterMetrics)
 		}
@@ -245,7 +245,7 @@ func TestDockerLoadAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, gauge := range []string{"docker_accelerator_cache_fills", "docker_accelerator_cache_reserved_bytes", "docker_accelerator_active_requests", "docker_accelerator_active_waits", "docker_accelerator_active_connections"} {
+	for _, gauge := range []string{"oci_accelerator_cache_fills", "oci_accelerator_cache_reserved_bytes", "oci_accelerator_active_requests", "oci_accelerator_active_waits", "oci_accelerator_active_connections"} {
 		if finalMetrics[gauge] != 0 {
 			t.Errorf("final %s=%g, want 0", gauge, finalMetrics[gauge])
 		}
@@ -305,12 +305,12 @@ func load4eLogPhase(t *testing.T, r dockerLoadResult, elapsed time.Duration, lat
 		i := int(float64(len(latencies)-1)*p + .5)
 		return latencies[i]
 	}
-	t.Logf("load clients=%d phase=%s elapsed=%s latency_min=%s latency_median=%s latency_p95=%s origin_layer_gets=%d origin_config_gets=%d origin_layer_bytes=%d origin_config_bytes=%d cache_hits=%.0f cache_wait_hits=%.0f cache_misses=%.0f peak_rss=%d peak_heap=%d peak_fds=%d peak_goroutines=%d peak_charged=%d peak_reserved=%d peak_fills=%d peak_connections=%d disk_logical=%d disk_physical=%d baseline_fd=%d end_fd=%d baseline_goroutines=%d end_goroutines=%d cache_entries=%.0f cache_bytes=%.0f", r.Clients, r.Phase, elapsed, latencies[0], percentile(.5), percentile(.95), r.LayerGETs, r.ConfigGETs, layerBytes, configBytes, r.CacheHits, r.CacheWaitHits, r.CacheMisses, r.PeakRSSBytes, r.PeakHeapBytes, r.PeakFDs, r.PeakGoroutines, r.PeakCacheChargedBytes, r.PeakCacheReservedBytes, r.PeakCacheFills, r.PeakActiveConnections, r.LogicalDiskBytes, r.PhysicalDiskBytes, r.BaselineFDs, r.EndFDs, r.BaselineGoroutines, r.EndGoroutines, metrics["docker_accelerator_cache_entries"], metrics["docker_accelerator_cache_bytes"])
+	t.Logf("load clients=%d phase=%s elapsed=%s latency_min=%s latency_median=%s latency_p95=%s origin_layer_gets=%d origin_config_gets=%d origin_layer_bytes=%d origin_config_bytes=%d cache_hits=%.0f cache_wait_hits=%.0f cache_misses=%.0f peak_rss=%d peak_heap=%d peak_fds=%d peak_goroutines=%d peak_charged=%d peak_reserved=%d peak_fills=%d peak_connections=%d disk_logical=%d disk_physical=%d baseline_fd=%d end_fd=%d baseline_goroutines=%d end_goroutines=%d cache_entries=%.0f cache_bytes=%.0f", r.Clients, r.Phase, elapsed, latencies[0], percentile(.5), percentile(.95), r.LayerGETs, r.ConfigGETs, layerBytes, configBytes, r.CacheHits, r.CacheWaitHits, r.CacheMisses, r.PeakRSSBytes, r.PeakHeapBytes, r.PeakFDs, r.PeakGoroutines, r.PeakCacheChargedBytes, r.PeakCacheReservedBytes, r.PeakCacheFills, r.PeakActiveConnections, r.LogicalDiskBytes, r.PhysicalDiskBytes, r.BaselineFDs, r.EndFDs, r.BaselineGoroutines, r.EndGoroutines, metrics["oci_accelerator_cache_entries"], metrics["oci_accelerator_cache_bytes"])
 }
 
 func writeDockerLoadReport(t *testing.T, results []dockerLoadResult) {
 	t.Helper()
-	path := os.Getenv("DOCKER_ACCELERATOR_DOCKER_LOAD_REPORT")
+	path := os.Getenv("OCI_ACCELERATOR_DOCKER_LOAD_REPORT")
 	if path == "" || t.Failed() || len(results) != 6 {
 		return
 	}

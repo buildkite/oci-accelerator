@@ -140,7 +140,7 @@ Verify cold and warm pulls, same bytes/digest, reduced upstream body bytes on wa
 Keep the existing CONNECT/TLS boundary and standard reverse proxy. Add registry
 request/response policy under `internal/proxy` and filesystem ownership under
 `internal/cache`; wire cache startup before opening the listener in
-`cmd/docker-accelerator/main.go`. Do not introduce provider adapters or replace
+`cmd/oci-accelerator/main.go`. Do not introduce provider adapters or replace
 the working forwarding stack. Each row is a separate implementation commit,
 validated and reviewed before beginning the next row.
 

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/config"
 )
 
 func TestRefusalClosesConnectionBeforeSecondCONNECT(t *testing.T) {
@@ -393,7 +393,7 @@ func (l failedAcceptListener) Accept() (net.Conn, error) {
 }
 
 func TestProxyHelperReportsLifecycleErrors(t *testing.T) {
-	const modeEnv = "DOCKER_ACCELERATOR_PROXY_HELPER_TEST"
+	const modeEnv = "OCI_ACCELERATOR_PROXY_HELPER_TEST"
 	switch os.Getenv(modeEnv) {
 	case "serve":
 		p := New(config.Config{MaxConnections: 1}, nil, nil, nil)

@@ -1,4 +1,4 @@
-# Docker accelerator
+# OCI Accelerator
 
 A standalone Go explicit HTTPS proxy for Docker Engine, with selective registry
 TLS interception, persistent CA identity, and authorized SHA-256 blob and
@@ -17,8 +17,8 @@ cold/warm/restart behavior, coalescing tradeoffs, and repeatable checks.
 ## Build and configure
 
 ```sh
-go build -o bin/docker-accelerator ./cmd/docker-accelerator
-bin/docker-accelerator --config config.example.yaml --check
+go build -o bin/oci-accelerator ./cmd/oci-accelerator
+bin/oci-accelerator --config config.example.yaml --check
 ```
 
 Follow the [operating guide](docs/operations.md) to configure registry authorities,
@@ -63,7 +63,7 @@ shared orb snapshot. Setup does not install a proxy CA into Docker's trust store
 Real Docker acceptance is opt-in and uses fresh isolated daemon state:
 
 ```sh
-DOCKER_ACCELERATOR_E2E=1 go test -v ./integration \
+OCI_ACCELERATOR_E2E=1 go test -v ./integration \
   -run TestDockerPullThroughCompiledProxy -count=1 -timeout=5m
 ```
 
@@ -72,3 +72,12 @@ digests, fresh upstream GETs, reduced warm layer bytes, and persistent CA identi
 using local fixtures—not public registries.
 See the [guide](docs/operations.md#acceptance-evidence-and-repeatable-checks) for
 prerequisites, cleanup, tested versions, and limitations.
+
+## Project rename
+
+Formerly Docker Accelerator. The Go module is now
+`github.com/buildkite/oci-accelerator`; the binary, metrics, and test environment
+variables use the OCI Accelerator name without compatibility aliases. See the
+[migration notes](docs/operations.md#upgrading-from-docker-accelerator).
+This is a name change, not expanded client support: Docker Engine remains the
+validated client.

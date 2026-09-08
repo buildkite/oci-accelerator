@@ -20,8 +20,8 @@ import (
 // cache fill, then proves that a fresh process cleans up and can acquire the
 // same store lock and fill the same object.
 func TestCacheCrashAcceptance(t *testing.T) {
-	if os.Getenv("DOCKER_ACCELERATOR_FAULT_E2E") != "1" {
-		t.Skip("set DOCKER_ACCELERATOR_FAULT_E2E=1 to run the cache crash acceptance test")
+	if os.Getenv("OCI_ACCELERATOR_FAULT_E2E") != "1" {
+		t.Skip("set OCI_ACCELERATOR_FAULT_E2E=1 to run the cache crash acceptance test")
 	}
 	requireCommands(t, "amp")
 
@@ -70,8 +70,8 @@ func TestCacheCrashAcceptance(t *testing.T) {
 	defer origin.Close()
 	authority := fmt.Sprintf("%s:%d", ip, originPort)
 
-	bin := filepath.Join(root, "docker-accelerator")
-	run(t, "go", "build", "-o", bin, "../cmd/docker-accelerator")
+	bin := filepath.Join(root, "oci-accelerator")
+	run(t, "go", "build", "-o", bin, "../cmd/oci-accelerator")
 	proxyPort := freePort(t, "127.0.0.1")
 	cacheDir := filepath.Join(root, "cache")
 	proxyCA := filepath.Join(root, "proxy-ca")

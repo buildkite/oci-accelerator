@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/ca"
+	"github.com/buildkite/oci-accelerator/internal/ca"
 )
 
 const fixtureToken = "opaque-fixture-pull-token"
@@ -36,8 +36,8 @@ type multiFixture struct {
 // TestDockerMultiPlatformThroughCompiledProxy exercises Docker's own platform
 // selection. It is deliberately opt-in because it starts privileged dockerds.
 func TestDockerMultiPlatformThroughCompiledProxy(t *testing.T) {
-	if os.Getenv("DOCKER_ACCELERATOR_E2E") != "1" {
-		t.Skip("set DOCKER_ACCELERATOR_E2E=1 to run the real Docker acceptance test")
+	if os.Getenv("OCI_ACCELERATOR_E2E") != "1" {
+		t.Skip("set OCI_ACCELERATOR_E2E=1 to run the real Docker acceptance test")
 	}
 	requireCommands(t, "docker", "dockerd", "sudo", "amp", "unshare", "mount")
 	if os.Geteuid() != 0 {
@@ -90,8 +90,8 @@ func runMultiPlatformCase(t *testing.T, rootMedia string) {
 	defer registrySrv.Close()
 	authority := fmt.Sprintf("%s:%d", registryHost, registryPort)
 
-	bin := filepath.Join(root, "docker-accelerator")
-	run(t, "go", "build", "-o", bin, "../cmd/docker-accelerator")
+	bin := filepath.Join(root, "oci-accelerator")
+	run(t, "go", "build", "-o", bin, "../cmd/oci-accelerator")
 	proxyPort := freePort(t, "127.0.0.1")
 	proxyCA := filepath.Join(root, "proxy-ca")
 	config := filepath.Join(root, "proxy.yaml")

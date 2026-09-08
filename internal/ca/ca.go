@@ -200,7 +200,7 @@ func newCA(now time.Time) ([]byte, *ecdsa.PrivateKey, error) {
 	t := &x509.Certificate{
 		SerialNumber:          serial,
 		SignatureAlgorithm:    x509.ECDSAWithSHA256,
-		Subject:               pkix.Name{CommonName: "Docker Accelerator CA"},
+		Subject:               pkix.Name{CommonName: "OCI Accelerator CA"},
 		NotBefore:             now.Add(-time.Minute),
 		NotAfter:              now.AddDate(10, 0, 0),
 		IsCA:                  true,

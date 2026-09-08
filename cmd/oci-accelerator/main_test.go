@@ -10,6 +10,19 @@ import (
 	"testing"
 )
 
+func TestRunHelpUsesOCIAcceleratorName(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if err := run(context.Background(), []string{"--help"}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "Usage: oci-accelerator --config FILE [--check]\n"; got != want {
+		t.Fatalf("help = %q, want %q", got, want)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("help wrote stderr: %q", errOut.String())
+	}
+}
+
 func TestRunRejectsInvalidArguments(t *testing.T) {
 	tests := []struct {
 		name   string

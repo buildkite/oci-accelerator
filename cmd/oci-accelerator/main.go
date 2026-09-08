@@ -12,10 +12,10 @@ import (
 	"net/http"
 	"os"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/ca"
-	"ampcode.com/buildkite/docker-accelerator/internal/cache"
-	"ampcode.com/buildkite/docker-accelerator/internal/config"
-	"ampcode.com/buildkite/docker-accelerator/internal/proxy"
+	"github.com/buildkite/oci-accelerator/internal/ca"
+	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/proxy"
 )
 
 func main() {
@@ -33,7 +33,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 // runWithListen takes ownership of each listener returned by listen.
 func runWithListen(ctx context.Context, args []string, stdout, stderr io.Writer, listen func(string, string) (net.Listener, error)) (runErr error) {
-	flags := flag.NewFlagSet("docker-accelerator", flag.ContinueOnError)
+	flags := flag.NewFlagSet("oci-accelerator", flag.ContinueOnError)
 	// The flag package includes rejected arguments in its diagnostics. Suppress
 	// those diagnostics so command-line input is never reflected in an error.
 	flags.SetOutput(io.Discard)
@@ -41,7 +41,7 @@ func runWithListen(ctx context.Context, args []string, stdout, stderr io.Writer,
 	check := flags.Bool("check", false, "validate configuration without starting the proxy")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: docker-accelerator --config FILE [--check]")
+			fmt.Fprintln(stdout, "Usage: oci-accelerator --config FILE [--check]")
 			return nil
 		}
 		return errors.New("invalid command line")

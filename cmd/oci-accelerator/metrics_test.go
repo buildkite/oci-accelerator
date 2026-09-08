@@ -157,7 +157,7 @@ shutdown_timeout: 100ms
 					wantStatus  int
 					wantContent []byte
 				}{
-					{path: "/metrics", wantStatus: http.StatusOK, wantContent: []byte("docker_accelerator_")},
+					{path: "/metrics", wantStatus: http.StatusOK, wantContent: []byte("oci_accelerator_")},
 					{path: "/", wantStatus: http.StatusNotFound},
 					{path: "/debug/pprof/", wantStatus: http.StatusNotFound},
 				}

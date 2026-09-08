@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 type bufferedConn struct {

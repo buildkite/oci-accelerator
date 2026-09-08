@@ -22,8 +22,8 @@ import (
 // TestCacheENOSPCAcceptance deliberately exhausts a private tmpfs. It is kept
 // opt-in because it requires passwordless sudo and Linux mount namespaces.
 func TestCacheENOSPCAcceptance(t *testing.T) {
-	if os.Getenv("DOCKER_ACCELERATOR_FAULT_E2E") != "1" {
-		t.Skip("set DOCKER_ACCELERATOR_FAULT_E2E=1 to run the cache fault acceptance test")
+	if os.Getenv("OCI_ACCELERATOR_FAULT_E2E") != "1" {
+		t.Skip("set OCI_ACCELERATOR_FAULT_E2E=1 to run the cache fault acceptance test")
 	}
 	requireCommands(t, "sudo", "unshare", "nsenter", "mount", "dd", "pgrep", "amp")
 	run(t, "sudo", "-n", "true")
@@ -69,8 +69,8 @@ func TestCacheENOSPCAcceptance(t *testing.T) {
 	defer origin.Close()
 	authority := fmt.Sprintf("%s:%d", ip, originPort)
 
-	bin := filepath.Join(root, "docker-accelerator")
-	run(t, "go", "build", "-o", bin, "../cmd/docker-accelerator")
+	bin := filepath.Join(root, "oci-accelerator")
+	run(t, "go", "build", "-o", bin, "../cmd/oci-accelerator")
 	proxyPort := freePort(t, "127.0.0.1")
 	mountpoint := filepath.Join(root, "cacheparent")
 	if err := os.Mkdir(mountpoint, 0o700); err != nil {

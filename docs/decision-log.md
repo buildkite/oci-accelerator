@@ -1,5 +1,19 @@
 # Implementation decisions
 
+## Project rename (maintenance)
+
+- Full clean-break rename to OCI Accelerator: command `oci-accelerator`, module
+  `github.com/buildkite/oci-accelerator`, metrics `oci_accelerator_`, and test/report
+  environment variables `OCI_ACCELERATOR_`. No compatibility aliases.
+- Rename only: preserve Docker Engine terminology, existing protocol/security
+  guarantees, configuration/storage formats and paths, and cached data. New CAs
+  use `OCI Accelerator CA`; existing certificates/keys and installed trust remain
+  untouched, including CAs carrying the old name.
+- User will rehome the repository on GitHub. Do not rename the hosted Amp project,
+  change the Git remote, or push. Deliver one local implementation commit plus a
+  log-only commit linking it. Preserve historical commit URLs and historical
+  decision text; update current commands and operating instructions.
+
 ## Proxy review follow-up (maintenance)
 
 - Fix findings from a deep `internal/proxy/` review on branch `fix/proxy-findings`

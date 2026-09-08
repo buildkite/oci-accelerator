@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"ampcode.com/buildkite/docker-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache"
 )
 
 // heapObjectsMetric is the live heap-object byte count. Reading it via
@@ -103,17 +103,17 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 			fmt.Fprintf(&b, "%s{%s=%q} %d\n", name, label, k, values[k])
 		}
 	}
-	writeMap("docker_accelerator_requests_total", "outcome", m.requests)
-	writeMap("docker_accelerator_request_status_total", "class", m.statuses)
-	writeMap("docker_accelerator_cache_total", "outcome", m.cache)
-	writeMap("docker_accelerator_fills_total", "outcome", m.fills)
-	writeMap("docker_accelerator_waits_total", "outcome", m.waits)
-	writeMap("docker_accelerator_fallbacks_total", "outcome", m.fallback)
-	writeMap("docker_accelerator_cache_rejections_total", "reason", m.rejects)
+	writeMap("oci_accelerator_requests_total", "outcome", m.requests)
+	writeMap("oci_accelerator_request_status_total", "class", m.statuses)
+	writeMap("oci_accelerator_cache_total", "outcome", m.cache)
+	writeMap("oci_accelerator_fills_total", "outcome", m.fills)
+	writeMap("oci_accelerator_waits_total", "outcome", m.waits)
+	writeMap("oci_accelerator_fallbacks_total", "outcome", m.fallback)
+	writeMap("oci_accelerator_cache_rejections_total", "reason", m.rejects)
 	writeScalar := func(name, kind string, value any) {
-		fmt.Fprintf(&b, "# TYPE docker_accelerator_%s %s\ndocker_accelerator_%s %d\n", name, kind, name, value)
+		fmt.Fprintf(&b, "# TYPE oci_accelerator_%s %s\noci_accelerator_%s %d\n", name, kind, name, value)
 	}
-	b.WriteString("# HELP docker_accelerator_upstream_get_attempts_total GET connection-acquisition attempts, including transport retries and DNS/dial/TLS failures before sending.\n")
+	b.WriteString("# HELP oci_accelerator_upstream_get_attempts_total GET connection-acquisition attempts, including transport retries and DNS/dial/TLS failures before sending.\n")
 	writeScalar("upstream_get_attempts_total", "counter", m.upstream)
 	writeScalar("upstream_body_bytes_total", "counter", m.upstreamBytes)
 	writeScalar("downstream_bytes_total", "counter", m.downstreamBytes)
@@ -132,11 +132,11 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeScalar("store_fill_expiry_total", "counter", cs.FillExpiry)
 	writeScalar("heap_alloc_bytes", "gauge", heapAlloc)
 	writeScalar("goroutines", "gauge", runtime.NumGoroutine())
-	b.WriteString("# TYPE docker_accelerator_cache_admissions_total counter\n")
+	b.WriteString("# TYPE oci_accelerator_cache_admissions_total counter\n")
 	for reason := cache.AdmissionReason(0); reason < cache.AdmissionReasonCount; reason++ {
-		fmt.Fprintf(&b, "docker_accelerator_cache_admissions_total{reason=%q} %d\n", reason.String(), cs.Admissions[reason])
+		fmt.Fprintf(&b, "oci_accelerator_cache_admissions_total{reason=%q} %d\n", reason.String(), cs.Admissions[reason])
 	}
-	b.WriteString("# TYPE docker_accelerator_request_duration_seconds histogram\n")
+	b.WriteString("# TYPE oci_accelerator_request_duration_seconds histogram\n")
 	var cumulative uint64
 	for i, count := range m.durations {
 		cumulative += count
@@ -144,9 +144,9 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 		if i < len(requestDurationBounds) {
 			label = strconv.FormatFloat(requestDurationBounds[i].Seconds(), 'g', -1, 64)
 		}
-		fmt.Fprintf(&b, "docker_accelerator_request_duration_seconds_bucket{le=%q} %d\n", label, cumulative)
+		fmt.Fprintf(&b, "oci_accelerator_request_duration_seconds_bucket{le=%q} %d\n", label, cumulative)
 	}
-	fmt.Fprintf(&b, "docker_accelerator_request_duration_seconds_count %d\ndocker_accelerator_request_duration_seconds_sum %g\n", cumulative, m.durationSum)
+	fmt.Fprintf(&b, "oci_accelerator_request_duration_seconds_count %d\noci_accelerator_request_duration_seconds_sum %g\n", cumulative, m.durationSum)
 	_, _ = fmt.Fprint(w, b.String())
 }
 func cloneMap(x map[string]uint64) map[string]uint64 {

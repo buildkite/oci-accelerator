@@ -13,8 +13,8 @@ import (
 // TestDockerPublicRegistriesThroughCompiledProxy is an opt-in compatibility
 // smoke test. It pulls and inspects images, but never creates or runs them.
 func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
-	if os.Getenv("DOCKER_ACCELERATOR_PUBLIC_E2E") != "1" {
-		t.Skip("set DOCKER_ACCELERATOR_PUBLIC_E2E=1 to run public registry acceptance")
+	if os.Getenv("OCI_ACCELERATOR_PUBLIC_E2E") != "1" {
+		t.Skip("set OCI_ACCELERATOR_PUBLIC_E2E=1 to run public registry acceptance")
 	}
 	requireCommands(t, "docker", "dockerd", "sudo", "amp", "go")
 	if os.Geteuid() != 0 {
@@ -22,8 +22,8 @@ func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	bin := filepath.Join(root, "docker-accelerator")
-	run(t, "go", "build", "-o", bin, "../cmd/docker-accelerator")
+	bin := filepath.Join(root, "oci-accelerator")
+	run(t, "go", "build", "-o", bin, "../cmd/oci-accelerator")
 	proxyPort := freePort(t, "127.0.0.1")
 	proxyCA, cacheDir := filepath.Join(root, "proxy-ca"), filepath.Join(root, "cache")
 	config := filepath.Join(root, "proxy.yaml")
