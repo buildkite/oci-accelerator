@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,10 +30,48 @@ func awaitNoActiveRequests(t *testing.T, p *Proxy) {
 	t.Fatal("metrics request completion was not recorded")
 }
 
-func metricsValues(p *Proxy) metricsSnapshot {
-	p.metrics.mu.Lock()
-	defer p.metrics.mu.Unlock()
-	return metricsSnapshot{requests: cloneMap(p.metrics.requests), statuses: cloneMap(p.metrics.statuses), cache: cloneMap(p.metrics.cache), fills: cloneMap(p.metrics.fills), waits: cloneMap(p.metrics.waits), fallback: cloneMap(p.metrics.fallback), upstream: p.metrics.upstream, upstreamBytes: p.metrics.upstreamBytes, downstreamBytes: p.metrics.downstreamBytes}
+func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {
+	m := newMetrics()
+	m.upstream = 2
+	m.activeRequests = 6
+	m.activeWaits = 7
+	s := &requestStats{cache: "miss", fill: "stored", wait: "complete", fallback: "retry", reject: "vary", upstreamBytes: 3}
+	m.finish(s, "complete", http.StatusOK, 20*time.Millisecond, 4)
+	want := metricsSnapshot{
+		requests:        map[string]uint64{"complete": 1},
+		statuses:        map[string]uint64{"2xx": 1},
+		cache:           map[string]uint64{"miss": 1},
+		fills:           map[string]uint64{"stored": 1},
+		waits:           map[string]uint64{"complete": 1},
+		fallback:        map[string]uint64{"retry": 1},
+		rejects:         map[string]uint64{"vary": 1},
+		upstream:        2,
+		upstreamBytes:   3,
+		downstreamBytes: 4,
+		durations:       [8]uint64{0, 1},
+		durationSum:     .02,
+		activeRequests:  5,
+		activeWaits:     7,
+	}
+	got := m.snapshot()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot = %+v, want %+v", got, want)
+	}
+	for _, counts := range []map[string]uint64{got.requests, got.statuses, got.cache, got.fills, got.waits, got.fallback, got.rejects} {
+		for key := range counts {
+			counts[key]++
+		}
+		counts["snapshot-only"] = 99
+	}
+	got.durations[1]++
+	if current := m.snapshot(); !reflect.DeepEqual(current, want) {
+		t.Fatalf("snapshot mutation changed live metrics: %+v", current)
+	}
+	previous := m.snapshot()
+	m.finish(s, "complete", http.StatusOK, time.Second, 8)
+	if !reflect.DeepEqual(previous, want) {
+		t.Fatalf("live update changed an existing snapshot: %+v", previous)
+	}
 }
 
 func TestHTTPTransferMetricsColdWarmDeniedNoStoreCorruptAndFailure(t *testing.T) {
@@ -91,7 +130,7 @@ func TestHTTPTransferMetricsColdWarmDeniedNoStoreCorruptAndFailure(t *testing.T)
 				resp.Body.Close()
 				awaitNoActiveRequests(t, p)
 			}
-			m, st := metricsValues(p), p.cache.Stats()
+			m, st := p.metrics.snapshot(), p.cache.Stats()
 			if uint64(gets.Load()) != tc.gets || m.upstream != tc.gets || m.upstreamBytes != tc.upstreamBytes || m.downstreamBytes != tc.downstreamBytes || m.requests["complete"] != tc.requests || fmt.Sprint(m.cache) != fmt.Sprint(tc.cache) || fmt.Sprint(m.fills) != fmt.Sprint(tc.fills) || fmt.Sprint(m.statuses) != fmt.Sprint(tc.statuses) || st.FillSuccess != tc.storeSuccess || st.FillFailure != tc.storeFailure {
 				t.Fatalf("gets=%d metrics=%+v store=%+v", gets.Load(), m, st)
 			}
@@ -150,7 +189,7 @@ func TestMetricsCountsFailedTransportGET(t *testing.T) {
 	origin.Close()
 	resp, _ := getBlob(t, c, origin.URL+blobURL("unreachable"), "Bearer secret")
 	awaitNoActiveRequests(t, p)
-	m := metricsValues(p)
+	m := p.metrics.snapshot()
 	if resp.StatusCode != 502 || m.upstream != 1 || m.upstreamBytes != 0 || m.statuses["5xx"] != 1 || m.requests["complete"] != 1 {
 		t.Fatalf("failed upstream metrics: %+v status=%d", m, resp.StatusCode)
 	}

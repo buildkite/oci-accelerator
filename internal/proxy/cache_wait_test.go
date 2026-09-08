@@ -139,7 +139,7 @@ func TestCacheFillWaitCoalescesAuthorizedBlobAndManifest(t *testing.T) {
 				t.Fatalf("origin GETs = %d, want 2", gets.Load())
 			}
 			awaitNoActiveRequests(t, p)
-			m := metricsValues(p)
+			m := p.metrics.snapshot()
 			if m.upstream != 2 || m.cache["miss"] != 1 || m.cache["wait_hit"] != 1 || m.waits["complete"] != 1 {
 				t.Fatalf("coalesced metrics = %+v", m)
 			}
@@ -278,7 +278,7 @@ func TestCacheFillWaitTimeoutRetriesOnceAndZeroWaitDoesNotRetry(t *testing.T) {
 				t.Fatalf("calls=%d want %d", calls.Load(), tc.wantCalls)
 			}
 			awaitNoActiveRequests(t, p)
-			m := metricsValues(p)
+			m := p.metrics.snapshot()
 			if m.upstream != uint64(tc.wantCalls) || (tc.wait > 0 && (m.waits["timeout"] != 1 || m.fallback["retry"] != 1)) || (tc.wait == 0 && (m.waits["timeout"] != 0 || m.fallback["retry"] != 0)) {
 				t.Fatalf("timeout metrics = %+v", m)
 			}
@@ -341,7 +341,7 @@ func TestCacheFillWaitFollowerCancellationLeavesLeaderFillIntact(t *testing.T) {
 		t.Fatalf("origin calls = %d, want authorization GET for each client", calls.Load())
 	}
 	awaitNoActiveRequests(t, p)
-	if m := metricsValues(p); m.waits["canceled"] != 1 || m.upstream != 3 {
+	if m := p.metrics.snapshot(); m.waits["canceled"] != 1 || m.upstream != 3 {
 		t.Fatalf("follower cancellation metrics = %+v", m)
 	}
 }
@@ -404,7 +404,7 @@ func TestCacheFillWaitLeaderDisconnectFallsBackWithoutPartialEntry(t *testing.T)
 		t.Fatalf("calls=%d stats=%+v, want three GETs and one complete entry", calls.Load(), stats)
 	}
 	awaitNoActiveRequests(t, p)
-	if m := metricsValues(p); m.upstream != 3 || m.fallback["retry"] != 1 || stats.FillAbort < 1 {
+	if m := p.metrics.snapshot(); m.upstream != 3 || m.fallback["retry"] != 1 || stats.FillAbort < 1 {
 		t.Fatalf("leader disconnect metrics=%+v store=%+v", m, stats)
 	}
 }
@@ -501,7 +501,7 @@ func TestCacheFillWaitCrossOriginTimeoutReplaysRegistryRequest(t *testing.T) {
 		t.Fatalf("calls registry/CDN = %d/%d, want 3/3", originCalls.Load(), cdnCalls.Load())
 	}
 	awaitNoActiveRequests(t, p)
-	if m := metricsValues(p); m.upstream != 6 || m.waits["timeout"] != 1 || m.fallback["retry"] != 1 {
+	if m := p.metrics.snapshot(); m.upstream != 6 || m.waits["timeout"] != 1 || m.fallback["retry"] != 1 {
 		t.Fatalf("cross-origin replay metrics = %+v", m)
 	}
 }
