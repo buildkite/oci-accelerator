@@ -36,6 +36,17 @@
   oversize write failure, Close abort, a trailing zero-byte EOF, and a byte-level
   round trip through Store.Get.
 
+- D (#13): give `dialUpstream` four internal refusal reasons (unparseable address,
+  resolution failure, forbidden address, connection failure), each wrapping
+  errRedirect via `fmt.Errorf("%w: ...")` so `errors.Is(err, errRedirect)` and the
+  client-facing 502 are unchanged. A `refuseDial` helper logs the reason at DEBUG
+  with only the upstream authority — never resolved IPs, credentials, or client
+  data — consistent with the existing request log. The security boundary is
+  untouched: validation still precedes any dial and the host is never re-resolved.
+  Chose log-only reasons (no client-facing metric) as agreed. Per review, log the
+  reason as a structured error value rather than its string, and give each subtest
+  a fresh Proxy to remove shared-state/order coupling.
+
 ## Slice 1 authorization
 
 - Implement 1a–1e autonomously, with per-subslice commits and independent review.

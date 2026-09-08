@@ -1,14 +1,18 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -265,6 +269,112 @@ func TestAddressPolicyAndRebinding(t *testing.T) {
 	}
 }
 
+// syncBuffer is a concurrency-safe log sink for asserting on structured logs.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestDialUpstreamRefusalReasonsAreDistinctAndLoggedWhileRefusingClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		address    string
+		lookupIP   func(context.Context, string) ([]net.IPAddr, error)
+		allowlist  bool
+		reason     error
+		logMessage string
+	}{
+		{
+			name:       "unparseable address",
+			address:    "not a valid authority",
+			reason:     errDialAddress,
+			logMessage: "unparseable upstream address",
+		},
+		{
+			name:       "resolution failure",
+			address:    "resolve-fail.test:443",
+			lookupIP:   func(context.Context, string) ([]net.IPAddr, error) { return nil, errors.New("no such host") },
+			reason:     errDialResolve,
+			logMessage: "upstream DNS resolution failed",
+		},
+		{
+			name:       "empty answer",
+			address:    "empty-answer.test:443",
+			lookupIP:   func(context.Context, string) ([]net.IPAddr, error) { return nil, nil },
+			reason:     errDialResolve,
+			logMessage: "upstream DNS resolution failed",
+		},
+		{
+			name:    "forbidden private address",
+			address: "private.test:443",
+			lookupIP: func(context.Context, string) ([]net.IPAddr, error) {
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+			},
+			reason:     errDialForbidden,
+			logMessage: "upstream address not permitted",
+		},
+		{
+			name: "connection refused",
+			lookupIP: func(context.Context, string) ([]net.IPAddr, error) {
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+			},
+			allowlist:  true,
+			reason:     errDialConnect,
+			logMessage: "upstream connection failed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &syncBuffer{}
+			logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			p := New(config.Config{DialTimeout: 500 * time.Millisecond}, nil, logger, nil)
+			address := tc.address
+			if tc.name == "connection refused" {
+				// A closed listener guarantees a connection failure at a real
+				// loopback authority; allowlisting it lets the dial reach the
+				// connect branch instead of being refused as a private address.
+				l := listen(t)
+				_, port, _ := net.SplitHostPort(l.Addr().String())
+				l.Close()
+				address = "127.0.0.1:" + port
+			}
+			if tc.lookupIP != nil {
+				p.lookupIP = tc.lookupIP
+			}
+			if tc.allowlist {
+				a, _ := hostport.Parse(address, "443")
+				p.destinations[a.String()] = struct{}{}
+			}
+			conn, err := p.dialUpstream(context.Background(), "tcp", address)
+			if conn != nil {
+				conn.Close()
+				t.Fatal("dial unexpectedly succeeded")
+			}
+			// Every reason wraps errRedirect so callers and the client-facing 502
+			// stay uniform, yet the specific reason is distinguishable internally.
+			if !errors.Is(err, errRedirect) {
+				t.Fatalf("err = %v, does not wrap errRedirect", err)
+			}
+			if !errors.Is(err, tc.reason) {
+				t.Fatalf("err = %v, want reason %v", err, tc.reason)
+			}
+			if !strings.Contains(logs.String(), tc.logMessage) {
+				t.Errorf("logs %q missing reason %q", logs.String(), tc.logMessage)
+			}
+		})
+	}
+}
 func FuzzImmutableObjectRequest(f *testing.F) {
 	f.Add(testBlobPath)
 	f.Add("/v2/repo/manifests/latest")

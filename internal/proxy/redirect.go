@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
@@ -13,6 +14,17 @@ import (
 )
 
 var errRedirect = errors.New("upstream redirect refused")
+
+// Internal dial-refusal reasons. Each wraps errRedirect so existing
+// errors.Is(err, errRedirect) checks and the client-facing 502 are unchanged;
+// the distinct reason exists only to make operator logs actionable. None of
+// these is ever surfaced to the client.
+var (
+	errDialAddress   = fmt.Errorf("%w: unparseable upstream address", errRedirect)
+	errDialResolve   = fmt.Errorf("%w: upstream DNS resolution failed", errRedirect)
+	errDialForbidden = fmt.Errorf("%w: upstream address not permitted", errRedirect)
+	errDialConnect   = fmt.Errorf("%w: upstream connection failed", errRedirect)
+)
 
 type registryTransport struct{ p *Proxy }
 
@@ -144,18 +156,19 @@ func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.
 	defer cancel()
 	a, err := hostport.Parse(address, "443")
 	if err != nil {
-		return nil, errRedirect
+		// The address is unparseable, so there is no safe host to name.
+		return nil, p.refuseDial("", errDialAddress)
 	}
 	_, permitted := p.destinations[a.String()]
 	ips, err := p.lookupIP(ctx, a.Host())
 	if err != nil || len(ips) == 0 {
-		return nil, errRedirect
+		return nil, p.refuseDial(a.String(), errDialResolve)
 	}
 	// Validate the entire answer before making any connection. Never resolve
 	// the hostname again after validation (DNS rebinding).
 	for _, ip := range ips {
 		if ip.Zone != "" || (!permitted && !publicIP(ip.IP)) {
-			return nil, errRedirect
+			return nil, p.refuseDial(a.String(), errDialForbidden)
 		}
 	}
 	for _, ip := range ips {
@@ -164,5 +177,16 @@ func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.
 			return &idleReadWriteConn{Conn: conn, timeout: p.cfg.IdleTimeout}, nil
 		}
 	}
-	return nil, errRedirect
+	return nil, p.refuseDial(a.String(), errDialConnect)
+}
+
+// refuseDial records the specific reason a dial was refused for operators and
+// returns it. Every reason wraps errRedirect, so callers and the client-facing
+// response are unaffected. Only the upstream authority (never resolved IPs,
+// credentials, or client data) is logged, matching the existing request log.
+func (p *Proxy) refuseDial(authority string, reason error) error {
+	if p.logger != nil {
+		p.logger.Debug("upstream dial refused", "authority", authority, "reason", reason)
+	}
+	return reason
 }
