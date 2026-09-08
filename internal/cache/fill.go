@@ -235,15 +235,11 @@ func (f *Fill) stopTimer() {
 }
 func (f *Fill) finish(cause error) error {
 	if f.file != nil {
-		if e := f.file.Close(); cause == nil {
-			cause = e
-		}
+		cause = errors.Join(cause, f.file.Close())
 		f.file = nil
 	}
 	removeErr := os.RemoveAll(f.dir)
-	if cause == nil {
-		cause = removeErr
-	}
+	cause = errors.Join(cause, removeErr)
 	f.store.mu.Lock()
 	if cause == nil {
 		f.store.fillAbort++

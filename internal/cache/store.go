@@ -370,6 +370,14 @@ func (s *Store) Stats() Stats {
 	}
 	return Stats{Bytes: s.bytes, Reserved: s.reserved, Entries: len(s.entries), Fills: len(s.fills), Evictions: s.evictions, Readers: s.readers, FillSuccess: s.fillSuccess, FillFailure: s.fillFailure, FillAbort: s.fillAbort, FillExpiry: s.fillExpiry, Admissions: s.admissions, CleanupBytes: cleanupBytes, CleanupSlots: len(s.failedCleanups)}
 }
+
+// Close permanently rejects new work and attempts to abort every active fill,
+// returning any abort and lock-release errors. It does not wait for readers,
+// including Gets already opening or verifying a body, which may still return
+// Readers. If any were active at shutdown's initial check, Close retains the
+// filesystem lock and returns an active-reader error. The caller must finish
+// those Gets, close all Readers, and call Close again to release the lock;
+// closing the Readers alone does not release it.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	s.closed = true
@@ -379,13 +387,14 @@ func (s *Store) Close() error {
 		fs = append(fs, f)
 	}
 	s.mu.Unlock()
+	var abortErr error
 	for _, f := range fs {
-		_ = f.Abort()
+		abortErr = errors.Join(abortErr, f.Abort())
 	}
 	if readers != 0 {
-		return errors.New("cache has active readers")
+		return errors.Join(abortErr, errors.New("cache has active readers"))
 	}
-	return s.releaseLock()
+	return errors.Join(abortErr, s.releaseLock())
 }
 func (s *Store) releaseLock() error {
 	s.mu.Lock()
@@ -393,8 +402,8 @@ func (s *Store) releaseLock() error {
 	if s.lock == nil {
 		return nil
 	}
-	_ = syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN)
-	err := s.lock.Close()
+	unlockErr := syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN)
+	err := errors.Join(unlockErr, s.lock.Close())
 	s.lock = nil
 	return err
 }
