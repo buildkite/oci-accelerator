@@ -90,25 +90,19 @@ func refuse(w http.ResponseWriter, message string, status int) {
 	http.Error(w, message, status)
 }
 
-// rawCONNECTAcceptable inspects the raw request head sniffed off the wire before
-// net/http parses it. It answers a single narrow question: "is there a reason to
-// reject this at the raw level?" It returns false only for a request whose first
-// line is syntactically a CONNECT (METHOD TARGET VERSION) but whose target or Host
-// is unparseable or disagrees between the request line and the Host header.
-//
-// It deliberately returns true for anything that is not an exact single-space
-// CONNECT request line (wrong word count from irregular spacing, non-CONNECT
-// method): those cases carry no raw CONNECT authority to cross-check, so
-// validation is left to net/http and the method/authority checks in ServeHTTP.
-// "Acceptable" therefore means "nothing to reject here", not "this is a valid
-// CONNECT". Deferring is safe: net/http's own request-line parser rejects
-// malformed spacing before ServeHTTP runs, and validateCONNECT re-checks that
-// the parsed request target and Host authority agree.
+// rawCONNECTAcceptable checks the wire authorities before net/http replaces the
+// CONNECT Host with the request-line authority. Fail closed on syntax this
+// checker cannot interpret, even if net/http would accept it (notably bare LF).
 func rawCONNECTAcceptable(header []byte) bool {
 	lines := strings.Split(string(header), "\r\n")
+	for _, line := range lines {
+		if strings.ContainsAny(line, "\r\n") || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			return false
+		}
+	}
 	parts := strings.Split(lines[0], " ")
 	if len(parts) != 3 || parts[0] != http.MethodConnect {
-		return true
+		return false
 	}
 	target, err := hostport.Parse(parts[1], "")
 	if err != nil {
