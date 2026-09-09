@@ -296,6 +296,15 @@ Real Docker cold, warm, restart, authentication, and trust behavior requires Lin
 Docker Engine, passwordless sudo, `mount`, a non-loopback IPv4 interface, and
 permission to create private PID/mount namespaces and mount procfs:
 
+The multiplatform fixture withholds selected configuration and layer
+bodies during warm and restarted-proxy phases while still authorizing every GET
+and returning valid metadata. Each phase uses fresh Docker state, so successful
+verified pulls prove proxy-cache delivery rather than Docker's local cache.
+Manifest bodies remain live: Docker reorders `Accept` values across requests,
+which intentionally produces distinct representation keys. Manifest delivery is
+therefore a compatibility check, not cache-hit proof. Tag mutation and access to
+the old digest remain covered.
+
 ```sh
 OCI_ACCELERATOR_E2E=1 go test -v ./integration \
   -run '^(TestDockerPullThroughCompiledProxy|TestDockerMultiPlatformThroughCompiledProxy)$' \
