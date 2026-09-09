@@ -53,8 +53,11 @@ Load(path)
 so unknown keys are rejected. It requires exactly one YAML document. Relative
 `ca_dir` and `cache.dir` are resolved against the configuration file's own
 directory, so a config is portable regardless of the working directory. Their
-lexically normalized absolute paths must be distinct; one may be nested beneath
-the other.
+lexically normalized absolute paths must be distinct. `cache.dir` may be nested
+beneath `ca_dir`, but `ca_dir` must not be inside `cache.dir`: cache inventory owns
+that directory's contents and can remove abandoned staging directories. These
+checks do not inspect the filesystem or resolve symlinks; startup still enforces
+ownership and on-disk layout requirements.
 
 ## Strictness
 

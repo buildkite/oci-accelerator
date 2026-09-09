@@ -388,13 +388,19 @@ cache:
 	}
 }
 
-func TestLoadRejectsIdenticalStateDirectories(t *testing.T) {
+func TestLoadRejectsConflictingStateDirectories(t *testing.T) {
 	tests := []struct {
 		name, caDir, cacheDir string
 	}{
 		{"relative aliases", "state", "./state"},
 		{"relative and absolute aliases", "state", "ABSOLUTE"},
 		{"normalized parent", "state", "other/../state"},
+		{"CA inside cache", "state/ca", "state"},
+		{"CA inside absolute cache", "state/ca", "ABSOLUTE"},
+		{"normalized nested CA", "state/other/../ca", "./state"},
+		{"CA inside staging path", "state/.fill-ca", "state"},
+		{"filesystem root cache", "state/ca", string(filepath.Separator)},
+		{"dot-prefixed child", "state/..ca", "state"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -419,9 +425,15 @@ func TestLoadRejectsIdenticalStateDirectories(t *testing.T) {
 }
 
 func TestLoadAllowsDistinctStateDirectories(t *testing.T) {
-	for _, cacheDir := range []string{"sibling", "ca/cache"} {
-		t.Run(cacheDir, func(t *testing.T) {
-			_, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {dir: '"+cacheDir+"'}\n"))
+	for _, test := range []struct{ caDir, cacheDir string }{
+		{"ca", "sibling"},
+		{"ca", "ca/cache"},
+		{"cache-other", "cache"},
+		{"cache/../ca", "cache"},
+		{"../ca", "."},
+	} {
+		t.Run(test.caDir+"_"+test.cacheDir, func(t *testing.T) {
+			_, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: '"+test.caDir+"'\ncache: {dir: '"+test.cacheDir+"'}\n"))
 			if err != nil {
 				t.Fatal(err)
 			}

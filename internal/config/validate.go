@@ -85,6 +85,11 @@ func validate(raw rawConfig, base string) (Config, error) {
 	if filepath.Clean(caDirAbsolute) == filepath.Clean(cacheDirAbsolute) {
 		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: must be distinct directory paths", ErrInvalid)
 	}
+	// Cache inventory owns every child of its root, including removal of
+	// abandoned staging directories. The CA must not live inside that namespace.
+	if relative, err := filepath.Rel(cacheDirAbsolute, caDirAbsolute); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: ca_dir must not be inside cache.dir", ErrInvalid)
+	}
 
 	return Config{
 		Listen:            listen,
