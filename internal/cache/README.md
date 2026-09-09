@@ -23,6 +23,9 @@ for performance notes see [benchmarks.md](benchmarks.md).
 Open or create the private cache directory, take its exclusive lock, and scan
 existing entries while discarding abandoned fills. `Open` applies a byte ceiling
 with default slot and fill limits; `OpenWithLimits` sets every `Limits` field.
+Startup errors match fixed sentinels for invalid limits, lock conflict, unsafe
+state, or filesystem failure; filesystem errors retain their cause for internal
+handling.
 
 ### `Metadata` · `Limits` · `Stats`
 

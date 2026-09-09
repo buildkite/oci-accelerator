@@ -23,8 +23,11 @@ oci-accelerator --config FILE [--check]
 - `--check` — validate the configuration and exit without starting the proxy.
 
 Positional arguments are rejected. Flag-parsing diagnostics are suppressed so
-command-line input is never reflected back in an error message, and startup
-errors are deliberately generic for the same reason.
+command-line input is never reflected back in an error message. Sanitized
+configuration diagnostics retain fixed fields, line numbers, and categories;
+configuration I/O errors remain generic. Cache diagnostics report only fixed
+lock-conflict, unsafe-state, invalid-limits, filesystem, or active-reader
+categories.
 
 ## Startup wiring
 

@@ -778,6 +778,8 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	if s2, err := Open(s.dir, s.max); err == nil {
 		s2.Close()
 		t.Fatal("second store opened")
+	} else if !errors.Is(err, ErrLockConflict) {
+		t.Fatalf("second store error = %v, want lock conflict", err)
 	}
 	m := testMeta("key", "abcd")
 	put(t, s, m, "abcd")
@@ -798,6 +800,8 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	if s2, err := Open(s.dir, s.max); err == nil {
 		s2.Close()
 		t.Fatal("unknown state accepted")
+	} else if !errors.Is(err, ErrUnsafeState) {
+		t.Fatalf("unknown state error = %v, want unsafe state", err)
 	}
 	if b, _ := os.ReadFile(path); !bytes.Equal(b, []byte("keep")) {
 		t.Fatal("deleted unknown data")
@@ -814,6 +818,16 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	if s2, err := Open(link, s.max); err == nil {
 		s2.Close()
 		t.Fatal("symlink accepted")
+	}
+}
+
+func TestOpenErrorCategories(t *testing.T) {
+	if _, err := OpenWithLimits("", Limits{}); !errors.Is(err, ErrInvalidLimits) {
+		t.Fatalf("invalid limits error = %v", err)
+	}
+	missingParent := filepath.Join(t.TempDir(), "missing-parent", "cache")
+	if _, err := Open(missingParent, 1<<20); !errors.Is(err, ErrFilesystem) {
+		t.Fatalf("filesystem error = %v", err)
 	}
 }
 func TestRestrictiveUmaskAndTinyCapacity(t *testing.T) {

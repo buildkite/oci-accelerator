@@ -19,9 +19,21 @@ import (
 const metadataReservation int64 = 4096 // capacity charged per entry, including its sidecar
 
 var (
-	ErrMiss   = errors.New("cache miss")
-	ErrBypass = errors.New("cache bypass")
+	ErrMiss          = errors.New("cache miss")
+	ErrBypass        = errors.New("cache bypass")
+	ErrInvalidLimits = errors.New("invalid cache limits")
+	ErrLockConflict  = errors.New("cache lock conflict")
+	ErrUnsafeState   = errors.New("unsafe cache state")
+	ErrFilesystem    = errors.New("cache filesystem failure")
+	ErrActiveReaders = errors.New("cache has active readers")
 )
+
+func filesystemError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrFilesystem, err)
+}
 
 type AdmissionReason uint8
 
@@ -160,7 +172,7 @@ func Open(dir string, maxBytes int64) (*Store, error) {
 
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	if dir == "" || !limits.valid() {
-		return nil, errors.New("cache directory and capacity are required")
+		return nil, ErrInvalidLimits
 	}
 	dir = filepath.Clean(dir)
 	if err := ensurePrivateDir(dir); err != nil {
@@ -169,22 +181,25 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	lockPath := filepath.Join(dir, ".lock")
 	if li, err := os.Lstat(lockPath); err == nil {
 		if !li.Mode().IsRegular() || li.Mode().Perm() != 0o600 || !owned(li) {
-			return nil, errors.New("cache lock has insecure type, ownership, or permissions")
+			return nil, ErrUnsafeState
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		return nil, filesystemError(err)
 	}
 	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, filesystemError(err)
 	}
 	if err = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lf.Close()
-		return nil, fmt.Errorf("cache is already open: %w", err)
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, fmt.Errorf("%w: %w", ErrLockConflict, err)
+		}
+		return nil, filesystemError(err)
 	}
 	if err = lf.Chmod(0o600); err != nil {
 		lf.Close()
-		return nil, err
+		return nil, filesystemError(err)
 	}
 	s := &Store{
 		dir:         dir,
@@ -198,6 +213,9 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	}
 	if err := s.inventory(); err != nil {
 		s.releaseLock()
+		if !errors.Is(err, ErrUnsafeState) {
+			err = filesystemError(err)
+		}
 		return nil, err
 	}
 	return s, nil
@@ -210,22 +228,28 @@ func ensurePrivateDir(dir string) error {
 	parentInfo, parentErr := os.Lstat(filepath.Dir(dir))
 	parentPrivate := parentErr == nil && isRealDir(parentInfo) && parentInfo.Mode().Perm()&0o022 == 0 && owned(parentInfo)
 	if !parentPrivate {
-		return errors.New("cache parent must be an owner-controlled non-symlink directory")
+		if parentErr != nil {
+			return filesystemError(parentErr)
+		}
+		return ErrUnsafeState
 	}
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		if err = os.Mkdir(dir, 0o700); err != nil {
-			return err
+			return filesystemError(err)
 		}
 		if err = os.Chmod(dir, 0o700); err != nil {
-			return err
+			return filesystemError(err)
 		}
 		info, err = os.Lstat(dir)
 	}
 	// The cache directory itself must be owned by this user and exactly 0700.
 	dirPrivate := err == nil && isRealDir(info) && info.Mode().Perm() == 0o700 && owned(info)
 	if !dirPrivate {
-		return errors.New("cache directory must be owned, non-symlink, and mode 0700")
+		if err != nil {
+			return filesystemError(err)
+		}
+		return ErrUnsafeState
 	}
 	return nil
 }
@@ -446,9 +470,9 @@ func (s *Store) Close() error {
 		abortErr = errors.Join(abortErr, f.Abort())
 	}
 	if readers != 0 {
-		return errors.Join(abortErr, errors.New("cache has active readers"))
+		return errors.Join(filesystemError(abortErr), ErrActiveReaders)
 	}
-	return errors.Join(abortErr, s.releaseLock())
+	return filesystemError(errors.Join(abortErr, s.releaseLock()))
 }
 func (s *Store) releaseLock() error {
 	s.mu.Lock()

@@ -51,6 +51,9 @@ func runWithListen(ctx context.Context, args []string, stdout, stderr io.Writer,
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
+		if errors.Is(err, config.ErrInvalid) {
+			return fmt.Errorf("configuration validation failed: %w", err)
+		}
 		return errors.New("configuration validation failed")
 	}
 	if *check {
@@ -71,12 +74,13 @@ func runWithListen(ctx context.Context, args []string, stdout, stderr io.Writer,
 			FillTimeout: cfg.Cache.FillTimeout,
 		})
 		if err != nil {
-			return errors.New("cache startup failed")
+			return cacheDiagnostic("cache startup failed", err)
 		}
 		defer func() {
 			if err := store.Close(); err != nil {
-				logger.Error("cache cleanup failed")
-				runErr = errors.Join(runErr, errors.New("cache cleanup failed"))
+				diagnostic := cacheDiagnostic("cache cleanup failed", err)
+				logger.Error(diagnostic.Error())
+				runErr = errors.Join(runErr, diagnostic)
 			}
 		}()
 	}
@@ -135,6 +139,21 @@ func runWithListen(ctx context.Context, args []string, stdout, stderr io.Writer,
 	shutdownErr := p.Shutdown(shutdown)
 	<-done
 	return errors.Join(serveErr, shutdownErr)
+}
+
+func cacheDiagnostic(prefix string, err error) error {
+	category := "filesystem failure"
+	switch {
+	case errors.Is(err, cache.ErrLockConflict):
+		category = "cache is locked by another process"
+	case errors.Is(err, cache.ErrUnsafeState):
+		category = "unsafe cache state"
+	case errors.Is(err, cache.ErrInvalidLimits):
+		category = "invalid cache limits"
+	case errors.Is(err, cache.ErrActiveReaders):
+		category = "active cache readers"
+	}
+	return fmt.Errorf("%s: %s", prefix, category)
 }
 
 // newMetricsServer builds the loopback metrics HTTP server, serving handler at
