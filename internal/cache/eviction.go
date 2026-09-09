@@ -20,6 +20,8 @@ func (s *Store) insertEvictionLocked(e *entry) {
 	e.eviction = s.evictionOrder.PushFront(e)
 }
 
+// Replace the list node even when last is unchanged: an in-flight eviction
+// batch uses node identity to detect access while its mutex was released.
 func (s *Store) setEntryLastLocked(e *entry, last int64) {
 	if e.eviction != nil {
 		s.evictionOrder.Remove(e.eviction)

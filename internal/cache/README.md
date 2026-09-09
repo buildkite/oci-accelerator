@@ -131,7 +131,11 @@ guaranteed. Successful removals count as evictions. If removal failures leave
 insufficient capacity, admission reports `io_error`; otherwise insufficient
 capacity reports `capacity`. A shared resume cursor
 (`evictionAfter`/`evictionAfterLast`) gives later candidates a turn across
-batches, so eviction is approximate rather than strict LRU.
+batches, so eviction is approximate rather than strict LRU. Before claiming a
+victim, eviction rechecks its pins and eviction-list node identity (replaced on
+every successful access, even if the clock repeats a timestamp). An entry hit
+while an earlier removal runs is skipped for that batch, even if its reader has
+already closed; skipped entries still consume a position in the bounded batch.
 
 ## Concurrency
 

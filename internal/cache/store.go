@@ -354,6 +354,14 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 		s.evictionAfterLast, s.evictionAfter = last.last, last.meta.Key
 	}
 
+	// Hits can refresh later candidates while an earlier removal runs unlocked.
+	// Each access replaces the list node, even if the clock repeats a timestamp.
+	// Snapshot this batch's nodes so refreshed entries wait for a future batch.
+	positions := make([]*list.Element, count)
+	for i := range count {
+		positions[i] = candidates[(start+i)%len(candidates)].eviction
+	}
+
 	// Remove victims until the request fits. A failed removal is retried later;
 	// its charge stays booked, so keep the first error only if nothing frees up.
 	var removeErr error
@@ -363,7 +371,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 			return nil
 		}
 		e := candidates[(start+i)%len(candidates)]
-		if s.entries[e.meta.Key] != e || e.pins != 0 || e.claimed || e.last > before {
+		if s.entries[e.meta.Key] != e || e.pins != 0 || e.claimed || e.eviction != positions[i] || e.last > before {
 			continue
 		}
 		e.claimed = true

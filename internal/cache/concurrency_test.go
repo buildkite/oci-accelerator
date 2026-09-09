@@ -190,6 +190,71 @@ func TestEvictionRechecksVictimPinsAfterBlockedRemoval(t *testing.T) {
 	}
 }
 
+func TestEvictionSkipsVictimHitAndClosedDuringBlockedRemoval(t *testing.T) {
+	for _, clock := range []string{"advanced", "repeated"} {
+		t.Run(clock, func(t *testing.T) {
+			const charge = metadataReservation + 1
+			s := openTest(t, 3*charge)
+			metas := seedEvictionEntries(t, s, 3, "x")
+			originalLast := s.entries[metas[1].Key].last
+
+			entered, release := make(chan struct{}), make(chan struct{})
+			t.Cleanup(func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			})
+			realRemoveAll := s.removeAll
+			firstDir := filepath.Join(s.dir, metas[0].Key)
+			s.removeAll = func(path string) error {
+				if path == firstDir {
+					close(entered)
+					<-release
+				}
+				return realRemoveAll(path)
+			}
+			result := make(chan error, 1)
+			go func() {
+				// Two removals are needed, but the third candidate can replace the
+				// second if it becomes hot while the first removal is blocked.
+				f, err := s.Begin(testMeta("needs-two-cold-victims", "ab"))
+				if f != nil {
+					err = errors.Join(err, f.Abort())
+				}
+				result <- err
+			}()
+			awaitBarrier(t, entered, "first victim removal")
+			// This reads exact bytes and closes the reader before releasing eviction.
+			// Pin checks alone cannot protect this now-unpinned, recently hit entry.
+			assertHitProgress(t, s, metas[1], "x")
+			if clock == "repeated" {
+				// Model a clock that returned the same timestamp on this access.
+				s.mu.Lock()
+				s.setEntryLastLocked(s.entries[metas[1].Key], originalLast)
+				s.mu.Unlock()
+			}
+			close(release)
+			if err := awaitResult(t, result, "admission after concurrent hit"); err != nil {
+				t.Fatal(err)
+			}
+			read(t, s, metas[1], "x")
+			for _, meta := range []Metadata{metas[0], metas[2]} {
+				if r, err := s.Get(context.Background(), meta); err != ErrMiss {
+					if r != nil {
+						_ = r.Close()
+					}
+					t.Fatalf("cold victim Get = %v, want ErrMiss", err)
+				}
+			}
+			if st := s.Stats(); st.Evictions != 2 || st.Bytes != charge || st.Entries != 1 || st.Readers != 0 || st.Reserved != 0 || st.Pending != 0 {
+				t.Fatalf("concurrent hit accounting = %+v", st)
+			}
+		})
+	}
+}
+
 func TestCloseRetainsLockWhileInvalidReaderCleanupBlocked(t *testing.T) {
 	s := openTest(t, 1<<20)
 	meta := testMeta("invalid-reader-close", "body")
