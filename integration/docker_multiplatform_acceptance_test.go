@@ -39,7 +39,7 @@ func TestDockerMultiPlatformThroughCompiledProxy(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_E2E=1 to run the real Docker acceptance test")
 	}
-	requireCommands(t, "docker", "dockerd", "sudo", "amp", "unshare", "mount")
+	requireCommands(t, "docker", "dockerd", "sudo", "mount")
 	if os.Geteuid() != 0 {
 		run(t, "sudo", "-n", "true")
 	}
@@ -98,10 +98,8 @@ func runMultiPlatformCase(t *testing.T, rootMedia string) {
 	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 33554432\n", proxyPort, authority, proxyCA, filepath.Join(root, "cache")), 0o600)
 	randomSuffix := strings.ToLower(rand.Text())
 	prefix := "acc3c-" + randomSuffix[:8]
-	proxyName := prefix + "-proxy"
-	t.Cleanup(func() { stopService(t, proxyName) })
-	proxyCmd := namespacedCommand(hosts, fmt.Sprintf("sudo -n -u %s env SSL_CERT_FILE=%s %s --config %s", shell(currentUser(t)), shell(registryCA), shell(bin), shell(config)))
-	startService(t, proxyName, proxyCmd)
+	proxyCmd := namespacedCommand(hosts, fmt.Sprintf("exec sudo -n -u %s env SSL_CERT_FILE=%s %s --config %s", shell(currentUser(t)), shell(registryCA), shell(bin), shell(config)))
+	proxy := startPrivilegedProcess(t, proxyCmd)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	proxyCert := filepath.Join(proxyCA, "ca.crt")
 	caBefore := certFingerprint(t, proxyCert)
@@ -123,10 +121,10 @@ func runMultiPlatformCase(t *testing.T, rootMedia string) {
 		assertFreshMultiGETs(t, before, after, f, want, ref)
 	}
 	restart := func() {
-		if !stopService(t, proxyName) {
+		if !proxy.Stop(t) {
 			t.Fatal("cannot restart proxy")
 		}
-		startService(t, proxyName, proxyCmd)
+		proxy = startPrivilegedProcess(t, proxyCmd)
 		waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 		if got := certFingerprint(t, proxyCert); got != caBefore {
 			t.Fatalf("proxy CA changed across restart: %s != %s", got, caBefore)
@@ -376,7 +374,7 @@ func joinFiles(t *testing.T, dst string, paths ...string) {
 	writeFile(t, dst, string(out), 0o600)
 }
 func namespacedCommand(hosts, command string) string {
-	return fmt.Sprintf("sudo -n unshare --mount --propagation private sh -c %s", shell(fmt.Sprintf("mount --bind %s /etc/hosts && exec %s", shell(hosts), command)))
+	return fmt.Sprintf("mount --bind %s /etc/hosts && %s", shell(hosts), command)
 }
 
 func currentUser(t *testing.T) string {

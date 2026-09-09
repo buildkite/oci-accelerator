@@ -2,16 +2,13 @@ package integration
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -23,7 +20,7 @@ func TestCacheCrashAcceptance(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_FAULT_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_FAULT_E2E=1 to run the cache crash acceptance test")
 	}
-	requireCommands(t, "amp")
+	requireCommands(t, "go")
 
 	root := t.TempDir()
 	ip := nonLoopbackIPv4(t)
@@ -75,20 +72,10 @@ func TestCacheCrashAcceptance(t *testing.T) {
 	proxyPort := freePort(t, "127.0.0.1")
 	cacheDir := filepath.Join(root, "cache")
 	proxyCA := filepath.Join(root, "proxy-ca")
-	pidFile := filepath.Join(root, "proxy.pid")
 	config := filepath.Join(root, "proxy.yaml")
 	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 16777216\n", proxyPort, authority, proxyCA, cacheDir), 0o600)
-	// The service command parser consumes one dollar-sign escaping layer.
-	command := fmt.Sprintf("sh -ceu %s", shell(fmt.Sprintf("echo $$$$ > %s; exec env SSL_CERT_FILE=%s %s --config %s", shell(pidFile), shell(originCA), shell(bin), shell(config))))
-	name := "crash-cache-" + fmt.Sprintf("%x", sha256.Sum256([]byte(root)))[:10]
-	running := false
-	t.Cleanup(func() {
-		if running {
-			stopService(t, name)
-		}
-	})
-	startService(t, name, command)
-	running = true
+	command := fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCA), shell(bin), shell(config))
+	process := startProcess(t, command)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 
 	caBefore := mustReadCrashFile(t, filepath.Join(proxyCA, "ca.crt"))
@@ -112,18 +99,7 @@ func TestCacheCrashAcceptance(t *testing.T) {
 	}
 	waitForNonemptyFillBody(t, cacheDir)
 
-	pidBytes := mustReadCrashFile(t, pidFile)
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil {
-		t.Fatalf("parse owned proxy pid: %v", err)
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		t.Fatalf("find owned proxy pid %d: %v", pid, err)
-	}
-	if err := process.Kill(); err != nil {
-		t.Fatalf("kill owned proxy pid %d: %v", pid, err)
-	}
+	process.Crash(t)
 	select {
 	case err := <-requestDone:
 		if err == nil {
@@ -132,14 +108,7 @@ func TestCacheCrashAcceptance(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("in-flight client did not fail after abrupt proxy kill")
 	}
-	waitForProcessExit(t, process, pid)
-	if !stopService(t, name) {
-		t.Fatal("could not reset crashed proxy supervisor")
-	}
-	running = false
-
-	startService(t, name, command)
-	running = true
+	process = startProcess(t, command)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	caAfter := mustReadCrashFile(t, filepath.Join(proxyCA, "ca.crt"))
 	if !bytes.Equal(caBefore, caAfter) {
@@ -187,16 +156,4 @@ func waitForNonemptyFillBody(t *testing.T, cacheDir string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("cache fill body did not become nonempty")
-}
-
-func waitForProcessExit(t *testing.T, process *os.Process, pid int) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := process.Signal(syscall.Signal(0)); err != nil {
-			return
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatalf("killed proxy pid %d did not exit", pid)
 }

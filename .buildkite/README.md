@@ -23,8 +23,10 @@ are not broadly forwarded into containers. Test results are not reused from Go's
 test cache. Jobs have explicit timeouts and failures are not automatically retried.
 
 Docker, public-registry, fault, and load acceptance are manual opt-in checks:
-their harness uses `amp orb service` and cannot run on ordinary hosted
-agents. CI runs the default local-fixture suite, **not** those acceptance matrices.
+their test-owned process harness runs on Linux with the documented Docker and
+namespace privileges, without Amp. CI runs the default local-fixture suite,
+**not** those acceptance matrices. Acceptance jobs and merge gates are deliberately
+absent; manual execution remains necessary for that coverage.
 See the [operating guide](../docs/operations.md#repeatable-checks)
 for that additional coverage.
 

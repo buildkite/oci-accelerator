@@ -21,7 +21,7 @@ func TestDockerLoadAcceptance(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_LOAD_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_LOAD_E2E=1 to run the Docker load acceptance test")
 	}
-	requireCommands(t, "docker", "dockerd", "sudo", "amp")
+	requireCommands(t, "docker", "dockerd", "sudo", "mount")
 	if os.Geteuid() != 0 {
 		run(t, "sudo", "-n", "true")
 	}
@@ -43,15 +43,15 @@ func TestDockerLoadAcceptance(t *testing.T) {
 	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nmetrics_listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 33554432\n  max_entries: 100000\n  max_fills: 16\nmax_connections: 256\n", proxyPort, metricsPort, authority, proxyCA, cacheDir), 0o600)
 
 	prefix := fmt.Sprintf("acc4e-%06x", uint64(time.Now().UnixNano())&0xffffff)
-	proxyName := prefix + "-proxy"
-	proxyCommand := fmt.Sprintf("sh -ceu %s", shell(fmt.Sprintf("echo $$$$ > %s; exec env SSL_CERT_FILE=%s %s --config %s", shell(pidFile), shell(originCAPath(root)), shell(bin), shell(config))))
+	proxyCommand := fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCAPath(root)), shell(bin), shell(config))
+	proxy := startProcess(t, proxyCommand)
+	proxy.writePIDFile(t, pidFile)
 	proxyRunning := true
 	t.Cleanup(func() {
 		if proxyRunning {
-			stopService(t, proxyName)
+			proxy.Stop(t)
 		}
 	})
-	startService(t, proxyName, proxyCommand)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", metricsPort))
 	caFingerprint := certFingerprint(t, filepath.Join(proxyCA, "ca.crt"))
@@ -61,14 +61,15 @@ func TestDockerLoadAcceptance(t *testing.T) {
 	serial := 0
 	for _, clients := range []int{1, 4} {
 		if clients == 4 {
-			if !stopService(t, proxyName) {
+			if !proxy.Stop(t) {
 				t.Fatal("cannot reset cache after failed proxy stop")
 			}
 			proxyRunning = false
 			if err := os.RemoveAll(cacheDir); err != nil {
 				t.Fatalf("reset cache for four-client cold phase: %v", err)
 			}
-			startService(t, proxyName, proxyCommand)
+			proxy = startProcess(t, proxyCommand)
+			proxy.writePIDFile(t, pidFile)
 			proxyRunning = true
 			waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 			if got := certFingerprint(t, filepath.Join(proxyCA, "ca.crt")); got != caFingerprint {
@@ -77,11 +78,12 @@ func TestDockerLoadAcceptance(t *testing.T) {
 		}
 		for phaseIndex, phase := range []string{"cold", "warm", "restart"} {
 			if phase == "restart" {
-				if !stopService(t, proxyName) {
+				if !proxy.Stop(t) {
 					t.Fatal("cannot restart proxy after failed stop")
 				}
 				proxyRunning = false
-				startService(t, proxyName, proxyCommand)
+				proxy = startProcess(t, proxyCommand)
+				proxy.writePIDFile(t, pidFile)
 				proxyRunning = true
 				waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 				if got := certFingerprint(t, filepath.Join(proxyCA, "ca.crt")); got != caFingerprint {
@@ -253,7 +255,7 @@ func TestDockerLoadAcceptance(t *testing.T) {
 	if fills, err := filepath.Glob(filepath.Join(cacheDir, ".fill-*")); err != nil || len(fills) != 0 {
 		t.Errorf("final temporary fills=%v (glob error %v)", fills, err)
 	}
-	if !stopService(t, proxyName) {
+	if !proxy.Stop(t) {
 		t.Fatal("failed to stop owned proxy service")
 	}
 	proxyRunning = false
