@@ -348,15 +348,10 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 	if maxAttempts > 0 {
 		count = min(count, maxAttempts)
 		start = s.resumeStart(candidates)
-		batch := batchAt(candidates, start, count)
-		// Do not remove useful entries when even a fully successful batch cannot
-		// admit the fill. Record where to resume so blocked or small victims
-		// cannot permanently hide a usable victim beyond this batch.
-		last := batch[len(batch)-1]
+		// Globally feasible requests may need several bounded batches. Resume
+		// beyond this batch even when this response still bypasses storage.
+		last := candidates[(start+count-1)%len(candidates)]
 		s.evictionAfterLast, s.evictionAfter = last.last, last.meta.Key
-		if !s.batchSuffices(batch, need, needSlots) {
-			return ErrBypass
-		}
 	}
 
 	// Remove victims until the request fits. A failed removal is retried later;
@@ -443,16 +438,6 @@ func (s *Store) resumeStart(candidates []*entry) int {
 		}
 	}
 	return 0
-}
-
-// batchAt returns the count entries beginning at start, wrapping around the
-// candidates slice.
-func batchAt(candidates []*entry, start, count int) []*entry {
-	batch := make([]*entry, count)
-	for i := range count {
-		batch[i] = candidates[(start+i)%len(candidates)]
-	}
-	return batch
 }
 
 func (s *Store) Stats() Stats {

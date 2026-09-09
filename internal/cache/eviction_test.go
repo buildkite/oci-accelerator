@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -107,24 +108,32 @@ func TestAdmissionEvictionCursorContinuesAfterFailedBatch(t *testing.T) {
 	}
 }
 
-func TestAdmissionPreflightRefusesMoreThanBudgetWithoutEviction(t *testing.T) {
+func TestAdmissionProgressivelyReclaimsMoreThanAttemptBudget(t *testing.T) {
 	const smallBody = "x"
 	const victims = 9
 	smallCharge := metadataReservation + int64(len(smallBody))
 	s := openTest(t, victims*smallCharge)
-	metas := seedEvictionEntries(t, s, victims, smallBody)
+	seedEvictionEntries(t, s, victims, smallBody)
 
 	largeBody := strings.Repeat("n", int(8*smallCharge+1-metadataReservation))
-	before := s.Stats()
 	_, err := s.Begin(testMeta("needs-nine-small-victims", largeBody))
 	assertAdmissionReason(t, err, AdmissionCapacity)
-	after := s.Stats()
-	if after.Evictions != before.Evictions || after.Bytes != before.Bytes || after.Entries != before.Entries {
-		t.Fatalf("preflight refusal changed accounting: before=%+v after=%+v", before, after)
+	if got := s.Stats(); got.Evictions != 8 || got.Bytes != smallCharge || got.Entries != 1 {
+		t.Fatalf("first reclamation batch stats = %+v", got)
 	}
-	for _, meta := range metas {
-		read(t, s, meta, smallBody)
+
+	meta := testMeta("needs-nine-small-victims", largeBody)
+	f, err := s.Begin(meta)
+	if err != nil {
+		t.Fatalf("second Begin: %v", err)
 	}
+	if _, err := io.WriteString(f, largeBody); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	read(t, s, meta, largeBody)
 }
 
 func TestAdmissionPreflightCursorReachesLargerVictim(t *testing.T) {
@@ -142,17 +151,17 @@ func TestAdmissionPreflightCursorReachesLargerVictim(t *testing.T) {
 	before := s.Stats()
 	_, err := s.Begin(testMeta("deferred-large-first", largeBody))
 	assertAdmissionReason(t, err, AdmissionCapacity)
-	if got := s.Stats(); got.Evictions != before.Evictions || got.Bytes != before.Bytes || got.Entries != before.Entries {
-		t.Fatalf("deferred batch changed accounting: before=%+v after=%+v", before, got)
+	if got := s.Stats(); got.Evictions != before.Evictions+smallVictims || got.Bytes != before.Bytes-smallVictims*smallCharge || got.Entries != before.Entries-smallVictims {
+		t.Fatalf("first progressive batch accounting: before=%+v after=%+v", before, got)
 	}
 
-	// An unrelated admission that fits must not restart the deferred search.
-	fitting, err := s.Begin(testMeta("fitting-small", smallBody))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fitting.Abort(); err != nil {
-		t.Fatal(err)
+	// Refill the free space with older small candidates. If fitting admissions
+	// reset the cursor, the next request spends its whole budget on these instead
+	// of resuming at the larger victim.
+	for i := range smallVictims {
+		meta := testMeta(fmt.Sprintf("replacement-small-%02d", i), smallBody)
+		put(t, s, meta, smallBody)
+		s.setEntryLastLocked(s.entries[meta.Key], 0)
 	}
 	f, err := s.Begin(testMeta("deferred-large-second", largeBody))
 	if err != nil {
@@ -161,11 +170,67 @@ func TestAdmissionPreflightCursorReachesLargerVictim(t *testing.T) {
 	if err := f.Abort(); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Stats(); got.Evictions != before.Evictions+1 || got.Bytes != before.Bytes-largeCharge {
+	if got := s.Stats(); got.Evictions != before.Evictions+smallVictims+1 || got.Bytes != before.Bytes-largeCharge {
 		t.Fatalf("larger-victim eviction stats = %+v", got)
 	}
 	for _, meta := range small {
-		read(t, s, meta, smallBody)
+		if _, err := s.Get(context.Background(), meta); err != ErrMiss {
+			t.Fatalf("evicted small victim Get = %v, want ErrMiss", err)
+		}
+	}
+}
+
+func TestAdmissionGloballyImpossibleWithPinnedEntryDoesNotEvict(t *testing.T) {
+	const body = "x"
+	const victims = 3
+	charge := metadataReservation + int64(len(body))
+	s := openTest(t, victims*charge)
+	metas := seedEvictionEntries(t, s, victims, body)
+	r, err := s.Get(context.Background(), metas[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	before := s.Stats()
+	largeBody := strings.Repeat("p", int(victims*charge-metadataReservation))
+	_, err = s.Begin(testMeta("pinned-prevents-global-fit", largeBody))
+	assertAdmissionReason(t, err, AdmissionCapacity)
+	if got := s.Stats(); got.Evictions != before.Evictions || got.Bytes != before.Bytes || got.Entries != before.Entries {
+		t.Fatalf("globally impossible admission changed accounting: before=%+v after=%+v", before, got)
+	}
+}
+
+func TestAdmissionPartialEvictionFailuresReportIOErrorAndProgress(t *testing.T) {
+	requireUnprivilegedTest(t)
+	const body = "x"
+	const victims = 11
+	charge := metadataReservation + int64(len(body))
+	s := openTest(t, victims*charge)
+	metas := seedEvictionEntries(t, s, victims, body)
+	for _, meta := range metas[:2] {
+		denyEntryRemoval(t, s.entries[meta.Key].dir)
+	}
+	largeBody := strings.Repeat("m", int(8*charge+1-metadataReservation))
+
+	_, err := s.Begin(testMeta("mixed-removal-failures", largeBody))
+	assertAdmissionReason(t, err, AdmissionIOError)
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Begin did not preserve first removal error: %v", err)
+	}
+	if got := s.Stats(); got.Evictions != 6 || got.Bytes != 5*charge || got.Entries != 5 {
+		t.Fatalf("partial failure accounting = %+v", got)
+	}
+
+	f, err := s.Begin(testMeta("mixed-removal-failures", largeBody))
+	if err != nil {
+		t.Fatalf("subsequent Begin did not make progress: %v", err)
+	}
+	if err := f.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Stats(); got.Evictions != 9 || got.Bytes != 2*charge || got.Entries != 2 {
+		t.Fatalf("subsequent progress accounting = %+v", got)
 	}
 }
 

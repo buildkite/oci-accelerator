@@ -163,10 +163,13 @@ is published. Old readers cannot remove a newer entry at the same key.
 
 Eviction is best-effort LRU with in-memory recency. Each admission makes at most
 eight eviction removal attempts, separately from up to eight pending-cleanup
-retries. It preflights the batch before removing useful entries. A fill needing
-more space than that batch can free bypasses admission rather than gradually
-emptying the cache. A shared cursor gives later candidates a turn after deferred
-or failed batches, so eviction is not strict LRU. Startup eviction is uncapped.
+retries. If all currently eligible victims together cannot make the request fit,
+it evicts nothing. Otherwise it removes a bounded batch even when that batch
+cannot admit the fill. Successful removals count as evictions; the response
+bypasses storage if capacity remains insufficient. Repeated requests can reclaim
+more space, but competing traffic may consume it: admission is not guaranteed.
+A shared cursor gives later candidates a turn after partial or failed batches,
+so eviction is not strict LRU. Startup eviction is uncapped.
 Startup sorts its inventoried entries when pressure requires eviction and once
 more to bulk-build the live order. That incrementally maintained order avoids
 sorting on each later admission, but candidate scanning and directory removal

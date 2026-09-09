@@ -123,7 +123,13 @@ Startup adds inventory entries to the lookup map directly, sorts snapshots for
 uncapped startup pressure, then bulk-builds the live `(last access, key)` order
 in one final sort. The store incrementally maintains that order thereafter;
 `evictLocked` scans that order for unpinned candidates, preflights whether
-removing them could satisfy the request, and removes a bounded batch. A shared resume cursor
+removing all of them could satisfy the request, and otherwise evicts nothing.
+For feasible requests it attempts up to eight removals, even when more victims
+are needed. Those removals free capacity for later attempts while this response
+bypasses storage; competing traffic can reuse that space, so admission is not
+guaranteed. Successful removals count as evictions. If removal failures leave
+insufficient capacity, admission reports `io_error`; otherwise insufficient
+capacity reports `capacity`. A shared resume cursor
 (`evictionAfter`/`evictionAfterLast`) gives later candidates a turn across
 batches, so eviction is approximate rather than strict LRU.
 
