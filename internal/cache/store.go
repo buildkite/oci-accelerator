@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -114,6 +113,7 @@ type entry struct {
 	invalid   bool
 	// Charges are reclaimed once, after directory removal and the final unpin.
 	reclaimed bool
+	eviction  *list.Element
 }
 
 type Store struct {
@@ -131,6 +131,7 @@ type Store struct {
 	admissions                                      [AdmissionReasonCount]int64
 	entries                                         map[string]*entry
 	fills                                           map[string]*Fill
+	evictionOrder                                   list.List // entries ordered by (last, key)
 	// Resume after this (last, key) position even if its entry disappears or pins.
 	evictionAfterLast int64
 	evictionAfter     string
@@ -316,17 +317,15 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 
 	// Gather unpinned candidates no newer than before, and check that removing
 	// all of them could even satisfy the request before disturbing anything.
-	candidates := s.evictionCandidatesLocked(before)
+	var candidates []*entry
+	if maxAttempts == 0 {
+		candidates = s.sortedEntriesLocked(before, true)
+	} else {
+		candidates = s.evictionCandidatesLocked(before)
+	}
 	if !s.batchSuffices(candidates, need, needSlots) {
 		return ErrBypass
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].last == candidates[j].last {
-			return candidates[i].meta.Key < candidates[j].meta.Key
-		}
-		return candidates[i].last < candidates[j].last
-	})
-
 	// Select the batch to remove. Admission eviction (maxAttempts > 0) removes at
 	// most maxAttempts victims per call, resuming from the recorded cursor. The
 	// sufficiency gate above guarantees at least one candidate here, so count >= 1
@@ -356,7 +355,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 		}
 		e := candidates[(start+i)%len(candidates)]
 		if err := os.RemoveAll(e.dir); err == nil {
-			delete(s.entries, e.meta.Key)
+			s.deleteEntryLocked(e)
 			// Eviction only selects unpinned entries, so their charge is free.
 			e.reclaimed = true
 			s.bytes -= e.charge
@@ -381,7 +380,11 @@ func (s *Store) freeCapacityLocked() (bytes int64, slots int) {
 // those last accessed no later than before.
 func (s *Store) evictionCandidatesLocked(before int64) []*entry {
 	var candidates []*entry
-	for _, e := range s.entries {
+	for item := s.evictionOrder.Front(); item != nil; item = item.Next() {
+		e := item.Value.(*entry)
+		if e.last > before {
+			break
+		}
 		if e.pins == 0 && e.last <= before {
 			candidates = append(candidates, e)
 		}

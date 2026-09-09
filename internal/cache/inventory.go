@@ -52,10 +52,13 @@ func (s *Store) inventory() error {
 				}
 				continue
 			}
+			// Inventory bulk-builds the ordered index after the scan. Inserting each
+			// arbitrarily encountered directory would make reopening quadratic.
 			s.entries[name] = entry
 			s.bytes += entry.charge
 		}
 		if readErr == io.EOF {
+			s.buildEvictionOrderLocked()
 			return nil
 		}
 	}

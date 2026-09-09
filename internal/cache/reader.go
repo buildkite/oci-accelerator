@@ -120,7 +120,7 @@ func (s *Store) openReader(ctx context.Context, e *entry, need bool, afterVerifi
 		return nil, ErrMiss
 	}
 	e.verified = true
-	e.last = time.Now().UnixNano()
+	s.setEntryLastLocked(e, time.Now().UnixNano())
 	s.mu.Unlock()
 	return &Reader{store: s, entry: e, file: f, remaining: meta.Size}, nil
 }
@@ -180,7 +180,7 @@ func (s *Store) unpin(e *entry) {
 		if os.RemoveAll(e.dir) != nil {
 			return
 		}
-		delete(s.entries, e.meta.Key)
+		s.deleteEntryLocked(e)
 	}
 	if !e.reclaimed {
 		e.reclaimed = true

@@ -636,8 +636,8 @@ func TestCapacityLRUPinningAndConcurrency(t *testing.T) {
 	a, b, c := testMeta("a", "aaaa"), testMeta("b", "bbbb"), testMeta("c", "cccc")
 	put(t, s, a, "aaaa")
 	put(t, s, b, "bbbb")
-	s.entries[a.Key].last = 1
-	s.entries[b.Key].last = 2
+	s.setEntryLastLocked(s.entries[a.Key], 1)
+	s.setEntryLastLocked(s.entries[b.Key], 2)
 	r, err := s.Get(context.Background(), a)
 	if err != nil {
 		t.Fatal(err)
@@ -942,8 +942,8 @@ func TestFailedAdmissionDoesNotEvictInsufficientVictims(t *testing.T) {
 	b := testMeta("new", body)
 	put(t, s, a, "a")
 	put(t, s, b, body)
-	s.entries[a.Key].last = 1
-	s.entries[b.Key].last = 3
+	s.setEntryLastLocked(s.entries[a.Key], 1)
+	s.setEntryLastLocked(s.entries[b.Key], 3)
 	if err := s.evictLocked(2*metadataReservation, 0, 2, 0); err != ErrBypass {
 		t.Fatalf("eviction without enough eligible space = %v", err)
 	}

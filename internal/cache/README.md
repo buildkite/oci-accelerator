@@ -10,7 +10,8 @@ for performance notes see [benchmarks.md](benchmarks.md).
 
 | File | Responsibility |
 | --- | --- |
-| `store.go` | `Store` type, `Open`/`OpenWithLimits`, accounting, LRU eviction, metadata validation, private-directory and lock enforcement, `Stats`, `Close` |
+| `store.go` | `Store` type, `Open`/`OpenWithLimits`, accounting, metadata validation, private-directory and lock enforcement, `Stats`, `Close` |
+| `eviction.go` | Incrementally maintained eviction ordering and entry index updates |
 | `fill.go` | `Fill` lifecycle: `Begin` admission, `Write`, `Commit` (verify and atomic publish), `Abort`, and the fill timeout |
 | `reader.go` | `Reader` and `Get`: pinning, single-flight body verification, and reclaim of detached entries on the final unpin |
 | `inventory.go` | Startup scan: discard abandoned `.fill-` directories, validate committed entries, reject unrecognized state |
@@ -116,8 +117,11 @@ invalidated entry keeps its charge until its final unpin, even if a replacement
 is published at the same key.
 
 Eviction is best-effort LRU keyed on each entry's last successful open or commit.
-`evictLocked` gathers unpinned candidates, preflights whether removing them could
-satisfy the request, and removes a bounded batch. A shared resume cursor
+Startup adds inventory entries to the lookup map directly, sorts snapshots for
+uncapped startup pressure, then bulk-builds the live `(last access, key)` order
+in one final sort. The store incrementally maintains that order thereafter;
+`evictLocked` scans that order for unpinned candidates, preflights whether
+removing them could satisfy the request, and removes a bounded batch. A shared resume cursor
 (`evictionAfter`/`evictionAfterLast`) gives later candidates a turn across
 batches, so eviction is approximate rather than strict LRU.
 

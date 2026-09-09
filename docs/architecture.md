@@ -167,8 +167,11 @@ retries. It preflights the batch before removing useful entries. A fill needing
 more space than that batch can free bypasses admission rather than gradually
 emptying the cache. A shared cursor gives later candidates a turn after deferred
 or failed batches, so eviction is not strict LRU. Startup eviction is uncapped.
-Index scanning and sorting still hold the store mutex; attempt bounds are not
-elapsed-time guarantees. See [cache benchmarks](../internal/cache/benchmarks.md).
+Startup sorts its inventoried entries when pressure requires eviction and once
+more to bulk-build the live order. That incrementally maintained order avoids
+sorting on each later admission, but candidate scanning and directory removal
+still hold the store mutex; attempt bounds are not elapsed-time guarantees. See
+[cache benchmarks](../internal/cache/benchmarks.md).
 
 Startup inventories entries in bounded batches, removes recognized abandoned
 fills and discardable incomplete entries, and rejects unknown or unsafe state

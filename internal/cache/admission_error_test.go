@@ -65,7 +65,8 @@ func TestEvictionFailureAdmissionCause(t *testing.T) {
 					}
 				})
 			}
-			s.entries[old.Key].last, s.entries[next.Key].last = 1, 2
+			s.setEntryLastLocked(s.entries[old.Key], 1)
+			s.setEntryLastLocked(s.entries[next.Key], 2)
 			want := s.Stats()
 			f, err := s.Begin(testMeta("new", "body"))
 			if mode == "later-victim-succeeds" {

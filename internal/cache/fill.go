@@ -58,7 +58,7 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		// No reader remains to retry cleanup. Reclaim the invalid entry's slot
 		// and bytes on successful removal; otherwise keep them charged.
 		if os.RemoveAll(e.dir) == nil {
-			delete(s.entries, meta.Key)
+			s.deleteEntryLocked(e)
 			if !e.reclaimed {
 				e.reclaimed = true
 				s.bytes -= e.charge
@@ -249,13 +249,14 @@ func (f *Fill) publishLocked(dest string) error {
 	}
 	delete(f.store.fills, f.meta.Key)
 	f.store.reserved -= f.charge
-	f.store.entries[f.meta.Key] = &entry{
+	e := &entry{
 		meta:     f.meta,
 		dir:      dest,
 		charge:   f.charge,
 		last:     time.Now().UnixNano(),
 		verified: true, // Just hash-verified during Commit; Readers can skip re-verification.
 	}
+	f.store.addEntryLocked(e)
 	f.store.bytes += f.charge
 	f.store.fillSuccess++
 	f.store.mu.Unlock()
@@ -327,7 +328,7 @@ func (f *Fill) supersedeTombstone(dest string) error {
 	if err := os.RemoveAll(e.dir); err != nil {
 		return err
 	}
-	delete(f.store.entries, f.meta.Key)
+	f.store.deleteEntryLocked(e)
 	// Unlinking does not free the body while readers hold its inode open.
 	// A detached pinned entry retains its charge until its final unpin.
 	if e.pins == 0 && !e.reclaimed {

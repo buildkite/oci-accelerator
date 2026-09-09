@@ -12,6 +12,38 @@ import (
 	"testing"
 )
 
+func TestBuildEvictionOrderBulkSortsReverseAndShuffledEntries(t *testing.T) {
+	s := &Store{entries: make(map[string]*entry)}
+	// Deliberately mix recency, ties, and insertion order. Map traversal must not
+	// affect the bulk-built startup index.
+	for _, item := range []struct {
+		name string
+		last int64
+	}{{"f", 3}, {"b", 1}, {"e", 2}, {"a", 1}, {"d", 2}, {"c", 3}} {
+		meta := testMeta("bulk-"+item.name, "x")
+		s.entries[meta.Key] = &entry{meta: meta, last: item.last}
+	}
+
+	s.buildEvictionOrderLocked()
+	var got []*entry
+	for item := s.evictionOrder.Front(); item != nil; item = item.Next() {
+		e := item.Value.(*entry)
+		if e.eviction != item {
+			t.Fatalf("entry %q does not reference its list element", e.meta.Key)
+		}
+		got = append(got, e)
+	}
+	if len(got) != len(s.entries) {
+		t.Fatalf("ordered entries = %d, want %d", len(got), len(s.entries))
+	}
+	for i := 1; i < len(got); i++ {
+		previous, current := got[i-1], got[i]
+		if previous.last > current.last || previous.last == current.last && previous.meta.Key > current.meta.Key {
+			t.Fatalf("order[%d:%d] = (%d, %q), (%d, %q)", i-1, i, previous.last, previous.meta.Key, current.last, current.meta.Key)
+		}
+	}
+}
+
 func TestAdmissionEvictionAttemptBudgetBoundary(t *testing.T) {
 	requireUnprivilegedTest(t)
 	const victims = 8
@@ -105,7 +137,7 @@ func TestAdmissionPreflightCursorReachesLargerVictim(t *testing.T) {
 	small := seedEvictionEntries(t, s, smallVictims, smallBody)
 	large := testMeta("later-large-victim", largeBody)
 	put(t, s, large, largeBody)
-	s.entries[large.Key].last = smallVictims + 1
+	s.setEntryLastLocked(s.entries[large.Key], smallVictims+1)
 
 	before := s.Stats()
 	_, err := s.Begin(testMeta("deferred-large-first", largeBody))
@@ -219,7 +251,7 @@ func seedEvictionEntries(t *testing.T, s *Store, count int, body string) []Metad
 	for i := range metas {
 		metas[i] = testMeta(fmt.Sprintf("eviction-victim-%02d", i), body)
 		put(t, s, metas[i], body)
-		s.entries[metas[i].Key].last = int64(i + 1)
+		s.setEntryLastLocked(s.entries[metas[i].Key], int64(i+1))
 	}
 	return metas
 }
