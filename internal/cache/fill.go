@@ -45,6 +45,8 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	if _, err := encodeMeta(meta); err != nil {
 		return nil, s.refuse(AdmissionInvalid, err)
 	}
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -54,10 +56,17 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	if e, ok := s.entries[meta.Key]; ok && !e.invalid {
 		s.admissions[AdmissionExisting]++
 		return nil, &AdmissionError{Reason: AdmissionExisting}
-	} else if ok && e.pins == 0 {
+	} else if ok && e.pins == 0 && !e.claimed {
 		// No reader remains to retry cleanup. Reclaim the invalid entry's slot
 		// and bytes on successful removal; otherwise keep them charged.
-		if os.RemoveAll(e.dir) == nil {
+		e.claimed = true
+		s.startOpLocked()
+		s.mu.Unlock()
+		removeErr := s.removeAll(e.dir)
+		s.mu.Lock()
+		s.finishOpLocked()
+		e.claimed = false
+		if removeErr == nil && s.entries[meta.Key] == e && e.pins == 0 {
 			s.deleteEntryLocked(e)
 			if !e.reclaimed {
 				e.reclaimed = true
@@ -66,6 +75,10 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		}
 	}
 	if _, ok := s.fills[meta.Key]; ok {
+		s.admissions[AdmissionExisting]++
+		return nil, &AdmissionError{Reason: AdmissionExisting}
+	}
+	if _, ok := s.claims[meta.Key]; ok {
 		s.admissions[AdmissionExisting]++
 		return nil, &AdmissionError{Reason: AdmissionExisting}
 	}
@@ -86,21 +99,58 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		s.admissions[AdmissionIOError]++
 		return nil, &AdmissionError{Reason: AdmissionIOError, Cause: err}
 	}
-	d, err := os.MkdirTemp(s.dir, ".fill-")
+	// Reserve capacity and key ownership before staging without exposing a
+	// partially initialized Fill.
+	s.claims[meta.Key] = charge
+	s.reserved += charge
+	// This claim spans every staging step, preventing Close from releasing the
+	// process lock in the gaps between individual filesystem calls.
+	s.startOpLocked()
+	s.mu.Unlock()
+	d, err := s.mkdirTemp(s.dir, ".fill-")
+	var f *os.File
+	if err == nil {
+		err = os.Chmod(d, 0o700)
+	}
+	if err == nil {
+		f, err = os.OpenFile(filepath.Join(d, "body"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	}
+	if err == nil {
+		err = f.Chmod(0o600)
+	}
+	// Finalize once. If staging failed, perform all close/removal work while the
+	// reservation and active operation still protect its resources.
+	var cleanupErr, removeErr error
 	if err != nil {
+		if f != nil {
+			cleanupErr = f.Close()
+		}
+		if d != "" {
+			removeErr = s.removeAll(d)
+			cleanupErr = errors.Join(cleanupErr, removeErr)
+		}
+	}
+	s.mu.Lock()
+	if err != nil || s.closed {
+		if err == nil { // Close raced with successful staging; reject and clean it.
+			s.mu.Unlock()
+			cleanupErr = f.Close()
+			removeErr = s.removeAll(d)
+			cleanupErr = errors.Join(cleanupErr, removeErr)
+			s.mu.Lock()
+		}
+		delete(s.claims, meta.Key)
+		s.reserved -= charge
+		if removeErr != nil {
+			s.retainCleanupLocked(d, charge)
+		}
+		s.finishOpLocked()
+		if s.closed {
+			s.admissions[AdmissionClosed]++
+			return nil, &AdmissionError{Reason: AdmissionClosed, Cause: errors.Join(err, cleanupErr)}
+		}
 		s.admissions[AdmissionIOError]++
-		return nil, &AdmissionError{Reason: AdmissionIOError, Cause: err}
-	}
-	if err = os.Chmod(d, 0o700); err != nil {
-		return nil, s.failAdmissionLocked(d, charge, err)
-	}
-	f, err := os.OpenFile(filepath.Join(d, "body"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, s.failAdmissionLocked(d, charge, err)
-	}
-	if err = f.Chmod(0o600); err != nil {
-		f.Close()
-		return nil, s.failAdmissionLocked(d, charge, err)
+		return nil, &AdmissionError{Reason: AdmissionIOError, Cause: errors.Join(err, cleanupErr)}
 	}
 	fill := &Fill{
 		store:     s,
@@ -114,8 +164,9 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 		completed: make(chan struct{}),
 	}
 	s.fills[meta.Key] = fill
+	delete(s.claims, meta.Key)
+	s.finishOpLocked()
 	s.admissions[AdmissionAccepted]++
-	s.reserved += charge
 	fill.timer = time.AfterFunc(s.fillTimeout, func() {
 		fill.mu.Lock()
 		if !fill.done {
@@ -290,7 +341,15 @@ func (f *Fill) finish(cause error) error {
 		cause = errors.Join(cause, f.file.Close())
 		f.file = nil
 	}
-	removeErr := os.RemoveAll(f.dir)
+	f.store.admissionMu.Lock()
+	f.store.mu.Lock()
+	f.store.startOpLocked()
+	f.store.mu.Unlock()
+	removeErr := f.store.removeAll(f.dir)
+	f.store.mu.Lock()
+	f.store.finishOpLocked()
+	f.store.mu.Unlock()
+	f.store.admissionMu.Unlock()
 	cause = errors.Join(cause, removeErr)
 	f.store.mu.Lock()
 	if cause == nil {
@@ -311,21 +370,43 @@ func (f *Fill) finish(cause error) error {
 	return cause
 }
 
-// supersedeTombstone removes an invalid entry or failed publication under s.mu.
+// supersedeTombstone claims an invalid entry or failed publication under s.mu,
+// removes it outside s.mu, then finalizes its accounting under s.mu.
 // Detaching its map entry or cleanup record prevents later removals of the
 // replacement path. Pinned bodies retain their charge until their final unpin.
 func (f *Fill) supersedeTombstone(dest string) error {
+	f.store.admissionMu.Lock()
+	defer f.store.admissionMu.Unlock()
 	f.store.mu.Lock()
 	defer f.store.mu.Unlock()
 	e, ok := f.store.entries[f.meta.Key]
 	if !ok {
 		// Retire any failed publication's cleanup record before reusing dest.
-		return f.store.removeCleanupLocked(dest)
+		f.store.startOpLocked()
+		f.store.mu.Unlock()
+		err := f.store.removeAll(dest)
+		f.store.mu.Lock()
+		f.store.finishOpLocked()
+		if err == nil {
+			if pending, exists := f.store.failedCleanups[dest]; exists {
+				f.store.cleanupQueue.Remove(pending.queued)
+				delete(f.store.failedCleanups, dest)
+				f.store.bytes -= pending.charge
+			}
+		}
+		return err
 	}
 	if !e.invalid {
 		return errors.New("cache fill destination occupied by a valid entry")
 	}
-	if err := os.RemoveAll(e.dir); err != nil {
+	e.claimed = true
+	f.store.startOpLocked()
+	f.store.mu.Unlock()
+	err := f.store.removeAll(e.dir)
+	f.store.mu.Lock()
+	f.store.finishOpLocked()
+	e.claimed = false
+	if err != nil {
 		return err
 	}
 	f.store.deleteEntryLocked(e)

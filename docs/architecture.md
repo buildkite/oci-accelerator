@@ -170,7 +170,10 @@ or failed batches, so eviction is not strict LRU. Startup eviction is uncapped.
 Startup sorts its inventoried entries when pressure requires eviction and once
 more to bulk-build the live order. That incrementally maintained order avoids
 sorting on each later admission, but candidate scanning and directory removal
-still hold the store mutex; attempt bounds are not elapsed-time guarantees. See
+are synchronous and admission-serialized while directory I/O runs outside the
+bookkeeping mutex. Claimed victims remain charged and cannot be pinned or selected
+again. Unrelated hits and statistics therefore continue during blocked filesystem
+calls; attempt bounds are not elapsed-time guarantees. See
 [cache benchmarks](../internal/cache/benchmarks.md).
 
 Startup inventories entries in bounded batches, removes recognized abandoned

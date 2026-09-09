@@ -89,7 +89,7 @@ type Metadata struct {
 }
 type Stats struct {
 	Bytes, Reserved                                 int64
-	Entries, Fills                                  int
+	Entries, Fills, Pending                         int
 	Evictions                                       int64
 	Readers                                         int
 	FillSuccess, FillFailure, FillAbort, FillExpiry int64
@@ -111,6 +111,7 @@ type entry struct {
 	verified  bool
 	verifying chan struct{} // Non-nil while one Get verifies; guarded by Store.mu.
 	invalid   bool
+	claimed   bool // A synchronous removal owns this generation.
 	// Charges are reclaimed once, after directory removal and the final unpin.
 	reclaimed bool
 	eviction  *list.Element
@@ -118,6 +119,7 @@ type entry struct {
 
 type Store struct {
 	mu                                              sync.Mutex
+	admissionMu                                     sync.Mutex
 	dir                                             string
 	max                                             int64
 	maxFills, maxEntries                            int
@@ -131,6 +133,11 @@ type Store struct {
 	admissions                                      [AdmissionReasonCount]int64
 	entries                                         map[string]*entry
 	fills                                           map[string]*Fill
+	claims                                          map[string]int64
+	activeOps                                       int
+	opsDone                                         *sync.Cond
+	removeAll                                       func(string) error
+	mkdirTemp                                       func(string, string) (string, error)
 	evictionOrder                                   list.List // entries ordered by (last, key)
 	// Resume after this (last, key) position even if its entry disappears or pins.
 	evictionAfterLast int64
@@ -210,9 +217,16 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 		fillTimeout: limits.FillTimeout,
 		entries:     make(map[string]*entry),
 		fills:       make(map[string]*Fill),
+		claims:      make(map[string]int64),
 		lock:        lf,
+		removeAll:   os.RemoveAll,
+		mkdirTemp:   os.MkdirTemp,
 	}
-	if err := s.inventory(); err != nil {
+	s.opsDone = sync.NewCond(&s.mu)
+	s.mu.Lock()
+	err = s.inventory()
+	s.mu.Unlock()
+	if err != nil {
 		s.releaseLock()
 		if !errors.Is(err, ErrUnsafeState) {
 			err = filesystemError(err)
@@ -354,13 +368,23 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 			return nil
 		}
 		e := candidates[(start+i)%len(candidates)]
-		if err := os.RemoveAll(e.dir); err == nil {
+		if s.entries[e.meta.Key] != e || e.pins != 0 || e.claimed || e.last > before {
+			continue
+		}
+		e.claimed = true
+		s.startOpLocked()
+		s.mu.Unlock()
+		err := s.removeAll(e.dir)
+		s.mu.Lock()
+		s.finishOpLocked()
+		e.claimed = false
+		if err == nil && s.entries[e.meta.Key] == e && e.pins == 0 {
 			s.deleteEntryLocked(e)
 			// Eviction only selects unpinned entries, so their charge is free.
 			e.reclaimed = true
 			s.bytes -= e.charge
 			s.evictions++
-		} else if removeErr == nil {
+		} else if err != nil && removeErr == nil {
 			removeErr = err
 		}
 	}
@@ -368,12 +392,15 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 		s.evictionAfter = ""
 		return nil
 	}
-	return removeErr
+	if removeErr != nil {
+		return removeErr
+	}
+	return ErrBypass
 }
 
 // freeCapacityLocked reports the currently unused bytes and entry slots.
 func (s *Store) freeCapacityLocked() (bytes int64, slots int) {
-	return s.max - s.bytes - s.reserved, s.maxEntries - len(s.entries) - len(s.fills) - len(s.failedCleanups)
+	return s.max - s.bytes - s.reserved, s.maxEntries - len(s.entries) - len(s.fills) - len(s.claims) - len(s.failedCleanups)
 }
 
 // evictionCandidatesLocked returns the unpinned entries eligible for removal:
@@ -385,7 +412,7 @@ func (s *Store) evictionCandidatesLocked(before int64) []*entry {
 		if e.last > before {
 			break
 		}
-		if e.pins == 0 && e.last <= before {
+		if e.pins == 0 && !e.claimed && e.last <= before {
 			candidates = append(candidates, e)
 		}
 	}
@@ -440,6 +467,7 @@ func (s *Store) Stats() Stats {
 		Reserved:     s.reserved,
 		Entries:      len(s.entries),
 		Fills:        len(s.fills),
+		Pending:      len(s.claims),
 		Evictions:    s.evictions,
 		Readers:      s.readers,
 		FillSuccess:  s.fillSuccess,
@@ -472,10 +500,23 @@ func (s *Store) Close() error {
 	for _, f := range fs {
 		abortErr = errors.Join(abortErr, f.Abort())
 	}
+	s.mu.Lock()
+	for s.activeOps != 0 {
+		s.opsDone.Wait()
+	}
+	s.mu.Unlock()
 	if readers != 0 {
 		return errors.Join(filesystemError(abortErr), ErrActiveReaders)
 	}
 	return filesystemError(errors.Join(abortErr, s.releaseLock()))
+}
+
+func (s *Store) startOpLocked() { s.activeOps++ }
+func (s *Store) finishOpLocked() {
+	s.activeOps--
+	if s.activeOps == 0 {
+		s.opsDone.Broadcast()
+	}
 }
 func (s *Store) releaseLock() error {
 	s.mu.Lock()

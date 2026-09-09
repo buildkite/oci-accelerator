@@ -44,7 +44,7 @@ func (s *Store) deleteEntryLocked(e *entry) {
 func (s *Store) sortedEntriesLocked(before int64, unpinnedOnly bool) []*entry {
 	entries := make([]*entry, 0, len(s.entries))
 	for _, e := range s.entries {
-		if e.last <= before && (!unpinnedOnly || e.pins == 0) {
+		if e.last <= before && (!unpinnedOnly || e.pins == 0 && !e.claimed) {
 			entries = append(entries, e)
 		}
 	}

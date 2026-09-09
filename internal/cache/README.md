@@ -32,7 +32,9 @@ handling.
 
 `Metadata` identifies one object (`Key`, a `sha256:` `Digest`, `Size`,
 `MediaType`). `Limits` bounds the store (`MaxBytes`, `MaxFills`, `MaxEntries`,
-`FillTimeout`). `Stats` is a point-in-time snapshot of the accounting counters.
+`FillTimeout`). `Stats` is a point-in-time snapshot of the accounting counters;
+`Pending` reports staging key claims that consume an entry slot but are not
+yet visible as initialized `Fill` values.
 
 ### `(*Store) Begin(meta Metadata) (*Fill, error)`
 
@@ -130,6 +132,9 @@ batches, so eviction is approximate rather than strict LRU.
 - **`Store.mu`** guards all store bookkeeping: the `entries` and `fills` maps,
   every accounting counter, and the per-entry `pins`/`verified`/`verifying`/
   `invalid` fields. Helpers named `...Locked` assume it is already held.
+- **`Store.admissionMu`** serializes admission and path ownership. Filesystem
+  removal and staging run without `Store.mu`, so unrelated hits and `Stats`
+  continue; claimed generations remain charged and cannot be pinned or reused.
 - **`Fill.mu`** guards one fill's own state. A `Fill` method may take `Store.mu`
   briefly (while holding `Fill.mu`) to publish or release accounting, and always
   releases it before returning; the reverse lock order never occurs.
@@ -147,6 +152,7 @@ The caller that opens a `Store` owns it and must `Close` it. `Close` rejects new
 work and aborts active fills, but does not wait for readers: if any `Reader` is
 still open it retains the filesystem lock and reports an active-reader error, so
 the caller must close all readers and call `Close` again to release the lock.
+It does wait for claimed filesystem operations before releasing that lock.
 
 ## Dependencies
 

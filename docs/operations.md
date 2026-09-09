@@ -176,7 +176,7 @@ Metrics use the `oci_accelerator_` prefix and include:
 - request counts, bounded status classes, duration histograms, and active requests/connections;
 - cache, fill, wait, fallback, and upstream GET/body counters;
 - cache admission and rejection reasons, entries, readers, fills, bytes, reservations, and
-  evictions;
+  evictions (the fills gauge includes reservations whose staging is still in progress);
 - Go heap allocation and goroutine gauges.
 
 Labels are fixed enums and never contain clients, repositories, paths, digests, tokens, or URLs.

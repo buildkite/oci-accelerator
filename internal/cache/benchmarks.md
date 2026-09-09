@@ -46,8 +46,8 @@ Admission's eviction phase is limited to eight directory-removal attempts; pendi
 cleanup retries have a separate budget. These limits bound attempts, not elapsed
 time or the syscalls within a removal. Startup bulk-sorts inventory while the
 live eviction order is maintained incrementally, avoiding admission-time sorting,
-but candidate scanning and removal still hold the store mutex, so admission can
-contend with hits. The
+and removal runs outside the bookkeeping mutex under serialized admission/path
+ownership. The
 [architecture guide](../../docs/architecture.md#storage-capacity-and-recovery)
 describes capacity preflight, best-effort LRU, and cleanup ownership.
 
