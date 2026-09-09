@@ -25,6 +25,7 @@ func TestCacheENOSPCAcceptance(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_FAULT_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_FAULT_E2E=1 to run the cache fault acceptance test")
 	}
+	requireLinux(t)
 	requireCommands(t, "sudo", "nsenter", "mount", "dd", "findmnt")
 	run(t, "sudo", "-n", "true")
 

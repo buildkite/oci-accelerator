@@ -16,6 +16,7 @@ func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_PUBLIC_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_PUBLIC_E2E=1 to run public registry acceptance")
 	}
+	requireLinux(t)
 	requireCommands(t, "docker", "dockerd", "sudo", "mount", "go")
 	if os.Geteuid() != 0 {
 		run(t, "sudo", "-n", "true")

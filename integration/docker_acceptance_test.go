@@ -83,6 +83,7 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_E2E=1 to run the real Docker acceptance test")
 	}
+	requireLinux(t)
 	requireCommands(t, "docker", "dockerd", "sudo", "mount")
 	if os.Geteuid() != 0 {
 		run(t, "sudo", "-n", "true")

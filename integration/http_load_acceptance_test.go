@@ -76,6 +76,7 @@ func TestBoundedHTTPLoadAcceptance(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_LOAD_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_LOAD_E2E=1 to run the bounded HTTP load matrix")
 	}
+	requireLinux(t)
 	requireCommands(t, "go")
 	root := t.TempDir()
 	bin := filepath.Join(root, "oci-accelerator")

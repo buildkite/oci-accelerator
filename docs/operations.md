@@ -283,6 +283,10 @@ go test -race ./...
 go vet ./...
 ```
 
+Plain process-lifecycle tests run on Unix without requiring procfs. Linux namespace
+tests are isolated from non-Linux builds; Docker, ENOSPC, and load acceptance tests
+skip on non-Linux hosts even when opted in.
+
 The following integration checks are opt-in because they need additional host capabilities.
 The Docker checks build the current binary and use isolated Docker state, processes, and CA
 trust; local checks use private registry fixtures. They never execute pulled images. Test

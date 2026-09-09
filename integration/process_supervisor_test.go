@@ -31,10 +31,7 @@ func TestProcessSupervisor(t *testing.T) {
 		// the child's entire lifetime, including if the controller disconnects.
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		child.SysProcAttr = &syscall.SysProcAttr{
-			Cloneflags: syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
-			Pdeathsig:  syscall.SIGKILL,
-		}
+		child.SysProcAttr = processNamespaceAttributes(t)
 	}
 
 	// The plain child initially inherits the controller's fresh process group.
