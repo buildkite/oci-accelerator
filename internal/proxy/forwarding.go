@@ -130,6 +130,7 @@ type loggingWriter struct {
 
 func (w *loggingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *loggingWriter) WriteHeader(code int) {
+	w.setWriteDeadline()
 	if code >= 200 && !w.wroteFinal {
 		w.status, w.wroteFinal = code, true
 	}
