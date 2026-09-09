@@ -46,6 +46,8 @@ types and permissions. Each file must be a regular file granting no access
 beyond its baseline (`ca.crt` at most `0644`, `ca.key` at most `0600`); stricter
 modes are accepted, broader ones rejected. The directory must be `0700` with no
 symlinks. `Open` creates the CA with `ca.crt` `0644` and `ca.key` `0600`.
+Each PEM file is limited to 64 KiB with a bounded read before parsing. Oversized
+files fail startup without replacing or truncating the installation.
 
 Loaded certificates must match the cryptographic and extension profile this
 package generates, rather than merely being capable of signing:
