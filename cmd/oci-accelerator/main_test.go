@@ -138,6 +138,25 @@ cache: {dir: cache}
 	}
 }
 
+func TestRunCheckRejectsIdenticalStateDirectoriesWithoutSideEffects(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yaml")
+	secret := "same-secret-state"
+	if err := os.WriteFile(path, []byte("registries: [example.com]\nca_dir: "+secret+"\ncache: {dir: ./"+secret+"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := run(context.Background(), []string{"--config", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "ca_dir and cache.dir") {
+		t.Fatalf("error = %v, want state directory diagnostic", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error leaked directory value: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, secret)); !os.IsNotExist(statErr) {
+		t.Fatalf("--check created state directory: %v", statErr)
+	}
+}
+
 func TestRunRejectsUnusableCacheBeforeListen(t *testing.T) {
 	root := t.TempDir()
 	cacheDir := filepath.Join(root, "unsafe-cache")

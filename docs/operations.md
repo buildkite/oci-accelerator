@@ -25,7 +25,9 @@ are rejected. `cache.fill_wait_timeout: 0s` is the one permitted zero duration. 
 retain scalar defaults, but null list elements are invalid. String fields reject non-string
 scalars. Numeric limits require decimal YAML integers without leading zeros: floats, quoted
 numbers, octal/hex forms, and underscores are rejected. `ca_dir` and `cache.dir` must both be
-nonblank; there is no forwarding-only configuration mode.
+nonblank and must resolve to distinct, lexically normalized absolute paths; there is no
+forwarding-only configuration mode. This validation does not resolve symlinks or inspect state;
+the filesystem ownership and layout checks still apply at startup.
 
 `--check` validates only the configuration. It does not inspect CA/cache state, bind listeners,
 or create directories. Before starting, provision the immediate parent of each state directory

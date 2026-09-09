@@ -106,9 +106,9 @@ ca_dir: ca
 		},
 		{
 			name: "ca_dir",
-			config: `cache: {dir: &value 'ca'}
+			config: `cache: {dir: cache}
+registries: [&value 'ca']
 ca_dir: *value
-registries: [registry.example]
 `,
 			check: func(t *testing.T, c Config, base string) {
 				assertEqual(t, "CADir", c.CADir, filepath.Join(base, "ca"))
@@ -116,9 +116,9 @@ registries: [registry.example]
 		},
 		{
 			name: "cache.dir",
-			config: `ca_dir: &value 'cache'
+			config: `ca_dir: ca
+registries: [&value 'cache']
 cache: {dir: *value}
-registries: [registry.example]
 `,
 			check: func(t *testing.T, c Config, base string) {
 				assertEqual(t, "Cache.Dir", c.Cache.Dir, filepath.Join(base, "cache"))

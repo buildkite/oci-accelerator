@@ -388,6 +388,47 @@ cache:
 	}
 }
 
+func TestLoadRejectsIdenticalStateDirectories(t *testing.T) {
+	tests := []struct {
+		name, caDir, cacheDir string
+	}{
+		{"relative aliases", "state", "./state"},
+		{"relative and absolute aliases", "state", "ABSOLUTE"},
+		{"normalized parent", "state", "other/../state"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			caDir, cacheDir := test.caDir, test.cacheDir
+			if cacheDir == "ABSOLUTE" {
+				cacheDir = filepath.Join(root, "state")
+			}
+			path := filepath.Join(root, "config.yaml")
+			if err := os.WriteFile(path, []byte("registries: [example.com]\nca_dir: '"+caDir+"'\ncache: {dir: '"+cacheDir+"'}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load unexpectedly returned %v", err)
+			}
+			if !strings.Contains(err.Error(), "ca_dir") || !strings.Contains(err.Error(), "cache.dir") {
+				t.Fatalf("error lacks state directory fields: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadAllowsDistinctStateDirectories(t *testing.T) {
+	for _, cacheDir := range []string{"sibling", "ca/cache"} {
+		t.Run(cacheDir, func(t *testing.T) {
+			_, err := Load(writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache: {dir: '"+cacheDir+"'}\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalid(t *testing.T) {
 	tests := []struct{ name, input string }{
 		{"missing_registries", "ca_dir: ca\ncache: {dir: cache}\n"},

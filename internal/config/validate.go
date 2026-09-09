@@ -72,15 +72,28 @@ func validate(raw rawConfig, base string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("redirect_allowlist: %w", err)
 	}
+	caDir := resolve(base, string(raw.CADir))
+	cacheDir := resolve(base, string(raw.Cache.Dir))
+	caDirAbsolute, err := filepath.Abs(caDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("%w: ca_dir: cannot resolve directory path", ErrInvalid)
+	}
+	cacheDirAbsolute, err := filepath.Abs(cacheDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("%w: cache.dir: cannot resolve directory path", ErrInvalid)
+	}
+	if filepath.Clean(caDirAbsolute) == filepath.Clean(cacheDirAbsolute) {
+		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: must be distinct directory paths", ErrInvalid)
+	}
 
 	return Config{
 		Listen:            listen,
 		MetricsListen:     metricsListen,
 		Registries:        registries,
 		RedirectAllowlist: redirectAllowlist,
-		CADir:             resolve(base, string(raw.CADir)),
+		CADir:             caDir,
 		Cache: Cache{
-			Dir:             resolve(base, string(raw.Cache.Dir)),
+			Dir:             cacheDir,
 			MaxBytes:        int64(raw.Cache.MaxBytes),
 			MaxFills:        int(raw.Cache.MaxFills),
 			MaxEntries:      int(raw.Cache.MaxEntries),

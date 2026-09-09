@@ -52,7 +52,9 @@ Load(path)
 `Load` seeds a `rawConfig` with `defaults()`, then decodes with `KnownFields(true)`
 so unknown keys are rejected. It requires exactly one YAML document. Relative
 `ca_dir` and `cache.dir` are resolved against the configuration file's own
-directory, so a config is portable regardless of the working directory.
+directory, so a config is portable regardless of the working directory. Their
+lexically normalized absolute paths must be distinct; one may be nested beneath
+the other.
 
 ## Strictness
 
