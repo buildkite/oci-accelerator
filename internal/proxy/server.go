@@ -11,12 +11,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
 	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 const maxHeaderBytes = 64 << 10
@@ -173,6 +175,101 @@ func (p *Proxy) closeAll() {
 	}
 }
 
+// ServeHTTP dispatches a CONNECT request to either registry interception or
+// an opaque relay, satisfying http.Handler for p.server.
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodConnect {
+		w.Header().Set("Allow", http.MethodConnect)
+		refuse(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if conn, ok := r.Context().Value(connContextKey{}).(*trackedConn); !ok || !conn.rawOK {
+		refuse(w, "bad CONNECT request", http.StatusBadRequest)
+		return
+	}
+	target, err := validateCONNECT(r)
+	if err != nil {
+		refuse(w, "bad CONNECT request", http.StatusBadRequest)
+		return
+	}
+	p.mu.Lock()
+	if p.closing {
+		p.mu.Unlock()
+		refuse(w, "proxy shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	p.inflight.Add(1)
+	p.mu.Unlock()
+	defer p.inflight.Done()
+
+	if _, configured := p.configured[target.String()]; configured {
+		if p.signer == nil {
+			refuse(w, "registry interception unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		p.intercept(w, r, target)
+		return
+	}
+
+	upstream, err := (&net.Dialer{Timeout: p.cfg.DialTimeout}).DialContext(r.Context(), "tcp", net.JoinHostPort(target.Host(), target.Port()))
+	if err != nil {
+		refuse(w, "destination unavailable", http.StatusBadGateway)
+		return
+	}
+	defer upstream.Close()
+	p.mu.Lock()
+	if p.closing {
+		p.mu.Unlock()
+		refuse(w, "proxy shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	p.tunnels[upstream] = struct{}{}
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.tunnels, upstream)
+		p.mu.Unlock()
+	}()
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		refuse(w, "tunneling unavailable", http.StatusInternalServerError)
+		return
+	}
+	client, rw, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	if _, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
+		err = rw.Flush()
+	}
+	if err != nil {
+		client.Close()
+		return
+	}
+	p.relay(client, upstream, rw.Reader)
+}
+
+func validateCONNECT(r *http.Request) (hostport.HostPort, error) {
+	if r.RequestURI == "" || r.Host == "" || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+		return hostport.HostPort{}, hostport.ErrInvalid
+	}
+	target, err := hostport.Parse(r.RequestURI, "")
+	if err != nil {
+		return hostport.HostPort{}, err
+	}
+	host, err := hostport.Parse(r.Host, "")
+	if err != nil || host != target {
+		return hostport.HostPort{}, hostport.ErrInvalid
+	}
+	return target, nil
+}
+
+func refuse(w http.ResponseWriter, message string, status int) {
+	w.Header().Set("Connection", "close")
+	http.Error(w, message, status)
+}
+
 type trackingListener struct {
 	net.Listener
 	p     *Proxy
@@ -216,6 +313,38 @@ type trackedConn struct {
 	header  []byte
 	rawOK   bool
 	checked bool
+}
+
+// rawCONNECTAcceptable checks the wire authorities before net/http replaces the
+// CONNECT Host with the request-line authority. Fail closed on syntax this
+// checker cannot interpret, even if net/http would accept it (notably bare LF).
+func rawCONNECTAcceptable(header []byte) bool {
+	lines := strings.Split(string(header), "\r\n")
+	for _, line := range lines {
+		if strings.ContainsAny(line, "\r\n") || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			return false
+		}
+	}
+	parts := strings.Split(lines[0], " ")
+	if len(parts) != 3 || parts[0] != http.MethodConnect {
+		return false
+	}
+	target, err := hostport.Parse(parts[1], "")
+	if err != nil {
+		return false
+	}
+	var hostText string
+	for _, line := range lines[1:] {
+		name, value, found := strings.Cut(line, ":")
+		if found && strings.EqualFold(name, "Host") {
+			if hostText != "" {
+				return false
+			}
+			hostText = strings.TrimSpace(value)
+		}
+	}
+	host, err := hostport.Parse(hostText, "")
+	return err == nil && host == target
 }
 
 func (c *trackedConn) Read(b []byte) (int, error) {

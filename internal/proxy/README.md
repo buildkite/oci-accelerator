@@ -12,8 +12,8 @@ design rationale, see the
 
 | File | Responsibility |
 | --- | --- |
-| `server.go` | `Proxy` type, `New`, `Serve`/`Shutdown`, connection tracking (`trackingListener`, `trackedConn`), CONNECT slot limiting, and raw-CONNECT header sniffing |
-| `tunnel.go` | `ServeHTTP` CONNECT dispatch, CONNECT validation, and the opaque TCP relay for non-registry destinations |
+| `server.go` | `Proxy` type, `New`, `Serve`/`Shutdown`, connection tracking (`trackingListener`, `trackedConn`), CONNECT slot limiting, raw-CONNECT header sniffing, and `ServeHTTP` CONNECT dispatch/validation |
+| `relay.go` | The opaque bidirectional TCP relay for non-registry destinations |
 | `intercept.go` | MITM interception of configured registries: hijack, terminate TLS with a CA-signed leaf, and serve the inner HTTP server over a single-connection listener |
 | `forwarding.go` | The inner reverse proxy to upstream registries: request validation, header stripping, and the logging/metrics response writer |
 | `redirect.go` | Upstream `RoundTrip` with bounded redirect following, cross-origin header stripping, and SSRF-hardened dialing (`dialUpstream`, `publicIP`) |
@@ -52,7 +52,7 @@ listener.
 
 ## Request flow
 
-A client issues `CONNECT host:port`. `ServeHTTP` (`tunnel.go`) validates the
+A client issues `CONNECT host:port`. `ServeHTTP` (`server.go`) validates the
 request, then dispatches on the target:
 
 ```
@@ -62,7 +62,7 @@ CONNECT host:port
            HTTP server whose handler is the reverse proxy (forwarding.go)
              -> registryTransport.RoundTrip (redirect.go): dial with SSRF
                 guard, follow redirects, then consult the cache (cache.go)
-    no  -> opaque TCP relay (tunnel.go): bidirectional copy, no inspection
+    no  -> opaque TCP relay (relay.go): bidirectional copy, no inspection
 ```
 
 Only requests to configured registries are intercepted. Everything else is a
