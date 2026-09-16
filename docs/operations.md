@@ -25,7 +25,11 @@ are rejected. `cache.fill_wait_timeout: 0s` is the one permitted zero duration. 
 retain scalar defaults, but null list elements are invalid. String fields reject non-string
 scalars. Numeric limits require decimal YAML integers without leading zeros: floats, quoted
 numbers, octal/hex forms, and underscores are rejected. `ca_dir` and `cache.dir` must both be
-nonblank; there is no forwarding-only configuration mode.
+nonblank and must resolve to distinct, lexically normalized absolute paths; there is no
+forwarding-only configuration mode. The CA directory must not be inside the cache directory;
+the reverse nesting is permitted. See [state-path validation](../internal/config/README.md#loading).
+This validation does not resolve symlinks or inspect state; the filesystem ownership and
+layout checks still apply at startup.
 
 `--check` validates only the configuration. It does not inspect CA/cache state, bind listeners,
 or create directories. Before starting, provision the immediate parent of each state directory
@@ -174,7 +178,7 @@ Metrics use the `oci_accelerator_` prefix and include:
 - request counts, bounded status classes, duration histograms, and active requests/connections;
 - cache, fill, wait, fallback, and upstream GET/body counters;
 - cache admission and rejection reasons, entries, readers, fills, bytes, reservations, and
-  evictions;
+  evictions (the fills gauge includes reservations whose staging is still in progress);
 - Go heap allocation and goroutine gauges.
 
 Labels are fixed enums and never contain clients, repositories, paths, digests, tokens, or URLs.
@@ -281,15 +285,31 @@ go test -race ./...
 go vet ./...
 ```
 
-The following integration checks are opt-in because they need additional host capabilities.
-The Docker checks build the current binary and use isolated Docker state, services, and CA
-trust; local checks use private registry fixtures. They never execute pulled images. Test
-cleanup stops/removes owned services and private directories without altering host trust or
-unrelated Docker state. A skipped opt-in check is not a pass.
+Plain process-lifecycle tests run on Unix without requiring procfs. Linux namespace
+tests are isolated from non-Linux builds; Docker, ENOSPC, and load acceptance tests
+skip on non-Linux hosts even when opted in.
 
-Real Docker cold, warm, restart, authentication, and trust behavior requires Go, Docker Engine,
-passwordless sudo, Amp service management, and a non-loopback IPv4 interface. The multi-platform
-fixture also requires `unshare`, `mount`, and permission to create private mount namespaces:
+The following integration checks are opt-in because they need additional host capabilities.
+The Docker checks build the current binary and use isolated Docker state, processes, and CA
+trust; local checks use private registry fixtures. They never execute pulled images. Test
+cleanup terminates and reaps owned processes before removing their private directories,
+without altering host trust or unrelated Docker state. Privileged fixtures run inside private
+PID and mount namespaces; termination also removes daemonized descendants. Diagnostics use
+private log files capped at the first 64 KiB, discarding later output. Amp is not a prerequisite. Acceptance
+tests remain manual-only, with no CI jobs or merge gates. A skipped opt-in check is not a pass.
+
+Real Docker cold, warm, restart, authentication, and trust behavior requires Linux, Go,
+Docker Engine, passwordless sudo, `mount`, a non-loopback IPv4 interface, and
+permission to create private PID/mount namespaces and mount procfs:
+
+The multiplatform fixture withholds selected configuration and layer
+bodies during warm and restarted-proxy phases while still authorizing every GET
+and returning valid metadata. Each phase uses fresh Docker state, so successful
+verified pulls prove proxy-cache delivery rather than Docker's local cache.
+Manifest bodies remain live: Docker reorders `Accept` values across requests,
+which intentionally produces distinct representation keys. Manifest delivery is
+therefore a compatibility check, not cache-hit proof. Tag mutation and access to
+the old digest remain covered.
 
 ```sh
 OCI_ACCELERATOR_E2E=1 go test -v ./integration \
@@ -307,14 +327,39 @@ OCI_ACCELERATOR_PUBLIC_E2E=1 go test -v ./integration \
   -run TestDockerPublicRegistriesThroughCompiledProxy -count=1 -timeout=10m
 ```
 
-Linux crash recovery and isolated tmpfs ENOSPC behavior requires Go, Amp service management,
-passwordless sudo, `unshare`, `nsenter`, `mount`, `dd`, `pgrep`, and private mount namespace/tmpfs
-support. The fixture fills only its disposable filesystem, not the host root disk:
+Linux crash recovery needs Go and a non-loopback IPv4 interface. Isolated tmpfs ENOSPC
+verification additionally needs passwordless sudo, `nsenter`, `mount`, `dd`,
+`findmnt`, and private PID/mount namespace, procfs, and tmpfs support. The fixture fills
+only its disposable filesystem, not the host root disk. The lifecycle check also verifies
+privileged descendant teardown:
 
 ```sh
 OCI_ACCELERATOR_FAULT_E2E=1 go test -v ./integration \
-  -run '^TestCache(ENOSPC|Crash)Acceptance$' -count=1 -timeout=10m
+  -run '^(TestCache(ENOSPC|Crash)Acceptance|TestPrivilegedProcessLifecycle)$' -count=1 -timeout=10m
 ```
+
+In an Amp orb, run the entire test runner as a supervised service so its child
+processes survive CLI updates. The wrapper stays alive after the one-shot test
+to prevent the service supervisor from automatically rerunning it:
+
+```sh
+runner=$(mktemp)
+cat > "$runner" <<'SH'
+OCI_ACCELERATOR_E2E=1 OCI_ACCELERATOR_FAULT_E2E=1 go test -v ./integration \
+  -run '^(TestDockerPullThroughCompiledProxy|TestDockerMultiPlatformThroughCompiledProxy|TestCache(ENOSPC|Crash)Acceptance|TestPrivilegedProcessLifecycle)$' -count=1 -timeout=10m
+printf 'Acceptance exit status: %s\n' "$?"
+exec sleep infinity
+SH
+amp orb service start acceptance --command "sh $runner"
+amp orb service logs acceptance
+# After the exit status is printed, stop the wrapper and remove it:
+amp orb service stop acceptance
+rm "$runner"
+```
+
+Allow normal test cleanup to finish. If the runner is forcibly killed, confirm its
+owned processes have exited before removing only the exact temporary directories
+reported by that run; never delete unrelated Docker state or host trust files.
 
 Bounded HTTP and Docker concurrency matrices require several GiB of disposable disk, Linux
 `/proc`, and enough resources for four simultaneous Docker daemons, plus the Docker prerequisites

@@ -72,15 +72,33 @@ func validate(raw rawConfig, base string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("redirect_allowlist: %w", err)
 	}
+	caDir := resolve(base, string(raw.CADir))
+	cacheDir := resolve(base, string(raw.Cache.Dir))
+	caDirAbsolute, err := filepath.Abs(caDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("%w: ca_dir: cannot resolve directory path", ErrInvalid)
+	}
+	cacheDirAbsolute, err := filepath.Abs(cacheDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("%w: cache.dir: cannot resolve directory path", ErrInvalid)
+	}
+	if filepath.Clean(caDirAbsolute) == filepath.Clean(cacheDirAbsolute) {
+		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: must be distinct directory paths", ErrInvalid)
+	}
+	// Cache inventory owns every child of its root, including removal of
+	// abandoned staging directories. The CA must not live inside that namespace.
+	if relative, err := filepath.Rel(cacheDirAbsolute, caDirAbsolute); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: ca_dir must not be inside cache.dir", ErrInvalid)
+	}
 
 	return Config{
 		Listen:            listen,
 		MetricsListen:     metricsListen,
 		Registries:        registries,
 		RedirectAllowlist: redirectAllowlist,
-		CADir:             resolve(base, string(raw.CADir)),
+		CADir:             caDir,
 		Cache: Cache{
-			Dir:             resolve(base, string(raw.Cache.Dir)),
+			Dir:             cacheDir,
 			MaxBytes:        int64(raw.Cache.MaxBytes),
 			MaxFills:        int(raw.Cache.MaxFills),
 			MaxEntries:      int(raw.Cache.MaxEntries),

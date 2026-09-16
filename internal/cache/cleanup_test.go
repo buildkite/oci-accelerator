@@ -170,32 +170,33 @@ func TestConcurrentCleanupRetriesReclaimOnce(t *testing.T) {
 }
 
 func TestFailedAdmissionCleanupIsRetained(t *testing.T) {
-	requireUnprivilegedTest(t)
 	s := openTest(t, metadataReservation)
-	dir, err := os.MkdirTemp(s.dir, ".fill-")
-	if err != nil {
-		t.Fatal(err)
+	realMkdirTemp, realRemoveAll := s.mkdirTemp, s.removeAll
+	var dir string
+	s.mkdirTemp = func(parent, pattern string) (string, error) {
+		var err error
+		dir, err = realMkdirTemp(parent, pattern)
+		if err == nil {
+			err = os.Mkdir(filepath.Join(dir, "body"), 0o700)
+		}
+		return dir, err
 	}
-	// Deny unlink of the directory, as can happen after MkdirTemp succeeds
-	// but before admission finishes configuring its files and permissions.
-	if err := os.Chmod(s.dir, 0o500); err != nil {
-		t.Fatal(err)
+	cleanupCause := errors.New("cleanup denied")
+	s.removeAll = func(path string) error {
+		if path == dir {
+			return cleanupCause
+		}
+		return realRemoveAll(path)
 	}
-	t.Cleanup(func() { _ = os.Chmod(s.dir, 0o700) })
-	cause := errors.New("admission setup failed")
-	s.mu.Lock()
-	err = s.failAdmissionLocked(dir, metadataReservation, cause)
-	s.mu.Unlock()
+	_, err := s.Begin(testMeta("empty", ""))
 	var admission *AdmissionError
-	if !errors.As(err, &admission) || admission.Reason != AdmissionIOError || !errors.Is(admission.Cause, cause) || !errors.Is(admission.Cause, os.ErrPermission) {
+	if !errors.As(err, &admission) || admission.Reason != AdmissionIOError || !errors.Is(admission.Cause, os.ErrExist) || !errors.Is(admission.Cause, cleanupCause) {
 		t.Fatalf("lost setup or cleanup failure: %v", err)
 	}
 	if st := s.Stats(); st.CleanupSlots != 1 || st.CleanupBytes != metadataReservation || st.Bytes != metadataReservation {
 		t.Fatalf("unadmitted directory lost its charge: %+v", st)
 	}
-	if err := os.Chmod(s.dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	s.mkdirTemp, s.removeAll = realMkdirTemp, realRemoveAll
 	put(t, s, testMeta("empty", ""), "")
 	if st := s.Stats(); st.CleanupSlots != 0 || st.CleanupBytes != 0 || st.Bytes != metadataReservation {
 		t.Fatalf("admission cleanup not reclaimed: %+v", st)

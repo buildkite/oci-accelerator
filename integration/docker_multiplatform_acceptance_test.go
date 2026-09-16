@@ -22,15 +22,17 @@ import (
 const fixtureToken = "opaque-fixture-pull-token"
 
 type multiFixture struct {
-	mu       sync.Mutex
-	current  int
-	gets     map[string]int
-	tokens   int
-	badScope int
-	images   [2]fixtureImage
-	other    fixtureImage
-	roots    [2][]byte
-	digests  [2]string
+	mu            sync.Mutex
+	current       int
+	gets          map[string]int
+	withheldPaths map[string]bool
+	withheld      map[string]int
+	tokens        int
+	badScope      int
+	images        [2]fixtureImage
+	other         fixtureImage
+	roots         [2][]byte
+	digests       [2]string
 }
 
 // TestDockerMultiPlatformThroughCompiledProxy exercises Docker's own platform
@@ -39,7 +41,8 @@ func TestDockerMultiPlatformThroughCompiledProxy(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_E2E=1 to run the real Docker acceptance test")
 	}
-	requireCommands(t, "docker", "dockerd", "sudo", "amp", "unshare", "mount")
+	requireLinux(t)
+	requireCommands(t, "docker", "dockerd", "sudo", "mount")
 	if os.Geteuid() != 0 {
 		run(t, "sudo", "-n", "true")
 	}
@@ -66,7 +69,7 @@ func runMultiPlatformCase(t *testing.T, rootMedia string) {
 	hosts := filepath.Join(root, "hosts")
 	writeFile(t, hosts, fmt.Sprintf("127.0.0.1 localhost\n%s %s %s\n", ip, registryHost, tokenHost), 0o644)
 
-	f := &multiFixture{gets: map[string]int{}, images: [2]fixtureImage{
+	f := &multiFixture{gets: map[string]int{}, withheld: map[string]int{}, images: [2]fixtureImage{
 		makeImageWithPayload(t, []byte("selected-amd64-A\n")),
 		makeImageWithPayload(t, []byte("selected-amd64-B\n")),
 	}}
@@ -98,10 +101,8 @@ func runMultiPlatformCase(t *testing.T, rootMedia string) {
 	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 33554432\n", proxyPort, authority, proxyCA, filepath.Join(root, "cache")), 0o600)
 	randomSuffix := strings.ToLower(rand.Text())
 	prefix := "acc3c-" + randomSuffix[:8]
-	proxyName := prefix + "-proxy"
-	t.Cleanup(func() { stopService(t, proxyName) })
-	proxyCmd := namespacedCommand(hosts, fmt.Sprintf("sudo -n -u %s env SSL_CERT_FILE=%s %s --config %s", shell(currentUser(t)), shell(registryCA), shell(bin), shell(config)))
-	startService(t, proxyName, proxyCmd)
+	proxyCmd := namespacedCommand(hosts, fmt.Sprintf("exec sudo -n -u %s env SSL_CERT_FILE=%s %s --config %s", shell(currentUser(t)), shell(registryCA), shell(bin), shell(config)))
+	proxy := startPrivilegedProcess(t, proxyCmd)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	proxyCert := filepath.Join(proxyCA, "ca.crt")
 	caBefore := certFingerprint(t, proxyCert)
@@ -114,37 +115,51 @@ func runMultiPlatformCase(t *testing.T, rootMedia string) {
 	auth := base64.StdEncoding.EncodeToString([]byte(registryUser + ":" + registryPass))
 	writeFile(t, filepath.Join(clientDir, "config.json"), fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, authority, auth), 0o600)
 
-	phase := func(name, ref string, want int) {
+	phase := func(name, ref string, want int, cacheOnly bool) {
+		withheldPaths := map[string]bool{}
+		if cacheOnly {
+			image := f.images[want]
+			// Docker reorders manifest Accept values across fresh daemons. Those
+			// are distinct cache keys; only blobs have a stable representation.
+			withheldPaths["/v2/multi/blobs/"+image.configDigest] = true
+			withheldPaths["/v2/multi/blobs/"+image.layerDigest] = true
+		}
+		f.mu.Lock()
+		f.withheldPaths = withheldPaths
+		f.mu.Unlock()
 		before := f.snapshot()
 		sock, stop := startDaemonWithHosts(t, prefix+"-"+name, proxyPort, clientTrust, hosts)
 		pullMultiAndVerify(t, sock, clientDir, authority, ref, f.images[want], f.digests[want])
 		stop()
 		after := f.snapshot()
-		assertFreshMultiGETs(t, before, after, f, want, ref)
+		assertFreshMultiGETs(t, before, after, f, want, ref, withheldPaths)
+		if cacheOnly {
+			t.Logf("phase=%s cache_delivery_proven_by_withheld_origin_bodies paths=%d", name, len(withheldPaths))
+		}
 	}
 	restart := func() {
-		if !stopService(t, proxyName) {
+		if !proxy.Stop(t) {
 			t.Fatal("cannot restart proxy")
 		}
-		startService(t, proxyName, proxyCmd)
+		proxy = startPrivilegedProcess(t, proxyCmd)
 		waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 		if got := certFingerprint(t, proxyCert); got != caBefore {
 			t.Fatalf("proxy CA changed across restart: %s != %s", got, caBefore)
 		}
 	}
-	phase("tag-cold", "latest", 0)
-	phase("tag-warm", "latest", 0)
+	phase("tag-cold", "latest", 0, false)
+	phase("tag-warm", "latest", 0, true)
 	restart()
-	phase("tag-restart", "latest", 0)
-	phase("digest-cold", f.digests[0], 0)
-	phase("digest-warm", f.digests[0], 0)
+	phase("tag-restart", "latest", 0, true)
+	phase("digest-cold", f.digests[0], 0, false)
+	phase("digest-warm", f.digests[0], 0, true)
 	restart()
-	phase("digest-restart", f.digests[0], 0)
+	phase("digest-restart", f.digests[0], 0, true)
 	f.mu.Lock()
 	f.current = 1
 	f.mu.Unlock()
-	phase("mutated", "latest", 1)
-	phase("old-digest", f.digests[0], 0)
+	phase("mutated", "latest", 1, false)
+	phase("old-digest", f.digests[0], 0, true)
 	f.mu.Lock()
 	tokens, bad := f.tokens, f.badScope
 	f.mu.Unlock()
@@ -155,8 +170,9 @@ func runMultiPlatformCase(t *testing.T, rootMedia string) {
 }
 
 type multiSnapshot struct {
-	gets   map[string]int
-	tokens int
+	gets     map[string]int
+	withheld map[string]int
+	tokens   int
 }
 
 func (f *multiFixture) snapshot() multiSnapshot {
@@ -166,7 +182,11 @@ func (f *multiFixture) snapshot() multiSnapshot {
 	for k, v := range f.gets {
 		m[k] = v
 	}
-	return multiSnapshot{m, f.tokens}
+	w := map[string]int{}
+	for k, v := range f.withheld {
+		w[k] = v
+	}
+	return multiSnapshot{gets: m, withheld: w, tokens: f.tokens}
 }
 
 func makePlatformImage(t *testing.T, arch string, payload []byte) fixtureImage {
@@ -325,12 +345,22 @@ func registryHandler(f *multiFixture, realm string, other fixtureImage) http.Han
 				return
 			}
 		}
+		f.mu.Lock()
+		withhold := r.Method == http.MethodGet && f.withheldPaths[path]
+		if withhold {
+			f.withheld[path]++
+		}
+		f.mu.Unlock()
 		w.Header().Set("Docker-Distribution-Api-Version", "registry/2.0")
 		if len(body) > 0 {
 			w.Header().Set("Docker-Content-Digest", digest(body))
 		}
 		w.Header().Set("Content-Type", ct)
 		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		if withhold {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if r.Method != http.MethodHead {
 			_, _ = w.Write(body)
 		}
@@ -376,7 +406,7 @@ func joinFiles(t *testing.T, dst string, paths ...string) {
 	writeFile(t, dst, string(out), 0o600)
 }
 func namespacedCommand(hosts, command string) string {
-	return fmt.Sprintf("sudo -n unshare --mount --propagation private sh -c %s", shell(fmt.Sprintf("mount --bind %s /etc/hosts && exec %s", shell(hosts), command)))
+	return fmt.Sprintf("mount --bind %s /etc/hosts && %s", shell(hosts), command)
 }
 
 func currentUser(t *testing.T) string {
@@ -418,7 +448,7 @@ func pullMultiAndVerify(t *testing.T, sock, client, authority, ref string, image
 	}
 	t.Fatalf("RepoDigests %v lacks root %s", x.RepoDigests, want)
 }
-func assertFreshMultiGETs(t *testing.T, b, a multiSnapshot, f *multiFixture, want int, ref string) {
+func assertFreshMultiGETs(t *testing.T, b, a multiSnapshot, f *multiFixture, want int, ref string, withheldPaths map[string]bool) {
 	rootPath := "/v2/multi/manifests/" + ref
 	rootDigestPath := "/v2/multi/manifests/" + f.digests[want]
 	if a.gets[rootPath]-b.gets[rootPath] < 1 && a.gets[rootDigestPath]-b.gets[rootDigestPath] < 1 {
@@ -431,6 +461,11 @@ func assertFreshMultiGETs(t *testing.T, b, a multiSnapshot, f *multiFixture, wan
 	for _, p := range paths {
 		if a.gets[p]-b.gets[p] < 1 {
 			t.Fatalf("no fresh authenticated digest GET for %s: before=%d after=%d", p, b.gets[p], a.gets[p])
+		}
+	}
+	for p := range withheldPaths {
+		if a.withheld[p]-b.withheld[p] < 1 {
+			t.Fatalf("origin body was not withheld for expected cache path %s: before=%d after=%d", p, b.withheld[p], a.withheld[p])
 		}
 	}
 	for _, p := range []string{"/v2/multi/manifests/" + f.other.manifestDigest, "/v2/multi/blobs/" + f.other.configDigest, "/v2/multi/blobs/" + f.other.layerDigest} {

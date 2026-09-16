@@ -15,6 +15,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -25,6 +26,7 @@ const (
 	certName   = "ca.crt"
 	keyName    = "ca.key"
 	caKeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature
+	maxPEMSize = 64 << 10
 )
 
 // Authority is a persistent CA with a bounded in-memory leaf cache.
@@ -277,7 +279,19 @@ func readRegular(path string, maxPerm os.FileMode) ([]byte, error) {
 	if err := checkRegular(path, maxPerm); err != nil {
 		return nil, err
 	}
-	return os.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxPEMSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxPEMSize {
+		return nil, errors.New("CA PEM file exceeds 64 KiB size limit")
+	}
+	return raw, nil
 }
 
 func checkRegular(path string, maxPerm os.FileMode) error {

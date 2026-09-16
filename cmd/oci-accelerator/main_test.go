@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/buildkite/oci-accelerator/internal/cache"
 )
 
 func TestRunHelpUsesOCIAcceleratorName(t *testing.T) {
@@ -74,6 +78,43 @@ cache: {dir: cache}
 	}
 }
 
+func TestRunReportsSanitizedConfigurationDiagnostics(t *testing.T) {
+	tests := []struct {
+		name, contents, want string
+	}{
+		{"malformed YAML", "registries: [example.com\nsecret-value", "line 2: malformed YAML"},
+		{"invalid timeout", "registries: [example.com]\nca_dir: ca\nshutdown_timeout: secret-value\n", "line 3: must be a duration"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config-secret-path.yaml")
+			if err := os.WriteFile(path, []byte(test.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := run(context.Background(), []string{"--config", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want sanitized diagnostic containing %q", err, test.want)
+			}
+			for _, secret := range []string{"secret-value", path} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("error leaked %q: %v", secret, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRunRedactsConfigurationIOError(t *testing.T) {
+	root := t.TempDir()
+	// A directory opens successfully but fails on read, even when tests run as root.
+	for _, path := range []string{filepath.Join(root, "missing-secret-config.yaml"), root} {
+		err := run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil || err.Error() != "configuration validation failed" {
+			t.Fatalf("error = %v", err)
+		}
+	}
+}
+
 func TestRunCheckValidatesWithoutSideEffects(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "config.yaml")
@@ -97,6 +138,29 @@ cache: {dir: cache}
 	}
 }
 
+func TestRunCheckRejectsConflictingStateDirectoriesWithoutSideEffects(t *testing.T) {
+	for _, child := range []string{"", "/ca", "/.fill-ca"} {
+		t.Run("state"+child, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "config.yaml")
+			secret := "secret-state"
+			if err := os.WriteFile(path, []byte("registries: [example.com]\nca_dir: "+secret+child+"\ncache: {dir: ./"+secret+"}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := run(context.Background(), []string{"--config", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), "ca_dir and cache.dir") {
+				t.Fatalf("error = %v, want state directory diagnostic", err)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("error leaked directory value: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, secret)); !os.IsNotExist(statErr) {
+				t.Fatalf("--check created state directory: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestRunRejectsUnusableCacheBeforeListen(t *testing.T) {
 	root := t.TempDir()
 	cacheDir := filepath.Join(root, "unsafe-cache")
@@ -115,10 +179,60 @@ func TestRunRejectsUnusableCacheBeforeListen(t *testing.T) {
 	}
 	var errOut bytes.Buffer
 	err = run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &errOut)
-	if err == nil || err.Error() != "cache startup failed" {
-		t.Fatalf("error = %v, want generic cache startup failure", err)
+	if err == nil || err.Error() != "cache startup failed: unsafe cache state" {
+		t.Fatalf("error = %v, want safe cache category", err)
 	}
 	if strings.Contains(err.Error(), cacheDir) || strings.Contains(errOut.String(), cacheDir) {
 		t.Fatalf("cache path leaked: %v %q", err, errOut.String())
+	}
+}
+
+func TestRunReportsLockedCacheWithoutLeakingPath(t *testing.T) {
+	root := t.TempDir()
+	cacheDir := filepath.Join(root, "locked-secret-cache")
+	store, err := cache.OpenWithLimits(cacheDir, cache.Limits{
+		MaxBytes: 1 << 20, MaxFills: 1, MaxEntries: 1, FillTimeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	path := filepath.Join(root, "config.yaml")
+	config := "registries: [example.com]\nca_dir: ca\ncache:\n  dir: locked-secret-cache\n"
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || err.Error() != "cache startup failed: cache is locked by another process" {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), cacheDir) || strings.Contains(err.Error(), "locked-secret-cache") {
+		t.Fatalf("cache path leaked: %v", err)
+	}
+}
+
+func TestRunReportsCacheFilesystemFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("registries: [example.com]\nca_dir: ca\ncache: {dir: missing-secret-parent/cache}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || err.Error() != "cache startup failed: filesystem failure" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCacheCleanupDiagnosticRedactsCauses(t *testing.T) {
+	for _, tc := range []struct {
+		cause error
+		want  string
+	}{
+		{errors.Join(cache.ErrFilesystem, &os.PathError{Op: "remove", Path: "/secret/cache", Err: os.ErrPermission}), "filesystem failure"},
+		{errors.Join(cache.ErrActiveReaders, errors.New("sensitive nested cause")), "active cache readers"},
+	} {
+		got := cacheDiagnostic("cache cleanup failed", tc.cause)
+		if got.Error() != "cache cleanup failed: "+tc.want {
+			t.Fatalf("cleanup diagnostic = %v", got)
+		}
 	}
 }

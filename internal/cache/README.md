@@ -10,7 +10,8 @@ for performance notes see [benchmarks.md](benchmarks.md).
 
 | File | Responsibility |
 | --- | --- |
-| `store.go` | `Store` type, `Open`/`OpenWithLimits`, accounting, LRU eviction, metadata validation, private-directory and lock enforcement, `Stats`, `Close` |
+| `store.go` | `Store` type, `Open`/`OpenWithLimits`, accounting, metadata validation, private-directory and lock enforcement, `Stats`, `Close` |
+| `eviction.go` | Incrementally maintained eviction ordering and entry index updates |
 | `fill.go` | `Fill` lifecycle: `Begin` admission, `Write`, `Commit` (verify and atomic publish), `Abort`, and the fill timeout |
 | `reader.go` | `Reader` and `Get`: pinning, single-flight body verification, and reclaim of detached entries on the final unpin |
 | `inventory.go` | Startup scan: discard abandoned `.fill-` directories, validate committed entries, reject unrecognized state |
@@ -23,12 +24,17 @@ for performance notes see [benchmarks.md](benchmarks.md).
 Open or create the private cache directory, take its exclusive lock, and scan
 existing entries while discarding abandoned fills. `Open` applies a byte ceiling
 with default slot and fill limits; `OpenWithLimits` sets every `Limits` field.
+Startup errors match fixed sentinels for invalid limits, lock conflict, unsafe
+state, or filesystem failure; filesystem errors retain their cause for internal
+handling.
 
 ### `Metadata` · `Limits` · `Stats`
 
 `Metadata` identifies one object (`Key`, a `sha256:` `Digest`, `Size`,
 `MediaType`). `Limits` bounds the store (`MaxBytes`, `MaxFills`, `MaxEntries`,
-`FillTimeout`). `Stats` is a point-in-time snapshot of the accounting counters.
+`FillTimeout`). `Stats` is a point-in-time snapshot of the accounting counters;
+`Pending` reports staging key claims that consume an entry slot but are not
+yet visible as initialized `Fill` values.
 
 ### `(*Store) Begin(meta Metadata) (*Fill, error)`
 
@@ -113,16 +119,32 @@ invalidated entry keeps its charge until its final unpin, even if a replacement
 is published at the same key.
 
 Eviction is best-effort LRU keyed on each entry's last successful open or commit.
-`evictLocked` gathers unpinned candidates, preflights whether removing them could
-satisfy the request, and removes a bounded batch. A shared resume cursor
+Startup adds inventory entries to the lookup map directly, sorts snapshots for
+uncapped startup pressure, then bulk-builds the live `(last access, key)` order
+in one final sort. The store incrementally maintains that order thereafter;
+`evictLocked` scans that order for unpinned candidates, preflights whether
+removing all of them could satisfy the request, and otherwise evicts nothing.
+For feasible requests it attempts up to eight removals, even when more victims
+are needed. Those removals free capacity for later attempts while this response
+bypasses storage; competing traffic can reuse that space, so admission is not
+guaranteed. Successful removals count as evictions. If removal failures leave
+insufficient capacity, admission reports `io_error`; otherwise insufficient
+capacity reports `capacity`. A shared resume cursor
 (`evictionAfter`/`evictionAfterLast`) gives later candidates a turn across
-batches, so eviction is approximate rather than strict LRU.
+batches, so eviction is approximate rather than strict LRU. Before claiming a
+victim, eviction rechecks its pins and eviction-list node identity (replaced on
+every successful access, even if the clock repeats a timestamp). An entry hit
+while an earlier removal runs is skipped for that batch, even if its reader has
+already closed; skipped entries still consume a position in the bounded batch.
 
 ## Concurrency
 
 - **`Store.mu`** guards all store bookkeeping: the `entries` and `fills` maps,
   every accounting counter, and the per-entry `pins`/`verified`/`verifying`/
   `invalid` fields. Helpers named `...Locked` assume it is already held.
+- **`Store.admissionMu`** serializes admission and path ownership. Filesystem
+  removal and staging run without `Store.mu`, so unrelated hits and `Stats`
+  continue; claimed generations remain charged and cannot be pinned or reused.
 - **`Fill.mu`** guards one fill's own state. A `Fill` method may take `Store.mu`
   briefly (while holding `Fill.mu`) to publish or release accounting, and always
   releases it before returning; the reverse lock order never occurs.
@@ -140,6 +162,7 @@ The caller that opens a `Store` owns it and must `Close` it. `Close` rejects new
 work and aborts active fills, but does not wait for readers: if any `Reader` is
 still open it retains the filesystem lock and reports an active-reader error, so
 the caller must close all readers and call `Close` again to release the lock.
+It does wait for claimed filesystem operations before releasing that lock.
 
 ## Dependencies
 

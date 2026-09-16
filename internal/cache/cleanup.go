@@ -1,10 +1,6 @@
 package cache
 
-import (
-	"container/list"
-	"errors"
-	"os"
-)
+import "container/list"
 
 const cleanupRetryLimit = 8 // Maximum background cleanup attempts per admission.
 
@@ -30,33 +26,18 @@ func (s *Store) retainCleanupLocked(dir string, charge int64) {
 func (s *Store) retryCleanupsLocked() {
 	for range min(cleanupRetryLimit, s.cleanupQueue.Len()) {
 		next := s.cleanupQueue.Front()
-		if err := s.removeCleanupLocked(next.Value.(string)); err != nil {
+		path := next.Value.(string)
+		s.startOpLocked()
+		s.mu.Unlock()
+		err := s.removeAll(path)
+		s.mu.Lock()
+		s.finishOpLocked()
+		if err != nil {
 			s.cleanupQueue.MoveToBack(next)
+		} else if pending, ok := s.failedCleanups[path]; ok {
+			s.cleanupQueue.Remove(pending.queued)
+			delete(s.failedCleanups, path)
+			s.bytes -= pending.charge
 		}
 	}
-}
-
-// removeCleanupLocked reclaims recorded capacity only after successful removal.
-// Clear the record before reusing a path so a later retry cannot delete new data.
-func (s *Store) removeCleanupLocked(dir string) error {
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
-	if pending, ok := s.failedCleanups[dir]; ok {
-		s.cleanupQueue.Remove(pending.queued)
-		delete(s.failedCleanups, dir)
-		s.bytes -= pending.charge
-	}
-	return nil
-}
-
-// failAdmissionLocked cleans up a staging directory that never became a Fill.
-// Admission has already checked capacity under s.mu, so it can retain one slot.
-func (s *Store) failAdmissionLocked(dir string, charge int64, cause error) error {
-	if err := os.RemoveAll(dir); err != nil {
-		s.retainCleanupLocked(dir, charge)
-		cause = errors.Join(cause, err)
-	}
-	s.admissions[AdmissionIOError]++
-	return &AdmissionError{Reason: AdmissionIOError, Cause: cause}
 }

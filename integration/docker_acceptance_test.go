@@ -83,7 +83,8 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_E2E=1 to run the real Docker acceptance test")
 	}
-	requireCommands(t, "docker", "dockerd", "sudo", "amp")
+	requireLinux(t)
+	requireCommands(t, "docker", "dockerd", "sudo", "mount")
 	if os.Geteuid() != 0 {
 		run(t, "sudo", "-n", "true")
 	}
@@ -104,9 +105,8 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 
 	randomSuffix := strings.ToLower(rand.Text())
 	prefix := "acc2d-" + randomSuffix[:8]
-	proxyName := prefix + "-proxy"
-	t.Cleanup(func() { stopService(t, proxyName) })
-	startService(t, proxyName, fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCAPath(root)), shell(bin), shell(config)))
+	proxyCommand := fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCAPath(root)), shell(bin), shell(config))
+	proxy := startProcess(t, proxyCommand)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	proxyCert := filepath.Join(proxyCA, "ca.crt")
 	fingerprint1 := certFingerprint(t, proxyCert)
@@ -164,10 +164,10 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 		t.Fatal("warm pull did not resolve the tag upstream")
 	}
 
-	if !stopService(t, proxyName) {
+	if !proxy.Stop(t) {
 		t.Fatal("cannot restart proxy after failed stop")
 	}
-	startService(t, proxyName, fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCAPath(root)), shell(bin), shell(config)))
+	proxy = startProcess(t, proxyCommand)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	if fingerprint2 := certFingerprint(t, proxyCert); fingerprint2 != fingerprint1 {
 		t.Fatalf("proxy CA changed across restart: %s != %s", fingerprint2, fingerprint1)
@@ -556,26 +556,31 @@ func startDaemonWithHosts(t *testing.T, name string, proxyPort int, trust, hosts
 	if err != nil {
 		t.Fatal(err)
 	}
-	dock := fmt.Sprintf("sudo -n env SSL_CERT_FILE=%s dockerd --config-file %s --host unix://%s --group %s --data-root %s --exec-root %s --pidfile %s --bridge none --iptables=false --ip-forward=false --ip-masq=false --storage-driver=vfs", shell(trust), shell(cfg), shell(sock), shell(strings.TrimSpace(string(group))), shell(filepath.Join(dir, "data")), shell(filepath.Join(dir, "exec")), shell(filepath.Join(dir, "dockerd.pid")))
+	dock := fmt.Sprintf("exec env SSL_CERT_FILE=%s dockerd --config-file %s --host unix://%s --group %s --data-root %s --exec-root %s --pidfile %s --bridge none --iptables=false --ip-forward=false --ip-masq=false --storage-driver=vfs", shell(trust), shell(cfg), shell(sock), shell(strings.TrimSpace(string(group))), shell(filepath.Join(dir, "data")), shell(filepath.Join(dir, "exec")), shell(filepath.Join(dir, "dockerd.pid")))
 	cmd := dock
 	if hosts != "" {
 		cmd = namespacedCommand(hosts, dock)
 	}
-	var stopOnce sync.Once
+	process := startPrivilegedProcess(t, cmd)
+	var stopMu sync.Mutex
+	stopped := false
 	stop := func() {
-		stopOnce.Do(func() {
-			if !stopService(t, name) {
+		stopMu.Lock()
+		defer stopMu.Unlock()
+		if !stopped {
+			if !process.Stop(t) {
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if out, err := exec.CommandContext(ctx, "sudo", "-n", "rm", "-rf", dir).CombinedOutput(); err != nil {
 				t.Errorf("remove owned daemon directory %s: %v: %s", dir, err, trim(string(out)))
+				return
 			}
-		})
+			stopped = true
+		}
 	}
 	t.Cleanup(stop)
-	startService(t, name, cmd)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if dockerCombined(sock, nil, "info").err == nil {
@@ -591,24 +596,6 @@ func startDaemonWithHosts(t *testing.T, name string, proxyPort int, trust, hosts
 	return "", stop
 }
 
-func startService(t *testing.T, name, command string) {
-	t.Helper()
-	// Keep Amp's generated service metadata in the repository's ignored .amp directory.
-	run(t, "amp", "orb", "service", "start", name, "--command", command, "--cwd", filepath.Dir(mustGetwd(t)))
-}
-func stopService(t *testing.T, name string) bool {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "amp", "orb", "service", "stop", name)
-	cmd.Dir = filepath.Dir(mustGetwd(t))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Errorf("stop service %s: %v: %s", name, err, trim(string(out)))
-		return false
-	}
-	return true
-}
 func originCAPath(root string) string { return filepath.Join(root, "origin-ca", "ca.crt") }
 func shell(s string) string           { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 func freePort(t *testing.T, host string) int {
@@ -681,9 +668,6 @@ func run(t *testing.T, name string, args ...string) string {
 	defer cancel()
 	c := exec.CommandContext(ctx, name, args...)
 	c.Dir = mustGetwd(t)
-	if name == "amp" {
-		c.Dir = filepath.Dir(c.Dir)
-	}
 	b, e := c.CombinedOutput()
 	if e != nil {
 		t.Fatalf("%s failed: %v: %s", name, e, trim(string(b)))

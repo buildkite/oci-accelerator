@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -10,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,7 +25,8 @@ func TestCacheENOSPCAcceptance(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_FAULT_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_FAULT_E2E=1 to run the cache fault acceptance test")
 	}
-	requireCommands(t, "sudo", "unshare", "nsenter", "mount", "dd", "pgrep", "amp")
+	requireLinux(t)
+	requireCommands(t, "sudo", "nsenter", "mount", "dd", "findmnt")
 	run(t, "sudo", "-n", "true")
 
 	root := t.TempDir()
@@ -81,29 +82,24 @@ func TestCacheENOSPCAcceptance(t *testing.T) {
 	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 921600\n", proxyPort, authority, proxyCA, filepath.Join(mountpoint, "cache")), 0o600)
 
 	uid, gid := os.Getuid(), os.Getgid()
-	command := fmt.Sprintf(`sudo -n unshare --mount --propagation private sh -ceu %s`, shell(fmt.Sprintf(
+	command := fmt.Sprintf(
 		`mount -t tmpfs -o size=1m,nr_inodes=1024 fault-cache %s
 mkdir %s/cache
 chown %d:%d %s %s/cache
 chmod 700 %s %s/cache
 dd if=/dev/zero of=%s/ballast bs=1024 count=700 status=none
 chown %d:%d %s/ballast
-sudo -n -u \#%d -g \#%d env SSL_CERT_FILE=%s %s --config %s`,
-		shell(mountpoint), shell(mountpoint), uid, gid, shell(mountpoint), shell(mountpoint), shell(mountpoint), shell(mountpoint), shell(mountpoint), uid, gid, shell(mountpoint), uid, gid, shell(originCA), shell(bin), shell(config))))
-	name := "fault-cache-" + strings.ToLower(fmt.Sprintf("%x", sha256.Sum256([]byte(root)))[:10])
-	t.Cleanup(func() { stopService(t, name) })
-	startService(t, name, command)
+exec sudo -n -u \#%d -g \#%d env SSL_CERT_FILE=%s %s --config %s`,
+		shell(mountpoint), shell(mountpoint), uid, gid, shell(mountpoint), shell(mountpoint), shell(mountpoint), shell(mountpoint), shell(mountpoint), uid, gid, shell(mountpoint), uid, gid, shell(originCA), shell(bin), shell(config))
+	process := startPrivilegedProcess(t, command)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 
-	nsPIDBytes, err := exec.Command("pgrep", "-n", "-f", bin+" --config "+config).Output()
-	if err != nil {
-		t.Fatalf("locate supervised proxy process: %v", err)
-	}
-	nsPID := strings.TrimSpace(string(nsPIDBytes))
+	nsPID := process.namespacePID()
 	ns := func(args ...string) (string, error) {
-		base := []string{"-n", "nsenter", "-t", nsPID, "-m", "--"}
-		out, err := exec.Command("sudo", append(base, args...)...).CombinedOutput()
-		return string(out), err
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		base := []string{"-n", "nsenter", "-t", nsPID, "-m", "-p", "--"}
+		return runBounded(ctx, "sudo", append(base, args...)...)
 	}
 	if out, err := ns("findmnt", "-n", "-o", "FSTYPE,SOURCE,SIZE", "--target", mountpoint); err != nil || !strings.Contains(out, "tmpfs") || !strings.Contains(out, "fault-cache") {
 		t.Fatalf("cache is not on the private fault tmpfs: %v: %s", err, strings.TrimSpace(out))

@@ -673,6 +673,47 @@ func TestMalformedInstallationsFailWithoutReplacement(t *testing.T) {
 	}
 }
 
+func TestReadRegularSizeBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pem")
+	for _, size := range []int{64 << 10, (64 << 10) + 1} {
+		want := bytes.Repeat([]byte("x"), size)
+		if err := os.WriteFile(path, want, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readRegular(path, 0o600)
+		if size == 64<<10 {
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("boundary read: bytes=%d err=%v", len(got), err)
+			}
+		} else if err == nil || got != nil {
+			t.Fatalf("oversized read: bytes=%d err=%v", len(got), err)
+		}
+	}
+}
+
+func TestOpenRejectsOversizedPEMWithoutReplacement(t *testing.T) {
+	for _, name := range []string{certName, keyName} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "ca")
+			if _, err := Open(dir, 1); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, name)
+			// A sparse file exercises a large on-disk size without allocating a
+			// large fixture. The loader must reject it before PEM parsing.
+			if err := os.Truncate(path, 1<<30); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(dir, 1); err == nil || !strings.Contains(err.Error(), "size limit") {
+				t.Fatalf("Open oversized %s = %v", name, err)
+			}
+			if st, err := os.Stat(path); err != nil || st.Size() != 1<<30 {
+				t.Fatalf("rejected file replaced: %v, %v", st, err)
+			}
+		})
+	}
+}
+
 func rewriteCertificate(t *testing.T, dir string, a *Authority, signer *ecdsa.PrivateKey, mutate func(*x509.Certificate)) {
 	t.Helper()
 	tmpl := *a.cert

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,9 +18,21 @@ import (
 const metadataReservation int64 = 4096 // capacity charged per entry, including its sidecar
 
 var (
-	ErrMiss   = errors.New("cache miss")
-	ErrBypass = errors.New("cache bypass")
+	ErrMiss          = errors.New("cache miss")
+	ErrBypass        = errors.New("cache bypass")
+	ErrInvalidLimits = errors.New("invalid cache limits")
+	ErrLockConflict  = errors.New("cache lock conflict")
+	ErrUnsafeState   = errors.New("unsafe cache state")
+	ErrFilesystem    = errors.New("cache filesystem failure")
+	ErrActiveReaders = errors.New("cache has active readers")
 )
+
+func filesystemError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrFilesystem, err)
+}
 
 type AdmissionReason uint8
 
@@ -78,7 +89,7 @@ type Metadata struct {
 }
 type Stats struct {
 	Bytes, Reserved                                 int64
-	Entries, Fills                                  int
+	Entries, Fills, Pending                         int
 	Evictions                                       int64
 	Readers                                         int
 	FillSuccess, FillFailure, FillAbort, FillExpiry int64
@@ -100,12 +111,15 @@ type entry struct {
 	verified  bool
 	verifying chan struct{} // Non-nil while one Get verifies; guarded by Store.mu.
 	invalid   bool
+	claimed   bool // A synchronous removal owns this generation.
 	// Charges are reclaimed once, after directory removal and the final unpin.
 	reclaimed bool
+	eviction  *list.Element
 }
 
 type Store struct {
 	mu                                              sync.Mutex
+	admissionMu                                     sync.Mutex
 	dir                                             string
 	max                                             int64
 	maxFills, maxEntries                            int
@@ -119,6 +133,12 @@ type Store struct {
 	admissions                                      [AdmissionReasonCount]int64
 	entries                                         map[string]*entry
 	fills                                           map[string]*Fill
+	claims                                          map[string]int64
+	activeOps                                       int
+	opsDone                                         *sync.Cond
+	removeAll                                       func(string) error
+	mkdirTemp                                       func(string, string) (string, error)
+	evictionOrder                                   list.List // entries ordered by (last, key)
 	// Resume after this (last, key) position even if its entry disappears or pins.
 	evictionAfterLast int64
 	evictionAfter     string
@@ -160,7 +180,7 @@ func Open(dir string, maxBytes int64) (*Store, error) {
 
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	if dir == "" || !limits.valid() {
-		return nil, errors.New("cache directory and capacity are required")
+		return nil, ErrInvalidLimits
 	}
 	dir = filepath.Clean(dir)
 	if err := ensurePrivateDir(dir); err != nil {
@@ -169,22 +189,25 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	lockPath := filepath.Join(dir, ".lock")
 	if li, err := os.Lstat(lockPath); err == nil {
 		if !li.Mode().IsRegular() || li.Mode().Perm() != 0o600 || !owned(li) {
-			return nil, errors.New("cache lock has insecure type, ownership, or permissions")
+			return nil, ErrUnsafeState
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		return nil, filesystemError(err)
 	}
 	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, filesystemError(err)
 	}
 	if err = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lf.Close()
-		return nil, fmt.Errorf("cache is already open: %w", err)
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, fmt.Errorf("%w: %w", ErrLockConflict, err)
+		}
+		return nil, filesystemError(err)
 	}
 	if err = lf.Chmod(0o600); err != nil {
 		lf.Close()
-		return nil, err
+		return nil, filesystemError(err)
 	}
 	s := &Store{
 		dir:         dir,
@@ -194,10 +217,20 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 		fillTimeout: limits.FillTimeout,
 		entries:     make(map[string]*entry),
 		fills:       make(map[string]*Fill),
+		claims:      make(map[string]int64),
 		lock:        lf,
+		removeAll:   os.RemoveAll,
+		mkdirTemp:   os.MkdirTemp,
 	}
-	if err := s.inventory(); err != nil {
+	s.opsDone = sync.NewCond(&s.mu)
+	s.mu.Lock()
+	err = s.inventory()
+	s.mu.Unlock()
+	if err != nil {
 		s.releaseLock()
+		if !errors.Is(err, ErrUnsafeState) {
+			err = filesystemError(err)
+		}
 		return nil, err
 	}
 	return s, nil
@@ -210,22 +243,28 @@ func ensurePrivateDir(dir string) error {
 	parentInfo, parentErr := os.Lstat(filepath.Dir(dir))
 	parentPrivate := parentErr == nil && isRealDir(parentInfo) && parentInfo.Mode().Perm()&0o022 == 0 && owned(parentInfo)
 	if !parentPrivate {
-		return errors.New("cache parent must be an owner-controlled non-symlink directory")
+		if parentErr != nil {
+			return filesystemError(parentErr)
+		}
+		return ErrUnsafeState
 	}
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		if err = os.Mkdir(dir, 0o700); err != nil {
-			return err
+			return filesystemError(err)
 		}
 		if err = os.Chmod(dir, 0o700); err != nil {
-			return err
+			return filesystemError(err)
 		}
 		info, err = os.Lstat(dir)
 	}
 	// The cache directory itself must be owned by this user and exactly 0700.
 	dirPrivate := err == nil && isRealDir(info) && info.Mode().Perm() == 0o700 && owned(info)
 	if !dirPrivate {
-		return errors.New("cache directory must be owned, non-symlink, and mode 0700")
+		if err != nil {
+			return filesystemError(err)
+		}
+		return ErrUnsafeState
 	}
 	return nil
 }
@@ -292,17 +331,15 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 
 	// Gather unpinned candidates no newer than before, and check that removing
 	// all of them could even satisfy the request before disturbing anything.
-	candidates := s.evictionCandidatesLocked(before)
+	var candidates []*entry
+	if maxAttempts == 0 {
+		candidates = s.sortedEntriesLocked(before, true)
+	} else {
+		candidates = s.evictionCandidatesLocked(before)
+	}
 	if !s.batchSuffices(candidates, need, needSlots) {
 		return ErrBypass
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].last == candidates[j].last {
-			return candidates[i].meta.Key < candidates[j].meta.Key
-		}
-		return candidates[i].last < candidates[j].last
-	})
-
 	// Select the batch to remove. Admission eviction (maxAttempts > 0) removes at
 	// most maxAttempts victims per call, resuming from the recorded cursor. The
 	// sufficiency gate above guarantees at least one candidate here, so count >= 1
@@ -311,15 +348,18 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 	if maxAttempts > 0 {
 		count = min(count, maxAttempts)
 		start = s.resumeStart(candidates)
-		batch := batchAt(candidates, start, count)
-		// Do not remove useful entries when even a fully successful batch cannot
-		// admit the fill. Record where to resume so blocked or small victims
-		// cannot permanently hide a usable victim beyond this batch.
-		last := batch[len(batch)-1]
+		// Globally feasible requests may need several bounded batches. Resume
+		// beyond this batch even when this response still bypasses storage.
+		last := candidates[(start+count-1)%len(candidates)]
 		s.evictionAfterLast, s.evictionAfter = last.last, last.meta.Key
-		if !s.batchSuffices(batch, need, needSlots) {
-			return ErrBypass
-		}
+	}
+
+	// Hits can refresh later candidates while an earlier removal runs unlocked.
+	// Each access replaces the list node, even if the clock repeats a timestamp.
+	// Snapshot this batch's nodes so refreshed entries wait for a future batch.
+	positions := make([]*list.Element, count)
+	for i := range count {
+		positions[i] = candidates[(start+i)%len(candidates)].eviction
 	}
 
 	// Remove victims until the request fits. A failed removal is retried later;
@@ -331,13 +371,23 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 			return nil
 		}
 		e := candidates[(start+i)%len(candidates)]
-		if err := os.RemoveAll(e.dir); err == nil {
-			delete(s.entries, e.meta.Key)
+		if s.entries[e.meta.Key] != e || e.pins != 0 || e.claimed || e.eviction != positions[i] || e.last > before {
+			continue
+		}
+		e.claimed = true
+		s.startOpLocked()
+		s.mu.Unlock()
+		err := s.removeAll(e.dir)
+		s.mu.Lock()
+		s.finishOpLocked()
+		e.claimed = false
+		if err == nil && s.entries[e.meta.Key] == e && e.pins == 0 {
+			s.deleteEntryLocked(e)
 			// Eviction only selects unpinned entries, so their charge is free.
 			e.reclaimed = true
 			s.bytes -= e.charge
 			s.evictions++
-		} else if removeErr == nil {
+		} else if err != nil && removeErr == nil {
 			removeErr = err
 		}
 	}
@@ -345,20 +395,27 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 		s.evictionAfter = ""
 		return nil
 	}
-	return removeErr
+	if removeErr != nil {
+		return removeErr
+	}
+	return ErrBypass
 }
 
 // freeCapacityLocked reports the currently unused bytes and entry slots.
 func (s *Store) freeCapacityLocked() (bytes int64, slots int) {
-	return s.max - s.bytes - s.reserved, s.maxEntries - len(s.entries) - len(s.fills) - len(s.failedCleanups)
+	return s.max - s.bytes - s.reserved, s.maxEntries - len(s.entries) - len(s.fills) - len(s.claims) - len(s.failedCleanups)
 }
 
 // evictionCandidatesLocked returns the unpinned entries eligible for removal:
 // those last accessed no later than before.
 func (s *Store) evictionCandidatesLocked(before int64) []*entry {
 	var candidates []*entry
-	for _, e := range s.entries {
-		if e.pins == 0 && e.last <= before {
+	for item := s.evictionOrder.Front(); item != nil; item = item.Next() {
+		e := item.Value.(*entry)
+		if e.last > before {
+			break
+		}
+		if e.pins == 0 && !e.claimed && e.last <= before {
 			candidates = append(candidates, e)
 		}
 	}
@@ -391,16 +448,6 @@ func (s *Store) resumeStart(candidates []*entry) int {
 	return 0
 }
 
-// batchAt returns the count entries beginning at start, wrapping around the
-// candidates slice.
-func batchAt(candidates []*entry, start, count int) []*entry {
-	batch := make([]*entry, count)
-	for i := range count {
-		batch[i] = candidates[(start+i)%len(candidates)]
-	}
-	return batch
-}
-
 func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -413,6 +460,7 @@ func (s *Store) Stats() Stats {
 		Reserved:     s.reserved,
 		Entries:      len(s.entries),
 		Fills:        len(s.fills),
+		Pending:      len(s.claims),
 		Evictions:    s.evictions,
 		Readers:      s.readers,
 		FillSuccess:  s.fillSuccess,
@@ -445,10 +493,23 @@ func (s *Store) Close() error {
 	for _, f := range fs {
 		abortErr = errors.Join(abortErr, f.Abort())
 	}
-	if readers != 0 {
-		return errors.Join(abortErr, errors.New("cache has active readers"))
+	s.mu.Lock()
+	for s.activeOps != 0 {
+		s.opsDone.Wait()
 	}
-	return errors.Join(abortErr, s.releaseLock())
+	s.mu.Unlock()
+	if readers != 0 {
+		return errors.Join(filesystemError(abortErr), ErrActiveReaders)
+	}
+	return filesystemError(errors.Join(abortErr, s.releaseLock()))
+}
+
+func (s *Store) startOpLocked() { s.activeOps++ }
+func (s *Store) finishOpLocked() {
+	s.activeOps--
+	if s.activeOps == 0 {
+		s.opsDone.Broadcast()
+	}
 }
 func (s *Store) releaseLock() error {
 	s.mu.Lock()

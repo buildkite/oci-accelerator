@@ -636,8 +636,8 @@ func TestCapacityLRUPinningAndConcurrency(t *testing.T) {
 	a, b, c := testMeta("a", "aaaa"), testMeta("b", "bbbb"), testMeta("c", "cccc")
 	put(t, s, a, "aaaa")
 	put(t, s, b, "bbbb")
-	s.entries[a.Key].last = 1
-	s.entries[b.Key].last = 2
+	s.setEntryLastLocked(s.entries[a.Key], 1)
+	s.setEntryLastLocked(s.entries[b.Key], 2)
 	r, err := s.Get(context.Background(), a)
 	if err != nil {
 		t.Fatal(err)
@@ -778,6 +778,8 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	if s2, err := Open(s.dir, s.max); err == nil {
 		s2.Close()
 		t.Fatal("second store opened")
+	} else if !errors.Is(err, ErrLockConflict) {
+		t.Fatalf("second store error = %v, want lock conflict", err)
 	}
 	m := testMeta("key", "abcd")
 	put(t, s, m, "abcd")
@@ -798,6 +800,8 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	if s2, err := Open(s.dir, s.max); err == nil {
 		s2.Close()
 		t.Fatal("unknown state accepted")
+	} else if !errors.Is(err, ErrUnsafeState) {
+		t.Fatalf("unknown state error = %v, want unsafe state", err)
 	}
 	if b, _ := os.ReadFile(path); !bytes.Equal(b, []byte("keep")) {
 		t.Fatal("deleted unknown data")
@@ -814,6 +818,16 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	if s2, err := Open(link, s.max); err == nil {
 		s2.Close()
 		t.Fatal("symlink accepted")
+	}
+}
+
+func TestOpenErrorCategories(t *testing.T) {
+	if _, err := OpenWithLimits("", Limits{}); !errors.Is(err, ErrInvalidLimits) {
+		t.Fatalf("invalid limits error = %v", err)
+	}
+	missingParent := filepath.Join(t.TempDir(), "missing-parent", "cache")
+	if _, err := Open(missingParent, 1<<20); !errors.Is(err, ErrFilesystem) {
+		t.Fatalf("filesystem error = %v", err)
 	}
 }
 func TestRestrictiveUmaskAndTinyCapacity(t *testing.T) {
@@ -928,8 +942,8 @@ func TestFailedAdmissionDoesNotEvictInsufficientVictims(t *testing.T) {
 	b := testMeta("new", body)
 	put(t, s, a, "a")
 	put(t, s, b, body)
-	s.entries[a.Key].last = 1
-	s.entries[b.Key].last = 3
+	s.setEntryLastLocked(s.entries[a.Key], 1)
+	s.setEntryLastLocked(s.entries[b.Key], 3)
 	if err := s.evictLocked(2*metadataReservation, 0, 2, 0); err != ErrBypass {
 		t.Fatalf("eviction without enough eligible space = %v", err)
 	}

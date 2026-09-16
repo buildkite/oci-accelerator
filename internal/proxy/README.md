@@ -69,6 +69,11 @@ Only requests to configured registries are intercepted. Everything else is a
 byte-for-byte tunnel: the proxy never inspects, caches, or enforces methods
 inside it.
 
+Downstream response writes refresh the configured idle write deadline, including
+informational headers such as `103 Early Hints`, final headers, body writes, and
+flushes. A client that stops reading cannot hold a header write indefinitely;
+the deadline is not an absolute limit on the duration of a streaming response.
+
 ## Caching
 
 The cache only stores immutable, digest-addressed objects. `blob.go` recognizes

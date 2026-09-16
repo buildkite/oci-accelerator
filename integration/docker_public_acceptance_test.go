@@ -16,7 +16,8 @@ func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_PUBLIC_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_PUBLIC_E2E=1 to run public registry acceptance")
 	}
-	requireCommands(t, "docker", "dockerd", "sudo", "amp", "go")
+	requireLinux(t)
+	requireCommands(t, "docker", "dockerd", "sudo", "mount", "go")
 	if os.Geteuid() != 0 {
 		run(t, "sudo", "-n", "true")
 	}
@@ -30,10 +31,9 @@ func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
 	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [registry-1.docker.io, ghcr.io]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 268435456\n", proxyPort, proxyCA, cacheDir), 0o600)
 
 	suffix := strings.ToLower(rand.Text())
-	prefix, proxyName := "acc3d-"+suffix[:8], "acc3d-"+suffix[:8]+"-proxy"
+	prefix := "acc3d-" + suffix[:8]
 	proxyCmd := fmt.Sprintf("env SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt %s --config %s", shell(bin), shell(config))
-	t.Cleanup(func() { stopService(t, proxyName) })
-	startService(t, proxyName, proxyCmd)
+	proxy := startProcess(t, proxyCmd)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	proxyCert := filepath.Join(proxyCA, "ca.crt")
 	fingerprint := certFingerprint(t, proxyCert)
@@ -63,10 +63,10 @@ func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
 		warm := publicPullIdentity(t, prefix+fmt.Sprintf("-%d-warm", i), proxyPort, trust, env, pinned)
 		assertPublicIdentity(t, image, cold, warm)
 
-		if !stopService(t, proxyName) {
+		if !proxy.Stop(t) {
 			t.Fatal("cannot restart public acceptance proxy")
 		}
-		startService(t, proxyName, proxyCmd)
+		proxy = startProcess(t, proxyCmd)
 		waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 		if got := certFingerprint(t, proxyCert); got != fingerprint {
 			t.Fatalf("proxy CA changed across restart: %s != %s", got, fingerprint)

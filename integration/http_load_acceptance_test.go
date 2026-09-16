@@ -76,7 +76,8 @@ func TestBoundedHTTPLoadAcceptance(t *testing.T) {
 	if os.Getenv("OCI_ACCELERATOR_LOAD_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_LOAD_E2E=1 to run the bounded HTTP load matrix")
 	}
-	requireCommands(t, "amp")
+	requireLinux(t)
+	requireCommands(t, "go")
 	root := t.TempDir()
 	bin := filepath.Join(root, "oci-accelerator")
 	run(t, "go", "build", "-o", bin, "../cmd/oci-accelerator")
@@ -206,18 +207,19 @@ func runLoadCase(t *testing.T, bin, originCA, authority string, counters *loadCo
 	pidFile, config := filepath.Join(caseRoot, "proxy.pid"), filepath.Join(caseRoot, "proxy.yaml")
 	maxBytes := int64(2<<30) + 1<<20
 	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nmetrics_listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: %d\n  max_fills: %d\n  max_entries: %d\n  fill_wait_timeout: %s\nmax_connections: 64\n", proxyPort, metricsPort, authority, proxyCA, cacheDir, maxBytes, maxFills, maxEntries, wait), 0o600)
-	command := fmt.Sprintf("sh -ceu %s", shell(fmt.Sprintf("echo $$$$ > %s; exec env SSL_CERT_FILE=%s %s --config %s", shell(pidFile), shell(originCA), shell(bin), shell(config))))
-	name := "http-load-" + fmt.Sprintf("%x", sha256.Sum256([]byte(caseRoot)))[:12]
+	command := fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCA), shell(bin), shell(config))
 	running := false
+	var process *testProcess
 	start := func() {
-		startService(t, name, command)
+		process = startProcess(t, command)
+		process.writePIDFile(t, pidFile)
 		running = true
 		waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 		waitTCP(t, fmt.Sprintf("127.0.0.1:%d", metricsPort))
 	}
 	stop := func() {
 		if running {
-			if stopService(t, name) {
+			if process.Stop(t) {
 				running = false
 			}
 		}

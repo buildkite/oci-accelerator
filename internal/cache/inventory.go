@@ -3,7 +3,6 @@ package cache
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -37,7 +36,7 @@ func (s *Store) inventory() error {
 			// Every other name must be a committed entry: a directory named by a
 			// lowercase-hex key. Anything else is unrecognized on-disk state.
 			if len(name) != keyHexLen || !dirEntry.IsDir() || !isLowerHex(name) {
-				return fmt.Errorf("unrecognized cache state %q", name)
+				return ErrUnsafeState
 			}
 
 			entry, err := loadInventoryEntry(path, name)
@@ -53,10 +52,13 @@ func (s *Store) inventory() error {
 				}
 				continue
 			}
+			// Inventory bulk-builds the ordered index after the scan. Inserting each
+			// arbitrarily encountered directory would make reopening quadratic.
 			s.entries[name] = entry
 			s.bytes += entry.charge
 		}
 		if readErr == io.EOF {
+			s.buildEvictionOrderLocked()
 			return nil
 		}
 	}
@@ -67,7 +69,10 @@ func (s *Store) inventory() error {
 func loadInventoryEntry(path, key string) (*entry, error) {
 	dirInfo, err := os.Lstat(path)
 	if err != nil || dirInfo.Mode().Perm() != 0o700 || !owned(dirInfo) {
-		return nil, errors.New("insecure cache entry")
+		if err != nil {
+			return nil, err
+		}
+		return nil, ErrUnsafeState
 	}
 	dir, err := os.Open(path)
 	if err != nil {
@@ -80,7 +85,7 @@ func loadInventoryEntry(path, key string) (*entry, error) {
 	}
 	for _, child := range children {
 		if child.Name() != "body" && child.Name() != "meta" {
-			return nil, fmt.Errorf("unrecognized state in cache entry %q", key)
+			return nil, ErrUnsafeState
 		}
 	}
 
@@ -89,7 +94,7 @@ func loadInventoryEntry(path, key string) (*entry, error) {
 	metaPath := filepath.Join(path, "meta")
 	metaInfo, err := os.Lstat(metaPath)
 	if err == nil && (!metaInfo.Mode().IsRegular() || metaInfo.Mode().Perm() != 0o600 || !owned(metaInfo)) {
-		return nil, errors.New("insecure cache metadata")
+		return nil, ErrUnsafeState
 	}
 	if err != nil || metaInfo.Size() > metadataReservation {
 		return nil, nil

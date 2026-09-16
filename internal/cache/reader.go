@@ -40,7 +40,7 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 		}
 		s.mu.Lock()
 		e := s.entries[meta.Key]
-		if s.closed || e == nil || e.meta != meta || e.invalid {
+		if s.closed || e == nil || e.meta != meta || e.invalid || e.claimed {
 			s.mu.Unlock()
 			return nil, ErrMiss
 		}
@@ -120,7 +120,7 @@ func (s *Store) openReader(ctx context.Context, e *entry, need bool, afterVerifi
 		return nil, ErrMiss
 	}
 	e.verified = true
-	e.last = time.Now().UnixNano()
+	s.setEntryLastLocked(e, time.Now().UnixNano())
 	s.mu.Unlock()
 	return &Reader{store: s, entry: e, file: f, remaining: meta.Size}, nil
 }
@@ -168,19 +168,38 @@ func (s *Store) invalidate(e *entry) {
 }
 func (s *Store) unpin(e *entry) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	cleanup := e.invalid && e.pins == 1
+	if cleanup {
+		// Cover the admission-serialization wait as well as removal. Close must
+		// not observe the last reader gone before this generation is settled.
+		s.startOpLocked()
+	}
 	e.pins--
 	s.readers--
-	if !e.invalid || e.pins != 0 {
+	if !cleanup {
+		s.mu.Unlock()
 		return
 	}
+	s.mu.Unlock()
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+	s.mu.Lock()
+	defer func() {
+		s.finishOpLocked()
+		s.mu.Unlock()
+	}()
 	// Detached entries no longer own their directory path: it may now contain
 	// a replacement. Their body charge is retained until this final unpin.
 	if cur, ok := s.entries[e.meta.Key]; ok && cur == e {
-		if os.RemoveAll(e.dir) != nil {
+		e.claimed = true
+		s.mu.Unlock()
+		err := s.removeAll(e.dir)
+		s.mu.Lock()
+		e.claimed = false
+		if err != nil {
 			return
 		}
-		delete(s.entries, e.meta.Key)
+		s.deleteEntryLocked(e)
 	}
 	if !e.reclaimed {
 		e.reclaimed = true

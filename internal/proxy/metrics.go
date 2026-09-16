@@ -129,7 +129,7 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeScalar("active_waits", "gauge", m.activeWaits)
 	writeScalar("active_connections", "gauge", p.connectionCount())
 	writeScalar("cache_entries", "gauge", cs.Entries)
-	writeScalar("cache_fills", "gauge", cs.Fills)
+	writeScalar("cache_fills", "gauge", cs.Fills+cs.Pending)
 	writeScalar("cache_bytes", "gauge", cs.Bytes)
 	writeScalar("cache_reserved_bytes", "gauge", cs.Reserved)
 	writeScalar("cache_readers", "gauge", cs.Readers)
