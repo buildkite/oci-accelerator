@@ -52,8 +52,12 @@ func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostpor
 		return
 	}
 	listener := &oneConnListener{done: make(chan struct{})}
-	inner := &http.Server{Handler: p.interceptHandler(target), ReadHeaderTimeout: p.cfg.ResponseHeaderTimeout,
-		IdleTimeout: p.cfg.IdleTimeout, MaxHeaderBytes: maxHeaderBytes, ErrorLog: log.New(io.Discard, "", 0),
+	inner := &http.Server{
+		Handler:                      p.interceptHandler(target),
+		ReadHeaderTimeout:            p.cfg.ResponseHeaderTimeout,
+		IdleTimeout:                  p.cfg.IdleTimeout,
+		MaxHeaderBytes:               maxHeaderBytes,
+		ErrorLog:                     log.New(io.Discard, "", 0),
 		DisableGeneralOptionsHandler: true,
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			if state == http.StateClosed || state == http.StateHijacked {
@@ -83,7 +87,10 @@ func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostpor
 		return
 	}
 	raw := &bufferedConn{Conn: client, reader: rw.Reader}
-	tlsConn := tls.Server(raw, &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS13, NextProtos: []string{"http/1.1"},
+	tlsConn := tls.Server(raw, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		MaxVersion: tls.VersionTLS13,
+		NextProtos: []string{"http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if hello.ServerName != "" {
 				sni, e := hostport.Parse(hello.ServerName, "443")

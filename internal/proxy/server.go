@@ -65,7 +65,10 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		MaxResponseHeaderBytes: maxHeaderBytes,
 		TLSHandshakeTimeout:    cfg.TLSHandshakeTimeout,
 		ResponseHeaderTimeout:  cfg.ResponseHeaderTimeout,
-		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}},
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			NextProtos: []string{"http/1.1"},
+		},
 	}
 	p := &Proxy{
 		cfg:          cfg,
@@ -113,7 +116,12 @@ func (p *Proxy) Serve(listener net.Listener) error {
 	if max <= 0 {
 		max = 1
 	}
-	tl := &trackingListener{Listener: listener, p: p, slots: make(chan struct{}, max), done: make(chan struct{})}
+	tl := &trackingListener{
+		Listener: listener,
+		p:        p,
+		slots:    make(chan struct{}, max),
+		done:     make(chan struct{}),
+	}
 	p.mu.Lock()
 	if p.listener != nil {
 		p.mu.Unlock()
@@ -211,7 +219,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstream, err := (&net.Dialer{Timeout: p.cfg.DialTimeout}).DialContext(r.Context(), "tcp", net.JoinHostPort(target.Host(), target.Port()))
+	addr := net.JoinHostPort(target.Host(), target.Port())
+	upstream, err := (&net.Dialer{Timeout: p.cfg.DialTimeout}).DialContext(r.Context(), "tcp", addr)
 	if err != nil {
 		refuse(w, "destination unavailable", http.StatusBadGateway)
 		return
@@ -321,7 +330,8 @@ type trackedConn struct {
 func rawCONNECTAcceptable(header []byte) bool {
 	lines := strings.Split(string(header), "\r\n")
 	for _, line := range lines {
-		if strings.ContainsAny(line, "\r\n") || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+		if strings.ContainsAny(line, "\r\n") ||
+			strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
 			return false
 		}
 	}

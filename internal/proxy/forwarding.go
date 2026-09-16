@@ -44,7 +44,10 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			pr.SetURL(upstream)
 			pr.Out.URL.RawQuery = rawQuery
 			pr.Out.Host = upstream.Host
-			for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Proxy-Authorization", "Proxy-Authenticate"} {
+			for _, name := range []string{
+				"Forwarded", "X-Forwarded-For", "X-Forwarded-Host",
+				"X-Forwarded-Proto", "Proxy-Authorization", "Proxy-Authenticate",
+			} {
 				pr.Out.Header.Del(name)
 			}
 		},
@@ -68,7 +71,10 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		p.metrics.activeRequests++
 		p.metrics.mu.Unlock()
 		object, eligible := immutableObjectRequest(r)
-		policy := requestPolicy{eligible: eligible, cacheable: eligible && cacheHeaders(r.Header, object.digest)}
+		policy := requestPolicy{
+			eligible:  eligible,
+			cacheable: eligible && cacheHeaders(r.Header, object.digest),
+		}
 		ctx := context.WithValue(r.Context(), policyKey{}, policy)
 		r = r.WithContext(context.WithValue(ctx, statsKey{}, stats))
 		lw := &loggingWriter{ResponseWriter: w, status: http.StatusOK, idleTimeout: p.cfg.IdleTimeout}

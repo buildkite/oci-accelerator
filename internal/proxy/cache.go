@@ -91,9 +91,21 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 	}
 	// Length-delimited serialization avoids collisions and preserves distinct
 	// Accept header values. Only the hash, not raw request headers, is persisted.
-	key, _ := json.Marshal([]any{a.String(), object.repository, string(object.kind), object.digest, req.Header.Values("Accept"), media[0]})
+	key, _ := json.Marshal([]any{
+		a.String(),
+		object.repository,
+		string(object.kind),
+		object.digest,
+		req.Header.Values("Accept"),
+		media[0],
+	})
 	sum := sha256.Sum256(key)
-	return cache.Metadata{Key: hex.EncodeToString(sum[:]), Digest: object.digest, Size: resp.ContentLength, MediaType: media[0]}, true
+	return cache.Metadata{
+		Key:       hex.EncodeToString(sum[:]),
+		Digest:    object.digest,
+		Size:      resp.ContentLength,
+		MediaType: media[0],
+	}, true
 }
 
 // manifestMediaTypes is the canonical set of OCI and Docker manifest media
