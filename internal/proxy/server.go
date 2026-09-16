@@ -186,20 +186,28 @@ func (p *Proxy) closeAll() {
 // on the connection's goroutine. It dispatches CONNECT to registry interception
 // or an opaque relay, and refuses any other method.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
+	// This proxy only tunnels; reject any non-CONNECT method.
 	if r.Method != http.MethodConnect {
 		w.Header().Set("Allow", http.MethodConnect)
 		refuse(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Require a tracked connection whose raw CONNECT line parsed cleanly.
 	if conn, ok := r.Context().Value(connContextKey{}).(*trackedConn); !ok || !conn.rawOK {
 		refuse(w, "bad CONNECT request", http.StatusBadRequest)
 		return
 	}
+
+	// Parse and validate the CONNECT target into a host:port.
 	target, err := validateCONNECT(r)
 	if err != nil {
 		refuse(w, "bad CONNECT request", http.StatusBadRequest)
 		return
 	}
+
+	// Register this request as in-flight so shutdown waits for it, unless already closing.
 	p.mu.Lock()
 	if p.closing {
 		p.mu.Unlock()
@@ -210,7 +218,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.Unlock()
 	defer p.inflight.Done()
 
+	// Take the interception path when the target is a configured registry.
 	if _, configured := p.configured[target.String()]; configured {
+		// Bail if we don't have a valid signer required for intercept
 		if p.signer == nil {
 			refuse(w, "registry interception unavailable", http.StatusServiceUnavailable)
 			return
@@ -219,6 +229,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Dial the upstream destination for an opaque (non-configured registry) tunnel.
 	addr := net.JoinHostPort(target.Host(), target.Port())
 	upstream, err := (&net.Dialer{Timeout: p.cfg.DialTimeout}).DialContext(r.Context(), "tcp", addr)
 	if err != nil {
@@ -226,6 +237,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer upstream.Close()
+
+	// Track the upstream conn so shutdown can force it closed, unless already closing.
 	p.mu.Lock()
 	if p.closing {
 		p.mu.Unlock()
@@ -234,21 +247,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	p.tunnels[upstream] = struct{}{}
 	p.mu.Unlock()
+
+	// On return, stop tracking the upstream conn.
 	defer func() {
 		p.mu.Lock()
 		delete(p.tunnels, upstream)
 		p.mu.Unlock()
 	}()
 
+	// Check whether we can take over the underlying TCP connection from net/http.
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		refuse(w, "tunneling unavailable", http.StatusInternalServerError)
 		return
 	}
+	// Take ownership of the raw client conn and its buffered reader/writer.
 	client, rw, err := hijacker.Hijack()
 	if err != nil {
 		return
 	}
+	// Tell the client the tunnel is open so it can start sending bytes.
 	if _, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
 		err = rw.Flush()
 	}
@@ -256,17 +274,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		client.Close()
 		return
 	}
+	// Pump bytes both ways between client and upstream until either side closes.
 	p.relay(client, upstream, rw.Reader)
 }
 
 func validateCONNECT(r *http.Request) (hostport.HostPort, error) {
+	// Require an authority and reject any request that carries a body.
 	if r.RequestURI == "" || r.Host == "" || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 		return hostport.HostPort{}, hostport.ErrInvalid
 	}
+	// Parse the request-line authority into a canonical host:port.
 	target, err := hostport.Parse(r.RequestURI, "")
 	if err != nil {
 		return hostport.HostPort{}, err
 	}
+	// Require the Host header to parse and match the request-line authority.
 	host, err := hostport.Parse(r.Host, "")
 	if err != nil || host != target {
 		return hostport.HostPort{}, hostport.ErrInvalid
@@ -288,22 +310,29 @@ type trackingListener struct {
 }
 
 func (l *trackingListener) Accept() (net.Conn, error) {
+	// Claim a concurrency slot, or bail out if the listener is closing.
 	select {
 	case l.slots <- struct{}{}:
 	case <-l.done:
 		return nil, net.ErrClosed
 	}
+
+	// Accept the next connection, releasing the slot if it fails.
 	conn, err := l.Listener.Accept()
 	if err != nil {
 		<-l.slots
 		return nil, err
 	}
+
+	// Wrap the conn so closing it frees its slot and untracks it.
 	t := &trackedConn{Conn: conn, release: func(t *trackedConn) {
 		l.p.mu.Lock()
 		delete(l.p.conns, t)
 		l.p.mu.Unlock()
 		<-l.slots
 	}}
+	
+	// Register the connection in the proxy's live-connection set.
 	l.p.mu.Lock()
 	l.p.conns[t] = struct{}{}
 	l.p.mu.Unlock()
@@ -324,10 +353,10 @@ type trackedConn struct {
 	checked bool
 }
 
-// rawCONNECTAcceptable checks the wire authorities before net/http replaces the
-// CONNECT Host with the request-line authority. Fail closed on syntax this
-// checker cannot interpret, even if net/http would accept it (notably bare LF).
+// rawCONNECTAcceptable checks the wire authorities before net/http rewrites the
+// CONNECT Host, failing closed on syntax it cannot interpret (notably bare LF).
 func rawCONNECTAcceptable(header []byte) bool {
+	// Split on CRLF and reject any line still holding a bare CR/LF or a leading space/tab (obs-fold).
 	lines := strings.Split(string(header), "\r\n")
 	for _, line := range lines {
 		if strings.ContainsAny(line, "\r\n") ||
@@ -335,14 +364,20 @@ func rawCONNECTAcceptable(header []byte) bool {
 			return false
 		}
 	}
+
+	// Require the request line to be exactly "CONNECT <authority> <version>".
 	parts := strings.Split(lines[0], " ")
 	if len(parts) != 3 || parts[0] != http.MethodConnect {
 		return false
 	}
+
+	// Parse the request-line authority into a canonical host:port.
 	target, err := hostport.Parse(parts[1], "")
 	if err != nil {
 		return false
 	}
+
+	// Scan the headers for a single Host value, rejecting duplicates.
 	var hostText string
 	for _, line := range lines[1:] {
 		name, value, found := strings.Cut(line, ":")
@@ -353,7 +388,10 @@ func rawCONNECTAcceptable(header []byte) bool {
 			hostText = strings.TrimSpace(value)
 		}
 	}
+
+	// Canonicalize the Host header so it can be compared against the request-line authority.
 	host, err := hostport.Parse(hostText, "")
+
 	return err == nil && host == target
 }
 
