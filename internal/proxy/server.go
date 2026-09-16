@@ -128,10 +128,9 @@ func (p *Proxy) Serve(listener net.Listener) error {
 	return err
 }
 
-// Shutdown stops accepting connections, drains until ctx expires, then closes
-// remaining sockets. It waits for CONNECT handlers and relay pumps to finish,
-// including releasing cache bodies, before returning. The context bounds graceful
-// serving, not cleanup: a stuck handler can delay return beyond the deadline.
+// Shutdown stops accepting, drains until ctx expires, then closes remaining
+// sockets. It returns only once CONNECT handlers and relay pumps finish (cache
+// bodies released), so a stuck handler can delay return past the deadline.
 func (p *Proxy) Shutdown(ctx context.Context) error {
 	p.mu.Lock()
 	p.closing = true
@@ -175,8 +174,9 @@ func (p *Proxy) closeAll() {
 	}
 }
 
-// ServeHTTP dispatches a CONNECT request to either registry interception or
-// an opaque relay, satisfying http.Handler for p.server.
+// ServeHTTP is p.server's http.Handler: net/http calls it per client request,
+// on the connection's goroutine. It dispatches CONNECT to registry interception
+// or an opaque relay, and refuses any other method.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodConnect {
 		w.Header().Set("Allow", http.MethodConnect)
