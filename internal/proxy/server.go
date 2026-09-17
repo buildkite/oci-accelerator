@@ -331,7 +331,7 @@ func (l *trackingListener) Accept() (net.Conn, error) {
 		l.p.mu.Unlock()
 		<-l.slots
 	}}
-	
+
 	// Register the connection in the proxy's live-connection set.
 	l.p.mu.Lock()
 	l.p.conns[t] = struct{}{}

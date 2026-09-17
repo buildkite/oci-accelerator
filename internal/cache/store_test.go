@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -586,6 +587,10 @@ func TestFillFailuresNeverPublish(t *testing.T) {
 				}
 				wantFailures, wantAborts = 0, 1
 			case "disk-full":
+				// /dev/full always fails writes with ENOSPC, but it is Linux-only.
+				if runtime.GOOS != "linux" {
+					t.Skip("/dev/full is only available on Linux")
+				}
 				if err := f.file.Close(); err != nil {
 					t.Fatal(err)
 				}
