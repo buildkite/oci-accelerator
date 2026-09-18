@@ -44,8 +44,8 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 			s.mu.Unlock()
 			return nil, ErrMiss
 		}
-		need := !e.verified
-		if need && e.verifying != nil {
+		needsVerification := !e.verified
+		if needsVerification && e.verifying != nil {
 			done := e.verifying
 			s.mu.Unlock()
 			if beforeWait != nil {
@@ -60,14 +60,14 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 				continue
 			}
 		}
-		if need {
+		if needsVerification {
 			e.verifying = make(chan struct{})
 		}
 		e.pins++
 		s.readers++
 		s.mu.Unlock()
-		r, err := s.openReader(ctx, e, need, afterVerificationRead)
-		if need {
+		r, err := s.openReader(ctx, e, needsVerification, afterVerificationRead)
+		if needsVerification {
 			s.mu.Lock()
 			close(e.verifying)
 			e.verifying = nil
@@ -79,7 +79,7 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 
 // openReader takes ownership of a pin acquired under s.mu. On success the
 // Reader owns that pin; every failure closes the file and releases the pin.
-func (s *Store) openReader(ctx context.Context, e *entry, need bool, afterVerificationRead func()) (*Reader, error) {
+func (s *Store) openReader(ctx context.Context, e *entry, needsVerification bool, afterVerificationRead func()) (*Reader, error) {
 	meta := e.meta
 	f, err := os.Open(e.dir + "/body")
 	if err != nil {
@@ -92,7 +92,7 @@ func (s *Store) openReader(ctx context.Context, e *entry, need bool, afterVerifi
 		s.invalidate(e)
 		return nil, ErrMiss
 	}
-	if need {
+	if needsVerification {
 		if err = verifyBody(ctx, f, meta.Digest, afterVerificationRead); err != nil {
 			f.Close()
 			// A cancellation leaves the entry intact for a later verifier;

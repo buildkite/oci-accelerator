@@ -17,8 +17,7 @@ design rationale, see the
 | `intercept.go` | MITM interception of configured registries: hijack, terminate TLS with a CA-signed leaf, and serve the inner HTTP server over a single-connection listener |
 | `forwarding.go` | The inner reverse proxy to upstream registries: request validation, header stripping, and the logging/metrics response writer |
 | `redirect.go` | Upstream `RoundTrip` with bounded redirect following, cross-origin header stripping, and SSRF-hardened dialing (`dialUpstream`, `publicIP`) |
-| `cache.go` | Cache policy: header eligibility, manifest media-type gate, object-key derivation, and hit/miss/fill orchestration |
-| `cache_wait.go` | `waitForFill`: single-flight coalescing that waits on an in-progress fill before a fresh upstream GET |
+| `cache.go` | Cache policy: header eligibility, manifest media-type gate, object-key derivation, hit/miss/fill orchestration, and `waitForFill` single-flight coalescing that waits on an in-progress fill before a fresh upstream GET |
 | `blob.go` | Recognizes immutable OCI object requests (`/v2/.../{blobs,manifests}/sha256:...`) |
 | `metrics.go` | Prometheus text-format metrics: recording and rendering |
 | `errors.go` | Maps upstream errors to fixed, non-leaking log labels |

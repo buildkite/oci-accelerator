@@ -12,6 +12,10 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
+// registryTransport is the outer http.RoundTripper the reverse proxy calls. It
+// adds the upstream-attempt metric, one retry, redirect following, and the
+// caching hand-off, then delegates each individual network round trip to the
+// shared stdlib transport at p.transport, which does the actual DNS/dial/TLS/HTTP.
 type registryTransport struct{ p *Proxy }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -29,11 +33,13 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}))
 	}
 
+	// First attempt may coalesce onto an in-flight fill instead of fetching.
 	resp, retry, err := t.roundTrip(req, true)
 	if err != nil || !retry {
 		return resp, err
 	}
 
+	// The coalesced wait timed out without a body; fetch from upstream ourselves.
 	resp, _, err = t.roundTrip(req, false)
 	return resp, err
 }
@@ -54,8 +60,7 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	policy, ok := req.Context().Value(policyKey{}).(requestPolicy)
 
 	// Absent only when invoked without that handler (unit tests): fall back to our own
-	// shape check, treating any cache-shaped request as fully cacheable (this skips the
-	// handler's request-header check, so it can be more permissive).
+	// shape check, treating any cache-shaped request as fully cacheable.
 	if !ok {
 		policy = policyBypass
 		if cacheShaped {
@@ -65,7 +70,6 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 
 	// Preserve original bypass decisions even if Connection header stripping
 	// removes a Range, conditional, or no-store header from the outgoing request.
-	// The transport re-derives shape only, so it can lower the policy, never raise it.
 	if !cacheShaped {
 		policy = policyBypass
 	}
@@ -77,20 +81,20 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	seen := map[string]bool{req.URL.String(): true}
 
 	// Loop to follow redirect hops.
-	// The first non-redirect (or ineligible) response goes to the caching layer.
-	// Cacheability carries forward only while every hop's headers still permit it.
-	// Redirect loops (already-seen URLs) and more than five hops are refused with errRedirect.
 	for hops := 0; ; hops++ {
 
-		// Request current hop.
+		// Single network round trip for this hop via the shared stdlib transport
+		// (p.transport); this registryTransport wraps it with retry, redirects, caching.
 		resp, err := t.p.transport.RoundTrip(current)
 		if err != nil {
 			return nil, false, err
 		}
 
-		// Hand off to caching layer if it is ineligible or a non-redirect
+		// This hop is terminal: either not cache-eligible, or not a redirect to follow.
+		// resolveResponse is the single exit — it meters the body and either bypasses
+		// (ineligible) or caches (hit/fill) before returning the response to the client.
 		if !eligible || !redirectStatus(resp.StatusCode) {
-			return t.p.cachedResponse(req, resp, permitted, mayWait, stats)
+			return t.p.resolveResponse(req, resp, permitted, mayWait, stats)
 		}
 
 		// We're doing a redirect so drop the body.

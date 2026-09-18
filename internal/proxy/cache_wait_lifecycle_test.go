@@ -79,9 +79,9 @@ func TestCacheFillWaitRetriesWhenCompletedEntryIsEvictedBeforeGet(t *testing.T) 
 	p := &Proxy{cache: s}
 	p.cfg.Cache.FillWaitTimeout = time.Second
 	stats := &requestStats{}
-	got, retry, err := p.cachedResponse(req, response(upstream), true, true, stats)
+	got, retry, err := p.resolveResponse(req, response(upstream), true, true, stats)
 	if got != nil || !retry || err != nil {
-		t.Fatalf("cachedResponse = (%v, %v, %v), want (nil, true, nil)", got, retry, err)
+		t.Fatalf("resolveResponse = (%v, %v, %v), want (nil, true, nil)", got, retry, err)
 	}
 	if stats.wait != "complete" || stats.fallback != "retry" {
 		t.Fatalf("request stats = %+v", stats)
@@ -125,9 +125,9 @@ func TestCacheFillWaitReturnsCancellationError(t *testing.T) {
 			p := &Proxy{cache: store, metrics: newMetrics()}
 			p.cfg.Cache.FillWaitTimeout = time.Minute
 			stats := &requestStats{}
-			got, retry, err := p.cachedResponse(req, resp, true, true, stats)
+			got, retry, err := p.resolveResponse(req, resp, true, true, stats)
 			if got != nil || retry || !errors.Is(err, context.Canceled) {
-				t.Fatalf("cachedResponse = (%v, %v, %v), want (nil, false, canceled)", got, retry, err)
+				t.Fatalf("resolveResponse = (%v, %v, %v), want (nil, false, canceled)", got, retry, err)
 			}
 			if closes != 1 || stats.upstreamBytes != 0 || stats.fallback != "" || p.metrics.activeWaits != 0 {
 				t.Fatalf("cancellation cleanup: closes=%d stats=%+v activeWaits=%d", closes, stats, p.metrics.activeWaits)
