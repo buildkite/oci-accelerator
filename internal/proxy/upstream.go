@@ -39,13 +39,13 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Response, bool, error) {
-	// Check if request is a cacheable digest-addressed blob/manifest
-	object, eligible := immutableObjectRequest(req)
+	// Parse the object and classify it from the request
+	object, cacheShaped := immutableObjectRequest(req)
 
 	// Recover the shared stats pointer stashed by the forwarding handler on the context so
 	// our writes to it surface in that handler's metrics/log.
 	stats, _ := req.Context().Value(statsKey{}).(*requestStats)
-	// Default when absent from running without the handler (unit tests).
+	// Absent only when invoked without that handler (unit tests): fall back to a bypass record.
 	if stats == nil {
 		stats = &requestStats{cache: "bypass"}
 	}
@@ -53,12 +53,12 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	// Recover eligibility/cacheability policy computed by the forwarding handler.
 	policy, ok := req.Context().Value(policyKey{}).(requestPolicy)
 
-	// Default when absent from running without the handler (unit tests): trust our
-	// own shape classification, treating any eligible request as fully cacheable
-	// (this default skips the handler's request-header check).
+	// Absent only when invoked without that handler (unit tests): fall back to our own
+	// shape check, treating any cache-shaped request as fully cacheable (this skips the
+	// handler's request-header check, so it can be more permissive).
 	if !ok {
 		policy = policyBypass
-		if eligible {
+		if cacheShaped {
 			policy = policyCacheable
 		}
 	}
@@ -66,64 +66,76 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	// Preserve original bypass decisions even if Connection header stripping
 	// removes a Range, conditional, or no-store header from the outgoing request.
 	// The transport re-derives shape only, so it can lower the policy, never raise it.
-	if !eligible {
+	if !cacheShaped {
 		policy = policyBypass
 	}
-	eligible = policy.eligible()
-	permitted := policy.cacheable()
 
-	// Follow redirects ourselves, tracking every URL seen so a redirect loop terminates.
+	// Seed variables for the following loop
+	eligible := policy.eligible()
+	permitted := policy.cacheable()
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
 
+	// Loop to follow redirect hops.
+	// The first non-redirect (or ineligible) response goes to the caching layer.
+	// Cacheability carries forward only while every hop's headers still permit it.
+	// Redirect loops (already-seen URLs) and more than five hops are refused with errRedirect.
 	for hops := 0; ; hops++ {
+
+		// Request current hop.
 		resp, err := t.p.transport.RoundTrip(current)
 		if err != nil {
 			return nil, false, err
 		}
 
-		// Terminal response (non-redirect or ineligible): hand off to the caching layer.
+		// Hand off to caching layer if it is ineligible or a non-redirect
 		if !eligible || !redirectStatus(resp.StatusCode) {
 			return t.p.cachedResponse(req, resp, permitted, mayWait, stats)
 		}
 
-		// A hop stays cacheable only if its own headers allow it; drop the body before the next hop.
-		permitted = permitted && cacheHeaders(resp.Header, object.digest)
+		// We're doing a redirect so drop the body.
 		resp.Body.Close()
 
-		// Cap redirect depth to refuse pathological or malicious redirect chains.
+		// Erode permission: once any hop's headers forbid caching it stays forbidden for
+		// the whole chain.
+		permitted = permitted && cacheHeaders(resp.Header, object.digest)
+
+		// Limit redirect depth to 5 hops
 		if hops == 5 {
 			return nil, false, errRedirect
 		}
 
-		// Resolve and validate Location; refuse anything unsafe or already visited (loop).
+		// Resolve and validate Location. Refuse anything unsafe or already seen.
 		next, err := redirectURL(current.URL, resp.Header.Get("Location"))
 		if err != nil || seen[next.String()] {
 			return nil, false, errRedirect
 		}
 
 		seen[next.String()] = true
-		current = redirectRequest(req.Context(), current, next)
+		current = buildRedirectRequest(req.Context(), current, next)
 	}
 }
 
-// redirectRequest builds the follow-up request for a redirect to next. A
-// same-origin hop keeps the current headers; a cross-origin hop drops all
-// headers except a safe allowlist, so custom registry authentication headers
-// never reach a different origin. Referer is always removed.
-func redirectRequest(ctx context.Context, current *http.Request, next *url.URL) *http.Request {
+// crossOriginSafeHeaders are the only request headers carried across a
+// cross-origin redirect.
+var crossOriginSafeHeaders = []string{"Accept", "Accept-Encoding", "User-Agent"}
+
+// buildRedirectRequest builds the follow-up request for a redirect to next.
+func buildRedirectRequest(ctx context.Context, current *http.Request, next *url.URL) *http.Request {
 	out := current.Clone(ctx)
 	out.URL, out.Host = next, next.Host
+
+	// Only retain a safe allowlist of headers for cross-origin hops.
 	if !sameOrigin(current.URL, next) {
-		// An allowlist, not a list of known secret header names: custom
-		// registry authentication headers must not reach storage either.
 		out.Header = make(http.Header)
-		for _, name := range []string{"Accept", "Accept-Encoding", "User-Agent"} {
+		for _, name := range crossOriginSafeHeaders {
 			if values := current.Header.Values(name); len(values) > 0 {
 				out.Header[name] = append([]string(nil), values...)
 			}
 		}
 	}
+
+	// Always drop Referer header.
 	out.Header.Del("Referer")
 	return out
 }
@@ -152,38 +164,6 @@ func sameOrigin(a, b *url.URL) bool {
 	x, ex := hostport.Parse(a.Host, "443")
 	y, ey := hostport.Parse(b.Host, "443")
 	return ex == nil && ey == nil && a.Scheme == b.Scheme && x == y
-}
-
-// These non-public ranges include special-use space beyond RFC1918/ULA.
-var nonPublic = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("10.0.0.0/8"),
-	netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("127.0.0.0/8"),
-	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
-	netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("198.18.0.0/15"),
-	netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/24"),
-	netip.MustParsePrefix("224.0.0.0/3"), netip.MustParsePrefix("::/96"),
-	netip.MustParsePrefix("64:ff9b::/96"), netip.MustParsePrefix("64:ff9b:1::/48"),
-	netip.MustParsePrefix("100::/64"), netip.MustParsePrefix("2001::/23"),
-	netip.MustParsePrefix("2001:db8::/32"), netip.MustParsePrefix("2002::/16"),
-	netip.MustParsePrefix("fec0::/10"),
-}
-
-func publicIP(ip net.IP) bool {
-	a, ok := netip.AddrFromSlice(ip)
-	if !ok {
-		return false
-	}
-	a = a.Unmap()
-	if !a.IsGlobalUnicast() || a.IsPrivate() || a.IsLoopback() || a.IsLinkLocalUnicast() {
-		return false
-	}
-	for _, prefix := range nonPublic {
-		if prefix.Contains(a) {
-			return false
-		}
-	}
-	return true
 }
 
 func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.Conn, error) {
@@ -232,4 +212,36 @@ func (p *Proxy) refuseDial(authority string, reason error) error {
 		p.logger.Debug("upstream dial refused", "authority", authority, "reason", reason)
 	}
 	return reason
+}
+
+// These non-public ranges include special-use space beyond RFC1918/ULA.
+var nonPublic = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("224.0.0.0/3"), netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("64:ff9b::/96"), netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"), netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"), netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fec0::/10"),
+}
+
+func publicIP(ip net.IP) bool {
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	a = a.Unmap()
+	if !a.IsGlobalUnicast() || a.IsPrivate() || a.IsLoopback() || a.IsLinkLocalUnicast() {
+		return false
+	}
+	for _, prefix := range nonPublic {
+		if prefix.Contains(a) {
+			return false
+		}
+	}
+	return true
 }
