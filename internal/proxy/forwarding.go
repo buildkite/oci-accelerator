@@ -65,11 +65,15 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		p.metrics.activeRequests++
 		p.metrics.mu.Unlock()
 
-		// Classify the request to decide cache eligibility.
+		// Classify the request to decide cache eligibility, climbing the ladder
+		// only as far as the shape and then the headers allow.
 		object, eligible := immutableObjectRequest(r)
-		policy := requestPolicy{
-			eligible:  eligible,
-			cacheable: eligible && cacheHeaders(r.Header, object.digest),
+		policy := policyBypass
+		if eligible {
+			policy = policyEligible
+			if cacheHeaders(r.Header, object.digest) {
+				policy = policyCacheable
+			}
 		}
 
 		// Stash policy and stats on the context so the transport can read/update them.

@@ -15,18 +15,33 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
-// requestPolicy preserves the original request's cache decisions before the
-// reverse proxy strips hop-by-hop headers. Store it by value, separately from
-// mutable statistics: instrumentation must not determine caching behavior.
-type requestPolicy struct {
-	// eligible: the request is a digest-addressed blob/manifest GET
-	// with no Range, conditional, or no-store header
-	eligible bool
+// requestPolicy preserves the original request's cache decision before the
+// reverse proxy strips hop-by-hop headers.
+//
+// It is an ordered ladder so each level implies the one below it:
+//
+//   - policyBypass: not cache-shaped (wrong method/path, or a Range,
+//     conditional, or no-store header).
+//
+//   - policyEligible: a digest-addressed blob/manifest GET, but the headers
+//     forbid storing (see cacheHeaderRejection) - no cache read or fill.
+//
+//   - policyCacheable: eligible AND the headers permit storing; the only level
+//     that serves from or admits a fill into the cache.
+type requestPolicy uint8
 
-	// cacheable: eligible AND the headers also permit storing the response
-	// (see cacheHeaderRejection); gates admitting a fresh fill into the cache.
-	cacheable bool
-}
+const (
+	policyBypass requestPolicy = iota
+	policyEligible
+	policyCacheable
+)
+
+// eligible reports whether the request is cache-shaped (a precondition for caching).
+func (p requestPolicy) eligible() bool { return p >= policyEligible }
+
+// cacheable reports whether the response may be served from or admitted to the cache.
+func (p requestPolicy) cacheable() bool { return p == policyCacheable }
+
 type policyKey struct{}
 
 type requestStats struct {

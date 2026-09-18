@@ -52,15 +52,25 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 
 	// Recover eligibility/cacheability policy computed by the forwarding handler.
 	policy, ok := req.Context().Value(policyKey{}).(requestPolicy)
-	// Default when absent from running without the handler (unit tests).
+
+	// Default when absent from running without the handler (unit tests): trust our
+	// own shape classification, treating any eligible request as fully cacheable
+	// (this default skips the handler's request-header check).
 	if !ok {
-		policy = requestPolicy{eligible: eligible, cacheable: eligible}
+		policy = policyBypass
+		if eligible {
+			policy = policyCacheable
+		}
 	}
 
 	// Preserve original bypass decisions even if Connection header stripping
 	// removes a Range, conditional, or no-store header from the outgoing request.
-	eligible = eligible && policy.eligible
-	permitted := eligible && policy.cacheable
+	// The transport re-derives shape only, so it can lower the policy, never raise it.
+	if !eligible {
+		policy = policyBypass
+	}
+	eligible = policy.eligible()
+	permitted := policy.cacheable()
 
 	// Follow redirects ourselves, tracking every URL seen so a redirect loop terminates.
 	current := req
@@ -76,18 +86,22 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 		if !eligible || !redirectStatus(resp.StatusCode) {
 			return t.p.cachedResponse(req, resp, permitted, mayWait, stats)
 		}
+
 		// A hop stays cacheable only if its own headers allow it; drop the body before the next hop.
 		permitted = permitted && cacheHeaders(resp.Header, object.digest)
 		resp.Body.Close()
+
 		// Cap redirect depth to refuse pathological or malicious redirect chains.
 		if hops == 5 {
 			return nil, false, errRedirect
 		}
+
 		// Resolve and validate Location; refuse anything unsafe or already visited (loop).
 		next, err := redirectURL(current.URL, resp.Header.Get("Location"))
 		if err != nil || seen[next.String()] {
 			return nil, false, errRedirect
 		}
+
 		seen[next.String()] = true
 		current = redirectRequest(req.Context(), current, next)
 	}
