@@ -2,8 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -14,27 +12,14 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
-var errRedirect = errors.New("upstream redirect refused")
-
-// Internal dial-refusal reasons. Each wraps errRedirect so existing
-// errors.Is(err, errRedirect) checks and the client-facing 502 are unchanged;
-// the distinct reason exists only to make operator logs actionable. None of
-// these is ever surfaced to the client.
-var (
-	errDialAddress   = fmt.Errorf("%w: unparseable upstream address", errRedirect)
-	errDialResolve   = fmt.Errorf("%w: upstream DNS resolution failed", errRedirect)
-	errDialForbidden = fmt.Errorf("%w: upstream address not permitted", errRedirect)
-	errDialConnect   = fmt.Errorf("%w: upstream connection failed", errRedirect)
-)
-
 type registryTransport struct{ p *Proxy }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Method == http.MethodGet {
-		// Count each connection-acquisition attempt, including transport retries
-		// and attempts that fail during DNS, dialing or TLS before sending a GET.
-		// Requests rejected before connection acquisition do not count. Attach
-		// once so redirects and fill-wait retries inherit, not stack, the hook.
+		// Count every connection-acquisition attempt (transport retries plus
+		// DNS/dial/TLS failures before the GET); requests rejected earlier don't
+		// count. Attach once so redirects and fill-wait retries inherit, not
+		// stack, the hook.
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 			GetConn: func(string) {
 				t.p.metrics.mu.Lock()
@@ -43,43 +28,62 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			},
 		}))
 	}
+
 	resp, retry, err := t.roundTrip(req, true)
 	if err != nil || !retry {
 		return resp, err
 	}
+
 	resp, _, err = t.roundTrip(req, false)
 	return resp, err
 }
 
 func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Response, bool, error) {
+	// Check if request is a cacheable digest-addressed blob/manifest
 	object, eligible := immutableObjectRequest(req)
+
+	// Recover the shared stats pointer stashed by the forwarding handler on the context so
+	// our writes to it surface in that handler's metrics/log.
 	stats, _ := req.Context().Value(statsKey{}).(*requestStats)
+	// Default when absent from running without the handler (unit tests).
 	if stats == nil {
 		stats = &requestStats{cache: "bypass"}
 	}
+
+	// Recover eligibility/cacheability policy computed by the forwarding handler.
 	policy, ok := req.Context().Value(policyKey{}).(requestPolicy)
+	// Default when absent from running without the handler (unit tests).
 	if !ok {
 		policy = requestPolicy{eligible: eligible, cacheable: eligible}
 	}
+
 	// Preserve original bypass decisions even if Connection header stripping
 	// removes a Range, conditional, or no-store header from the outgoing request.
 	eligible = eligible && policy.eligible
 	permitted := eligible && policy.cacheable
+
+	// Follow redirects ourselves, tracking every URL seen so a redirect loop terminates.
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
+
 	for hops := 0; ; hops++ {
 		resp, err := t.p.transport.RoundTrip(current)
 		if err != nil {
 			return nil, false, err
 		}
+
+		// Terminal response (non-redirect or ineligible): hand off to the caching layer.
 		if !eligible || !redirectStatus(resp.StatusCode) {
 			return t.p.cachedResponse(req, resp, permitted, mayWait, stats)
 		}
+		// A hop stays cacheable only if its own headers allow it; drop the body before the next hop.
 		permitted = permitted && cacheHeaders(resp.Header, object.digest)
 		resp.Body.Close()
+		// Cap redirect depth to refuse pathological or malicious redirect chains.
 		if hops == 5 {
 			return nil, false, errRedirect
 		}
+		// Resolve and validate Location; refuse anything unsafe or already visited (loop).
 		next, err := redirectURL(current.URL, resp.Header.Get("Location"))
 		if err != nil || seen[next.String()] {
 			return nil, false, errRedirect

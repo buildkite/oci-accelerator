@@ -19,7 +19,13 @@ import (
 // reverse proxy strips hop-by-hop headers. Store it by value, separately from
 // mutable statistics: instrumentation must not determine caching behavior.
 type requestPolicy struct {
-	eligible, cacheable bool
+	// eligible: the request is a digest-addressed blob/manifest GET
+	// with no Range, conditional, or no-store header
+	eligible bool
+
+	// cacheable: eligible AND the headers also permit storing the response
+	// (see cacheHeaderRejection); gates admitting a fresh fill into the cache.
+	cacheable bool
 }
 type policyKey struct{}
 
