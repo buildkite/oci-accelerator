@@ -40,7 +40,7 @@ func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	if !ok || charge > s.max {
 		return nil, s.refuse(AdmissionOversized, nil)
 	}
-	// JSON escaping can exceed the sidecar limit even for a short raw string.
+	// JSON escaping can exceed the meta file limit even for a short raw string.
 	// Reject before eviction or staging; Commit still checks its final encoding.
 	if _, err := encodeMeta(meta); err != nil {
 		return nil, s.refuse(AdmissionInvalid, err)
@@ -226,8 +226,8 @@ func (f *Fill) Commit() error {
 	}
 	f.file = nil
 
-	// Write and flush the metadata sidecar, then flush the staging directory.
-	if err := f.writeMetaSidecar(); err != nil {
+	// Write and flush the meta file, then flush the staging directory.
+	if err := f.writeMetaFile(); err != nil {
 		return f.finish(err)
 	}
 	if err := syncDirectory(f.dir); err != nil {
@@ -264,9 +264,9 @@ func (f *Fill) Commit() error {
 	return nil
 }
 
-// writeMetaSidecar writes the encoded metadata to an exclusive meta file in the
+// writeMetaFile writes the encoded metadata to an exclusive meta file in the
 // staging directory, propagating the first error across chmod/write/sync/close.
-func (f *Fill) writeMetaSidecar() error {
+func (f *Fill) writeMetaFile() error {
 	b, err := encodeMeta(f.meta)
 	if err != nil {
 		return err

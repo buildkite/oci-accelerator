@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const metadataReservation int64 = 4096 // capacity charged per entry, including its sidecar
+const metadataReservation int64 = 4096 // capacity charged per entry, including its meta file
 
 var (
 	ErrMiss          = errors.New("cache miss")

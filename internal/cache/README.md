@@ -82,7 +82,7 @@ byte `Size`, and the `MediaType`). An object then moves through:
 ```
 Begin(meta)  admits the key, reserves capacity, and stages a .fill-XXXX directory
 Write(p)     appends bytes, hashing and enforcing the declared Size as it goes
-Commit()     verifies Size and Digest, writes the meta sidecar, then atomically
+Commit()     verifies Size and Digest, writes the meta file, then atomically
              renames the staging directory into place as a committed entry
 ```
 
@@ -105,7 +105,7 @@ closes early — see the [architecture guide](../../docs/architecture.md#fill-an
 Capacity is tracked in bytes and in entry slots, both bounded by `Limits`.
 
 - **`charge`** — the capacity one object accounts for: its `Size` plus a fixed
-  `metadataReservation` (4 KiB) for the sidecar.
+  `metadataReservation` (4 KiB) for the meta file.
 - **`reserved`** — charge held by in-progress fills between `Begin` and their
   terminal state. `Commit` converts a fill's reservation into committed `bytes`.
 - **`bytes`** — charge of committed entries, plus the charge of directories

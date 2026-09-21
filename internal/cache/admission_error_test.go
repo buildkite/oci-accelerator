@@ -233,7 +233,7 @@ func TestAdmissionChecksEncodedMetadataBeforeEviction(t *testing.T) {
 					read(t, s, meta, "body")
 					info, err := os.Stat(filepath.Join(s.dir, meta.Key, "meta"))
 					if err != nil || info.Size() != int64(size) {
-						t.Fatalf("published sidecar = %v, %v", info, err)
+						t.Fatalf("published meta file = %v, %v", info, err)
 					}
 					return
 				}
