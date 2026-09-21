@@ -12,14 +12,17 @@ design rationale, see the
 
 | File | Responsibility |
 | --- | --- |
-| `server.go` | `Proxy` type, `New`, `Serve`/`Shutdown`, connection tracking (`trackingListener`, `trackedConn`), CONNECT slot limiting, raw-CONNECT header sniffing, and `ServeHTTP` CONNECT dispatch/validation |
-| `relay.go` | The opaque bidirectional TCP relay for non-registry destinations |
-| `intercept.go` | MITM interception of configured registries: hijack, terminate TLS with a CA-signed leaf, and serve the inner HTTP server over a single-connection listener |
+| `server.go` | `Proxy` type, `New`, `Serve`/`Shutdown`, and `ServeHTTP` CONNECT dispatch/validation |
+| `connections.go` | Connection tracking (`trackingListener`, `trackedConn`), connection limits, raw-CONNECT header inspection, and connection context |
+| `relay.go` | The opaque bidirectional TCP relay, with an explicit idle timeout and ownership of both connections until its workers finish |
+| `intercept.go` | Shutdown-aware CONNECT takeover and `serveIntercepted`: terminate TLS and serve the supplied handler over a single-connection listener |
 | `forwarding.go` | The inner reverse proxy to upstream registries: request validation, header stripping, and the logging/metrics response writer |
-| `upstream.go` | Upstream `RoundTrip` with bounded redirect following, cross-origin header stripping, and SSRF-hardened dialing (`dialUpstream`, `publicIP`) |
-| `cache.go` | Cache policy, object-key derivation, hit/miss/fill orchestration, and `waitForFill` coalescing after the caller's accepted upstream GET |
-| `immutable.go` | Recognizes immutable OCI object requests (`/v2/.../{blobs,manifests}/sha256:...`) |
-| `metrics.go` | Prometheus text-format metrics: recording and rendering |
+| `registry_transport.go` | Upstream `RoundTrip`, bounded redirect following, cross-origin header stripping, and fill-wait retry |
+| `dial.go` | SSRF-hardened DNS resolution/dialing (`dialUpstream`, `publicIP`) and upstream idle deadlines |
+| `cache_policy.go` | Immutable OCI object recognition, request/response cache eligibility, media types, and metadata/key derivation |
+| `cache.go` | `registryTransport` hit/miss/fill orchestration and `waitForFill` coalescing after the caller's accepted upstream GET |
+| `cache_body.go` | Streaming upstream-byte accounting and cache-fill commit/abort ownership |
+| `metrics.go` | Per-request statistics and Prometheus text-format metrics: recording and rendering |
 | `errors.go` | Upstream error sentinels, dial-refusal reasons, and fixed, non-leaking log labels |
 
 ## Public interface
@@ -59,14 +62,25 @@ CONNECT host:port
   configured registry?
     yes -> intercept: hijack, TLS-terminate with a CA leaf, serve an inner
            HTTP server whose handler is the reverse proxy (forwarding.go)
-             -> registryTransport.RoundTrip (upstream.go): dial with SSRF
-                guard, follow redirects, then consult the cache (cache.go)
+             -> registryTransport.RoundTrip (registry_transport.go): dial
+                with SSRF guard (dial.go), follow redirects, then consult
+                the cache (cache.go)
     no  -> opaque TCP relay (relay.go): bidirectional copy, no inspection
 ```
 
 Only requests to configured registries are intercepted. Everything else is a
 byte-for-byte tunnel: the proxy never inspects, caches, or enforces methods
 inside it.
+
+`ServeHTTP` supplies the registry handler to `intercept`. The coordinator
+registers the inner HTTP server for shutdown before `serveIntercepted`
+acknowledges CONNECT or starts TLS. The session function owns the client
+connection until serving ends; it does not access `Proxy` or construct the
+forwarding handler.
+
+`registryTransport` receives the shared upstream HTTP transport, cache store,
+metrics, and fill-wait timeout explicitly; it does not hold a `Proxy` reference.
+`Proxy` owns upstream transport shutdown, while the caller owns the cache store.
 
 Downstream response writes refresh the configured idle write deadline, including
 informational headers such as `103 Early Hints`, final headers, body writes, and
@@ -75,12 +89,13 @@ the deadline is not an absolute limit on the duration of a streaming response.
 
 ## Caching
 
-The cache only stores immutable, digest-addressed objects. `immutable.go` recognizes
+The cache only stores immutable, digest-addressed objects. `cache_policy.go` recognizes
 `GET /v2/<repo>/{blobs,manifests}/sha256:<digest>` requests with no range or
-conditional headers. `cache.go` then derives a metadata key, checks response
-eligibility (media type, encoding, and cache-control/vary/digest headers), and
-either serves a hit, coalesces onto an in-progress fill (`waitForFill`), or
-starts a new fill that mirrors the upstream stream into `internal/cache`.
+conditional headers, derives a metadata key, and checks response eligibility
+(media type, encoding, and cache-control/vary/digest headers). `cache.go` either
+serves a hit, coalesces onto an in-progress fill (`waitForFill`), or starts a new
+fill. `cache_body.go` mirrors the upstream stream into `internal/cache` and
+commits or aborts the fill as the response body is consumed or closed.
 
 Every cache delivery still requires the client's own authorized upstream GET to
 succeed first; a hit substitutes bytes, never authorization. See the
@@ -88,7 +103,7 @@ succeed first; a hit substitutes bytes, never authorization. See the
 
 ## Security boundaries
 
-- **SSRF hardening** (`upstream.go`): the entire DNS answer is validated before
+- **SSRF hardening** (`dial.go`): the entire DNS answer is validated before
   any connection, non-public address ranges are refused for hosts that are not
   configured destinations (the registries plus the redirect allowlist), and the
   hostname is never re-resolved after validation (no DNS rebinding).

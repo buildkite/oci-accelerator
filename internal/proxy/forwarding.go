@@ -23,7 +23,12 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 
 		// Route upstream calls through the transport that adds caching,
 		// fill-wait, redirect and SSRF handling.
-		Transport: registryTransport{p},
+		Transport: registryTransport{
+			upstream:        p.transport,
+			cache:           p.cache,
+			metrics:         p.metrics,
+			fillWaitTimeout: p.cfg.Cache.FillWaitTimeout,
+		},
 
 		// Retarget onto the upstream and strip proxy-revealing / hop-by-hop headers.
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -188,24 +193,4 @@ func headerHasToken(h http.Header, name, token string) bool {
 		}
 	}
 	return false
-}
-
-type idleReadWriteConn struct {
-	net.Conn
-	timeout time.Duration
-}
-
-func (c *idleReadWriteConn) Read(b []byte) (int, error) {
-	if c.timeout > 0 {
-		_ = c.SetReadDeadline(time.Now().Add(c.timeout))
-	}
-	return c.Conn.Read(b)
-}
-func (c *idleReadWriteConn) Write(b []byte) (int, error) {
-	if c.timeout > 0 {
-		// The transport may already be reading on a pooled connection. Give
-		// that pending read a fresh budget when sending the next request.
-		_ = c.SetDeadline(time.Now().Add(c.timeout))
-	}
-	return c.Conn.Write(b)
 }

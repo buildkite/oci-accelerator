@@ -292,13 +292,13 @@ func TestCachedResponseRecordsVaryAndDigestBypassReasons(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = store.Close() })
-			p := &Proxy{cache: store}
+			transport := registryTransport{cache: store}
 			req, resp := cachePolicyFixture()
 			req = req.WithContext(context.Background())
 			resp.Body = io.NopCloser(strings.NewReader("abc"))
 			tc.mutate(resp.Header)
 			stats := &requestStats{}
-			got, retry, err := p.resolveResponse(req, resp, true, false, stats)
+			got, retry, err := transport.resolveResponse(req, resp, true, false, stats)
 			if got == nil || retry || err != nil {
 				t.Fatalf("resolveResponse = (%v, %v, %v), want the upstream response passed through", got, retry, err)
 			}

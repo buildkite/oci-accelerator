@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-func (p *Proxy) relay(client, upstream net.Conn, buffered *bufio.Reader) {
-	idle := p.cfg.IdleTimeout
+func relay(client, upstream net.Conn, buffered *bufio.Reader, idle time.Duration) {
 	activity := func() {
 		if idle > 0 {
 			deadline := time.Now().Add(idle)

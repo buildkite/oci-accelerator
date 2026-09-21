@@ -44,9 +44,9 @@ func TestCacheLimitsPreserveUpstreamStream(t *testing.T) {
 					}
 					defer f.Abort()
 				}
-				p := &Proxy{cache: s}
+				transport := registryTransport{cache: s}
 				stats := &requestStats{}
-				resp, retry, err := p.resolveResponse(req, response(), true, false, stats)
+				resp, retry, err := transport.resolveResponse(req, response(), true, false, stats)
 				if err != nil || retry || resp == nil {
 					t.Fatalf("resolveResponse = (%v, %v, %v), want response without retry", resp, retry, err)
 				}

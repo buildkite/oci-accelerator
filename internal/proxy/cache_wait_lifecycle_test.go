@@ -77,10 +77,9 @@ func TestCacheFillWaitRetriesWhenCompletedEntryIsEvictedBeforeGet(t *testing.T) 
 			}
 		})
 	}}
-	p := &Proxy{cache: s}
-	p.cfg.Cache.FillWaitTimeout = time.Second
+	transport := registryTransport{cache: s, fillWaitTimeout: time.Second}
 	stats := &requestStats{}
-	got, retry, err := p.resolveResponse(req, response(upstream), true, true, stats)
+	got, retry, err := transport.resolveResponse(req, response(upstream), true, true, stats)
 	if got != nil || !retry || err != nil {
 		t.Fatalf("resolveResponse = (%v, %v, %v), want (nil, true, nil)", got, retry, err)
 	}
@@ -123,15 +122,14 @@ func TestCacheFillWaitReturnsCancellationError(t *testing.T) {
 					leader.Abort()
 				}
 			}}
-			p := &Proxy{cache: store, metrics: newMetrics()}
-			p.cfg.Cache.FillWaitTimeout = time.Minute
+			transport := registryTransport{cache: store, metrics: newMetrics(), fillWaitTimeout: time.Minute}
 			stats := &requestStats{}
-			got, retry, err := p.resolveResponse(req, resp, true, true, stats)
+			got, retry, err := transport.resolveResponse(req, resp, true, true, stats)
 			if got != nil || retry || !errors.Is(err, context.Canceled) {
 				t.Fatalf("resolveResponse = (%v, %v, %v), want (nil, false, canceled)", got, retry, err)
 			}
-			if closes != 1 || stats.upstreamBytes != 0 || stats.fallback != "" || p.metrics.activeWaits != 0 {
-				t.Fatalf("cancellation cleanup: closes=%d stats=%+v activeWaits=%d", closes, stats, p.metrics.activeWaits)
+			if closes != 1 || stats.upstreamBytes != 0 || stats.fallback != "" || transport.metrics.activeWaits != 0 {
+				t.Fatalf("cancellation cleanup: closes=%d stats=%+v activeWaits=%d", closes, stats, transport.metrics.activeWaits)
 			}
 			if !complete && store.Stats().Fills != 1 {
 				t.Fatal("follower cancellation disturbed leader fill")
