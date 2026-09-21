@@ -16,20 +16,6 @@ import (
 	"time"
 )
 
-func awaitNoActiveRequests(t *testing.T, p *Proxy) {
-	t.Helper()
-	var active int64
-	if waitUntil(3*time.Second, func() bool {
-		p.metrics.mu.Lock()
-		active = p.metrics.activeRequests
-		p.metrics.mu.Unlock()
-		return active == 0
-	}) {
-		return
-	}
-	t.Fatalf("metrics request completion was not recorded (got %d active requests)", active)
-}
-
 func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {
 	m := newMetrics()
 	m.upstream = 2

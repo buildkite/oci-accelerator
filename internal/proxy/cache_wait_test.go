@@ -2,66 +2,23 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache/cachetest"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
-
-const waitTestTimeout = 3 * time.Second
-
-func waitFor(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(waitTestTimeout):
-		t.Fatalf("timed out waiting for %s", what)
-	}
-}
-
-func waitForFills(t *testing.T, p *Proxy, want int) {
-	t.Helper()
-	if waitUntil(waitTestTimeout, func() bool {
-		return p.cache.Stats().Fills == want
-	}) {
-		return
-	}
-	t.Fatalf("timed out waiting for %d active cache fills (got %d)", want, p.cache.Stats().Fills)
-}
-
-func safeRelease(ch chan struct{}) func() {
-	var once sync.Once
-	return func() { once.Do(func() { close(ch) }) }
-}
-
-func waitRequest(t *testing.T, c *http.Client, url, token, accept string, ctx context.Context) (*http.Response, []byte, error) {
-	t.Helper()
-	r, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	r.Header.Set("Authorization", token)
-	if accept != "" {
-		r.Header.Set("Accept", accept)
-	}
-	resp, err := c.Do(r)
-	if err != nil {
-		return nil, nil, err
-	}
-	b, readErr := io.ReadAll(resp.Body)
-	closeErr := resp.Body.Close()
-	if readErr != nil {
-		return resp, b, readErr
-	}
-	return resp, b, closeErr
-}
 
 func TestCacheFillWaitCoalescesAuthorizedBlobAndManifest(t *testing.T) {
 	for _, tc := range []struct {
@@ -502,4 +459,123 @@ func TestCacheFillWaitCrossOriginTimeoutReplaysRegistryRequest(t *testing.T) {
 	if m := p.metrics.snapshot(); m.upstream != 6 || m.waits["timeout"] != 1 || m.fallback["retry"] != 1 {
 		t.Fatalf("cross-origin replay metrics = %+v", m)
 	}
+}
+
+func TestCacheFillWaitRetriesWhenCompletedEntryIsEvictedBeforeGet(t *testing.T) {
+	const body = "entry evicted between completion and get"
+	limits := cache.Limits{MaxBytes: 1 << 20, MaxFills: 2, MaxEntries: 1, FillTimeout: time.Minute}
+	s, err := cache.OpenWithLimits(filepath.Join(t.TempDir(), "cache"), limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, "https://registry.test"+blobURL(body), nil)
+	response := func(b io.ReadCloser) *http.Response {
+		return &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(body)), Header: http.Header{"Content-Type": {"application/octet-stream"}}, Body: b}
+	}
+	meta, ok := objectMetadata(req, response(io.NopCloser(strings.NewReader(body))))
+	if !ok {
+		t.Fatal("invalid fixture metadata")
+	}
+	leader, err := s.Begin(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(leader, body); err != nil {
+		t.Fatal(err)
+	}
+
+	otherBody := "replacement entry"
+	other := cache.Metadata{Key: strings.Repeat("0", 64), Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(otherBody))), Size: int64(len(otherBody)), MediaType: "application/octet-stream"}
+	var once sync.Once
+	upstream := &closeCallbackBody{ReadCloser: io.NopCloser(strings.NewReader(body)), close: func() {
+		once.Do(func() {
+			if err := leader.Commit(); err != nil {
+				t.Errorf("commit leader: %v", err)
+				return
+			}
+			replacement, err := s.Begin(other)
+			if err != nil {
+				t.Errorf("begin replacement: %v", err)
+				return
+			}
+			if _, err := io.WriteString(replacement, otherBody); err != nil {
+				t.Errorf("write replacement: %v", err)
+				return
+			}
+			if err := replacement.Commit(); err != nil {
+				t.Errorf("commit replacement: %v", err)
+			}
+		})
+	}}
+	transport := registryTransport{cache: s, fillWaitTimeout: time.Second}
+	stats := &requestStats{}
+	got, retry, err := transport.resolveResponse(req, response(upstream), true, true, stats)
+	if got != nil || !retry || err != nil {
+		t.Fatalf("resolveResponse = (%v, %v, %v), want (nil, true, nil)", got, retry, err)
+	}
+	if stats.wait != "complete" || stats.fallback != "retry" {
+		t.Fatalf("request stats = %+v", stats)
+	}
+	if st := s.Stats(); st.Entries != 1 || st.Fills != 0 || st.Reserved != 0 || st.Evictions != 1 {
+		t.Fatalf("cache stats = %+v, want one replacement and one eviction", st)
+	}
+}
+
+func TestCacheFillWaitReturnsCancellationError(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		t.Run(fmt.Sprintf("leader-aborted=%v", complete), func(t *testing.T) {
+			store, err := cachetest.Open(filepath.Join(t.TempDir(), "cache"), 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			req, resp := cachePolicyFixture()
+			meta, ok := objectMetadata(req, resp)
+			if !ok {
+				t.Fatal("invalid fixture metadata")
+			}
+			leader, err := store.Begin(meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer leader.Abort()
+			ctx, cancel := context.WithCancel(req.Context())
+			defer cancel()
+			req = req.WithContext(ctx)
+			closes := 0
+			resp.Body = &closeCallbackBody{ReadCloser: io.NopCloser(strings.NewReader("abc")), close: func() {
+				closes++
+				cancel()
+				if complete {
+					// Both select cases are ready. Whichever wins, cancellation
+					// must be an error rather than a request for another GET.
+					leader.Abort()
+				}
+			}}
+			transport := registryTransport{cache: store, metrics: newMetrics(), fillWaitTimeout: time.Minute}
+			stats := &requestStats{}
+			got, retry, err := transport.resolveResponse(req, resp, true, true, stats)
+			if got != nil || retry || !errors.Is(err, context.Canceled) {
+				t.Fatalf("resolveResponse = (%v, %v, %v), want (nil, false, canceled)", got, retry, err)
+			}
+			if closes != 1 || stats.upstreamBytes != 0 || stats.fallback != "" || transport.metrics.activeWaits != 0 {
+				t.Fatalf("cancellation cleanup: closes=%d stats=%+v activeWaits=%d", closes, stats, transport.metrics.activeWaits)
+			}
+			if !complete && store.Stats().Fills != 1 {
+				t.Fatal("follower cancellation disturbed leader fill")
+			}
+		})
+	}
+}
+
+type closeCallbackBody struct {
+	io.ReadCloser
+	close func()
+}
+
+func (b *closeCallbackBody) Close() error {
+	b.close()
+	return b.ReadCloser.Close()
 }

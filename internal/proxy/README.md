@@ -25,6 +25,20 @@ design rationale, see the
 | `metrics.go` | Per-request statistics and Prometheus text-format metrics: recording and rendering |
 | `errors.go` | Upstream error sentinels, dial-refusal reasons, and fixed, non-leaking log labels |
 
+Tests use `<owner>[_<topic>]_test.go`, named for the responsibility they verify
+rather than the fixture or entry point they call. Source-aligned suites cover
+connections, dialing, relaying, interception, forwarding, registry transport,
+cache policy and bodies, metrics, and errors. Cross-component dispatch,
+authentication, and shutdown scenarios live in `server_test.go`,
+`server_auth_test.go`, and `server_shutdown_test.go`.
+
+`cache_test.go` includes cache limits and transfer failures;
+`cache_manifest_test.go` groups manifest caching and protocol bypasses;
+`cache_wait_test.go` covers coalescing and fallback. Shared server, TLS, tunnel,
+and cache fixtures live in `test_helpers_test.go`; single-suite helpers stay
+with their tests. Tests and fuzz targets precede supporting helpers, with
+higher-level helpers before their implementation details.
+
 ## Public interface
 
 ### `New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *cache.Store) *Proxy`
