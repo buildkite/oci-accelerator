@@ -69,6 +69,11 @@ func (s *Store) buildEvictionOrderLocked() {
 	}
 }
 
+// freeCapacityLocked reports the currently unused bytes and entry slots.
+func (s *Store) freeCapacityLocked() (bytes int64, slots int) {
+	return s.max - s.bytes - s.reserved, s.maxEntries - len(s.entries) - len(s.fills) - len(s.claims) - len(s.failedCleanups)
+}
+
 // before prevents an older startup candidate from evicting newer entries.
 // maxAttempts bounds admission eviction; zero leaves startup eviction uncapped.
 // ErrBypass means insufficient eligible capacity in this batch. If removal

@@ -1,8 +1,10 @@
 package cache
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"hash"
 	"math"
@@ -13,6 +15,7 @@ import (
 )
 
 const evictionAttemptLimit = 8 // Maximum victim-directory removals per Begin.
+const cleanupRetryLimit = 8    // Maximum background cleanup attempts per admission.
 
 var errFillExpired = errors.New("cache fill expired")
 
@@ -264,6 +267,23 @@ func (f *Fill) Commit() error {
 	return nil
 }
 
+func (f *Fill) Abort() error {
+	f.mu.Lock()
+	defer f.unlockAndStopIfDone()
+	if f.done {
+		return nil
+	}
+	return f.finish(nil)
+}
+
+func encodeMeta(m Metadata) ([]byte, error) {
+	b, e := json.Marshal(diskMetadata{Metadata: m, Committed: time.Now().UnixNano()})
+	if e == nil && len(b) > int(metadataReservation) {
+		e = errors.New("cache metadata too large")
+	}
+	return b, e
+}
+
 // writeMetaFile writes the encoded metadata to an exclusive meta file in the
 // staging directory, propagating the first error across chmod/write/sync/close.
 func (f *Fill) writeMetaFile() error {
@@ -287,87 +307,6 @@ func (f *Fill) writeMetaFile() error {
 		}
 	}
 	return err
-}
-
-// publishLocked records the committed entry under the store lock, re-checking
-// the deadline one last time. It converts the fill's reservation into the
-// entry's charge. It never returns a non-deadline error.
-func (f *Fill) publishLocked(dest string) error {
-	f.store.mu.Lock()
-	if !time.Now().Before(f.deadline) {
-		f.store.mu.Unlock()
-		return errFillExpired
-	}
-	delete(f.store.fills, f.meta.Key)
-	f.store.reserved -= f.charge
-	e := &entry{
-		meta:     f.meta,
-		dir:      dest,
-		charge:   f.charge,
-		last:     time.Now().UnixNano(),
-		verified: true, // Just hash-verified during Commit; Readers can skip re-verification.
-	}
-	f.store.addEntryLocked(e)
-	f.store.bytes += f.charge
-	f.store.fillSuccess++
-	f.store.mu.Unlock()
-	return nil
-}
-func (f *Fill) Abort() error {
-	f.mu.Lock()
-	defer f.unlockAndStopIfDone()
-	if f.done {
-		return nil
-	}
-	return f.finish(nil)
-}
-
-func (f *Fill) unlockAndStopIfDone() {
-	done := f.done
-	f.mu.Unlock()
-	if done {
-		f.stopTimer()
-	}
-}
-
-func (f *Fill) stopTimer() {
-	if f.timer.Stop() {
-		f.timerDoneOnce.Do(func() { close(f.timerDone) })
-	}
-	<-f.timerDone
-}
-func (f *Fill) finish(cause error) error {
-	if f.file != nil {
-		cause = errors.Join(cause, f.file.Close())
-		f.file = nil
-	}
-	f.store.admissionMu.Lock()
-	f.store.mu.Lock()
-	f.store.startOpLocked()
-	f.store.mu.Unlock()
-	removeErr := f.store.removeAll(f.dir)
-	f.store.mu.Lock()
-	f.store.finishOpLocked()
-	f.store.mu.Unlock()
-	f.store.admissionMu.Unlock()
-	cause = errors.Join(cause, removeErr)
-	f.store.mu.Lock()
-	if cause == nil {
-		f.store.fillAbort++
-	} else if errors.Is(cause, errFillExpired) {
-		f.store.fillExpiry++
-	} else {
-		f.store.fillFailure++
-	}
-	delete(f.store.fills, f.meta.Key)
-	f.store.reserved -= f.charge
-	if removeErr != nil {
-		f.store.retainCleanupLocked(f.dir, f.charge)
-	}
-	f.store.mu.Unlock()
-	f.done = true
-	close(f.completed)
-	return cause
 }
 
 // supersedeTombstone claims an invalid entry or failed publication under s.mu,
@@ -417,6 +356,118 @@ func (f *Fill) supersedeTombstone(dest string) error {
 		f.store.bytes -= e.charge
 	}
 	return nil
+}
+
+// publishLocked records the committed entry under the store lock, re-checking
+// the deadline one last time. It converts the fill's reservation into the
+// entry's charge. It never returns a non-deadline error.
+func (f *Fill) publishLocked(dest string) error {
+	f.store.mu.Lock()
+	if !time.Now().Before(f.deadline) {
+		f.store.mu.Unlock()
+		return errFillExpired
+	}
+	delete(f.store.fills, f.meta.Key)
+	f.store.reserved -= f.charge
+	e := &entry{
+		meta:     f.meta,
+		dir:      dest,
+		charge:   f.charge,
+		last:     time.Now().UnixNano(),
+		verified: true, // Just hash-verified during Commit; Readers can skip re-verification.
+	}
+	f.store.addEntryLocked(e)
+	f.store.bytes += f.charge
+	f.store.fillSuccess++
+	f.store.mu.Unlock()
+	return nil
+}
+
+func (f *Fill) finish(cause error) error {
+	if f.file != nil {
+		cause = errors.Join(cause, f.file.Close())
+		f.file = nil
+	}
+	f.store.admissionMu.Lock()
+	f.store.mu.Lock()
+	f.store.startOpLocked()
+	f.store.mu.Unlock()
+	removeErr := f.store.removeAll(f.dir)
+	f.store.mu.Lock()
+	f.store.finishOpLocked()
+	f.store.mu.Unlock()
+	f.store.admissionMu.Unlock()
+	cause = errors.Join(cause, removeErr)
+	f.store.mu.Lock()
+	if cause == nil {
+		f.store.fillAbort++
+	} else if errors.Is(cause, errFillExpired) {
+		f.store.fillExpiry++
+	} else {
+		f.store.fillFailure++
+	}
+	delete(f.store.fills, f.meta.Key)
+	f.store.reserved -= f.charge
+	if removeErr != nil {
+		f.store.retainCleanupLocked(f.dir, f.charge)
+	}
+	f.store.mu.Unlock()
+	f.done = true
+	close(f.completed)
+	return cause
+}
+
+func (f *Fill) unlockAndStopIfDone() {
+	done := f.done
+	f.mu.Unlock()
+	if done {
+		f.stopTimer()
+	}
+}
+
+func (f *Fill) stopTimer() {
+	if f.timer.Stop() {
+		f.timerDoneOnce.Do(func() { close(f.timerDone) })
+	}
+	<-f.timerDone
+}
+
+type cleanup struct {
+	charge int64
+	queued *list.Element
+}
+
+// retainCleanupLocked transfers an admitted directory's charge to pending
+// cleanup. Each record consumes its original entry slot, bounding the map by
+// MaxEntries. The caller must already have released any fill reservation.
+func (s *Store) retainCleanupLocked(dir string, charge int64) {
+	if s.failedCleanups == nil {
+		s.failedCleanups = make(map[string]cleanup)
+	}
+	s.failedCleanups[dir] = cleanup{charge: charge, queued: s.cleanupQueue.PushBack(dir)}
+	s.bytes += charge
+}
+
+// retryCleanupsLocked rotates failures so later directories get a turn. Limit
+// attempts even when more cleanup could avoid eviction or admission refusal.
+// The queue contains exactly the charged records, with no stale path retries.
+func (s *Store) retryCleanupsLocked() {
+	for range min(cleanupRetryLimit, s.cleanupQueue.Len()) {
+		next := s.cleanupQueue.Front()
+		path := next.Value.(string)
+		s.startOpLocked()
+		s.mu.Unlock()
+		err := s.removeAll(path)
+		s.mu.Lock()
+		s.finishOpLocked()
+		if err != nil {
+			s.cleanupQueue.MoveToBack(next)
+		} else if pending, ok := s.failedCleanups[path]; ok {
+			s.cleanupQueue.Remove(pending.queued)
+			delete(s.failedCleanups, path)
+			s.bytes -= pending.charge
+		}
+	}
 }
 
 func syncDirectory(p string) error {

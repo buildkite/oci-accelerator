@@ -4,7 +4,6 @@ package cache
 import (
 	"container/list"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,29 +15,6 @@ import (
 )
 
 const metadataReservation int64 = 4096 // capacity charged per entry, including its meta file
-
-var (
-	ErrMiss          = errors.New("cache miss")
-	ErrBypass        = errors.New("cache bypass")
-	ErrInvalidLimits = errors.New("invalid cache limits")
-	ErrLockConflict  = errors.New("cache lock conflict")
-	ErrUnsafeState   = errors.New("unsafe cache state")
-	ErrFilesystem    = errors.New("cache filesystem failure")
-	ErrActiveReaders = errors.New("cache has active readers")
-)
-
-func filesystemError(err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("%w: %w", ErrFilesystem, err)
-}
-
-var completedNotification = func() <-chan struct{} {
-	c := make(chan struct{})
-	close(c)
-	return c
-}()
 
 // Metadata describes an immutable object representation. The caller supplies a
 // lowercase, 64-hex-character Key identifying that representation, including its
@@ -118,23 +94,6 @@ type Limits struct {
 
 func (l Limits) valid() bool {
 	return l.MaxBytes > 0 && l.MaxFills > 0 && l.MaxEntries > 0 && l.FillTimeout > 0
-}
-
-// Completion returns a notification for a matching active or already-published
-// fill. The channel closes only after the store's terminal state is visible.
-func (s *Store) Completion(meta Metadata) (<-chan struct{}, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil, false
-	}
-	if e, ok := s.entries[meta.Key]; ok && e.meta == meta && !e.invalid {
-		return completedNotification, true
-	}
-	if f, ok := s.fills[meta.Key]; ok && f.meta == meta {
-		return f.completed, true
-	}
-	return nil, false
 }
 
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {
@@ -292,11 +251,6 @@ func add(a, b int64) (int64, bool) {
 	return a + b, true
 }
 
-// freeCapacityLocked reports the currently unused bytes and entry slots.
-func (s *Store) freeCapacityLocked() (bytes int64, slots int) {
-	return s.max - s.bytes - s.reserved, s.maxEntries - len(s.entries) - len(s.fills) - len(s.claims) - len(s.failedCleanups)
-}
-
 func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -321,6 +275,31 @@ func (s *Store) Stats() Stats {
 		CleanupSlots: len(s.failedCleanups),
 	}
 }
+
+// Completion returns a notification for a matching active or already-published
+// fill. The channel closes only after the store's terminal state is visible.
+func (s *Store) Completion(meta Metadata) (<-chan struct{}, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, false
+	}
+	if e, ok := s.entries[meta.Key]; ok && e.meta == meta && !e.invalid {
+		return completedNotification, true
+	}
+	if f, ok := s.fills[meta.Key]; ok && f.meta == meta {
+		return f.completed, true
+	}
+	return nil, false
+}
+
+// completedNotification is a shared, already-closed channel returned for entries
+// whose fill has already published; a receive on it proceeds immediately.
+var completedNotification = func() <-chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
 
 // Close rejects new work, aborts every active fill, and releases the filesystem
 // lock once no readers remain. With readers still active it keeps the lock and
@@ -376,12 +355,4 @@ func (s *Store) releaseLock() error {
 	err := errors.Join(unlockErr, s.lock.Close())
 	s.lock = nil
 	return err
-}
-
-func encodeMeta(m Metadata) ([]byte, error) {
-	b, e := json.Marshal(diskMetadata{Metadata: m, Committed: time.Now().UnixNano()})
-	if e == nil && len(b) > int(metadataReservation) {
-		e = errors.New("cache metadata too large")
-	}
-	return b, e
 }
