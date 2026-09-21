@@ -105,7 +105,7 @@ func (s *Store) begin(meta Metadata) (*Fill, error) {
 	s.retryCleanupsLocked()
 
 	// Evict victims to make room, separating capacity refusal from I/O failure.
-	if err := s.evictLocked(charge, 1, math.MaxInt64, evictionAttemptLimit); err != nil {
+	if err := s.evictForAdmissionLocked(charge, 1, math.MaxInt64, evictionAttemptLimit); err != nil {
 		if errors.Is(err, ErrBypass) {
 			s.admissions[AdmissionCapacity]++
 			return nil, &AdmissionError{Reason: AdmissionCapacity}

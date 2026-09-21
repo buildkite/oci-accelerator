@@ -5,11 +5,33 @@ import (
 	"sort"
 )
 
-// before prevents an older startup candidate from evicting newer entries.
-// maxAttempts bounds admission eviction; zero leaves startup eviction uncapped.
-// ErrBypass means insufficient eligible capacity in this batch. If removal
-// failures prevent admission, return the first filesystem error.
-func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts int) error {
+// evictForAdmissionLocked reclaims space for an admission request. It removes at
+// most maxAttempts victims per call and advances the store's shared resume cursor
+// so later calls continue past this batch; maxAttempts must be positive. It reads
+// the incrementally maintained eviction order. before prevents an older candidate
+// from evicting newer entries. ErrBypass means insufficient eligible capacity in
+// this batch. If removal failures prevent admission, return the first filesystem
+// error.
+func (s *Store) evictForAdmissionLocked(need int64, needSlots int, before int64, maxAttempts int) error {
+	gather := func() []*entry { return s.evictionCandidatesLocked(before) }
+	return s.evictLocked(need, needSlots, before, gather, maxAttempts)
+}
+
+// evictAtStartupLocked reclaims space during inventory reload with no per-call cap
+// and no cursor interaction. It sorts the entry map directly because the ordered
+// eviction list is not yet the source of truth at startup. before prevents an
+// older reload candidate from evicting newer entries. Its ErrBypass and
+// removal-error handling match evictForAdmissionLocked.
+func (s *Store) evictAtStartupLocked(need int64, needSlots int, before int64) error {
+	gather := func() []*entry { return s.sortedEntriesLocked(before, true) }
+	return s.evictLocked(need, needSlots, before, gather, 0)
+}
+
+// evictLocked is the shared eviction core. gather supplies the ordered victim
+// pool and is invoked only after the fast-path capacity check fails. maxAttempts
+// > 0 caps victims per call and drives the resume cursor; maxAttempts == 0 leaves
+// eviction uncapped and cursor-free.
+func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func() []*entry, maxAttempts int) error {
 	fits := func() bool {
 		free, freeSlots := s.freeCapacityLocked()
 		return need <= free && needSlots <= freeSlots
@@ -21,13 +43,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 
 	// Gather unpinned candidates no newer than before, and check that removing
 	// all of them could even satisfy the request before disturbing anything.
-	var candidates []*entry
-	if maxAttempts == 0 {
-		candidates = s.sortedEntriesLocked(before, true)
-	} else {
-		candidates = s.evictionCandidatesLocked(before)
-	}
-
+	candidates := gather()
 	if !s.batchSuffices(candidates, need, needSlots) {
 		return ErrBypass
 	}

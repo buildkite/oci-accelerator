@@ -269,7 +269,7 @@ func TestUncappedEvictionCanRemoveMoreThanAdmissionBudget(t *testing.T) {
 	s := openTest(t, 9*charge)
 	seedEvictionEntries(t, s, 9, "x")
 	s.mu.Lock()
-	err := s.evictLocked(9*charge, 1, math.MaxInt64, 0)
+	err := s.evictAtStartupLocked(9*charge, 1, math.MaxInt64)
 	s.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +437,7 @@ func TestFailedAdmissionDoesNotEvictInsufficientVictims(t *testing.T) {
 	put(t, s, b, body)
 	s.setEntryLastLocked(s.entries[a.Key], 1)
 	s.setEntryLastLocked(s.entries[b.Key], 3)
-	if err := s.evictLocked(2*metadataReservation, 0, 2, 0); err != ErrBypass {
+	if err := s.evictAtStartupLocked(2*metadataReservation, 0, 2); err != ErrBypass {
 		t.Fatalf("eviction without enough eligible space = %v", err)
 	}
 	read(t, s, a, "a")

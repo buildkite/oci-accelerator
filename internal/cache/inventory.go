@@ -55,7 +55,7 @@ func (s *Store) inventory() error {
 			// Discard entries that are unreadable, oversized, or that will not fit
 			// the current limits. before=entry.last stops an older reload candidate
 			// from evicting newer entries admitted earlier in this scan.
-			if entry == nil || entry.charge > s.max || s.evictLocked(entry.charge, 1, entry.last, 0) != nil {
+			if entry == nil || entry.charge > s.max || s.evictAtStartupLocked(entry.charge, 1, entry.last) != nil {
 				if err := os.RemoveAll(path); err != nil {
 					return err
 				}
