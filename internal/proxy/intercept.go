@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -11,10 +12,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/buildkite/oci-accelerator/internal/ca"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
-func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostport.HostPort) {
+// intercept coordinates the session with Proxy shutdown. The supplied handler
+// owns decrypted HTTP requests; this layer only owns CONNECT and TLS serving.
+func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostport.HostPort, handler http.Handler) {
 
 	// Check whether we can take over the underlying TCP connection from net/http.
 	h, ok := w.(http.Hijacker)
@@ -29,24 +33,14 @@ func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostpor
 		return
 	}
 
-	// Adapt the single hijacked conn into a one-shot listener the inner server can Accept.
-	listener := &oneConnListener{done: make(chan struct{})}
-
 	// Build an inner HTTP server to serve decrypted requests off the tunnel.
 	inner := &http.Server{
-		Handler:                      p.interceptHandler(target),
+		Handler:                      handler,
 		ReadHeaderTimeout:            p.cfg.ResponseHeaderTimeout,
 		IdleTimeout:                  p.cfg.IdleTimeout,
 		MaxHeaderBytes:               maxHeaderBytes,
 		ErrorLog:                     log.New(io.Discard, "", 0),
 		DisableGeneralOptionsHandler: true,
-
-		// End the one-shot listener once its connection is closed or hijacked.
-		ConnState: func(_ net.Conn, state http.ConnState) {
-			if state == http.StateClosed || state == http.StateHijacked {
-				listener.finish()
-			}
-		},
 	}
 
 	// Register the inner server so shutdown can drain it, unless already closing.
@@ -66,8 +60,24 @@ func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostpor
 		p.mu.Unlock()
 	}()
 
+	serveIntercepted(r.Context(), client, rw, inner, target, p.signer, p.cfg.TLSHandshakeTimeout)
+}
+
+// serveIntercepted acknowledges CONNECT and serves one TLS session. It owns
+// client until serving finishes and closes it on every return path. The caller
+// registers inner for shutdown before calling; no Proxy state is accessed here.
+func serveIntercepted(ctx context.Context, client net.Conn, rw *bufio.ReadWriter, inner *http.Server, target hostport.HostPort, signer *ca.Authority, handshakeTimeout time.Duration) {
+	// Adapt the single hijacked conn into a one-shot listener the inner server can Accept.
+	listener := &oneConnListener{done: make(chan struct{})}
+	inner.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed || state == http.StateHijacked {
+			listener.finish()
+		}
+	}
+
 	// Tell the client the tunnel is open so it can start the TLS handshake.
-	if _, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
+	_, err := rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+	if err == nil {
 		err = rw.Flush()
 	}
 	if err != nil {
@@ -92,17 +102,17 @@ func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostpor
 					return nil, errors.New("TLS name mismatch")
 				}
 			}
-			return p.signer.Certificate(target.Host())
+			return signer.Certificate(target.Host())
 		},
 	})
 
 	// Bound the TLS handshake with a deadline when one is configured.
-	if d := p.cfg.TLSHandshakeTimeout; d > 0 {
-		_ = tlsConn.SetDeadline(time.Now().Add(d))
+	if handshakeTimeout > 0 {
+		_ = tlsConn.SetDeadline(time.Now().Add(handshakeTimeout))
 	}
 
 	// Run the TLS handshake, tearing down the tunnel if it fails.
-	if err := tlsConn.HandshakeContext(r.Context()); err != nil {
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		_ = client.Close()
 		return
 	}

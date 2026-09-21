@@ -15,7 +15,7 @@ design rationale, see the
 | `server.go` | `Proxy` type, `New`, `Serve`/`Shutdown`, and `ServeHTTP` CONNECT dispatch/validation |
 | `connections.go` | Connection tracking (`trackingListener`, `trackedConn`), connection limits, raw-CONNECT header inspection, and connection context |
 | `relay.go` | The opaque bidirectional TCP relay, with an explicit idle timeout and ownership of both connections until its workers finish |
-| `intercept.go` | MITM interception of configured registries: hijack, terminate TLS with a CA-signed leaf, and serve the inner HTTP server over a single-connection listener |
+| `intercept.go` | Shutdown-aware CONNECT takeover and `serveIntercepted`: terminate TLS and serve the supplied handler over a single-connection listener |
 | `forwarding.go` | The inner reverse proxy to upstream registries: request validation, header stripping, and the logging/metrics response writer |
 | `registry_transport.go` | Upstream `RoundTrip`, bounded redirect following, cross-origin header stripping, and fill-wait retry |
 | `dial.go` | SSRF-hardened DNS resolution/dialing (`dialUpstream`, `publicIP`) and upstream idle deadlines |
@@ -71,6 +71,12 @@ CONNECT host:port
 Only requests to configured registries are intercepted. Everything else is a
 byte-for-byte tunnel: the proxy never inspects, caches, or enforces methods
 inside it.
+
+`ServeHTTP` supplies the registry handler to `intercept`. The coordinator
+registers the inner HTTP server for shutdown before `serveIntercepted`
+acknowledges CONNECT or starts TLS. The session function owns the client
+connection until serving ends; it does not access `Proxy` or construct the
+forwarding handler.
 
 `registryTransport` receives the shared upstream HTTP transport, cache store,
 metrics, and fill-wait timeout explicitly; it does not hold a `Proxy` reference.

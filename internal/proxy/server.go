@@ -223,7 +223,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			refuse(w, "registry interception unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		p.intercept(w, r, target)
+		p.intercept(w, r, target, p.interceptHandler(target))
 		return
 	}
 

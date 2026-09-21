@@ -540,6 +540,43 @@ func TestInterceptShutdownClosesTLSKeepAliveWithoutContextDeadline(t *testing.T)
 	}
 }
 
+func TestInterceptRegistersBeforeHandshakeAndCleansUpOnShutdown(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer origin.Close()
+	p, addr, _ := interceptFixture(t, origin, nil, true)
+	p.cfg.TLSHandshakeTimeout = time.Minute
+	conn, _ := connectLifecycle(t, addr.Host, strings.TrimPrefix(origin.URL, "https://"), nil)
+
+	// CONNECT is acknowledged, but the client has not sent a TLS ClientHello.
+	// The inner server must already be visible to shutdown at this boundary.
+	p.mu.Lock()
+	inners := len(p.inners)
+	p.mu.Unlock()
+	if inners != 1 {
+		t.Fatalf("registered inner servers = %d, want 1 before handshake", inners)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- p.Shutdown(ctx) }()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Shutdown = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown waited for the TLS handshake timeout")
+	}
+	assertLifecycleClosed(t, conn, "pending TLS client")
+	p.mu.Lock()
+	inners, conns := len(p.inners), len(p.conns)
+	p.mu.Unlock()
+	if inners != 0 || conns != 0 || hits.Load() != 0 {
+		t.Fatalf("shutdown cleanup: inner servers=%d connections=%d origin requests=%d", inners, conns, hits.Load())
+	}
+}
+
 func TestUnconfiguredTunnelPresentsOriginCertificate(t *testing.T) {
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer origin.Close()
