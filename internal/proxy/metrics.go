@@ -19,6 +19,15 @@ import (
 // imposes on every scrape.
 const heapObjectsMetric = "/memory/classes/heap/objects:bytes"
 
+type requestStats struct {
+	cache, fill    string
+	wait, fallback string
+	admission      string
+	reject         string
+	upstreamBytes  int64
+}
+type statsKey struct{}
+
 // Finite histogram bounds, shared by classification and scrape labels.
 var requestDurationBounds = [...]time.Duration{
 	10 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond,

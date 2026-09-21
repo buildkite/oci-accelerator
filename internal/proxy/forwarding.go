@@ -189,23 +189,3 @@ func headerHasToken(h http.Header, name, token string) bool {
 	}
 	return false
 }
-
-type idleReadWriteConn struct {
-	net.Conn
-	timeout time.Duration
-}
-
-func (c *idleReadWriteConn) Read(b []byte) (int, error) {
-	if c.timeout > 0 {
-		_ = c.SetReadDeadline(time.Now().Add(c.timeout))
-	}
-	return c.Conn.Read(b)
-}
-func (c *idleReadWriteConn) Write(b []byte) (int, error) {
-	if c.timeout > 0 {
-		// The transport may already be reading on a pooled connection. Give
-		// that pending read a fresh budget when sending the next request.
-		_ = c.SetDeadline(time.Now().Add(c.timeout))
-	}
-	return c.Conn.Write(b)
-}
