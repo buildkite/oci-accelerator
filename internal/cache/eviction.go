@@ -27,6 +27,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts
 	} else {
 		candidates = s.evictionCandidatesLocked(before)
 	}
+
 	if !s.batchSuffices(candidates, need, needSlots) {
 		return ErrBypass
 	}

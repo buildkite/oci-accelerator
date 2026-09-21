@@ -12,32 +12,55 @@ import (
 )
 
 type Store struct {
-	mu                                              sync.Mutex
-	admissionMu                                     sync.Mutex
-	dir                                             string
-	max                                             int64
-	maxFills, maxEntries                            int
-	fillTimeout                                     time.Duration
-	failedCleanups                                  map[string]cleanup
-	cleanupQueue                                    list.List
-	bytes, reserved                                 int64
-	evictions                                       int64
-	readers                                         int
+	// Guards all mutable store state below.
+	mu sync.Mutex
+	// Serializes admission and publication so key ownership decisions don't race.
+	admissionMu sync.Mutex
+	// Root directory holding the cache on disk.
+	dir string
+	// Maximum total bytes (data plus metadata reservation) the cache may hold.
+	max int64
+	// Caps on concurrent in-flight fills and total live entries.
+	maxFills, maxEntries int
+	// Deadline after which a stalled in-progress fill is expired.
+	fillTimeout time.Duration
+	// Temp dirs whose removal failed, keyed by path, awaiting retry.
+	failedCleanups map[string]cleanup
+	// FIFO retry order of failed-cleanup paths.
+	cleanupQueue list.List
+	// Bytes charged to published entries; bytes reserved for in-flight fills.
+	bytes, reserved int64
+	// Cumulative count of entries evicted to reclaim space.
+	evictions int64
+	// Count of currently open Readers.
+	readers int
+	// Terminal fill outcome counters.
 	fillSuccess, fillFailure, fillAbort, fillExpiry int64
-	admissions                                      [AdmissionReasonCount]int64
-	entries                                         map[string]*entry
-	fills                                           map[string]*Fill
-	claims                                          map[string]int64
-	activeOps                                       int
-	opsDone                                         *sync.Cond
-	removeAll                                       func(string) error
-	mkdirTemp                                       func(string, string) (string, error)
-	evictionOrder                                   list.List // entries ordered by (last, key)
+	// Per-reason admission decision counters.
+	admissions [AdmissionReasonCount]int64
+	// Published cache entries indexed by key.
+	entries map[string]*entry
+	// In-progress fills indexed by key.
+	fills map[string]*Fill
+	// Reserved key ownership and byte charge during staging, before a fill publishes.
+	claims map[string]int64
+	// Count of in-flight filesystem operations running with mu released.
+	activeOps int
+	// Signaled when activeOps reaches zero, so Close can wait for drain.
+	opsDone *sync.Cond
+	// Injectable os.RemoveAll for tests.
+	removeAll func(string) error
+	// Injectable os.MkdirTemp for tests.
+	mkdirTemp func(string, string) (string, error)
+	// Entries ordered by (last, key) for eviction victim selection.
+	evictionOrder list.List
 	// Resume after this (last, key) position even if its entry disappears or pins.
 	evictionAfterLast int64
 	evictionAfter     string
-	lock              *os.File
-	closed            bool
+	// Held OS file lock enforcing single-process ownership of dir.
+	lock *os.File
+	// True once the store is shutting down and rejecting new work.
+	closed bool
 }
 
 // completedNotification is a shared, already-closed channel returned for entries
