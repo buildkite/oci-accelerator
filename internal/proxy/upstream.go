@@ -33,13 +33,15 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}))
 	}
 
-	// First attempt may coalesce onto an in-flight fill instead of fetching.
+	// Coalescing requires this caller's own accepted upstream GET. The first
+	// attempt may then close its body and wait for another fill.
 	resp, retry, err := t.roundTrip(req, true)
 	if err != nil || !retry {
 		return resp, err
 	}
 
-	// The coalesced wait timed out without a body; fetch from upstream ourselves.
+	// Timeout, fill failure, or eviction before reader acquisition left no cached
+	// body. Repeat the full authorization/redirect path once, without waiting again.
 	resp, _, err = t.roundTrip(req, false)
 	return resp, err
 }

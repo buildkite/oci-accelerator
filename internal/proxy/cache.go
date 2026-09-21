@@ -16,19 +16,20 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
-// requestPolicy preserves the original request's cache decision before the
-// reverse proxy strips hop-by-hop headers.
+// requestPolicy preserves the original request's redirect and cache decisions
+// before the reverse proxy strips hop-by-hop headers. Store it by value,
+// separately from mutable statistics: instrumentation must not determine policy.
 //
-// It is an ordered ladder so each level implies the one below it:
+// The levels distinguish redirect following from permission to use the cache:
 //
-//   - policyBypass: not cache-shaped (wrong method/path, or a Range,
-//     conditional, or no-store header).
+//   - policyBypass: an unsupported request shape (method/path, Range, or
+//     conditional headers); redirects remain client-handled and caching is off.
 //
-//   - policyEligible: a digest-addressed blob/manifest GET, but the headers
-//     forbid storing (see cacheHeaderRejection) - no cache read or fill.
+//   - policyEligible: an immutable-object GET whose headers forbid cache use
+//     (for example, no-store); follow redirects, but never read or fill the cache.
 //
-//   - policyCacheable: eligible AND the headers permit storing; the only level
-//     that serves from or admits a fill into the cache.
+//   - policyCacheable: follow redirects and allow cache reads or fills, subject
+//     to every redirect's cache restrictions and the terminal response checks.
 type requestPolicy uint8
 
 const (
@@ -201,7 +202,9 @@ func (p *Proxy) resolveResponse(req *http.Request, resp *http.Response, permitte
 		stats.cache = "miss"
 	}
 
-	// Coalesce with an in-flight fill for the same object instead of a duplicate GET.
+	// This caller's upstream GET has already authorized the matching response.
+	// Coalescing closes its body and waits for a fill instead of consuming another
+	// body stream; it does not avoid the caller's authorization GET.
 	if mayWait && p.cfg.Cache.FillWaitTimeout > 0 {
 		if completed, active := p.cache.Completion(meta); active {
 			return p.waitForFill(req.Context(), resp, meta, completed, stats)
