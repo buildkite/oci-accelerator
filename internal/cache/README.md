@@ -28,6 +28,16 @@ for performance notes see [benchmarks.md](benchmarks.md).
 Files place their main operations before supporting helpers, with lifecycle
 ordering where applicable. Tests and benchmarks likewise precede their helpers.
 
+Tests use `<owner>[_<topic>]_test.go`, named for the responsibility under test
+rather than the public method used to exercise it. Admission, fill, eviction,
+filesystem, inventory, and reader tests sit beside those implementations.
+`inventory_recovery_test.go` covers process-crash recovery;
+`reader_verification_test.go` covers first-read verification and its waiters.
+Store-wide lifecycle, shutdown, concurrency, and readmission scenarios stay in
+`store_test.go` and `store_*_test.go`. Common fixtures and concurrency helpers
+live in `test_helpers_test.go`; `permission*_test.go` provides shared
+permission-test infrastructure, including platform-specific capability handling.
+
 ## Public interface
 
 ### `OpenWithLimits(dir string, limits Limits) (*Store, error)`
