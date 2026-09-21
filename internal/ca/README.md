@@ -30,6 +30,13 @@ of the configured registry list and avoids generating unused certificates.
 | `profile.go` | Accepted root CA algorithms, constraints, and extensions |
 | `leaf.go` | Per-host leaf issuance and a bounded in-memory leaf cache |
 
+Tests use `<owner>[_<topic>]_test.go`, named for the responsibility they verify
+rather than the fixture or entry point they call. `leaf_test.go` and
+`profile_test.go` sit beside their source files. `ca_test.go` covers `ca.go`'s
+core Open/create/load lifecycle and the leaf cache as exercised through
+`Authority`; `ca_permissions_test.go` isolates the adversarial reopen checks:
+unsafe parent permissions, symlinked parents, and foreign-owned installations.
+
 ## Public interface
 
 ### `Open(dir string, maxLeaves int) (*Authority, error)`
