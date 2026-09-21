@@ -20,8 +20,37 @@ type Reader struct {
 	closed    bool
 }
 
-func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
-	return s.get(ctx, meta, nil, nil)
+func (r *Reader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return 0, os.ErrClosed
+	}
+	n, err := r.file.Read(p)
+	r.remaining -= int64(n)
+	if err == io.EOF && r.remaining > 0 {
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil && err != io.EOF {
+		// Retire only this generation. Keep its pin and charge until Close,
+		// even if a replacement is published before this reader finishes.
+		r.store.mu.Lock()
+		r.entry.invalid = true
+		r.store.mu.Unlock()
+	}
+	return n, err
+}
+
+func (r *Reader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	err := r.file.Close()
+	r.store.unpin(r.entry)
+	return err
 }
 
 // get looks up a committed entry and returns a Reader that owns a fresh pin.
@@ -205,35 +234,4 @@ func (s *Store) unpin(e *entry) {
 		e.reclaimed = true
 		s.bytes -= e.charge
 	}
-}
-func (r *Reader) Read(p []byte) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		return 0, os.ErrClosed
-	}
-	n, err := r.file.Read(p)
-	r.remaining -= int64(n)
-	if err == io.EOF && r.remaining > 0 {
-		err = io.ErrUnexpectedEOF
-	}
-	if err != nil && err != io.EOF {
-		// Retire only this generation. Keep its pin and charge until Close,
-		// even if a replacement is published before this reader finishes.
-		r.store.mu.Lock()
-		r.entry.invalid = true
-		r.store.mu.Unlock()
-	}
-	return n, err
-}
-func (r *Reader) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		return nil
-	}
-	r.closed = true
-	err := r.file.Close()
-	r.store.unpin(r.entry)
-	return err
 }

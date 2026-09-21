@@ -10,28 +10,6 @@ import (
 	"testing"
 )
 
-// pinnedTombstone invalidates an entry by unlinking its body and attempting
-// another Get. The returned reader still pins and can read the original inode.
-func pinnedTombstone(t *testing.T, s *Store, m Metadata, body string) *Reader {
-	t.Helper()
-	put(t, s, m, body)
-	held, err := s.Get(context.Background(), m)
-	if err != nil {
-		t.Fatalf("initial Get: %v", err)
-	}
-	if err := os.Remove(filepath.Join(s.dir, m.Key, "body")); err != nil {
-		t.Fatalf("remove body: %v", err)
-	}
-	if _, err := s.Get(context.Background(), m); err != ErrMiss {
-		t.Fatalf("invalidating Get = %v, want ErrMiss", err)
-	}
-	e := s.entries[m.Key]
-	if e == nil || !e.invalid || e.pins != 1 {
-		t.Fatalf("expected invalid pinned tombstone, got %+v", e)
-	}
-	return held
-}
-
 // Replacing an invalid entry preserves old readers and releases the old charge
 // only after those readers close.
 func TestBeginReadmitsPinnedInvalidEntry(t *testing.T) {
@@ -374,4 +352,26 @@ func TestReadmitCommitReaderCloseRace(t *testing.T) {
 			t.Fatalf("iter %d: Close = %v", i, err)
 		}
 	}
+}
+
+// pinnedTombstone invalidates an entry by unlinking its body and attempting
+// another Get. The returned reader still pins and can read the original inode.
+func pinnedTombstone(t *testing.T, s *Store, m Metadata, body string) *Reader {
+	t.Helper()
+	put(t, s, m, body)
+	held, err := s.Get(context.Background(), m)
+	if err != nil {
+		t.Fatalf("initial Get: %v", err)
+	}
+	if err := os.Remove(filepath.Join(s.dir, m.Key, "body")); err != nil {
+		t.Fatalf("remove body: %v", err)
+	}
+	if _, err := s.Get(context.Background(), m); err != ErrMiss {
+		t.Fatalf("invalidating Get = %v, want ErrMiss", err)
+	}
+	e := s.entries[m.Key]
+	if e == nil || !e.invalid || e.pins != 1 {
+		t.Fatalf("expected invalid pinned tombstone, got %+v", e)
+	}
+	return held
 }

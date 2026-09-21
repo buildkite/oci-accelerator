@@ -10,15 +10,23 @@ for performance notes see [benchmarks.md](benchmarks.md).
 
 | File | Responsibility |
 | --- | --- |
-| `store.go` | `Store` type, `OpenWithLimits`, accounting, metadata validation, private-directory and lock enforcement, `Stats`, `Completion`, `Close` |
-| `admission.go` | `Begin`: reserve capacity and key ownership, stage a fill, and report bounded admission reasons and errors |
+| `store.go` | `Store` and its public entry points in lifecycle order: `OpenWithLimits`, `Begin`, `Completion`, `Get`, `Stats`, `Close`; shutdown coordination |
+| `admission.go` | Private `begin` implementation: reserve capacity and key ownership, stage a fill, and report bounded admission reasons and errors |
 | `eviction.go` | Capacity checks, bounded victim selection/removal, incrementally maintained eviction ordering, and entry index updates |
 | `fill.go` | `Fill` lifecycle: `Write`, `Commit` (verify and atomic publish), `Abort`, and fill expiry/terminal cleanup |
-| `reader.go` | `Reader` and `Get`: pinning, single-flight body verification, and reclaim of detached entries on the final unpin |
+| `reader.go` | `Reader` and private lookup: pinning, single-flight body verification, and reclaim of detached entries on the final unpin |
+| `entry.go` | Private committed-generation state, owned and synchronized by `Store` |
+| `metadata.go` | `Metadata`, its disk representation, validation, encoding, and metadata constants |
+| `limits.go` | `Limits` and limit validation |
+| `stats.go` | `Stats` snapshot type; `Store.Stats` constructs it in `store.go` |
+| `filesystem.go` | Private-directory checks and process-lock acquisition/release |
 | `inventory.go` | Startup scan: discard abandoned `.fill-` directories, validate committed entries, reject unrecognized state |
 | `cleanup.go` | Deferred removal of directories whose deletion failed, charged against the entry and byte budgets |
 | `errors.go` | Public error categories and filesystem-error wrapping |
 | `cachetest/cachetest.go` | Test-only convenience constructor for callers outside the cache package |
+
+Files place their main operations before supporting helpers, with lifecycle
+ordering where applicable. Tests and benchmarks likewise precede their helpers.
 
 ## Public interface
 

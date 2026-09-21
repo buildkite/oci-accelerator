@@ -10,50 +10,6 @@ import (
 	"time"
 )
 
-func awaitBarrier(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
-}
-
-func awaitResult[T any](t *testing.T, ch <-chan T, what string) T {
-	t.Helper()
-	select {
-	case result := <-ch:
-		return result
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-		var zero T
-		return zero
-	}
-}
-
-func assertHitProgress(t *testing.T, s *Store, meta Metadata, want string) {
-	t.Helper()
-	done := make(chan error, 1)
-	go func() {
-		r, err := s.Get(context.Background(), meta)
-		if err == nil {
-			var b []byte
-			b, err = io.ReadAll(r)
-			if err == nil && string(b) != want {
-				err = errors.New("unexpected bytes: " + string(b))
-			}
-			err = errors.Join(err, r.Close())
-		}
-		done <- err
-	}()
-	if err := awaitResult(t, done, "unrelated cache hit"); err != nil {
-		t.Fatal(err)
-	}
-	statsDone := make(chan Stats, 1)
-	go func() { statsDone <- s.Stats() }()
-	_ = awaitResult(t, statsDone, "Stats")
-}
-
 func TestBlockedStagingDoesNotBlockHitOrStatsAndDelaysClose(t *testing.T) {
 	s := openTest(t, 1<<20)
 	hot := testMeta("hot-during-staging", "body")
@@ -546,4 +502,48 @@ func TestPausedCommitTombstoneSupersessionDoesNotBlockHitsAndDelaysClose(t *test
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	read(t, reopened, fresh, "new exact bytes")
+}
+
+func assertHitProgress(t *testing.T, s *Store, meta Metadata, want string) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		r, err := s.Get(context.Background(), meta)
+		if err == nil {
+			var b []byte
+			b, err = io.ReadAll(r)
+			if err == nil && string(b) != want {
+				err = errors.New("unexpected bytes: " + string(b))
+			}
+			err = errors.Join(err, r.Close())
+		}
+		done <- err
+	}()
+	if err := awaitResult(t, done, "unrelated cache hit"); err != nil {
+		t.Fatal(err)
+	}
+	statsDone := make(chan Stats, 1)
+	go func() { statsDone <- s.Stats() }()
+	_ = awaitResult(t, statsDone, "Stats")
+}
+
+func awaitBarrier(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func awaitResult[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case result := <-ch:
+		return result
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		var zero T
+		return zero
+	}
 }

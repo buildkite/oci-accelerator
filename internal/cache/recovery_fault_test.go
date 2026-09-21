@@ -93,25 +93,6 @@ func TestCacheCrashChild(t *testing.T) {
 	}
 }
 
-func writeSyncedRecoveryFile(t *testing.T, path string, body []byte) {
-	t.Helper()
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err == nil {
-		_, err = f.Write(body)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if f != nil {
-		if closeErr := f.Close(); err == nil {
-			err = closeErr
-		}
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestProcessCrashRecovery(t *testing.T) {
 	body := "completed bytes survive exactly"
 	complete := testMeta("bounded4c-complete", body)
@@ -197,42 +178,6 @@ func TestProcessCrashRecovery(t *testing.T) {
 				t.Fatalf("successful recovery stats = %+v", st)
 			}
 		})
-	}
-}
-
-// assertBeginAdmitsPinnedTombstone checks refill admission while an invalid
-// entry remains reader-pinned. Its isolated store preserves the caller's
-// capacity and eviction accounting.
-func assertBeginAdmitsPinnedTombstone(t *testing.T) {
-	t.Helper()
-	s := openTest(t, 1<<20)
-	corrupt := testMeta("corrupt-window", "same")
-	put(t, s, corrupt, "same")
-	held, err := s.Get(context.Background(), corrupt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(s.dir, corrupt.Key, "body")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Get(context.Background(), corrupt); err != ErrMiss {
-		t.Fatalf("invalidating Get during pinned window = %v", err)
-	}
-	if e := s.entries[corrupt.Key]; e == nil || !e.invalid || e.pins != 1 {
-		t.Fatalf("expected invalid pinned tombstone, got %+v", e)
-	}
-	refill, err := s.Begin(corrupt)
-	if err != nil {
-		t.Fatalf("Begin over invalid pinned tombstone = %v, want admission", err)
-	}
-	if err := refill.Abort(); err != nil {
-		t.Fatal(err)
-	}
-	if err := held.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(s.dir, corrupt.Key)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("tombstone not reclaimed after abort and unpin: %v", err)
 	}
 }
 
@@ -372,62 +317,6 @@ func TestConcurrentRestartCorruption(t *testing.T) {
 type getResult struct {
 	body string
 	err  error
-}
-
-func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
-}
-
-func awaitGet(t *testing.T, ch <-chan getResult, what string) getResult {
-	t.Helper()
-	select {
-	case result := <-ch:
-		return result
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-		return getResult{}
-	}
-}
-
-func asyncGet(s *Store, ctx context.Context, m Metadata, afterVerificationRead, beforeWait func()) <-chan getResult {
-	result := make(chan getResult, 1)
-	go func() {
-		r, err := s.get(ctx, m, afterVerificationRead, beforeWait)
-		if err == nil {
-			body, readErr := io.ReadAll(r)
-			closeErr := r.Close()
-			err = errors.Join(readErr, closeErr)
-			result <- getResult{body: string(body), err: err}
-			return
-		}
-		result <- getResult{err: err}
-	}()
-	return result
-}
-
-func openUnverifiedTestEntry(t *testing.T, key string) (*Store, Metadata, string) {
-	t.Helper()
-	dir := filepath.Join(t.TempDir(), "cache")
-	body := string(bytes.Repeat([]byte("verified"), 128*1024))
-	m := testMeta(key, body)
-	s, err := openDefault(dir, 2<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	put(t, s, m, body)
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s, err = openDefault(dir, 2<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s, m, body
 }
 
 func TestFirstVerificationSharedByWaiters(t *testing.T) {
@@ -642,5 +531,116 @@ func TestCloseRejectsFirstVerificationWaiters(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("final Close: %v", err)
+	}
+}
+
+func writeSyncedRecoveryFile(t *testing.T, path string, body []byte) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err == nil {
+		_, err = f.Write(body)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if f != nil {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertBeginAdmitsPinnedTombstone checks refill admission while an invalid
+// entry remains reader-pinned. Its isolated store preserves the caller's
+// capacity and eviction accounting.
+func assertBeginAdmitsPinnedTombstone(t *testing.T) {
+	t.Helper()
+	s := openTest(t, 1<<20)
+	corrupt := testMeta("corrupt-window", "same")
+	put(t, s, corrupt, "same")
+	held, err := s.Get(context.Background(), corrupt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(s.dir, corrupt.Key, "body")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(context.Background(), corrupt); err != ErrMiss {
+		t.Fatalf("invalidating Get during pinned window = %v", err)
+	}
+	if e := s.entries[corrupt.Key]; e == nil || !e.invalid || e.pins != 1 {
+		t.Fatalf("expected invalid pinned tombstone, got %+v", e)
+	}
+	refill, err := s.Begin(corrupt)
+	if err != nil {
+		t.Fatalf("Begin over invalid pinned tombstone = %v, want admission", err)
+	}
+	if err := refill.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, corrupt.Key)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("tombstone not reclaimed after abort and unpin: %v", err)
+	}
+}
+
+func openUnverifiedTestEntry(t *testing.T, key string) (*Store, Metadata, string) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "cache")
+	body := string(bytes.Repeat([]byte("verified"), 128*1024))
+	m := testMeta(key, body)
+	s, err := openDefault(dir, 2<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(t, s, m, body)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = openDefault(dir, 2<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, m, body
+}
+
+func asyncGet(s *Store, ctx context.Context, m Metadata, afterVerificationRead, beforeWait func()) <-chan getResult {
+	result := make(chan getResult, 1)
+	go func() {
+		r, err := s.get(ctx, m, afterVerificationRead, beforeWait)
+		if err == nil {
+			body, readErr := io.ReadAll(r)
+			closeErr := r.Close()
+			err = errors.Join(readErr, closeErr)
+			result <- getResult{body: string(body), err: err}
+			return
+		}
+		result <- getResult{err: err}
+	}()
+	return result
+}
+
+func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func awaitGet(t *testing.T, ch <-chan getResult, what string) getResult {
+	t.Helper()
+	select {
+	case result := <-ch:
+		return result
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		return getResult{}
 	}
 }

@@ -11,40 +11,6 @@ import (
 	"time"
 )
 
-// abandonFill leaves a real failed cleanup, either in staging or at the
-// renamed-but-unindexed publication boundary, without a running fill timer.
-func abandonFill(t *testing.T, s *Store, meta Metadata, published bool) string {
-	t.Helper()
-	f, err := s.Begin(meta)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.WriteString(f, "body"); err != nil {
-		t.Fatal(err)
-	}
-	f.mu.Lock()
-	if published {
-		dest := filepath.Join(s.dir, meta.Key)
-		err = os.Rename(f.dir, dest)
-		if err == nil {
-			f.dir = dest
-		}
-	}
-	dir := f.dir
-	f.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if err := f.Abort(); !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("Abort with denied cleanup = %v, want permission error", err)
-	}
-	return dir
-}
-
 func TestAdmissionRetriesFailedCleanup(t *testing.T) {
 	requireUnprivilegedTest(t)
 	const charge = metadataReservation + 4
@@ -278,4 +244,38 @@ func TestCleanupRetryBudgetAndRotation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// abandonFill leaves a real failed cleanup, either in staging or at the
+// renamed-but-unindexed publication boundary, without a running fill timer.
+func abandonFill(t *testing.T, s *Store, meta Metadata, published bool) string {
+	t.Helper()
+	f, err := s.Begin(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(f, "body"); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	if published {
+		dest := filepath.Join(s.dir, meta.Key)
+		err = os.Rename(f.dir, dest)
+		if err == nil {
+			f.dir = dest
+		}
+	}
+	dir := f.dir
+	f.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := f.Abort(); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Abort with denied cleanup = %v, want permission error", err)
+	}
+	return dir
 }

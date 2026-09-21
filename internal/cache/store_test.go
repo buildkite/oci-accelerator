@@ -19,10 +19,6 @@ import (
 	"time"
 )
 
-func testMeta(key, body string) Metadata {
-	return Metadata{Key: fmt.Sprintf("%x", sha256.Sum256([]byte(key))), Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))), Size: int64(len(body)), MediaType: "application/octet-stream"}
-}
-
 func TestCompletionTracksMatchingFillTerminalState(t *testing.T) {
 	s := openTest(t, 1<<20)
 	meta := testMeta("completion", "body")
@@ -403,54 +399,6 @@ func TestExpirationRacesNeverPublishOverdueFill(t *testing.T) {
 	}
 }
 
-// openDefault opens a Store with a generous set of non-size limits, mirroring
-// cachetest.Open for internal tests that cannot import the cachetest package
-// without creating an import cycle.
-func openDefault(dir string, maxBytes int64) (*Store, error) {
-	return OpenWithLimits(dir, Limits{MaxBytes: maxBytes, MaxFills: 16, MaxEntries: 100000, FillTimeout: 10 * time.Minute})
-}
-
-func openTest(t *testing.T, limit int64) *Store {
-	t.Helper()
-	s, err := openDefault(filepath.Join(t.TempDir(), "cache"), limit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := s.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	return s
-}
-func put(t *testing.T, s *Store, m Metadata, body string) {
-	t.Helper()
-	f, err := s.Begin(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.WriteString(f, body); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Commit(); err != nil {
-		t.Fatal(err)
-	}
-}
-func read(t *testing.T, s *Store, m Metadata, want string) {
-	t.Helper()
-	r, err := s.Get(context.Background(), m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := io.ReadAll(r)
-	closeErr := r.Close()
-	if err != nil || string(got) != want {
-		t.Fatalf("body=%q err=%v", got, err)
-	}
-	if closeErr != nil {
-		t.Fatalf("close reader: %v", closeErr)
-	}
-}
 func TestFillReadRestart(t *testing.T) {
 	s := openTest(t, 1<<20)
 	m := testMeta("registry/repo/accept", "blob bytes")
@@ -964,5 +912,60 @@ func TestFailedAdmissionDoesNotEvictInsufficientVictims(t *testing.T) {
 	read(t, s, b, body)
 	if s.Stats().Evictions != 0 {
 		t.Fatal("failed admission evicted useful data")
+	}
+}
+
+func testMeta(key, body string) Metadata {
+	return Metadata{Key: fmt.Sprintf("%x", sha256.Sum256([]byte(key))), Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))), Size: int64(len(body)), MediaType: "application/octet-stream"}
+}
+
+func openTest(t *testing.T, limit int64) *Store {
+	t.Helper()
+	s, err := openDefault(filepath.Join(t.TempDir(), "cache"), limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return s
+}
+
+// openDefault opens a Store with a generous set of non-size limits, mirroring
+// cachetest.Open for internal tests that cannot import the cachetest package
+// without creating an import cycle.
+func openDefault(dir string, maxBytes int64) (*Store, error) {
+	return OpenWithLimits(dir, Limits{MaxBytes: maxBytes, MaxFills: 16, MaxEntries: 100000, FillTimeout: 10 * time.Minute})
+}
+
+func put(t *testing.T, s *Store, m Metadata, body string) {
+	t.Helper()
+	f, err := s.Begin(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(f, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func read(t *testing.T, s *Store, m Metadata, want string) {
+	t.Helper()
+	r, err := s.Get(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	closeErr := r.Close()
+	if err != nil || string(got) != want {
+		t.Fatalf("body=%q err=%v", got, err)
+	}
+	if closeErr != nil {
+		t.Fatalf("close reader: %v", closeErr)
 	}
 }

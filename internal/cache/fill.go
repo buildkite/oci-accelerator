@@ -2,7 +2,6 @@ package cache
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"hash"
 	"os"
@@ -123,14 +122,6 @@ func (f *Fill) Abort() error {
 		return nil
 	}
 	return f.finish(nil)
-}
-
-func encodeMeta(m Metadata) ([]byte, error) {
-	b, e := json.Marshal(diskMetadata{Metadata: m, Committed: time.Now().UnixNano()})
-	if e == nil && len(b) > int(metadataReservation) {
-		e = errors.New("cache metadata too large")
-	}
-	return b, e
 }
 
 // writeMetaFile writes the encoded metadata to an exclusive meta file in the
