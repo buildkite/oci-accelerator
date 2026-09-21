@@ -16,11 +16,11 @@ design rationale, see the
 | `relay.go` | The opaque bidirectional TCP relay for non-registry destinations |
 | `intercept.go` | MITM interception of configured registries: hijack, terminate TLS with a CA-signed leaf, and serve the inner HTTP server over a single-connection listener |
 | `forwarding.go` | The inner reverse proxy to upstream registries: request validation, header stripping, and the logging/metrics response writer |
-| `redirect.go` | Upstream `RoundTrip` with bounded redirect following, cross-origin header stripping, and SSRF-hardened dialing (`dialUpstream`, `publicIP`) |
-| `cache.go` | Cache policy: header eligibility, manifest media-type gate, object-key derivation, hit/miss/fill orchestration, and `waitForFill` single-flight coalescing that waits on an in-progress fill before a fresh upstream GET |
-| `blob.go` | Recognizes immutable OCI object requests (`/v2/.../{blobs,manifests}/sha256:...`) |
+| `upstream.go` | Upstream `RoundTrip` with bounded redirect following, cross-origin header stripping, and SSRF-hardened dialing (`dialUpstream`, `publicIP`) |
+| `cache.go` | Cache policy, object-key derivation, hit/miss/fill orchestration, and `waitForFill` coalescing after the caller's accepted upstream GET |
+| `immutable.go` | Recognizes immutable OCI object requests (`/v2/.../{blobs,manifests}/sha256:...`) |
 | `metrics.go` | Prometheus text-format metrics: recording and rendering |
-| `errors.go` | Maps upstream errors to fixed, non-leaking log labels |
+| `errors.go` | Upstream error sentinels, dial-refusal reasons, and fixed, non-leaking log labels |
 
 ## Public interface
 
@@ -59,7 +59,7 @@ CONNECT host:port
   configured registry?
     yes -> intercept: hijack, TLS-terminate with a CA leaf, serve an inner
            HTTP server whose handler is the reverse proxy (forwarding.go)
-             -> registryTransport.RoundTrip (redirect.go): dial with SSRF
+             -> registryTransport.RoundTrip (upstream.go): dial with SSRF
                 guard, follow redirects, then consult the cache (cache.go)
     no  -> opaque TCP relay (relay.go): bidirectional copy, no inspection
 ```
@@ -75,11 +75,11 @@ the deadline is not an absolute limit on the duration of a streaming response.
 
 ## Caching
 
-The cache only stores immutable, digest-addressed objects. `blob.go` recognizes
+The cache only stores immutable, digest-addressed objects. `immutable.go` recognizes
 `GET /v2/<repo>/{blobs,manifests}/sha256:<digest>` requests with no range or
 conditional headers. `cache.go` then derives a metadata key, checks response
 eligibility (media type, encoding, and cache-control/vary/digest headers), and
-either serves a hit, coalesces onto an in-progress fill (`cache_wait.go`), or
+either serves a hit, coalesces onto an in-progress fill (`waitForFill`), or
 starts a new fill that mirrors the upstream stream into `internal/cache`.
 
 Every cache delivery still requires the client's own authorized upstream GET to
@@ -88,7 +88,7 @@ succeed first; a hit substitutes bytes, never authorization. See the
 
 ## Security boundaries
 
-- **SSRF hardening** (`redirect.go`): the entire DNS answer is validated before
+- **SSRF hardening** (`upstream.go`): the entire DNS answer is validated before
   any connection, non-public address ranges are refused for hosts that are not
   configured destinations (the registries plus the redirect allowlist), and the
   hostname is never re-resolved after validation (no DNS rebinding).

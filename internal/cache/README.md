@@ -10,12 +10,15 @@ for performance notes see [benchmarks.md](benchmarks.md).
 
 | File | Responsibility |
 | --- | --- |
-| `store.go` | `Store` type, `OpenWithLimits`, accounting, metadata validation, private-directory and lock enforcement, `Stats`, `Close` |
-| `eviction.go` | Incrementally maintained eviction ordering and entry index updates |
-| `fill.go` | `Fill` lifecycle: `Begin` admission, `Write`, `Commit` (verify and atomic publish), `Abort`, and the fill timeout |
+| `store.go` | `Store` type, `OpenWithLimits`, accounting, metadata validation, private-directory and lock enforcement, `Stats`, `Completion`, `Close` |
+| `admission.go` | `Begin`: reserve capacity and key ownership, stage a fill, and report bounded admission reasons and errors |
+| `eviction.go` | Capacity checks, bounded victim selection/removal, incrementally maintained eviction ordering, and entry index updates |
+| `fill.go` | `Fill` lifecycle: `Write`, `Commit` (verify and atomic publish), `Abort`, and fill expiry/terminal cleanup |
 | `reader.go` | `Reader` and `Get`: pinning, single-flight body verification, and reclaim of detached entries on the final unpin |
 | `inventory.go` | Startup scan: discard abandoned `.fill-` directories, validate committed entries, reject unrecognized state |
 | `cleanup.go` | Deferred removal of directories whose deletion failed, charged against the entry and byte budgets |
+| `errors.go` | Public error categories and filesystem-error wrapping |
+| `cachetest/cachetest.go` | Test-only convenience constructor for callers outside the cache package |
 
 ## Public interface
 
