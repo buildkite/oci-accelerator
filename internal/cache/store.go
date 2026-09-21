@@ -175,13 +175,18 @@ func (l Limits) valid() bool {
 }
 
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {
+	// Reject an empty directory or out-of-range limits before touching the filesystem.
 	if dir == "" || !limits.valid() {
 		return nil, ErrInvalidLimits
 	}
+
+	// Ensure the cache directory is a private, this-user-owned 0700 directory.
 	dir = filepath.Clean(dir)
 	if err := ensurePrivateDir(dir); err != nil {
 		return nil, err
 	}
+
+	// Reject a pre-existing lock file that isn't a regular, 0600, owned file.
 	lockPath := filepath.Join(dir, ".lock")
 	if li, err := os.Lstat(lockPath); err == nil {
 		if !li.Mode().IsRegular() || li.Mode().Perm() != 0o600 || !owned(li) {
@@ -190,10 +195,14 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, filesystemError(err)
 	}
+
+	// Open (creating if absent) the lock file.
 	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, filesystemError(err)
 	}
+
+	// Take an exclusive, non-blocking flock; a contended lock means another process owns this cache.
 	if err = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lf.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
@@ -201,10 +210,14 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 		}
 		return nil, filesystemError(err)
 	}
+
+	// Re-assert 0600 on the now-owned lock file in case it predated us with looser bits.
 	if err = lf.Chmod(0o600); err != nil {
 		lf.Close()
 		return nil, filesystemError(err)
 	}
+
+	// Build the store now that we hold the lock.
 	s := &Store{
 		dir:         dir,
 		max:         limits.MaxBytes,
@@ -218,7 +231,11 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 		removeAll:   os.RemoveAll,
 		mkdirTemp:   os.MkdirTemp,
 	}
+
+	// Wire the shutdown condition variable to the store mutex.
 	s.opsDone = sync.NewCond(&s.mu)
+
+	// Load any entries already on disk into the in-memory index.
 	s.mu.Lock()
 	err = s.inventory()
 	s.mu.Unlock()
@@ -229,6 +246,7 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 		}
 		return nil, err
 	}
+
 	return s, nil
 }
 
@@ -311,137 +329,9 @@ func add(a, b int64) (int64, bool) {
 	return a + b, true
 }
 
-// before prevents an older startup candidate from evicting newer entries.
-// maxAttempts bounds admission eviction; zero leaves startup eviction uncapped.
-// ErrBypass means insufficient eligible capacity in this batch. If removal
-// failures prevent admission, return the first filesystem error.
-func (s *Store) evictLocked(need int64, needSlots int, before int64, maxAttempts int) error {
-	fits := func() bool {
-		free, freeSlots := s.freeCapacityLocked()
-		return need <= free && needSlots <= freeSlots
-	}
-	if fits() {
-		// A fitting admission must not reset another request's deferred batch.
-		return nil
-	}
-
-	// Gather unpinned candidates no newer than before, and check that removing
-	// all of them could even satisfy the request before disturbing anything.
-	var candidates []*entry
-	if maxAttempts == 0 {
-		candidates = s.sortedEntriesLocked(before, true)
-	} else {
-		candidates = s.evictionCandidatesLocked(before)
-	}
-	if !s.batchSuffices(candidates, need, needSlots) {
-		return ErrBypass
-	}
-	// Select the batch to remove. Admission eviction (maxAttempts > 0) removes at
-	// most maxAttempts victims per call, resuming from the recorded cursor. The
-	// sufficiency gate above guarantees at least one candidate here, so count >= 1
-	// and the batch indexing below cannot go out of range or divide by zero.
-	start, count := 0, len(candidates)
-	if maxAttempts > 0 {
-		count = min(count, maxAttempts)
-		start = s.resumeStart(candidates)
-		// Globally feasible requests may need several bounded batches. Resume
-		// beyond this batch even when this response still bypasses storage.
-		last := candidates[(start+count-1)%len(candidates)]
-		s.evictionAfterLast, s.evictionAfter = last.last, last.meta.Key
-	}
-
-	// Hits can refresh later candidates while an earlier removal runs unlocked.
-	// Each access replaces the list node, even if the clock repeats a timestamp.
-	// Snapshot this batch's nodes so refreshed entries wait for a future batch.
-	positions := make([]*list.Element, count)
-	for i := range count {
-		positions[i] = candidates[(start+i)%len(candidates)].eviction
-	}
-
-	// Remove victims until the request fits. A failed removal is retried later;
-	// its charge stays booked, so keep the first error only if nothing frees up.
-	var removeErr error
-	for i := range count {
-		if fits() {
-			s.evictionAfter = ""
-			return nil
-		}
-		e := candidates[(start+i)%len(candidates)]
-		if s.entries[e.meta.Key] != e || e.pins != 0 || e.claimed || e.eviction != positions[i] || e.last > before {
-			continue
-		}
-		e.claimed = true
-		s.startOpLocked()
-		s.mu.Unlock()
-		err := s.removeAll(e.dir)
-		s.mu.Lock()
-		s.finishOpLocked()
-		e.claimed = false
-		if err == nil && s.entries[e.meta.Key] == e && e.pins == 0 {
-			s.deleteEntryLocked(e)
-			// Eviction only selects unpinned entries, so their charge is free.
-			e.reclaimed = true
-			s.bytes -= e.charge
-			s.evictions++
-		} else if err != nil && removeErr == nil {
-			removeErr = err
-		}
-	}
-	if fits() {
-		s.evictionAfter = ""
-		return nil
-	}
-	if removeErr != nil {
-		return removeErr
-	}
-	return ErrBypass
-}
-
 // freeCapacityLocked reports the currently unused bytes and entry slots.
 func (s *Store) freeCapacityLocked() (bytes int64, slots int) {
 	return s.max - s.bytes - s.reserved, s.maxEntries - len(s.entries) - len(s.fills) - len(s.claims) - len(s.failedCleanups)
-}
-
-// evictionCandidatesLocked returns the unpinned entries eligible for removal:
-// those last accessed no later than before.
-func (s *Store) evictionCandidatesLocked(before int64) []*entry {
-	var candidates []*entry
-	for item := s.evictionOrder.Front(); item != nil; item = item.Next() {
-		e := item.Value.(*entry)
-		if e.last > before {
-			break
-		}
-		if e.pins == 0 && !e.claimed && e.last <= before {
-			candidates = append(candidates, e)
-		}
-	}
-	return candidates
-}
-
-// batchSuffices reports whether removing every entry in batch would free enough
-// capacity for the request, adding their reclaimable charge and slots to the
-// current free capacity.
-func (s *Store) batchSuffices(batch []*entry, need int64, needSlots int) bool {
-	available, availableSlots := s.freeCapacityLocked()
-	for _, e := range batch {
-		available += e.charge
-		availableSlots++
-	}
-	return available >= need && availableSlots >= needSlots
-}
-
-// resumeStart returns the index in candidates at which to resume, honoring the
-// recorded (last, key) eviction cursor; zero when there is no cursor.
-func (s *Store) resumeStart(candidates []*entry) int {
-	if s.evictionAfter == "" {
-		return 0
-	}
-	for i, e := range candidates {
-		if e.last > s.evictionAfterLast || e.last == s.evictionAfterLast && e.meta.Key > s.evictionAfter {
-			return i
-		}
-	}
-	return 0
 }
 
 func (s *Store) Stats() Stats {
@@ -469,14 +359,12 @@ func (s *Store) Stats() Stats {
 	}
 }
 
-// Close permanently rejects new work and attempts to abort every active fill,
-// returning any abort and lock-release errors. It does not wait for readers,
-// including Gets already opening or verifying a body, which may still return
-// Readers. If any were active at shutdown's initial check, Close retains the
-// filesystem lock and returns an active-reader error. The caller must finish
-// those Gets, close all Readers, and call Close again to release the lock;
-// closing the Readers alone does not release it.
+// Close rejects new work, aborts every active fill, and releases the filesystem
+// lock once no readers remain. With readers still active it keeps the lock and
+// returns ErrActiveReaders; the caller must drain them and call Close again.
 func (s *Store) Close() error {
+
+	// Mark the store closed and snapshot the fills and reader count under the lock.
 	s.mu.Lock()
 	s.closed = true
 	fs := make([]*Fill, 0, len(s.fills))
@@ -485,18 +373,26 @@ func (s *Store) Close() error {
 		fs = append(fs, f)
 	}
 	s.mu.Unlock()
+
+	// Abort each snapshotted fill, collecting any errors.
 	var abortErr error
 	for _, f := range fs {
 		abortErr = errors.Join(abortErr, f.Abort())
 	}
+
+	// Wait for in-flight store operations (e.g. unlocked removals) to finish.
 	s.mu.Lock()
 	for s.activeOps != 0 {
 		s.opsDone.Wait()
 	}
 	s.mu.Unlock()
+
+	// Retain the lock if readers were active at the initial check; caller retries.
 	if readers != 0 {
 		return errors.Join(filesystemError(abortErr), ErrActiveReaders)
 	}
+
+	// No readers: release the lock and report abort and release errors together.
 	return filesystemError(errors.Join(abortErr, s.releaseLock()))
 }
 
