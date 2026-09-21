@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
-	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache/cachetest"
 	"github.com/buildkite/oci-accelerator/internal/config"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
@@ -43,7 +43,7 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := cache.Open(filepath.Join(t.TempDir(), "cache"), 1<<30)
+	store, err := cachetest.Open(filepath.Join(t.TempDir(), "cache"), 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}

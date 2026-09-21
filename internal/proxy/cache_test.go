@@ -16,14 +16,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache/cachetest"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 func cacheFixture(t *testing.T, origin *httptest.Server, limit int64, logs *bytes.Buffer) (*Proxy, *http.Client) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "cache")
-	s, err := cache.Open(dir, limit)
+	s, err := cachetest.Open(dir, limit)
 	if err != nil {
 		t.Fatal(err)
 	}

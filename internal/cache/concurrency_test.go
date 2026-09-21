@@ -371,7 +371,7 @@ func TestPausedDeferredCleanupDoesNotBlockHitsAndDelaysClose(t *testing.T) {
 		t.Fatalf("Close returned during cleanup: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	if other, err := Open(s.dir, 1<<20); err == nil {
+	if other, err := openDefault(s.dir, 1<<20); err == nil {
 		_ = other.Close()
 		t.Fatal("cache reopened during cleanup")
 	} else if !errors.Is(err, ErrLockConflict) {
@@ -447,7 +447,7 @@ func TestPausedBeginTombstoneCleanupDoesNotBlockHitsAndDelaysClose(t *testing.T)
 		t.Fatalf("Close returned during supersession: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	if other, err := Open(s.dir, 1<<20); err == nil {
+	if other, err := openDefault(s.dir, 1<<20); err == nil {
 		_ = other.Close()
 		t.Fatal("cache reopened during supersession")
 	} else if !errors.Is(err, ErrLockConflict) {
@@ -540,7 +540,7 @@ func TestPausedCommitTombstoneSupersessionDoesNotBlockHitsAndDelaysClose(t *test
 		t.Fatal(err)
 	}
 
-	reopened, err := Open(s.dir, 1<<20)
+	reopened, err := openDefault(s.dir, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}

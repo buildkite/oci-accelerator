@@ -299,7 +299,7 @@ func TestStartupRetainsNewestLargeCandidate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	reopened, err := Open(s.dir, large.Size+metadataReservation)
+	reopened, err := openDefault(s.dir, large.Size+metadataReservation)
 	if err != nil {
 		t.Fatal(err)
 	}

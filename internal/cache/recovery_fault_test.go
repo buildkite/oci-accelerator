@@ -24,7 +24,7 @@ func TestCacheCrashChild(t *testing.T) {
 	dir, ready := os.Getenv("CACHE_CRASH_DIR"), os.Getenv("CACHE_CRASH_READY")
 	body := []byte("completed bytes survive exactly")
 	meta := testMeta("bounded4c-complete", string(body))
-	s, err := Open(dir, 1<<20)
+	s, err := openDefault(dir, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestProcessCrashRecovery(t *testing.T) {
 			}
 			waited = true
 
-			s, err := Open(dir, 1<<20) // proves the killed process released its flock.
+			s, err := openDefault(dir, 1<<20) // proves the killed process released its flock.
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -415,7 +415,7 @@ func openUnverifiedTestEntry(t *testing.T, key string) (*Store, Metadata, string
 	dir := filepath.Join(t.TempDir(), "cache")
 	body := string(bytes.Repeat([]byte("verified"), 128*1024))
 	m := testMeta(key, body)
-	s, err := Open(dir, 2<<20)
+	s, err := openDefault(dir, 2<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +423,7 @@ func openUnverifiedTestEntry(t *testing.T, key string) (*Store, Metadata, string
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s, err = Open(dir, 2<<20)
+	s, err = openDefault(dir, 2<<20)
 	if err != nil {
 		t.Fatal(err)
 	}

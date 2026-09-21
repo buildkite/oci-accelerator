@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache/cachetest"
 )
 
 type closeCallbackBody struct {
@@ -94,7 +95,7 @@ func TestCacheFillWaitRetriesWhenCompletedEntryIsEvictedBeforeGet(t *testing.T) 
 func TestCacheFillWaitReturnsCancellationError(t *testing.T) {
 	for _, complete := range []bool{false, true} {
 		t.Run(fmt.Sprintf("leader-aborted=%v", complete), func(t *testing.T) {
-			store, err := cache.Open(filepath.Join(t.TempDir(), "cache"), 1<<20)
+			store, err := cachetest.Open(filepath.Join(t.TempDir(), "cache"), 1<<20)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache/cachetest"
 )
 
 func manifestURL(repository, body string) string {
@@ -78,7 +78,7 @@ func TestManifestCacheColdWarmAndRestart(t *testing.T) {
 			if err := p.cache.Close(); err != nil {
 				t.Fatal(err)
 			}
-			reopened, err := cache.Open(dir, 1<<20)
+			reopened, err := cachetest.Open(dir, 1<<20)
 			if err != nil {
 				t.Fatal(err)
 			}

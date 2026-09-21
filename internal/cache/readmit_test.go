@@ -200,7 +200,7 @@ func TestCloseWaitsForDetachedReader(t *testing.T) {
 	if err := s.Close(); err == nil {
 		t.Fatal("Close succeeded with a detached reader")
 	}
-	if second, err := Open(s.dir, s.max); err == nil {
+	if second, err := openDefault(s.dir, s.max); err == nil {
 		second.Close()
 		t.Fatal("lock released with a detached reader")
 	}
@@ -210,7 +210,7 @@ func TestCloseWaitsForDetachedReader(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := Open(s.dir, s.max)
+	second, err := openDefault(s.dir, s.max)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestBeginReclaimsUnpinnedTombstone(t *testing.T) {
 // reader's final unpin must never remove the newly published directory.
 func TestReadmitCommitReaderCloseRace(t *testing.T) {
 	for i := 0; i < 200; i++ {
-		s, err := Open(filepath.Join(t.TempDir(), "cache"), 1<<20)
+		s, err := openDefault(filepath.Join(t.TempDir(), "cache"), 1<<20)
 		if err != nil {
 			t.Fatalf("iter %d: open = %v", i, err)
 		}

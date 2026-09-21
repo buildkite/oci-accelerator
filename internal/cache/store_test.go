@@ -402,9 +402,17 @@ func TestExpirationRacesNeverPublishOverdueFill(t *testing.T) {
 		})
 	}
 }
+
+// openDefault opens a Store with a generous set of non-size limits, mirroring
+// cachetest.Open for internal tests that cannot import the cachetest package
+// without creating an import cycle.
+func openDefault(dir string, maxBytes int64) (*Store, error) {
+	return OpenWithLimits(dir, Limits{MaxBytes: maxBytes, MaxFills: 16, MaxEntries: 100000, FillTimeout: 10 * time.Minute})
+}
+
 func openTest(t *testing.T, limit int64) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "cache"), limit)
+	s, err := openDefault(filepath.Join(t.TempDir(), "cache"), limit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +476,7 @@ func TestFillReadRestart(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s2, err := Open(s.dir, s.max)
+	s2, err := openDefault(s.dir, s.max)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,7 +744,7 @@ func TestRecoveryAndCorruption(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			s2, err := Open(s.dir, s.max)
+			s2, err := openDefault(s.dir, s.max)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -766,7 +774,7 @@ func TestMissingLiveEntryRefillsAndCancelledVerification(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s2, err := Open(s.dir, s.max)
+	s2, err := openDefault(s.dir, s.max)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -780,7 +788,7 @@ func TestMissingLiveEntryRefillsAndCancelledVerification(t *testing.T) {
 }
 func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	s := openTest(t, 1<<20)
-	if s2, err := Open(s.dir, s.max); err == nil {
+	if s2, err := openDefault(s.dir, s.max); err == nil {
 		s2.Close()
 		t.Fatal("second store opened")
 	} else if !errors.Is(err, ErrLockConflict) {
@@ -792,7 +800,7 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	if s.Close() == nil {
 		t.Fatal("closed with live reader")
 	}
-	if s2, err := Open(s.dir, s.max); err == nil {
+	if s2, err := openDefault(s.dir, s.max); err == nil {
 		s2.Close()
 		t.Fatal("released lock with reader")
 	}
@@ -802,7 +810,7 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	}
 	path := filepath.Join(s.dir, "operator-file")
 	os.WriteFile(path, []byte("keep"), 0o600)
-	if s2, err := Open(s.dir, s.max); err == nil {
+	if s2, err := openDefault(s.dir, s.max); err == nil {
 		s2.Close()
 		t.Fatal("unknown state accepted")
 	} else if !errors.Is(err, ErrUnsafeState) {
@@ -813,14 +821,14 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 	}
 	os.Remove(path)
 	os.Chmod(s.dir, 0o755)
-	if s2, err := Open(s.dir, s.max); err == nil {
+	if s2, err := openDefault(s.dir, s.max); err == nil {
 		s2.Close()
 		t.Fatal("insecure dir accepted")
 	}
 	os.Chmod(s.dir, 0o700)
 	link := filepath.Join(filepath.Dir(s.dir), "link")
 	os.Symlink(s.dir, link)
-	if s2, err := Open(link, s.max); err == nil {
+	if s2, err := openDefault(link, s.max); err == nil {
 		s2.Close()
 		t.Fatal("symlink accepted")
 	}
@@ -831,7 +839,7 @@ func TestOpenErrorCategories(t *testing.T) {
 		t.Fatalf("invalid limits error = %v", err)
 	}
 	missingParent := filepath.Join(t.TempDir(), "missing-parent", "cache")
-	if _, err := Open(missingParent, 1<<20); !errors.Is(err, ErrFilesystem) {
+	if _, err := openDefault(missingParent, 1<<20); !errors.Is(err, ErrFilesystem) {
 		t.Fatalf("filesystem error = %v", err)
 	}
 }
@@ -839,14 +847,14 @@ func TestRestrictiveUmaskAndTinyCapacity(t *testing.T) {
 	root := t.TempDir()
 	previous := syscall.Umask(0o777)
 	defer syscall.Umask(previous)
-	s, err := Open(filepath.Join(root, "cache"), 1<<20)
+	s, err := openDefault(filepath.Join(root, "cache"), 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := testMeta("key", "abcd")
 	put(t, s, m, "abcd")
 	s.Close()
-	s, err = Open(s.dir, 1)
+	s, err = openDefault(s.dir, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -899,7 +907,7 @@ func TestRestartKeepsNewestCandidateRegardlessOfInventoryOrder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s2, err := Open(s.dir, metadataReservation+4)
+	s2, err := openDefault(s.dir, metadataReservation+4)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -174,10 +174,6 @@ func (l Limits) valid() bool {
 	return l.MaxBytes > 0 && l.MaxFills > 0 && l.MaxEntries > 0 && l.FillTimeout > 0
 }
 
-func Open(dir string, maxBytes int64) (*Store, error) {
-	return OpenWithLimits(dir, Limits{MaxBytes: maxBytes, MaxFills: 16, MaxEntries: 100000, FillTimeout: 10 * time.Minute})
-}
-
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	if dir == "" || !limits.valid() {
 		return nil, ErrInvalidLimits

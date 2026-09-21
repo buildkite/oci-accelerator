@@ -10,7 +10,7 @@ for performance notes see [benchmarks.md](benchmarks.md).
 
 | File | Responsibility |
 | --- | --- |
-| `store.go` | `Store` type, `Open`/`OpenWithLimits`, accounting, metadata validation, private-directory and lock enforcement, `Stats`, `Close` |
+| `store.go` | `Store` type, `OpenWithLimits`, accounting, metadata validation, private-directory and lock enforcement, `Stats`, `Close` |
 | `eviction.go` | Incrementally maintained eviction ordering and entry index updates |
 | `fill.go` | `Fill` lifecycle: `Begin` admission, `Write`, `Commit` (verify and atomic publish), `Abort`, and the fill timeout |
 | `reader.go` | `Reader` and `Get`: pinning, single-flight body verification, and reclaim of detached entries on the final unpin |
@@ -19,14 +19,14 @@ for performance notes see [benchmarks.md](benchmarks.md).
 
 ## Public interface
 
-### `Open(dir string, maxBytes int64) (*Store, error)` · `OpenWithLimits(dir string, limits Limits) (*Store, error)`
+### `OpenWithLimits(dir string, limits Limits) (*Store, error)`
 
 Open or create the private cache directory, take its exclusive lock, and scan
-existing entries while discarding abandoned fills. `Open` applies a byte ceiling
-with default slot and fill limits; `OpenWithLimits` sets every `Limits` field.
+existing entries while discarding abandoned fills, setting every `Limits` field.
 Startup errors match fixed sentinels for invalid limits, lock conflict, unsafe
 state, or filesystem failure; filesystem errors retain their cause for internal
-handling.
+handling. Tests that only care about a byte ceiling use `cachetest.Open`, which
+supplies generous defaults for the remaining limits.
 
 ### `Metadata` · `Limits` · `Stats`
 
