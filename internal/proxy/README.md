@@ -20,7 +20,7 @@ design rationale, see the
 | `registry_transport.go` | Upstream `RoundTrip`, bounded redirect following, cross-origin header stripping, and fill-wait retry |
 | `dial.go` | SSRF-hardened DNS resolution/dialing (`dialUpstream`, `publicIP`) and upstream idle deadlines |
 | `cache_policy.go` | Immutable OCI object recognition, request/response cache eligibility, media types, and metadata/key derivation |
-| `cache.go` | Hit/miss/fill orchestration and `waitForFill` coalescing after the caller's accepted upstream GET |
+| `cache.go` | `registryTransport` hit/miss/fill orchestration and `waitForFill` coalescing after the caller's accepted upstream GET |
 | `cache_body.go` | Streaming upstream-byte accounting and cache-fill commit/abort ownership |
 | `metrics.go` | Per-request statistics and Prometheus text-format metrics: recording and rendering |
 | `errors.go` | Upstream error sentinels, dial-refusal reasons, and fixed, non-leaking log labels |
@@ -71,6 +71,10 @@ CONNECT host:port
 Only requests to configured registries are intercepted. Everything else is a
 byte-for-byte tunnel: the proxy never inspects, caches, or enforces methods
 inside it.
+
+`registryTransport` receives the shared upstream HTTP transport, cache store,
+metrics, and fill-wait timeout explicitly; it does not hold a `Proxy` reference.
+`Proxy` owns upstream transport shutdown, while the caller owns the cache store.
 
 Downstream response writes refresh the configured idle write deadline, including
 informational headers such as `103 Early Hints`, final headers, body writes, and

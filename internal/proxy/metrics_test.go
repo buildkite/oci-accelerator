@@ -267,7 +267,8 @@ func TestMetricsCountsRedirectsWithoutStackingTrace(t *testing.T) {
 	}))
 	// Exercise the upstream transport directly to verify an existing trace is
 	// preserved and invoked once per hop, not duplicated when following it.
-	resp, err := (registryTransport{p}).RoundTrip(req)
+	transport := registryTransport{upstream: p.transport, metrics: p.metrics}
+	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		t.Fatal(err)
 	}

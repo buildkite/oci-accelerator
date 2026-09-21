@@ -13,12 +13,12 @@ import (
 // 1. a response whose Body the caller must close (bypass, cache hit, or fill)
 // 2. retry=true after the upstream body has been closed, so the caller must not touch it
 // 3. an error if cancelled while waiting.
-func (p *Proxy) resolveResponse(req *http.Request, resp *http.Response, permitted, mayWait bool, stats *requestStats) (response *http.Response, retry bool, err error) {
+func (t registryTransport) resolveResponse(req *http.Request, resp *http.Response, permitted, mayWait bool, stats *requestStats) (response *http.Response, retry bool, err error) {
 	// Meter every upstream byte read, whatever the outcome below.
 	resp.Body = &countedBody{ReadCloser: resp.Body, stats: stats}
 
 	// Bypass when caching is off or this response isn't permitted to be cached.
-	if p.cache == nil || !permitted {
+	if t.cache == nil || !permitted {
 		return resp, false, nil
 	}
 
@@ -39,7 +39,7 @@ func (p *Proxy) resolveResponse(req *http.Request, resp *http.Response, permitte
 	}
 
 	// Serve from cache on a hit; otherwise record the miss and fall through to fill.
-	if body, err := p.cache.Get(req.Context(), meta); err == nil {
+	if body, err := t.cache.Get(req.Context(), meta); err == nil {
 		stats.cache = "hit"
 		resp.Body.Close()
 		resp.Body = body
@@ -51,9 +51,9 @@ func (p *Proxy) resolveResponse(req *http.Request, resp *http.Response, permitte
 	// This caller's upstream GET has already authorized the matching response.
 	// Coalescing closes its body and waits for a fill instead of consuming another
 	// body stream; it does not avoid the caller's authorization GET.
-	if mayWait && p.cfg.Cache.FillWaitTimeout > 0 {
-		if completed, active := p.cache.Completion(meta); active {
-			return p.waitForFill(req.Context(), resp, meta, completed, stats)
+	if mayWait && t.fillWaitTimeout > 0 {
+		if completed, active := t.cache.Completion(meta); active {
+			return t.waitForFill(req.Context(), resp, meta, completed, stats)
 		}
 	}
 
@@ -63,7 +63,7 @@ func (p *Proxy) resolveResponse(req *http.Request, resp *http.Response, permitte
 	}
 
 	// Begin a new fill; if admission is refused, bypass and record why.
-	fill, err := p.cache.Begin(meta)
+	fill, err := t.cache.Begin(meta)
 	if err != nil {
 		stats.fill = "bypass"
 		var admission *cache.AdmissionError
@@ -82,27 +82,27 @@ func (p *Proxy) resolveResponse(req *http.Request, resp *http.Response, permitte
 // same object. On a hit it returns resp with a cache body; otherwise it returns
 // retry=true for a fresh GET, or an error on cancellation. Call only for an
 // active fill with a positive timeout.
-func (p *Proxy) waitForFill(ctx context.Context, resp *http.Response, meta cache.Metadata, completed <-chan struct{}, stats *requestStats) (*http.Response, bool, error) {
+func (t registryTransport) waitForFill(ctx context.Context, resp *http.Response, meta cache.Metadata, completed <-chan struct{}, stats *requestStats) (*http.Response, bool, error) {
 	// Drop the upstream stream; we're serving from the coalesced fill instead.
 	resp.Body.Close()
 
 	// Track the in-flight wait so metrics reflect concurrent coalescers.
-	if p.metrics != nil {
-		p.metrics.mu.Lock()
-		p.metrics.activeWaits++
-		p.metrics.mu.Unlock()
-		defer func() { p.metrics.mu.Lock(); p.metrics.activeWaits--; p.metrics.mu.Unlock() }()
+	if t.metrics != nil {
+		t.metrics.mu.Lock()
+		t.metrics.activeWaits++
+		t.metrics.mu.Unlock()
+		defer func() { t.metrics.mu.Lock(); t.metrics.activeWaits--; t.metrics.mu.Unlock() }()
 	}
 
 	// Bound the wait so a stalled fill can't block this request indefinitely.
-	timer := time.NewTimer(p.cfg.Cache.FillWaitTimeout)
+	timer := time.NewTimer(t.fillWaitTimeout)
 	defer timer.Stop()
 
 	select {
 	// Fill finished: serve it from cache if the object is now present.
 	case <-completed:
 		stats.wait = "complete"
-		if body, err := p.cache.Get(ctx, meta); err == nil {
+		if body, err := t.cache.Get(ctx, meta); err == nil {
 			resp.Body = body
 			stats.cache = "wait_hit"
 			return resp, false, nil

@@ -6,15 +6,22 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"time"
 
+	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 // registryTransport is the outer http.RoundTripper the reverse proxy calls. It
 // adds the upstream-attempt metric, one retry, redirect following, and the
 // caching hand-off, then delegates each individual network round trip to the
-// shared stdlib transport at p.transport, which does the actual DNS/dial/TLS/HTTP.
-type registryTransport struct{ p *Proxy }
+// shared upstream transport, which does the actual DNS/dial/TLS/HTTP.
+type registryTransport struct {
+	upstream        *http.Transport
+	cache           *cache.Store
+	metrics         *metrics
+	fillWaitTimeout time.Duration
+}
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Method == http.MethodGet {
@@ -24,9 +31,9 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		// stack, the hook.
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 			GetConn: func(string) {
-				t.p.metrics.mu.Lock()
-				t.p.metrics.upstream++
-				t.p.metrics.mu.Unlock()
+				t.metrics.mu.Lock()
+				t.metrics.upstream++
+				t.metrics.mu.Unlock()
 			},
 		}))
 	}
@@ -84,8 +91,8 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	for hops := 0; ; hops++ {
 
 		// Single network round trip for this hop via the shared stdlib transport
-		// (p.transport); this registryTransport wraps it with retry, redirects, caching.
-		resp, err := t.p.transport.RoundTrip(current)
+		// (t.upstream); this registryTransport wraps it with retry, redirects, caching.
+		resp, err := t.upstream.RoundTrip(current)
 		if err != nil {
 			return nil, false, err
 		}
@@ -94,7 +101,7 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 		// resolveResponse is the single exit — it meters the body and either bypasses
 		// (ineligible) or caches (hit/fill) before returning the response to the client.
 		if !eligible || !redirectStatus(resp.StatusCode) {
-			return t.p.resolveResponse(req, resp, permitted, mayWait, stats)
+			return t.resolveResponse(req, resp, permitted, mayWait, stats)
 		}
 
 		// We're doing a redirect so drop the body.

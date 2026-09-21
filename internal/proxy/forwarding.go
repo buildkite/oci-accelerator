@@ -23,7 +23,12 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 
 		// Route upstream calls through the transport that adds caching,
 		// fill-wait, redirect and SSRF handling.
-		Transport: registryTransport{p},
+		Transport: registryTransport{
+			upstream:        p.transport,
+			cache:           p.cache,
+			metrics:         p.metrics,
+			fillWaitTimeout: p.cfg.Cache.FillWaitTimeout,
+		},
 
 		// Retarget onto the upstream and strip proxy-revealing / hop-by-hop headers.
 		Rewrite: func(pr *httputil.ProxyRequest) {
