@@ -301,9 +301,13 @@ var completedNotification = func() <-chan struct{} {
 	return c
 }()
 
-// Close rejects new work, aborts every active fill, and releases the filesystem
-// lock once no readers remain. With readers still active it keeps the lock and
-// returns ErrActiveReaders; the caller must drain them and call Close again.
+// Close permanently rejects new work, aborts active fills, and waits for claimed
+// filesystem operations. It returns any abort and lock-release errors.
+// It does not wait for readers, including Gets already opening or verifying a
+// body, which may still return Readers. If any readers were active at the initial
+// check, Close retains the filesystem lock and returns ErrActiveReaders even if
+// they drain before it returns. The caller must finish those Gets, close every
+// Reader, and call Close again; closing Readers alone does not release the lock.
 func (s *Store) Close() error {
 
 	// Mark the store closed and snapshot the fills and reader count under the lock.

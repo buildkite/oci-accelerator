@@ -54,8 +54,9 @@ that fill reaches its terminal state, so callers can coalesce onto it.
 ### `(*Store) Stats() Stats` · `(*Store) Close() error`
 
 `Stats` snapshots the counters. `Close` rejects new work, aborts active fills,
-and releases the lock; it reports an active-reader error and retains the lock
-until every reader is closed.
+and waits for claimed filesystem operations. If readers were active at its
+initial check, it returns `ErrActiveReaders` and retains the lock until the
+caller drains those readers and calls `Close` again.
 
 ### `(*Fill) Write(p []byte) (int, error)` · `Commit() error` · `Abort() error`
 
@@ -159,10 +160,14 @@ corruption turns the entry into a miss.
 ## Ownership and shutdown
 
 The caller that opens a `Store` owns it and must `Close` it. `Close` rejects new
-work and aborts active fills, but does not wait for readers: if any `Reader` is
-still open it retains the filesystem lock and reports an active-reader error, so
-the caller must close all readers and call `Close` again to release the lock.
-It does wait for claimed filesystem operations before releasing that lock.
+work and aborts active fills, but does not wait for readers. Its initial reader
+snapshot includes `Get` calls already opening or verifying a body; those calls
+may still return a `Reader` after shutdown begins. If that snapshot is nonzero,
+`Close` retains the filesystem lock and returns `ErrActiveReaders`, even if the
+readers drain before it returns. The caller must finish those `Get` calls, close
+all readers, and call `Close` again. Closing readers alone never releases the
+retained lock. `Close` does wait for claimed filesystem operations before
+releasing that lock, and reports abort and lock-release errors to the caller.
 
 ## Dependencies
 
