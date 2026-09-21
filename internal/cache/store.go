@@ -34,43 +34,6 @@ func filesystemError(err error) error {
 	return fmt.Errorf("%w: %w", ErrFilesystem, err)
 }
 
-type AdmissionReason uint8
-
-const (
-	AdmissionAccepted AdmissionReason = iota
-	AdmissionInvalid
-	AdmissionOversized
-	AdmissionExisting
-	AdmissionFillLimit
-	AdmissionCapacity
-	AdmissionClosed
-	AdmissionIOError
-	AdmissionReasonCount
-)
-
-func (r AdmissionReason) String() string {
-	names := [...]string{"accepted", "invalid", "oversized", "existing", "fill_limit", "capacity", "closed", "io_error"}
-	if int(r) >= len(names) {
-		return fmt.Sprintf("unknown(%d)", uint8(r))
-	}
-	return names[r]
-}
-
-type AdmissionError struct {
-	Reason AdmissionReason
-	Cause  error
-}
-
-func (e *AdmissionError) Error() string {
-	message := "cache admission refused: " + e.Reason.String()
-	if e.Cause != nil {
-		message += ": " + e.Cause.Error()
-	}
-	return message
-}
-func (e *AdmissionError) Unwrap() error        { return e.Cause }
-func (e *AdmissionError) Is(target error) bool { return target == ErrBypass }
-
 var completedNotification = func() <-chan struct{} {
 	c := make(chan struct{})
 	close(c)
@@ -153,6 +116,10 @@ type Limits struct {
 	FillTimeout time.Duration
 }
 
+func (l Limits) valid() bool {
+	return l.MaxBytes > 0 && l.MaxFills > 0 && l.MaxEntries > 0 && l.FillTimeout > 0
+}
+
 // Completion returns a notification for a matching active or already-published
 // fill. The channel closes only after the store's terminal state is visible.
 func (s *Store) Completion(meta Metadata) (<-chan struct{}, bool) {
@@ -168,10 +135,6 @@ func (s *Store) Completion(meta Metadata) (<-chan struct{}, bool) {
 		return f.completed, true
 	}
 	return nil, false
-}
-
-func (l Limits) valid() bool {
-	return l.MaxBytes > 0 && l.MaxFills > 0 && l.MaxEntries > 0 && l.FillTimeout > 0
 }
 
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {

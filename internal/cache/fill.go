@@ -419,12 +419,6 @@ func (f *Fill) supersedeTombstone(dest string) error {
 	return nil
 }
 
-func (s *Store) refuse(reason AdmissionReason, cause error) error {
-	s.mu.Lock()
-	s.admissions[reason]++
-	s.mu.Unlock()
-	return &AdmissionError{Reason: reason, Cause: cause}
-}
 func syncDirectory(p string) error {
 	d, e := os.Open(p)
 	if e != nil {
