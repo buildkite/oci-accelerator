@@ -10,7 +10,7 @@ shutdown. For installation and day-to-day operation, see the
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | `main`, flag parsing, startup wiring, the optional metrics HTTP server, and graceful-shutdown orchestration with joined error returns |
+| `main.go` | `main` and `run`, which delegates flag parsing, cache and metrics startup, and graceful-shutdown orchestration to focused helpers (`resolveConfig`, `openCacheStore`, `startMetrics`, `serveUntilSignal`), joining their errors on return |
 | `signal.go` | Builds a shutdown context from SIGINT/SIGTERM and restores default handling so a second signal can force-terminate a stuck cleanup |
 
 ## Usage
@@ -32,31 +32,36 @@ categories.
 ## Startup wiring
 
 ```
-main -> shutdownContext (signal.go) -> run -> runWithListen
-  1. parse flags (--config, --check)
-  2. config.Load(path)                     -> internal/config
-  3. --check? print "configuration validated" and exit
-  4. ca.Open(cfg.CADir, cfg.MaxLeafCertificates)   -> internal/ca
-  5. cache.OpenWithLimits(cfg.Cache...)    -> internal/cache (skipped if no dir)
-  6. net.Listen(cfg.Listen)
-  7. proxy.New(cfg, signer, logger, store) -> internal/proxy
-  8. optional loopback metrics server on cfg.MetricsListen (GET /metrics)
-  9. go p.Serve(listener); select on {ctx.Done, serve done, metrics done}
- 10. p.Shutdown(timeout); Close the cache; join all errors
+main -> shutdownContext (signal.go) -> run
+  1. resolveConfig: parse flags (--config, --check)
+  2. resolveConfig: config.Load(path)              -> internal/config
+  3. resolveConfig: --check? print "configuration validated" and exit
+  4. ca.Open(cfg.CADir, cfg.MaxLeafCertificates)    -> internal/ca
+  5. openCacheStore: cache.OpenWithLimits(cfg.Cache...) -> internal/cache (skipped if no dir)
+  6. listen(cfg.Listen)
+  7. proxy.New(cfg, signer, logger, store)          -> internal/proxy
+  8. startMetrics: optional loopback metrics server on cfg.MetricsListen (GET /metrics)
+  9. serveUntilSignal: go p.Serve(listener); select on {ctx.Done, serve done, metrics done}
+ 10. serveUntilSignal: p.Shutdown(timeout); then run closes the cache and listeners and joins all errors
 ```
 
-The listener is injectable (`runWithListen` takes a `listen` function) so tests
-can drive startup without binding real sockets. `run` supplies `net.Listen`.
+`run` delegates each step to a focused helper: `resolveConfig` handles flags and
+config loading, `openCacheStore` opens the optional cache and returns its
+cleanup, `startMetrics` starts the optional metrics server and returns its
+cleanup, and `serveUntilSignal` runs the proxy until shutdown. The listener is
+injectable (`run` takes a `listen` function) so tests can drive startup without
+binding real sockets. `main` supplies `net.Listen`.
 
 ## Shutdown
 
 `shutdownContext` (`signal.go`) cancels the run context on SIGINT or SIGTERM and
 then restores default signal handling, so a second signal terminates a process
 stuck in cleanup using the operating system's default behavior. On shutdown,
-`runWithListen` bounds graceful serving with `cfg.ShutdownTimeout`, closes the
-metrics server and listeners, waits for the proxy to drain, and returns the
-joined errors from serving, shutdown, and resource cleanup (including the
-cache's `Close`).
+`serveUntilSignal` bounds graceful serving with `cfg.ShutdownTimeout` and waits
+for the proxy to drain; `run` then closes the metrics server (via the cleanup
+returned by `startMetrics`), the proxy listener (`closeProxyListener`), and the
+cache (via the cleanup returned by `openCacheStore`), joining errors from
+serving, shutdown, and resource cleanup.
 
 ## Logging and error hygiene
 
