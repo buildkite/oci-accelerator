@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,20 +13,6 @@ import (
 
 	"github.com/buildkite/oci-accelerator/internal/cache"
 )
-
-const testBlobDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-
-func cachePolicyFixture() (*http.Request, *http.Response) {
-	req, _ := http.NewRequest(http.MethodGet, "https://registry.example/v2/team/image/blobs/"+testBlobDigest, nil)
-	resp := &http.Response{
-		StatusCode:    http.StatusOK,
-		Header:        make(http.Header),
-		ContentLength: 3,
-	}
-	resp.Header.Set("Content-Type", "application/octet-stream")
-	resp.Header.Set("Content-Encoding", "identity")
-	return req, resp
-}
 
 func TestBlobMetadataAcceptsTerminalBlobResponse(t *testing.T) {
 	req, resp := cachePolicyFixture()
@@ -292,15 +279,15 @@ func TestCachedResponseRecordsVaryAndDigestBypassReasons(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = store.Close() })
-			p := &Proxy{cache: store}
+			transport := registryTransport{cache: store}
 			req, resp := cachePolicyFixture()
 			req = req.WithContext(context.Background())
 			resp.Body = io.NopCloser(strings.NewReader("abc"))
 			tc.mutate(resp.Header)
 			stats := &requestStats{}
-			got, retry, err := p.cachedResponse(req, resp, true, false, stats)
+			got, retry, err := transport.resolveResponse(req, resp, true, false, stats)
 			if got == nil || retry || err != nil {
-				t.Fatalf("cachedResponse = (%v, %v, %v), want the upstream response passed through", got, retry, err)
+				t.Fatalf("resolveResponse = (%v, %v, %v), want the upstream response passed through", got, retry, err)
 			}
 			if stats.reject != tc.wantReason {
 				t.Fatalf("stats.reject = %q, want %q", stats.reject, tc.wantReason)
@@ -313,4 +300,43 @@ func TestCachedResponseRecordsVaryAndDigestBypassReasons(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBlobClassification(t *testing.T) {
+	for _, tc := range []struct {
+		path, method, header string
+		want                 bool
+	}{
+		{testBlobPath, "GET", "", true},
+		{testBlobPath, "HEAD", "", false},
+		{testBlobPath, "GET", "Range", false},
+		{testBlobPath, "GET", "If-None-Match", false},
+		{testBlobPath + "?", "GET", "", false},
+		{testBlobPath + "?secret=x", "GET", "", false},
+		{strings.Replace(testBlobPath, "team/", "team%2f", 1), "GET", "", false},
+		{strings.Replace(testBlobPath, "team/", "team/../", 1), "GET", "", false},
+		{strings.Replace(testBlobPath, "sha256", "sha512", 1), "GET", "", false},
+		{strings.Replace(testBlobPath, "blobs", "manifests", 1), "GET", "", true},
+	} {
+		r, _ := http.NewRequest(tc.method, "https://registry.test"+tc.path, nil)
+		if tc.header != "" {
+			r.Header[tc.header] = []string{""}
+		}
+		_, got := immutableObjectRequest(r)
+		if got != tc.want {
+			t.Errorf("%s %s %s: %v", tc.method, tc.path, tc.header, got)
+		}
+	}
+}
+
+func FuzzImmutableObjectRequest(f *testing.F) {
+	f.Add(testBlobPath)
+	f.Add("/v2/repo/manifests/latest")
+	f.Fuzz(func(t *testing.T, path string) {
+		r := &http.Request{Method: "GET", URL: &url.URL{Path: path}, Header: make(http.Header)}
+		object, ok := immutableObjectRequest(r)
+		if ok && (object.repository == "" || len(object.digest) != 71 || strings.Contains(path, "..")) {
+			t.Fatal("invalid classification")
+		}
+	})
 }

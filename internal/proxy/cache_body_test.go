@@ -13,67 +13,6 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/cache"
 )
 
-// scriptedReader replays a sequence of (bytes, err) steps. Each step's bytes are
-// delivered fully across as many Reads as the caller's buffer requires; the
-// step's error is only returned once all of its bytes have been handed out, so a
-// step's data is never silently truncated by a small buffer.
-type scriptedReader struct {
-	steps  []readStep
-	pos    int
-	off    int
-	closed bool
-}
-
-type readStep struct {
-	data []byte
-	err  error
-}
-
-func (r *scriptedReader) Read(p []byte) (int, error) {
-	if r.pos >= len(r.steps) {
-		return 0, io.EOF
-	}
-	step := r.steps[r.pos]
-	n := copy(p, step.data[r.off:])
-	r.off += n
-	if r.off < len(step.data) {
-		return n, nil
-	}
-	r.pos++
-	r.off = 0
-	return n, step.err
-}
-
-func (r *scriptedReader) Close() error { r.closed = true; return nil }
-
-func fillingBodyFixture(t *testing.T, body string) (*cache.Store, cache.Metadata) {
-	t.Helper()
-	s, err := cache.OpenWithLimits(filepath.Join(t.TempDir(), "cache"), cache.Limits{MaxBytes: 1 << 20, MaxFills: 4, MaxEntries: 8, FillTimeout: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	meta := cache.Metadata{
-		Key:       fmt.Sprintf("%x", sha256.Sum256([]byte("key:"+body))),
-		Digest:    fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))),
-		Size:      int64(len(body)),
-		MediaType: "application/octet-stream",
-	}
-	return s, meta
-}
-
-// drain reads the body to completion (or until a non-EOF error) the way the
-// reverse proxy would, returning the accumulated upstream error.
-func drain(b *fillingBody) error {
-	buf := make([]byte, 8)
-	for {
-		_, err := b.Read(buf)
-		if err != nil {
-			return err
-		}
-	}
-}
-
 func TestFillingBodyCommitsOnCleanEOF(t *testing.T) {
 	const body = "clean eof body"
 	s, meta := fillingBodyFixture(t, body)
@@ -230,3 +169,64 @@ func TestFillingBodyCloseAbortsUnfinishedFill(t *testing.T) {
 		t.Fatalf("stats = %+v, want no committed entry", st)
 	}
 }
+
+func fillingBodyFixture(t *testing.T, body string) (*cache.Store, cache.Metadata) {
+	t.Helper()
+	s, err := cache.OpenWithLimits(filepath.Join(t.TempDir(), "cache"), cache.Limits{MaxBytes: 1 << 20, MaxFills: 4, MaxEntries: 8, FillTimeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	meta := cache.Metadata{
+		Key:       fmt.Sprintf("%x", sha256.Sum256([]byte("key:"+body))),
+		Digest:    fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))),
+		Size:      int64(len(body)),
+		MediaType: "application/octet-stream",
+	}
+	return s, meta
+}
+
+// drain reads the body to completion (or until a non-EOF error) the way the
+// reverse proxy would, returning the accumulated upstream error.
+func drain(b *fillingBody) error {
+	buf := make([]byte, 8)
+	for {
+		_, err := b.Read(buf)
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// scriptedReader replays a sequence of (bytes, err) steps. Each step's bytes are
+// delivered fully across as many Reads as the caller's buffer requires; the
+// step's error is only returned once all of its bytes have been handed out, so a
+// step's data is never silently truncated by a small buffer.
+type scriptedReader struct {
+	steps  []readStep
+	pos    int
+	off    int
+	closed bool
+}
+
+type readStep struct {
+	data []byte
+	err  error
+}
+
+func (r *scriptedReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.steps) {
+		return 0, io.EOF
+	}
+	step := r.steps[r.pos]
+	n := copy(p, step.data[r.off:])
+	r.off += n
+	if r.off < len(step.data) {
+		return n, nil
+	}
+	r.pos++
+	r.off = 0
+	return n, step.err
+}
+
+func (r *scriptedReader) Close() error { r.closed = true; return nil }

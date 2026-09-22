@@ -162,3 +162,29 @@ func TestOpenReaderRejectsStaleEntry(t *testing.T) {
 		})
 	}
 }
+func TestMissingLiveEntryRefillsAndCancelledVerification(t *testing.T) {
+	s := openTest(t, 1<<20)
+	m := testMeta("key", "abcd")
+	put(t, s, m, "abcd")
+	if err := os.Remove(filepath.Join(s.dir, m.Key, "body")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(context.Background(), m); err != ErrMiss {
+		t.Fatal("missing body hit")
+	}
+	put(t, s, m, "abcd")
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := openDefault(s.dir, s.max)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s2.Get(ctx, m); err != ErrMiss {
+		t.Fatal("cancelled hit")
+	}
+	read(t, s2, m, "abcd")
+}

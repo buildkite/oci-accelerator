@@ -16,20 +16,6 @@ import (
 	"time"
 )
 
-func awaitNoActiveRequests(t *testing.T, p *Proxy) {
-	t.Helper()
-	var active int64
-	if waitUntil(3*time.Second, func() bool {
-		p.metrics.mu.Lock()
-		active = p.metrics.activeRequests
-		p.metrics.mu.Unlock()
-		return active == 0
-	}) {
-		return
-	}
-	t.Fatalf("metrics request completion was not recorded (got %d active requests)", active)
-}
-
 func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {
 	m := newMetrics()
 	m.upstream = 2
@@ -267,7 +253,8 @@ func TestMetricsCountsRedirectsWithoutStackingTrace(t *testing.T) {
 	}))
 	// Exercise the upstream transport directly to verify an existing trace is
 	// preserved and invoked once per hop, not duplicated when following it.
-	resp, err := (registryTransport{p}).RoundTrip(req)
+	transport := registryTransport{upstream: p.transport, metrics: p.metrics}
+	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		t.Fatal(err)
 	}

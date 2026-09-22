@@ -166,6 +166,12 @@ redirect_allowlist: [*value, cdn-two.example]
 	}
 }
 
+// TestLoadRawStringNullBehavior covers a null scalar on a strictString-typed
+// field: optional fields keep their default, while required fields (ca_dir,
+// registries) still enforce their presence check. Null elements within the
+// registries/redirect_allowlist lists are covered separately in
+// TestLoadRejectsNullAndEmptyListElements, since that behavior belongs to
+// parseAuthorities rather than the scalar type itself.
 func TestLoadRawStringNullBehavior(t *testing.T) {
 	t.Run("optional fields preserve defaults", func(t *testing.T) {
 		path := writeConfig(t, `listen: null
@@ -193,11 +199,6 @@ cache: {dir: cache}
 registries: null
 cache: {dir: cache}
 `},
-		{"registry null element", `ca_dir: ca
-registries: [null]
-cache: {dir: cache}
-`},
-		{"redirect null element", validConfig + "redirect_allowlist: [null]\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := Load(writeConfig(t, test.config)); !errors.Is(err, ErrInvalid) {

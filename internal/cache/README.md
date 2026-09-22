@@ -10,23 +10,44 @@ for performance notes see [benchmarks.md](benchmarks.md).
 
 | File | Responsibility |
 | --- | --- |
-| `store.go` | `Store` type, `Open`/`OpenWithLimits`, accounting, metadata validation, private-directory and lock enforcement, `Stats`, `Close` |
-| `eviction.go` | Incrementally maintained eviction ordering and entry index updates |
-| `fill.go` | `Fill` lifecycle: `Begin` admission, `Write`, `Commit` (verify and atomic publish), `Abort`, and the fill timeout |
-| `reader.go` | `Reader` and `Get`: pinning, single-flight body verification, and reclaim of detached entries on the final unpin |
+| `store.go` | `Store` and its public entry points in lifecycle order: `OpenWithLimits`, `Begin`, `Completion`, `Get`, `Stats`, `Close`; shutdown coordination |
+| `admission.go` | Private `begin` implementation: reserve capacity and key ownership, stage a fill, and report bounded admission reasons and errors |
+| `eviction.go` | Capacity checks, bounded victim selection/removal, incrementally maintained eviction ordering, and entry index updates |
+| `fill.go` | `Fill` lifecycle: `Write`, `Commit` (verify and atomic publish), `Abort`, and fill expiry/terminal cleanup |
+| `reader.go` | `Reader` and private lookup: pinning, single-flight body verification, and reclaim of detached entries on the final unpin |
+| `entry.go` | Private committed-generation state, owned and synchronized by `Store` |
+| `metadata.go` | `Metadata`, its disk representation, validation, encoding, and metadata constants |
+| `limits.go` | `Limits` and limit validation |
+| `stats.go` | `Stats` snapshot type; `Store.Stats` constructs it in `store.go` |
+| `filesystem.go` | Private-directory checks and process-lock acquisition/release |
 | `inventory.go` | Startup scan: discard abandoned `.fill-` directories, validate committed entries, reject unrecognized state |
 | `cleanup.go` | Deferred removal of directories whose deletion failed, charged against the entry and byte budgets |
+| `errors.go` | Public error categories and filesystem-error wrapping |
+| `cachetest/cachetest.go` | Test-only convenience constructor for callers outside the cache package |
+
+Files place their main operations before supporting helpers, with lifecycle
+ordering where applicable. Tests and benchmarks likewise precede their helpers.
+
+Tests use `<owner>[_<topic>]_test.go`, named for the responsibility under test
+rather than the public method used to exercise it. Admission, fill, eviction,
+filesystem, inventory, and reader tests sit beside those implementations.
+`inventory_recovery_test.go` covers process-crash recovery;
+`reader_verification_test.go` covers first-read verification and its waiters.
+Store-wide lifecycle, shutdown, concurrency, and readmission scenarios stay in
+`store_test.go` and `store_*_test.go`. Common fixtures and concurrency helpers
+live in `test_helpers_test.go`; `permission*_test.go` provides shared
+permission-test infrastructure, including platform-specific capability handling.
 
 ## Public interface
 
-### `Open(dir string, maxBytes int64) (*Store, error)` · `OpenWithLimits(dir string, limits Limits) (*Store, error)`
+### `OpenWithLimits(dir string, limits Limits) (*Store, error)`
 
 Open or create the private cache directory, take its exclusive lock, and scan
-existing entries while discarding abandoned fills. `Open` applies a byte ceiling
-with default slot and fill limits; `OpenWithLimits` sets every `Limits` field.
+existing entries while discarding abandoned fills, setting every `Limits` field.
 Startup errors match fixed sentinels for invalid limits, lock conflict, unsafe
 state, or filesystem failure; filesystem errors retain their cause for internal
-handling.
+handling. Tests that only care about a byte ceiling use `cachetest.Open`, which
+supplies generous defaults for the remaining limits.
 
 ### `Metadata` · `Limits` · `Stats`
 
@@ -54,8 +75,9 @@ that fill reaches its terminal state, so callers can coalesce onto it.
 ### `(*Store) Stats() Stats` · `(*Store) Close() error`
 
 `Stats` snapshots the counters. `Close` rejects new work, aborts active fills,
-and releases the lock; it reports an active-reader error and retains the lock
-until every reader is closed.
+and waits for claimed filesystem operations. If readers were active at its
+initial check, it returns `ErrActiveReaders` and retains the lock until the
+caller drains those readers and calls `Close` again.
 
 ### `(*Fill) Write(p []byte) (int, error)` · `Commit() error` · `Abort() error`
 
@@ -82,7 +104,7 @@ byte `Size`, and the `MediaType`). An object then moves through:
 ```
 Begin(meta)  admits the key, reserves capacity, and stages a .fill-XXXX directory
 Write(p)     appends bytes, hashing and enforcing the declared Size as it goes
-Commit()     verifies Size and Digest, writes the meta sidecar, then atomically
+Commit()     verifies Size and Digest, writes the meta file, then atomically
              renames the staging directory into place as a committed entry
 ```
 
@@ -105,7 +127,7 @@ closes early — see the [architecture guide](../../docs/architecture.md#fill-an
 Capacity is tracked in bytes and in entry slots, both bounded by `Limits`.
 
 - **`charge`** — the capacity one object accounts for: its `Size` plus a fixed
-  `metadataReservation` (4 KiB) for the sidecar.
+  `metadataReservation` (4 KiB) for the meta file.
 - **`reserved`** — charge held by in-progress fills between `Begin` and their
   terminal state. `Commit` converts a fill's reservation into committed `bytes`.
 - **`bytes`** — charge of committed entries, plus the charge of directories
@@ -159,10 +181,14 @@ corruption turns the entry into a miss.
 ## Ownership and shutdown
 
 The caller that opens a `Store` owns it and must `Close` it. `Close` rejects new
-work and aborts active fills, but does not wait for readers: if any `Reader` is
-still open it retains the filesystem lock and reports an active-reader error, so
-the caller must close all readers and call `Close` again to release the lock.
-It does wait for claimed filesystem operations before releasing that lock.
+work and aborts active fills, but does not wait for readers. Its initial reader
+snapshot includes `Get` calls already opening or verifying a body; those calls
+may still return a `Reader` after shutdown begins. If that snapshot is nonzero,
+`Close` retains the filesystem lock and returns `ErrActiveReaders`, even if the
+readers drain before it returns. The caller must finish those `Get` calls, close
+all readers, and call `Close` again. Closing readers alone never releases the
+retained lock. `Close` does wait for claimed filesystem operations before
+releasing that lock, and reports abort and lock-release errors to the caller.
 
 ## Dependencies
 

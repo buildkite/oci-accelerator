@@ -2,7 +2,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -17,30 +16,32 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/ca"
 	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 const maxHeaderBytes = 64 << 10
 
 // Proxy is an HTTP CONNECT forward proxy.
 type Proxy struct {
-	cfg          config.Config
-	server       *http.Server
-	configured   map[string]struct{}
-	signer       *ca.Authority
-	logger       *slog.Logger
-	transport    *http.Transport
-	cache        *cache.Store
-	destinations map[string]struct{}
-	lookupIP     func(context.Context, string) ([]net.IPAddr, error)
-	dialIP       func(context.Context, string, string) (net.Conn, error)
-	metrics      *metrics
+	cfg          config.Config                                           // static proxy configuration supplied at construction
+	server       *http.Server                                            // outer HTTP server accepting client CONNECT requests
+	configured   map[string]struct{}                                     // registries eligible for TLS interception and caching
+	signer       *ca.Authority                                           // certificate authority for signing intercepted TLS hosts
+	logger       *slog.Logger                                            // structured logger for proxy events
+	transport    *http.Transport                                         // HTTP transport used for upstream requests
+	cache        *cache.Store                                            // layer cache store; nil disables caching
+	destinations map[string]struct{}                                     // hosts allowed as CONNECT targets (registries plus redirects)
+	lookupIP     func(context.Context, string) ([]net.IPAddr, error)     // DNS resolver hook, overridable in tests
+	dialIP       func(context.Context, string, string) (net.Conn, error) // upstream dialer hook, overridable in tests
+	metrics      *metrics                                                // request and cache counters
 
-	mu       sync.Mutex
-	listener net.Listener
-	conns    map[*trackedConn]struct{}
-	tunnels  map[net.Conn]struct{}
-	inners   map[*http.Server]struct{}
-	closing  bool
+	mu       sync.Mutex                // guards the mutable fields below
+	listener net.Listener              // active listener; nil before Serve or after shutdown
+	conns    map[*trackedConn]struct{} // live client connections accepted by the outer server
+	tunnels  map[net.Conn]struct{}     // live upstream connections for passthrough CONNECT tunnels
+	inners   map[*http.Server]struct{} // per-connection inner servers handling intercepted TLS
+	closing  bool                      // set once shutdown starts to reject new inflight work
+
 	// inflight covers CONNECT handlers, including dials, relays and interception.
 	// Add happens under mu while closing is false, before Shutdown can Wait.
 	// Handlers finish only after relay pumps exit and cache bodies are closed.
@@ -53,6 +54,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+
 	transport := &http.Transport{
 		Proxy:                  nil,
 		DisableCompression:     true,
@@ -63,8 +65,12 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		MaxResponseHeaderBytes: maxHeaderBytes,
 		TLSHandshakeTimeout:    cfg.TLSHandshakeTimeout,
 		ResponseHeaderTimeout:  cfg.ResponseHeaderTimeout,
-		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}},
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			NextProtos: []string{"http/1.1"},
+		},
 	}
+
 	p := &Proxy{
 		cfg:          cfg,
 		signer:       signer,
@@ -80,7 +86,9 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		lookupIP:     net.DefaultResolver.LookupIPAddr,
 		dialIP:       (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext,
 	}
+
 	transport.DialContext = p.dialUpstream
+
 	for _, registry := range cfg.Registries {
 		p.configured[registry.String()] = struct{}{}
 		p.destinations[registry.String()] = struct{}{}
@@ -88,6 +96,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 	for _, destination := range cfg.RedirectAllowlist {
 		p.destinations[destination.String()] = struct{}{}
 	}
+
 	p.server = &http.Server{
 		Handler:                      p,
 		DisableGeneralOptionsHandler: true,
@@ -111,7 +120,12 @@ func (p *Proxy) Serve(listener net.Listener) error {
 	if max <= 0 {
 		max = 1
 	}
-	tl := &trackingListener{Listener: listener, p: p, slots: make(chan struct{}, max), done: make(chan struct{})}
+	tl := &trackingListener{
+		Listener: listener,
+		p:        p,
+		slots:    make(chan struct{}, max),
+		done:     make(chan struct{}),
+	}
 	p.mu.Lock()
 	if p.listener != nil {
 		p.mu.Unlock()
@@ -126,10 +140,9 @@ func (p *Proxy) Serve(listener net.Listener) error {
 	return err
 }
 
-// Shutdown stops accepting connections, drains until ctx expires, then closes
-// remaining sockets. It waits for CONNECT handlers and relay pumps to finish,
-// including releasing cache bodies, before returning. The context bounds graceful
-// serving, not cleanup: a stuck handler can delay return beyond the deadline.
+// Shutdown stops accepting, drains until ctx expires, then closes remaining
+// sockets. It returns only once CONNECT handlers and relay pumps finish (cache
+// bodies released), so a stuck handler can delay return past the deadline.
 func (p *Proxy) Shutdown(ctx context.Context) error {
 	p.mu.Lock()
 	p.closing = true
@@ -173,84 +186,121 @@ func (p *Proxy) closeAll() {
 	}
 }
 
-type trackingListener struct {
-	net.Listener
-	p     *Proxy
-	slots chan struct{}
-	done  chan struct{}
-	once  sync.Once
-}
+// ServeHTTP is p.server's http.Handler: net/http calls it per client request,
+// on the connection's goroutine. It dispatches CONNECT to registry interception
+// or an opaque relay, and refuses any other method.
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-func (l *trackingListener) Accept() (net.Conn, error) {
-	select {
-	case l.slots <- struct{}{}:
-	case <-l.done:
-		return nil, net.ErrClosed
+	// This proxy only tunnels; reject any non-CONNECT method.
+	if r.Method != http.MethodConnect {
+		w.Header().Set("Allow", http.MethodConnect)
+		refuse(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
-	conn, err := l.Listener.Accept()
+
+	// Require a tracked connection whose raw CONNECT line parsed cleanly.
+	if conn, ok := r.Context().Value(connContextKey{}).(*trackedConn); !ok || !conn.rawOK {
+		refuse(w, "bad CONNECT request", http.StatusBadRequest)
+		return
+	}
+
+	// Parse and validate the CONNECT target into a host:port.
+	target, err := validateCONNECT(r)
 	if err != nil {
-		<-l.slots
-		return nil, err
+		refuse(w, "bad CONNECT request", http.StatusBadRequest)
+		return
 	}
-	t := &trackedConn{Conn: conn, release: func(t *trackedConn) {
-		l.p.mu.Lock()
-		delete(l.p.conns, t)
-		l.p.mu.Unlock()
-		<-l.slots
-	}}
-	l.p.mu.Lock()
-	l.p.conns[t] = struct{}{}
-	l.p.mu.Unlock()
-	return t, nil
-}
 
-func (l *trackingListener) Close() error {
-	l.once.Do(func() { close(l.done) })
-	return l.Listener.Close()
-}
-
-type trackedConn struct {
-	net.Conn
-	once    sync.Once
-	release func(*trackedConn)
-	header  []byte
-	rawOK   bool
-	checked bool
-}
-
-func (c *trackedConn) Read(b []byte) (int, error) {
-	n, err := c.Conn.Read(b)
-	if !c.checked && n > 0 {
-		remaining := maxHeaderBytes - len(c.header)
-		if remaining > n {
-			remaining = n
-		}
-		if remaining > 0 {
-			c.header = append(c.header, b[:remaining]...)
-		}
-		if end := bytes.Index(c.header, []byte("\r\n\r\n")); end >= 0 {
-			c.rawOK = rawCONNECTAcceptable(c.header[:end])
-			c.checked = true
-			c.header = nil
-		} else if len(c.header) == maxHeaderBytes {
-			c.checked = true
-			c.header = nil
-		}
+	// Register this request as in-flight so shutdown waits for it, unless already closing.
+	p.mu.Lock()
+	if p.closing {
+		p.mu.Unlock()
+		refuse(w, "proxy shutting down", http.StatusServiceUnavailable)
+		return
 	}
-	return n, err
-}
+	p.inflight.Add(1)
+	p.mu.Unlock()
+	defer p.inflight.Done()
 
-type connContextKey struct{}
-
-func (c *trackedConn) Close() error {
-	err := c.Conn.Close()
-	c.once.Do(func() { c.release(c) })
-	return err
-}
-
-func (c *trackedConn) CloseWrite() error {
-	if conn, ok := c.Conn.(interface{ CloseWrite() error }); ok {
-		return conn.CloseWrite()
+	// Take the interception path when the target is a configured registry.
+	if _, configured := p.configured[target.String()]; configured {
+		// Bail if we don't have a valid signer required for intercept
+		if p.signer == nil {
+			refuse(w, "registry interception unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		p.intercept(w, r, target, p.interceptHandler(target))
+		return
 	}
-	return nil
+
+	// Dial the upstream destination for an opaque (non-configured registry) tunnel.
+	addr := net.JoinHostPort(target.Host(), target.Port())
+	upstream, err := (&net.Dialer{Timeout: p.cfg.DialTimeout}).DialContext(r.Context(), "tcp", addr)
+	if err != nil {
+		refuse(w, "destination unavailable", http.StatusBadGateway)
+		return
+	}
+	defer upstream.Close()
+
+	// Track the upstream conn so shutdown can force it closed, unless already closing.
+	p.mu.Lock()
+	if p.closing {
+		p.mu.Unlock()
+		refuse(w, "proxy shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	p.tunnels[upstream] = struct{}{}
+	p.mu.Unlock()
+
+	// On return, stop tracking the upstream conn.
+	defer func() {
+		p.mu.Lock()
+		delete(p.tunnels, upstream)
+		p.mu.Unlock()
+	}()
+
+	// Check whether we can take over the underlying TCP connection from net/http.
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		refuse(w, "tunneling unavailable", http.StatusInternalServerError)
+		return
+	}
+	// Take ownership of the raw client conn and its buffered reader/writer.
+	client, rw, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	// Tell the client the tunnel is open so it can start sending bytes.
+	if _, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
+		err = rw.Flush()
+	}
+	if err != nil {
+		client.Close()
+		return
+	}
+	// Pump bytes both ways between client and upstream until either side closes.
+	relay(client, upstream, rw.Reader, p.cfg.IdleTimeout)
+}
+
+func validateCONNECT(r *http.Request) (hostport.HostPort, error) {
+	// Require an authority and reject any request that carries a body.
+	if r.RequestURI == "" || r.Host == "" || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+		return hostport.HostPort{}, hostport.ErrInvalid
+	}
+	// Parse the request-line authority into a canonical host:port.
+	target, err := hostport.Parse(r.RequestURI, "")
+	if err != nil {
+		return hostport.HostPort{}, err
+	}
+	// Require the Host header to parse and match the request-line authority.
+	host, err := hostport.Parse(r.Host, "")
+	if err != nil || host != target {
+		return hostport.HostPort{}, hostport.ErrInvalid
+	}
+	return target, nil
+}
+
+func refuse(w http.ResponseWriter, message string, status int) {
+	w.Header().Set("Connection", "close")
+	http.Error(w, message, status)
 }

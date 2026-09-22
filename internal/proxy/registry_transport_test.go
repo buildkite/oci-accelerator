@@ -1,54 +1,17 @@
 package proxy
 
 import (
-	"bytes"
-	"context"
-	"errors"
 	"fmt"
 	"io"
-	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/buildkite/oci-accelerator/internal/config"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
-
-var testBlobPath = "/v2/team/image/blobs/sha256:" + strings.Repeat("a", 64)
-
-func TestBlobClassification(t *testing.T) {
-	for _, tc := range []struct {
-		path, method, header string
-		want                 bool
-	}{
-		{testBlobPath, "GET", "", true},
-		{testBlobPath, "HEAD", "", false},
-		{testBlobPath, "GET", "Range", false},
-		{testBlobPath, "GET", "If-None-Match", false},
-		{testBlobPath + "?", "GET", "", false},
-		{testBlobPath + "?secret=x", "GET", "", false},
-		{strings.Replace(testBlobPath, "team/", "team%2f", 1), "GET", "", false},
-		{strings.Replace(testBlobPath, "team/", "team/../", 1), "GET", "", false},
-		{strings.Replace(testBlobPath, "sha256", "sha512", 1), "GET", "", false},
-		{strings.Replace(testBlobPath, "blobs", "manifests", 1), "GET", "", true},
-	} {
-		r, _ := http.NewRequest(tc.method, "https://registry.test"+tc.path, nil)
-		if tc.header != "" {
-			r.Header[tc.header] = []string{""}
-		}
-		_, got := immutableObjectRequest(r)
-		if got != tc.want {
-			t.Errorf("%s %s %s: %v", tc.method, tc.path, tc.header, got)
-		}
-	}
-}
 
 func TestBlobRedirectCredentialsAndDenials(t *testing.T) {
 	for _, code := range []int{200, 401, 403, 404, 429, 503} {
@@ -220,171 +183,6 @@ func TestRedirectRefusals(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestAddressPolicyAndRebinding(t *testing.T) {
-	for _, ip := range []string{"127.0.0.1", "10.0.0.1", "169.254.169.254", "100.64.0.1", "::1", "fc00::1", "fe80::1", "fec0::1", "::ffff:127.0.0.1", "64:ff9b::7f00:1", "224.0.0.1"} {
-		if publicIP(net.ParseIP(ip)) {
-			t.Errorf("allowed %s", ip)
-		}
-	}
-	for _, ip := range []string{"8.8.8.8", "2606:4700:4700::1111"} {
-		if !publicIP(net.ParseIP(ip)) {
-			t.Errorf("blocked %s", ip)
-		}
-	}
-	p := New(config.Config{DialTimeout: time.Second}, nil, nil, nil)
-	l := listen(t)
-	defer l.Close()
-	_, port, _ := net.SplitHostPort(l.Addr().String())
-	calls := 0
-	p.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {
-		calls++
-		return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}, {IP: net.ParseIP("127.0.0.1")}}, nil
-	}
-	if c, err := p.dialUpstream(context.Background(), "tcp", "storage.test:"+port); err == nil {
-		c.Close()
-		t.Fatal("mixed answer accepted")
-	}
-	a, _ := hostport.Parse("storage.test:"+port, "443")
-	p.destinations[a.String()] = struct{}{}
-	calls = 0
-	p.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {
-		calls++
-		if calls > 1 {
-			t.Error("DNS re-resolved after validation")
-		}
-		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
-	}
-	c, err := p.dialUpstream(context.Background(), "tcp", "storage.test:"+port)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.Close()
-	delete(p.destinations, a.String())
-	calls = 0
-	if c, err := p.dialUpstream(context.Background(), "tcp", "storage.test:"+port); err == nil {
-		c.Close()
-		t.Fatal("private DNS answer accepted")
-	}
-}
-
-// syncBuffer is a concurrency-safe log sink for asserting on structured logs.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-func TestDialUpstreamRefusalReasonsAreDistinctAndLoggedWhileRefusingClosed(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		address    string
-		lookupIP   func(context.Context, string) ([]net.IPAddr, error)
-		allowlist  bool
-		reason     error
-		logMessage string
-	}{
-		{
-			name:       "unparseable address",
-			address:    "not a valid authority",
-			reason:     errDialAddress,
-			logMessage: "unparseable upstream address",
-		},
-		{
-			name:       "resolution failure",
-			address:    "resolve-fail.test:443",
-			lookupIP:   func(context.Context, string) ([]net.IPAddr, error) { return nil, errors.New("no such host") },
-			reason:     errDialResolve,
-			logMessage: "upstream DNS resolution failed",
-		},
-		{
-			name:       "empty answer",
-			address:    "empty-answer.test:443",
-			lookupIP:   func(context.Context, string) ([]net.IPAddr, error) { return nil, nil },
-			reason:     errDialResolve,
-			logMessage: "upstream DNS resolution failed",
-		},
-		{
-			name:    "forbidden private address",
-			address: "private.test:443",
-			lookupIP: func(context.Context, string) ([]net.IPAddr, error) {
-				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
-			},
-			reason:     errDialForbidden,
-			logMessage: "upstream address not permitted",
-		},
-		{
-			name: "connection refused",
-			lookupIP: func(context.Context, string) ([]net.IPAddr, error) {
-				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
-			},
-			allowlist:  true,
-			reason:     errDialConnect,
-			logMessage: "upstream connection failed",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			logs := &syncBuffer{}
-			logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-			p := New(config.Config{DialTimeout: 500 * time.Millisecond}, nil, logger, nil)
-			address := tc.address
-			if tc.name == "connection refused" {
-				// A closed listener guarantees a connection failure at a real
-				// loopback authority; allowlisting it lets the dial reach the
-				// connect branch instead of being refused as a private address.
-				l := listen(t)
-				_, port, _ := net.SplitHostPort(l.Addr().String())
-				l.Close()
-				address = "127.0.0.1:" + port
-			}
-			if tc.lookupIP != nil {
-				p.lookupIP = tc.lookupIP
-			}
-			if tc.allowlist {
-				a, _ := hostport.Parse(address, "443")
-				p.destinations[a.String()] = struct{}{}
-			}
-			conn, err := p.dialUpstream(context.Background(), "tcp", address)
-			if conn != nil {
-				conn.Close()
-				t.Fatal("dial unexpectedly succeeded")
-			}
-			// Every reason wraps errRedirect so callers and the client-facing 502
-			// stay uniform, yet the specific reason is distinguishable internally.
-			if !errors.Is(err, errRedirect) {
-				t.Fatalf("err = %v, does not wrap errRedirect", err)
-			}
-			if !errors.Is(err, tc.reason) {
-				t.Fatalf("err = %v, want reason %v", err, tc.reason)
-			}
-			if !strings.Contains(logs.String(), tc.logMessage) {
-				t.Errorf("logs %q missing reason %q", logs.String(), tc.logMessage)
-			}
-		})
-	}
-}
-func FuzzImmutableObjectRequest(f *testing.F) {
-	f.Add(testBlobPath)
-	f.Add("/v2/repo/manifests/latest")
-	f.Fuzz(func(t *testing.T, path string) {
-		r := &http.Request{Method: "GET", URL: &url.URL{Path: path}, Header: make(http.Header)}
-		object, ok := immutableObjectRequest(r)
-		if ok && (object.repository == "" || len(object.digest) != 71 || strings.Contains(path, "..")) {
-			t.Fatal("invalid classification")
-		}
-	})
 }
 
 func FuzzRedirectURL(f *testing.F) {

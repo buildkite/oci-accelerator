@@ -71,7 +71,7 @@ func TestCloseReportsAllAbortErrorsAndPreservesReaderLock(t *testing.T) {
 				if err := reader.Close(); err != nil {
 					t.Fatal(err)
 				}
-				other, err := Open(s.dir, s.max)
+				other, err := openDefault(s.dir, s.max)
 				if other != nil {
 					other.Close()
 				}
@@ -82,7 +82,7 @@ func TestCloseReportsAllAbortErrorsAndPreservesReaderLock(t *testing.T) {
 					t.Fatalf("retry Close: %v", err)
 				}
 			}
-			other, err := Open(s.dir, s.max)
+			other, err := openDefault(s.dir, s.max)
 			if err != nil {
 				t.Fatalf("shutdown retained lock without readers: %v", err)
 			}

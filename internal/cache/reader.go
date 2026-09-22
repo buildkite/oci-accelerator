@@ -20,8 +20,43 @@ type Reader struct {
 	closed    bool
 }
 
-func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
-	return s.get(ctx, meta, nil, nil)
+func (r *Reader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return 0, os.ErrClosed
+	}
+
+	n, err := r.file.Read(p)
+	r.remaining -= int64(n)
+	if err == io.EOF && r.remaining > 0 {
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil && err != io.EOF {
+		// Retire only this generation. Keep its pin and charge until Close,
+		// even if a replacement is published before this reader finishes.
+		r.store.mu.Lock()
+		r.entry.invalid = true
+		r.store.mu.Unlock()
+	}
+
+	return n, err
+}
+
+func (r *Reader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return nil
+	}
+
+	r.closed = true
+	err := r.file.Close()
+	r.store.unpin(r.entry)
+
+	return err
 }
 
 // get looks up a committed entry and returns a Reader that owns a fresh pin.
@@ -31,43 +66,60 @@ func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 // been replaced. The callbacks are nil in production and are per-call test
 // seams for pausing after verification begins and immediately before a wait.
 func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, beforeWait func()) (*Reader, error) {
+	// Malformed keys can never name a committed entry, so skip the lookup.
 	if !validMeta(meta) {
 		return nil, ErrMiss
 	}
 	for {
+		// Abandon the lookup if the caller has already given up.
 		if ctx.Err() != nil {
 			return nil, ErrMiss
 		}
+
+		// Select a live entry that still matches the requested generation.
 		s.mu.Lock()
 		e := s.entries[meta.Key]
 		if s.closed || e == nil || e.meta != meta || e.invalid || e.claimed {
 			s.mu.Unlock()
 			return nil, ErrMiss
 		}
-		need := !e.verified
-		if need && e.verifying != nil {
+
+		// A verification is already in flight: wait for it, then retry the lookup.
+		needsVerification := !e.verified
+		if needsVerification && e.verifying != nil {
 			done := e.verifying
 			s.mu.Unlock()
 			if beforeWait != nil {
 				beforeWait()
 			}
 			select {
+			// Hit when the caller cancels before the verifier finishes.
 			case <-ctx.Done():
 				return nil, ErrMiss
+
+			// Hit when the verifier closes the channel, signaling it is done.
 			case <-done:
 				// Recheck the entry: a canceled verifier permits takeover;
 				// corruption, replacement, or shutdown may instead mean a miss.
 				continue
 			}
 		}
-		if need {
+
+		// Claim the verification so concurrent callers wait rather than duplicate it.
+		if needsVerification {
 			e.verifying = make(chan struct{})
 		}
+
+		// Take a pin under the lock so the entry survives the open below.
 		e.pins++
 		s.readers++
 		s.mu.Unlock()
-		r, err := s.openReader(ctx, e, need, afterVerificationRead)
-		if need {
+
+		// Open (and, if claimed, verify) the body outside the lock.
+		r, err := s.openReader(ctx, e, needsVerification, afterVerificationRead)
+
+		// Release the single-flight claim, waking any callers that were waiting.
+		if needsVerification {
 			s.mu.Lock()
 			close(e.verifying)
 			e.verifying = nil
@@ -79,20 +131,23 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 
 // openReader takes ownership of a pin acquired under s.mu. On success the
 // Reader owns that pin; every failure closes the file and releases the pin.
-func (s *Store) openReader(ctx context.Context, e *entry, need bool, afterVerificationRead func()) (*Reader, error) {
+func (s *Store) openReader(ctx context.Context, e *entry, needsVerification bool, afterVerificationRead func()) (*Reader, error) {
 	meta := e.meta
+
 	f, err := os.Open(e.dir + "/body")
 	if err != nil {
 		s.invalidate(e)
 		return nil, ErrMiss
 	}
+
 	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() || st.Size() != meta.Size {
 		f.Close()
 		s.invalidate(e)
 		return nil, ErrMiss
 	}
-	if need {
+
+	if needsVerification {
 		if err = verifyBody(ctx, f, meta.Digest, afterVerificationRead); err != nil {
 			f.Close()
 			// A cancellation leaves the entry intact for a later verifier;
@@ -110,6 +165,7 @@ func (s *Store) openReader(ctx context.Context, e *entry, need bool, afterVerifi
 			return nil, ErrMiss
 		}
 	}
+
 	s.mu.Lock()
 	// The path may have been replaced since selection. Only the same valid
 	// entry can lend its verification state to this open descriptor.
@@ -166,34 +222,44 @@ func (s *Store) invalidate(e *entry) {
 	s.mu.Unlock()
 	s.unpin(e)
 }
+
 func (s *Store) unpin(e *entry) {
 	s.mu.Lock()
+
 	cleanup := e.invalid && e.pins == 1
 	if cleanup {
 		// Cover the admission-serialization wait as well as removal. Close must
 		// not observe the last reader gone before this generation is settled.
 		s.startOpLocked()
 	}
+
 	e.pins--
 	s.readers--
+
 	if !cleanup {
 		s.mu.Unlock()
 		return
 	}
+
 	s.mu.Unlock()
+
 	s.admissionMu.Lock()
 	defer s.admissionMu.Unlock()
+
 	s.mu.Lock()
 	defer func() {
 		s.finishOpLocked()
 		s.mu.Unlock()
 	}()
+
 	// Detached entries no longer own their directory path: it may now contain
 	// a replacement. Their body charge is retained until this final unpin.
 	if cur, ok := s.entries[e.meta.Key]; ok && cur == e {
 		e.claimed = true
 		s.mu.Unlock()
+
 		err := s.removeAll(e.dir)
+
 		s.mu.Lock()
 		e.claimed = false
 		if err != nil {
@@ -201,39 +267,9 @@ func (s *Store) unpin(e *entry) {
 		}
 		s.deleteEntryLocked(e)
 	}
+
 	if !e.reclaimed {
 		e.reclaimed = true
 		s.bytes -= e.charge
 	}
-}
-func (r *Reader) Read(p []byte) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		return 0, os.ErrClosed
-	}
-	n, err := r.file.Read(p)
-	r.remaining -= int64(n)
-	if err == io.EOF && r.remaining > 0 {
-		err = io.ErrUnexpectedEOF
-	}
-	if err != nil && err != io.EOF {
-		// Retire only this generation. Keep its pin and charge until Close,
-		// even if a replacement is published before this reader finishes.
-		r.store.mu.Lock()
-		r.entry.invalid = true
-		r.store.mu.Unlock()
-	}
-	return n, err
-}
-func (r *Reader) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		return nil
-	}
-	r.closed = true
-	err := r.file.Close()
-	r.store.unpin(r.entry)
-	return err
 }

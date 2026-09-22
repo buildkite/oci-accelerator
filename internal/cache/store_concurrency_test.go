@@ -10,50 +10,6 @@ import (
 	"time"
 )
 
-func awaitBarrier(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
-}
-
-func awaitResult[T any](t *testing.T, ch <-chan T, what string) T {
-	t.Helper()
-	select {
-	case result := <-ch:
-		return result
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-		var zero T
-		return zero
-	}
-}
-
-func assertHitProgress(t *testing.T, s *Store, meta Metadata, want string) {
-	t.Helper()
-	done := make(chan error, 1)
-	go func() {
-		r, err := s.Get(context.Background(), meta)
-		if err == nil {
-			var b []byte
-			b, err = io.ReadAll(r)
-			if err == nil && string(b) != want {
-				err = errors.New("unexpected bytes: " + string(b))
-			}
-			err = errors.Join(err, r.Close())
-		}
-		done <- err
-	}()
-	if err := awaitResult(t, done, "unrelated cache hit"); err != nil {
-		t.Fatal(err)
-	}
-	statsDone := make(chan Stats, 1)
-	go func() { statsDone <- s.Stats() }()
-	_ = awaitResult(t, statsDone, "Stats")
-}
-
 func TestBlockedStagingDoesNotBlockHitOrStatsAndDelaysClose(t *testing.T) {
 	s := openTest(t, 1<<20)
 	hot := testMeta("hot-during-staging", "body")
@@ -124,134 +80,6 @@ func TestBlockedStagingDoesNotBlockHitOrStatsAndDelaysClose(t *testing.T) {
 	}
 	if _, err := os.Stat(s.dir); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestEvictionRechecksVictimPinsAfterBlockedRemoval(t *testing.T) {
-	const charge = metadataReservation + 1
-	s := openTest(t, 2*charge)
-	metas := seedEvictionEntries(t, s, 2, "x")
-
-	entered, release := make(chan struct{}), make(chan struct{})
-	t.Cleanup(func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	})
-	realRemoveAll := s.removeAll
-	firstDir := filepath.Join(s.dir, metas[0].Key)
-	s.removeAll = func(path string) error {
-		if path == firstDir {
-			close(entered)
-			<-release
-		}
-		return realRemoveAll(path)
-	}
-	result := make(chan error, 1)
-	go func() {
-		_, err := s.Begin(testMeta("needs-both-victims", "ab"))
-		result <- err
-	}()
-	awaitBarrier(t, entered, "first victim removal")
-	type getResult struct {
-		r   *Reader
-		err error
-	}
-	getDone := make(chan getResult, 1)
-	go func() {
-		r, err := s.Get(context.Background(), metas[1])
-		getDone <- getResult{r, err}
-	}()
-	var r *Reader
-	t.Cleanup(func() {
-		if r != nil {
-			_ = r.Close()
-		}
-	})
-	got := awaitResult(t, getDone, "pinning second victim")
-	r = got.r
-	if got.err != nil {
-		t.Fatal(got.err)
-	}
-	close(release)
-	select {
-	case err := <-result:
-		assertAdmissionReason(t, err, AdmissionCapacity)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Begin remained blocked")
-	}
-	if st := s.Stats(); st.Bytes != charge || st.Entries != 1 || st.Readers != 1 || st.Reserved != 0 || st.Pending != 0 {
-		t.Fatalf("capacity bypass accounting = %+v", st)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestEvictionSkipsVictimHitAndClosedDuringBlockedRemoval(t *testing.T) {
-	for _, clock := range []string{"advanced", "repeated"} {
-		t.Run(clock, func(t *testing.T) {
-			const charge = metadataReservation + 1
-			s := openTest(t, 3*charge)
-			metas := seedEvictionEntries(t, s, 3, "x")
-			originalLast := s.entries[metas[1].Key].last
-
-			entered, release := make(chan struct{}), make(chan struct{})
-			t.Cleanup(func() {
-				select {
-				case <-release:
-				default:
-					close(release)
-				}
-			})
-			realRemoveAll := s.removeAll
-			firstDir := filepath.Join(s.dir, metas[0].Key)
-			s.removeAll = func(path string) error {
-				if path == firstDir {
-					close(entered)
-					<-release
-				}
-				return realRemoveAll(path)
-			}
-			result := make(chan error, 1)
-			go func() {
-				// Two removals are needed, but the third candidate can replace the
-				// second if it becomes hot while the first removal is blocked.
-				f, err := s.Begin(testMeta("needs-two-cold-victims", "ab"))
-				if f != nil {
-					err = errors.Join(err, f.Abort())
-				}
-				result <- err
-			}()
-			awaitBarrier(t, entered, "first victim removal")
-			// This reads exact bytes and closes the reader before releasing eviction.
-			// Pin checks alone cannot protect this now-unpinned, recently hit entry.
-			assertHitProgress(t, s, metas[1], "x")
-			if clock == "repeated" {
-				// Model a clock that returned the same timestamp on this access.
-				s.mu.Lock()
-				s.setEntryLastLocked(s.entries[metas[1].Key], originalLast)
-				s.mu.Unlock()
-			}
-			close(release)
-			if err := awaitResult(t, result, "admission after concurrent hit"); err != nil {
-				t.Fatal(err)
-			}
-			read(t, s, metas[1], "x")
-			for _, meta := range []Metadata{metas[0], metas[2]} {
-				if r, err := s.Get(context.Background(), meta); err != ErrMiss {
-					if r != nil {
-						_ = r.Close()
-					}
-					t.Fatalf("cold victim Get = %v, want ErrMiss", err)
-				}
-			}
-			if st := s.Stats(); st.Evictions != 2 || st.Bytes != charge || st.Entries != 1 || st.Readers != 0 || st.Reserved != 0 || st.Pending != 0 {
-				t.Fatalf("concurrent hit accounting = %+v", st)
-			}
-		})
 	}
 }
 
@@ -371,7 +199,7 @@ func TestPausedDeferredCleanupDoesNotBlockHitsAndDelaysClose(t *testing.T) {
 		t.Fatalf("Close returned during cleanup: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	if other, err := Open(s.dir, 1<<20); err == nil {
+	if other, err := openDefault(s.dir, 1<<20); err == nil {
 		_ = other.Close()
 		t.Fatal("cache reopened during cleanup")
 	} else if !errors.Is(err, ErrLockConflict) {
@@ -447,7 +275,7 @@ func TestPausedBeginTombstoneCleanupDoesNotBlockHitsAndDelaysClose(t *testing.T)
 		t.Fatalf("Close returned during supersession: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	if other, err := Open(s.dir, 1<<20); err == nil {
+	if other, err := openDefault(s.dir, 1<<20); err == nil {
 		_ = other.Close()
 		t.Fatal("cache reopened during supersession")
 	} else if !errors.Is(err, ErrLockConflict) {
@@ -540,7 +368,7 @@ func TestPausedCommitTombstoneSupersessionDoesNotBlockHitsAndDelaysClose(t *test
 		t.Fatal(err)
 	}
 
-	reopened, err := Open(s.dir, 1<<20)
+	reopened, err := openDefault(s.dir, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
