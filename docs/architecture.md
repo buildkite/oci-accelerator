@@ -55,8 +55,10 @@ Registries need not authorize HEAD and GET alike, so approval always originates
 from the same GET that would otherwise supply the body.
 
 The process computes an HMAC fingerprint over the original canonical URL and all
-forwarded end-to-end request headers. Header names are canonicalized, while exact
-values and their order are retained. Anonymous requests are explicitly distinct
+forwarded end-to-end request headers. Header names and transport-managed fields
+are normalized to their forwarded form, so wire-equivalent GETs share grant
+invalidation; see the [proxy caching contract](../internal/proxy/README.md#caching).
+Other exact values and their order are retained. Anonymous requests are explicitly distinct
 from authenticated requests. The HMAC key is process-local and never persisted;
 restart therefore clears every grant without retaining credentials, raw header
 values, signed redirect URLs, or reversible cache keys.

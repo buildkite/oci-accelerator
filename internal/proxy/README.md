@@ -122,6 +122,13 @@ canonical URL and all forwarded end-to-end headers, and a fast hit still require
 a verified body. See the
 [architecture guide](../../docs/architecture.md#authorization-before-cache-use).
 
+Fingerprints account for HTTP/1.1 transport-managed headers: `Host` is represented
+by the pinned URL authority, bodyless GETs emit no length or transfer headers, and
+only the first `User-Agent` value is sent (an explicit empty value suppresses it).
+Ignored `Header` entries for `Host`, `Content-Length`, `Transfer-Encoding`, and
+`Trailer` therefore do not create separate grants. Other end-to-end values and
+their order remain identity-sensitive.
+
 ## Security boundaries
 
 - **SSRF hardening** (`dial.go`): the entire DNS answer is validated before

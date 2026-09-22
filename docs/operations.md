@@ -204,8 +204,9 @@ hashed as received. Tags, HEAD, Range, conditional and non-identity encoded resp
 unknown-length bodies, no-store traffic, and unsupported Vary dimensions bypass storage.
 
 Only full immutable digest blob and manifest GETs can reuse authorization. Grants are keyed by a
-process-local HMAC of the original canonical URL and every forwarded end-to-end header, preserving
-exact values and value order; anonymous requests are distinct. They are fixed-lived from an
+process-local HMAC of the original canonical URL and every forwarded end-to-end header.
+Transport-managed fields use their forwarded form; other exact values and value order are
+preserved. Anonymous requests are distinct. Grants are fixed-lived from an
 eligible terminal `200`, never renewed on hits, never persisted, and never refreshed or coalesced
 in the background. Tokens are opaque, so revocation or expiry can take effect as late as the
 grant's original expiry. Set `cache.authorization_ttl: 0s` for the old every-delivery upstream

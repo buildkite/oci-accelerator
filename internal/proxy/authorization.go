@@ -125,6 +125,23 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 		headers[canonical] = append(headers[canonical], req.Header[name]...)
 	}
 
+	// The upstream transport is HTTP/1.1-only and receives bodyless GETs.
+	// These Header fields are ignored: authority is pinned in Request.Host
+	// (and hashed from URL.Host below), and there is no length or transfer data.
+	for _, name := range []string{"host", "content-length", "transfer-encoding", "trailer"} {
+		delete(headers, name)
+	}
+	// net/http sends only the first User-Agent value, omitting an explicit
+	// empty value. ReverseProxy supplies that empty value when the client has
+	// no User-Agent; direct transport callers get the HTTP/1.1 default instead.
+	if values, present := headers["user-agent"]; !present {
+		headers["user-agent"] = []string{"Go-http-client/1.1"}
+	} else if len(values) == 0 || values[0] == "" {
+		delete(headers, "user-agent")
+	} else {
+		headers["user-agent"] = values[:1]
+	}
+
 	// Keyed HMAC with a length-prefixed writer so field boundaries are unambiguous.
 	mac := hmac.New(sha256.New, c.secret[:])
 	write := func(value string) {
