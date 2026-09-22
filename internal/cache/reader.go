@@ -23,9 +23,11 @@ type Reader struct {
 func (r *Reader) Read(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if r.closed {
 		return 0, os.ErrClosed
 	}
+
 	n, err := r.file.Read(p)
 	r.remaining -= int64(n)
 	if err == io.EOF && r.remaining > 0 {
@@ -38,18 +40,22 @@ func (r *Reader) Read(p []byte) (int, error) {
 		r.entry.invalid = true
 		r.store.mu.Unlock()
 	}
+
 	return n, err
 }
 
 func (r *Reader) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if r.closed {
 		return nil
 	}
+
 	r.closed = true
 	err := r.file.Close()
 	r.store.unpin(r.entry)
+
 	return err
 }
 
@@ -216,34 +222,44 @@ func (s *Store) invalidate(e *entry) {
 	s.mu.Unlock()
 	s.unpin(e)
 }
+
 func (s *Store) unpin(e *entry) {
 	s.mu.Lock()
+
 	cleanup := e.invalid && e.pins == 1
 	if cleanup {
 		// Cover the admission-serialization wait as well as removal. Close must
 		// not observe the last reader gone before this generation is settled.
 		s.startOpLocked()
 	}
+
 	e.pins--
 	s.readers--
+
 	if !cleanup {
 		s.mu.Unlock()
 		return
 	}
+
 	s.mu.Unlock()
+
 	s.admissionMu.Lock()
 	defer s.admissionMu.Unlock()
+
 	s.mu.Lock()
 	defer func() {
 		s.finishOpLocked()
 		s.mu.Unlock()
 	}()
+
 	// Detached entries no longer own their directory path: it may now contain
 	// a replacement. Their body charge is retained until this final unpin.
 	if cur, ok := s.entries[e.meta.Key]; ok && cur == e {
 		e.claimed = true
 		s.mu.Unlock()
+
 		err := s.removeAll(e.dir)
+
 		s.mu.Lock()
 		e.claimed = false
 		if err != nil {
@@ -251,6 +267,7 @@ func (s *Store) unpin(e *entry) {
 		}
 		s.deleteEntryLocked(e)
 	}
+
 	if !e.reclaimed {
 		e.reclaimed = true
 		s.bytes -= e.charge

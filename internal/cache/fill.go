@@ -31,23 +31,29 @@ type Fill struct {
 func (f *Fill) Write(p []byte) (int, error) {
 	f.mu.Lock()
 	defer f.unlockAndStopIfDone()
+
 	if f.done {
 		return 0, os.ErrClosed
 	}
+
 	if !time.Now().Before(f.deadline) {
 		return 0, f.finish(errFillExpired)
 	}
+
 	if int64(len(p)) > f.meta.Size-f.written {
 		return 0, f.finish(errors.New("cache fill exceeds declared size"))
 	}
+
 	n, e := f.file.Write(p)
 	if n > 0 {
 		_, _ = f.hash.Write(p[:n])
 		f.written += int64(n)
 	}
+
 	if e != nil {
 		return n, f.finish(e)
 	}
+
 	return n, e
 }
 
@@ -58,9 +64,11 @@ func (f *Fill) Write(p []byte) (int, error) {
 func (f *Fill) Commit() error {
 	f.mu.Lock()
 	defer f.unlockAndStopIfDone()
+
 	if f.done {
 		return os.ErrClosed
 	}
+
 	if !time.Now().Before(f.deadline) {
 		return f.finish(errFillExpired)
 	}
@@ -98,6 +106,7 @@ func (f *Fill) Commit() error {
 	if err := os.Rename(f.dir, dest); err != nil {
 		return f.finish(err)
 	}
+
 	f.dir = dest
 	if err := syncDirectory(f.store.dir); err != nil {
 		return f.finish(err)
@@ -156,8 +165,10 @@ func (f *Fill) writeMetaFile() error {
 func (f *Fill) supersedeTombstone(dest string) error {
 	f.store.admissionMu.Lock()
 	defer f.store.admissionMu.Unlock()
+
 	f.store.mu.Lock()
 	defer f.store.mu.Unlock()
+
 	e, ok := f.store.entries[f.meta.Key]
 	if !ok {
 		// Retire any failed publication's cleanup record before reusing dest.
@@ -175,9 +186,11 @@ func (f *Fill) supersedeTombstone(dest string) error {
 		}
 		return err
 	}
+
 	if !e.invalid {
 		return errors.New("cache fill destination occupied by a valid entry")
 	}
+
 	e.claimed = true
 	f.store.startOpLocked()
 	f.store.mu.Unlock()
@@ -188,7 +201,9 @@ func (f *Fill) supersedeTombstone(dest string) error {
 	if err != nil {
 		return err
 	}
+
 	f.store.deleteEntryLocked(e)
+
 	// Unlinking does not free the body while readers hold its inode open.
 	// A detached pinned entry retains its charge until its final unpin.
 	if e.pins == 0 && !e.reclaimed {
@@ -203,12 +218,16 @@ func (f *Fill) supersedeTombstone(dest string) error {
 // entry's charge. It never returns a non-deadline error.
 func (f *Fill) publishLocked(dest string) error {
 	f.store.mu.Lock()
+
 	if !time.Now().Before(f.deadline) {
 		f.store.mu.Unlock()
 		return errFillExpired
 	}
+
 	delete(f.store.fills, f.meta.Key)
+
 	f.store.reserved -= f.charge
+
 	e := &entry{
 		meta:     f.meta,
 		dir:      dest,
@@ -217,8 +236,10 @@ func (f *Fill) publishLocked(dest string) error {
 		verified: true, // Just hash-verified during Commit; Readers can skip re-verification.
 	}
 	f.store.addEntryLocked(e)
+
 	f.store.bytes += f.charge
 	f.store.fillSuccess++
+
 	f.store.mu.Unlock()
 	return nil
 }
@@ -228,17 +249,25 @@ func (f *Fill) finish(cause error) error {
 		cause = errors.Join(cause, f.file.Close())
 		f.file = nil
 	}
+
 	f.store.admissionMu.Lock()
+
 	f.store.mu.Lock()
 	f.store.startOpLocked()
 	f.store.mu.Unlock()
+
 	removeErr := f.store.removeAll(f.dir)
+
 	f.store.mu.Lock()
 	f.store.finishOpLocked()
 	f.store.mu.Unlock()
+
 	f.store.admissionMu.Unlock()
+
 	cause = errors.Join(cause, removeErr)
+
 	f.store.mu.Lock()
+
 	if cause == nil {
 		f.store.fillAbort++
 	} else if errors.Is(cause, errFillExpired) {
@@ -246,12 +275,17 @@ func (f *Fill) finish(cause error) error {
 	} else {
 		f.store.fillFailure++
 	}
+
 	delete(f.store.fills, f.meta.Key)
+
 	f.store.reserved -= f.charge
+
 	if removeErr != nil {
 		f.store.retainCleanupLocked(f.dir, f.charge)
 	}
+
 	f.store.mu.Unlock()
+
 	f.done = true
 	close(f.completed)
 	return cause

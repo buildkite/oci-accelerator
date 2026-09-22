@@ -12,55 +12,31 @@ import (
 )
 
 type Store struct {
-	// Guards all mutable store state below.
-	mu sync.Mutex
-	// Serializes admission and publication so key ownership decisions don't race.
-	admissionMu sync.Mutex
-	// Root directory holding the cache on disk.
-	dir string
-	// Maximum total bytes (data plus metadata reservation) the cache may hold.
-	max int64
-	// Caps on concurrent in-flight fills and total live entries.
-	maxFills, maxEntries int
-	// Deadline after which a stalled in-progress fill is expired.
-	fillTimeout time.Duration
-	// Temp dirs whose removal failed, keyed by path, awaiting retry.
-	failedCleanups map[string]cleanup
-	// FIFO retry order of failed-cleanup paths.
-	cleanupQueue list.List
-	// Bytes charged to published entries; bytes reserved for in-flight fills.
-	bytes, reserved int64
-	// Cumulative count of entries evicted to reclaim space.
-	evictions int64
-	// Count of currently open Readers.
-	readers int
-	// Terminal fill outcome counters.
-	fillSuccess, fillFailure, fillAbort, fillExpiry int64
-	// Per-reason admission decision counters.
-	admissions [AdmissionReasonCount]int64
-	// Published cache entries indexed by key.
-	entries map[string]*entry
-	// In-progress fills indexed by key.
-	fills map[string]*Fill
-	// Reserved key ownership and byte charge during staging, before a fill publishes.
-	claims map[string]int64
-	// Count of in-flight filesystem operations running with mu released.
-	activeOps int
-	// Signaled when activeOps reaches zero, so Close can wait for drain.
-	opsDone *sync.Cond
-	// Injectable os.RemoveAll for tests.
-	removeAll func(string) error
-	// Injectable os.MkdirTemp for tests.
-	mkdirTemp func(string, string) (string, error)
-	// Entries ordered by (last, key) for eviction victim selection.
-	evictionOrder list.List
-	// Resume after this (last, key) position even if its entry disappears or pins.
-	evictionAfterLast int64
-	evictionAfter     string
-	// Held OS file lock enforcing single-process ownership of dir.
-	lock *os.File
-	// True once the store is shutting down and rejecting new work.
-	closed bool
+	mu                                              sync.Mutex                           // guards all mutable store state below.
+	admissionMu                                     sync.Mutex                           // serializes admission and publication so key ownership decisions don't race.
+	dir                                             string                               // root directory holding the cache on disk.
+	max                                             int64                                // maximum total bytes (data plus metadata reservation) the cache may hold.
+	maxFills, maxEntries                            int                                  // caps on concurrent in-flight fills and total live entries.
+	fillTimeout                                     time.Duration                        // deadline after which a stalled in-progress fill is expired.
+	failedCleanups                                  map[string]cleanup                   // temp dirs whose removal failed, keyed by path, awaiting retry.
+	cleanupQueue                                    list.List                            // FIFO retry order of failed-cleanup paths.
+	bytes, reserved                                 int64                                // bytes charged to published entries; bytes reserved for in-flight fills.
+	evictions                                       int64                                // cumulative count of entries evicted to reclaim space.
+	readers                                         int                                  // count of currently open Readers.
+	fillSuccess, fillFailure, fillAbort, fillExpiry int64                                // terminal fill outcome counters.
+	admissions                                      [AdmissionReasonCount]int64          // per-reason admission decision counters.
+	entries                                         map[string]*entry                    // published cache entries indexed by key.
+	fills                                           map[string]*Fill                     // in-progress fills indexed by key.
+	claims                                          map[string]int64                     // reserved key ownership and byte charge during staging, before a fill publishes.
+	activeOps                                       int                                  // count of in-flight filesystem operations running with mu released.
+	opsDone                                         *sync.Cond                           // signaled when activeOps reaches zero, so Close can wait for drain.
+	removeAll                                       func(string) error                   // injectable os.RemoveAll for tests.
+	mkdirTemp                                       func(string, string) (string, error) // injectable os.MkdirTemp for tests.
+	evictionOrder                                   list.List                            // entries ordered by (last, key) for eviction victim selection.
+	evictionAfterLast                               int64                                // resume after this (last, key) position even if its entry disappears or pins.
+	evictionAfter                                   string                               // paired with evictionAfterLast.
+	lock                                            *os.File                             // held OS file lock enforcing single-process ownership of dir.
+	closed                                          bool                                 // true once the store is shutting down and rejecting new work.
 }
 
 // completedNotification is a shared, already-closed channel returned for entries
