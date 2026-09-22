@@ -16,7 +16,7 @@ import (
 
 func TestRunHelpUsesOCIAcceleratorName(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if err := run(context.Background(), []string{"--help"}, &out, &errOut); err != nil {
+	if err := run(context.Background(), []string{"--help"}, &out, &errOut, net.Listen); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := out.String(), "Usage: oci-accelerator --config FILE [--check]\n"; got != want {
@@ -42,7 +42,7 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
-			err := run(context.Background(), test.args, &out, &errOut)
+			err := run(context.Background(), test.args, &out, &errOut, net.Listen)
 			if err == nil {
 				t.Fatalf("run(%q) succeeded", test.args)
 			}
@@ -72,7 +72,7 @@ cache: {dir: cache}
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
-	err := run(context.Background(), []string{"--config", path}, &out, &errOut)
+	err := run(context.Background(), []string{"--config", path}, &out, &errOut, net.Listen)
 	if err == nil || strings.Contains(err.Error(), secret) || strings.Contains(out.String(), secret) || strings.Contains(errOut.String(), secret) {
 		t.Fatalf("unsafe result: err=%v stdout=%q stderr=%q", err, out.String(), errOut.String())
 	}
@@ -91,7 +91,7 @@ func TestRunReportsSanitizedConfigurationDiagnostics(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.contents), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err := run(context.Background(), []string{"--config", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{})
+			err := run(context.Background(), []string{"--config", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want sanitized diagnostic containing %q", err, test.want)
 			}
@@ -108,7 +108,7 @@ func TestRunRedactsConfigurationIOError(t *testing.T) {
 	root := t.TempDir()
 	// A directory opens successfully but fails on read, even when tests run as root.
 	for _, path := range []string{filepath.Join(root, "missing-secret-config.yaml"), root} {
-		err := run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{})
+		err := run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 		if err == nil || err.Error() != "configuration validation failed" {
 			t.Fatalf("error = %v", err)
 		}
@@ -125,7 +125,7 @@ cache: {dir: cache}
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := run(context.Background(), []string{"--config", path, "--check"}, &out, &bytes.Buffer{}); err != nil {
+	if err := run(context.Background(), []string{"--config", path, "--check"}, &out, &bytes.Buffer{}, net.Listen); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "configuration validated") {
@@ -147,7 +147,7 @@ func TestRunCheckRejectsConflictingStateDirectoriesWithoutSideEffects(t *testing
 			if err := os.WriteFile(path, []byte("registries: [example.com]\nca_dir: "+secret+child+"\ncache: {dir: ./"+secret+"}\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err := run(context.Background(), []string{"--config", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{})
+			err := run(context.Background(), []string{"--config", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 			if err == nil || !strings.Contains(err.Error(), "ca_dir and cache.dir") {
 				t.Fatalf("error = %v, want state directory diagnostic", err)
 			}
@@ -178,7 +178,7 @@ func TestRunRejectsUnusableCacheBeforeListen(t *testing.T) {
 		t.Fatal(err)
 	}
 	var errOut bytes.Buffer
-	err = run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &errOut)
+	err = run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &errOut, net.Listen)
 	if err == nil || err.Error() != "cache startup failed: unsafe cache state" {
 		t.Fatalf("error = %v, want safe cache category", err)
 	}
@@ -202,7 +202,7 @@ func TestRunReportsLockedCacheWithoutLeakingPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err = run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{})
+	err = run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 	if err == nil || err.Error() != "cache startup failed: cache is locked by another process" {
 		t.Fatalf("error = %v", err)
 	}
@@ -216,7 +216,7 @@ func TestRunReportsCacheFilesystemFailure(t *testing.T) {
 	if err := os.WriteFile(path, []byte("registries: [example.com]\nca_dir: ca\ncache: {dir: missing-secret-parent/cache}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 	if err == nil || err.Error() != "cache startup failed: filesystem failure" {
 		t.Fatalf("error = %v", err)
 	}

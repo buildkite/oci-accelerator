@@ -61,7 +61,7 @@ func TestRunPreservesMetricsBindAndListenerCleanupErrors(t *testing.T) {
 		}
 		return net.Listen(network, address)
 	}
-	err := runWithListen(context.Background(), []string{"--config", path}, io.Discard, io.Discard, listen)
+	err := run(context.Background(), []string{"--config", path}, io.Discard, io.Discard, listen)
 	if err == nil {
 		t.Fatal("run succeeded despite bind and cleanup failures")
 	}
@@ -113,7 +113,7 @@ func TestRunPreservesLifecycleErrors(t *testing.T) {
 			completed := make(chan struct{})
 			var runErr error
 			go func() {
-				runErr = runWithListen(ctx, []string{"--config", path}, io.Discard, io.Discard, listenForTest(proxyListener, metricsListener))
+				runErr = run(ctx, []string{"--config", path}, io.Discard, io.Discard, listenForTest(proxyListener, metricsListener))
 				close(completed)
 			}()
 			t.Cleanup(func() {
@@ -193,7 +193,7 @@ func TestRunPreservesServingErrorRacingCancellation(t *testing.T) {
 			completed := make(chan struct{})
 			var runErr error
 			go func() {
-				runErr = runWithListen(ctx, []string{"--config", path}, io.Discard, io.Discard, listenForTest(listener))
+				runErr = run(ctx, []string{"--config", path}, io.Discard, io.Discard, listenForTest(listener))
 				close(completed)
 			}()
 			t.Cleanup(func() {

@@ -70,7 +70,7 @@ func TestMetricsBindFailureAndSideEffectFreeCheck(t *testing.T) {
 		}
 		return net.Listen(network, address)
 	}
-	if err := runWithListen(context.Background(), []string{"--config", path, "--check"}, io.Discard, io.Discard, listen); err != nil {
+	if err := run(context.Background(), []string{"--config", path, "--check"}, io.Discard, io.Discard, listen); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"ca", "cache"} {
@@ -79,7 +79,7 @@ func TestMetricsBindFailureAndSideEffectFreeCheck(t *testing.T) {
 		}
 	}
 	var logs bytes.Buffer
-	err = runWithListen(context.Background(), []string{"--config", path}, io.Discard, &logs, listen)
+	err = run(context.Background(), []string{"--config", path}, io.Discard, &logs, listen)
 	if err == nil || err.Error() != "cannot listen on configured metrics address" {
 		t.Fatalf("wrong bind error: %v", err)
 	}
@@ -122,7 +122,7 @@ shutdown_timeout: 100ms
 			completed := make(chan struct{})
 			var runErr error
 			go func() {
-				runErr = runWithListen(ctx, []string{"--config", path}, io.Discard, io.Discard, listenForTest(listeners...))
+				runErr = run(ctx, []string{"--config", path}, io.Discard, io.Discard, listenForTest(listeners...))
 				close(completed)
 			}()
 			t.Cleanup(func() {
