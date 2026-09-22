@@ -65,11 +65,14 @@ func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted
 	if a == nil || isTransient(resp.StatusCode) {
 		return
 	}
+
 	lifetime := authorizationLifetime(resp.Header, a.requestLifetime)
 	hopDeadline := received.Add(lifetime)
+
 	if a.deadline.IsZero() || hopDeadline.Before(a.deadline) {
 		a.deadline = hopDeadline
 	}
+
 	if !permitted || lifetime <= 0 || !cacheHeaders(resp.Header, a.digest) {
 		a.cache.invalidate(a.entry)
 	}

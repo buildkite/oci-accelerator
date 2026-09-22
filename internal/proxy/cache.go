@@ -48,9 +48,9 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 		stats.cache = "miss"
 	}
 
-	// This caller has already made its own authorized upstream GET. Coalescing
-	// drops that response body and waits for another request's in-flight fill,
-	// saving only the second body download, never the authorization GET.
+	// We already made our own authorized GET. If another request is already
+	// filling this object, drop our body and wait for its fill instead of
+	// downloading twice. Saves the download, not the GET.
 	if mayWait && t.fillWaitTimeout > 0 {
 		if completed, active := t.cache.Completion(meta); active {
 			return t.waitForFill(req.Context(), resp, meta, completed, stats)

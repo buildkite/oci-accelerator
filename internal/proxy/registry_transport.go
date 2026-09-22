@@ -39,8 +39,8 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}))
 	}
 
-	// Coalescing requires this caller's own accepted upstream GET. The first
-	// attempt may then close its body and wait for another fill.
+	// Make our own authorized GET first. This attempt may then close its body
+	// and wait for another request's fill instead of downloading it again.
 	resp, retry, err := t.roundTrip(req, true)
 	if err != nil || !retry {
 		return resp, err
@@ -88,10 +88,9 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
 
-	// Fast path: try to serve entirely from a cached authorization grant. On a
-	// hit this returns without upstream I/O; otherwise attempt carries the
-	// registered in-flight bookkeeping (or is nil when grant caching does not
-	// apply) for the upstream path below to settle.
+	// Fast path: serve from a cached authorization grant with no upstream I/O.
+	// On a miss, attempt carries the in-flight entry for the upstream path below
+	// to settle, or is nil when grant caching does not apply.
 	resp, attempt := t.beginGrantAttempt(req, object, eligible, permitted, mayWait, stats)
 	if resp != nil {
 		return resp, false, nil

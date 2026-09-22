@@ -70,6 +70,7 @@ func (c *authorizationCache) start(req *http.Request) (*authorizationEntry, *aut
 	if e.grant != nil && !time.Now().Before(e.grant.expires) {
 		e.grant = nil
 	}
+
 	return e, e.grant
 }
 
@@ -79,6 +80,7 @@ func (c *authorizationCache) start(req *http.Request) (*authorizationEntry, *aut
 func (c *authorizationCache) commit(e *authorizationEntry, grant *authorizationGrant) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	if c.entries[e.key] == e {
 		e.grant = grant
 	}
@@ -91,6 +93,7 @@ func (c *authorizationCache) commit(e *authorizationEntry, grant *authorizationG
 func (c *authorizationCache) invalidate(e *authorizationEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	if current := c.entries[e.key]; current != nil {
 		c.remove(current)
 	}
@@ -99,6 +102,7 @@ func (c *authorizationCache) invalidate(e *authorizationEntry) {
 func (c *authorizationCache) valid(e *authorizationEntry, g *authorizationGrant) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	return c.entries[e.key] == e && e.grant == g && time.Now().Before(g.expires)
 }
 
@@ -164,17 +168,21 @@ func (t registryTransport) authorizedResponse(req *http.Request, e *authorizatio
 	if g == nil {
 		return nil
 	}
+
 	body, err := t.cache.Get(req.Context(), g.meta)
 	if err != nil {
 		return nil
 	}
+
 	// Verification can block. Recheck expiry and invalidation after acquiring
 	// the reader; no store lock is held during disk I/O.
 	if req.Context().Err() != nil || !t.authorization.valid(e, g) {
 		body.Close()
 		return nil
 	}
+
 	stats.cache = "hit"
+
 	return &http.Response{
 		StatusCode: http.StatusOK, Status: "200 OK",
 		Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
