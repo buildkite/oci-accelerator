@@ -21,6 +21,7 @@ type registryTransport struct {
 	cache           *cache.Store
 	metrics         *metrics
 	fillWaitTimeout time.Duration
+	authorization   *authorizationCache
 }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -87,20 +88,58 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
 
+	var entry *authorizationEntry
+	var deadline time.Time
+	var requestLifetime time.Duration
+	if t.authorization != nil && t.cache != nil && eligible {
+		requestLifetime = authorizationLifetime(req.Header, t.authorization.ttl, time.Time{}, time.Time{}, false)
+		if original, ok := req.Context().Value(authorizationLifetimeKey{}).(time.Duration); ok {
+			requestLifetime = min(requestLifetime, original)
+		}
+		var grant *authorizationGrant
+		entry, grant = t.authorization.start(req)
+		if permitted && requestLifetime > 0 && mayWait {
+			if resp := t.authorizedResponse(req, entry, grant, stats); resp != nil {
+				return resp, false, nil
+			}
+		}
+	}
+
 	// Loop to follow redirect hops.
 	for hops := 0; ; hops++ {
 
 		// Single network round trip for this hop via the shared stdlib transport
 		// (t.upstream); this registryTransport wraps it with retry, redirects, caching.
+		sent := time.Now()
 		resp, err := t.upstream.RoundTrip(current)
 		if err != nil {
 			return nil, false, err
+		}
+		received := time.Now()
+		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 && resp.StatusCode <= 599
+		if entry != nil && !transient {
+			lifetime := authorizationLifetime(resp.Header, requestLifetime, sent, received, true)
+			hopDeadline := received.Add(lifetime)
+			if deadline.IsZero() || hopDeadline.Before(deadline) {
+				deadline = hopDeadline
+			}
+			if !permitted || lifetime <= 0 || !cacheHeaders(resp.Header, object.digest) {
+				t.authorization.complete(entry, nil)
+			}
 		}
 
 		// This hop is terminal: either not cache-eligible, or not a redirect to follow.
 		// resolveResponse is the single exit — it meters the body and either bypasses
 		// (ineligible) or caches (hit/fill) before returning the response to the client.
 		if !eligible || !redirectStatus(resp.StatusCode) {
+			if entry != nil && !transient {
+				meta, ok := objectMetadata(req, resp)
+				if ok && permitted && received.Before(deadline) {
+					t.authorization.complete(entry, &authorizationGrant{meta: meta, expires: deadline})
+				} else {
+					t.authorization.complete(entry, nil)
+				}
+			}
 			return t.resolveResponse(req, resp, permitted, mayWait, stats)
 		}
 
@@ -113,12 +152,18 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 
 		// Limit redirect depth to 5 hops
 		if hops == 5 {
+			if entry != nil {
+				t.authorization.complete(entry, nil)
+			}
 			return nil, false, errRedirect
 		}
 
 		// Resolve and validate Location. Refuse anything unsafe or already seen.
 		next, err := redirectURL(current.URL, resp.Header.Get("Location"))
 		if err != nil || seen[next.String()] {
+			if entry != nil {
+				t.authorization.complete(entry, nil)
+			}
 			return nil, false, errRedirect
 		}
 

@@ -20,6 +20,7 @@ func TestLoadDurationBoundsAndDefaults(t *testing.T) {
 		{"shutdown_timeout", 15 * time.Second, func(c Config) time.Duration { return c.ShutdownTimeout }},
 		{"cache.fill_timeout", DefaultCacheFillTimeout, func(c Config) time.Duration { return c.Cache.FillTimeout }},
 		{"cache.fill_wait_timeout", DefaultCacheFillWaitTimeout, func(c Config) time.Duration { return c.Cache.FillWaitTimeout }},
+		{"cache.authorization_ttl", DefaultCacheAuthorizationTTL, func(c Config) time.Duration { return c.Cache.AuthorizationTTL }},
 	}
 	const base = `registries: [registry.example]
 ca_dir: ca
@@ -39,7 +40,7 @@ cache:
 						input += key + ": " + value + "\n"
 					}
 					c, err := Load(writeConfig(t, input))
-					allowZero := field.name == "cache.fill_wait_timeout"
+					allowZero := field.name == "cache.fill_wait_timeout" || field.name == "cache.authorization_ttl"
 					if value == "-1ns" || (value == "0s" && !allowZero) {
 						if !errors.Is(err, ErrInvalid) {
 							t.Fatalf("Load error = %v, want ErrInvalid", err)
@@ -61,6 +62,17 @@ cache:
 					}
 					assertEqual(t, field.name, field.get(c), want)
 				})
+			}
+		})
+	}
+}
+
+func TestLoadRejectsNonStringAuthorizationTTL(t *testing.T) {
+	for _, value := range []string{"30", "true", "30seconds"} {
+		t.Run(value, func(t *testing.T) {
+			input := "registries: [registry.example]\nca_dir: ca\ncache: {dir: cache, authorization_ttl: " + value + "}\n"
+			if _, err := Load(writeConfig(t, input)); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load error = %v, want ErrInvalid", err)
 			}
 		})
 	}

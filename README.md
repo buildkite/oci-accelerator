@@ -2,15 +2,17 @@
 
 A standalone Go explicit HTTPS proxy for Docker Engine, with selective registry
 TLS interception, persistent CA identity, and authorized SHA-256 blob and
-digest-manifest caching. Every cached delivery still requires a successful upstream
-GET. Tags remain uncached; there is no offline fallback or request-rate-limit avoidance.
+digest-manifest caching. By default, recently approved requests can reuse a verified
+body without another upstream GET for up to 30 seconds; setting
+`cache.authorization_ttl: 0s` restores authorization on every delivery. Tags remain
+uncached, and there is no offline or failed-request fallback.
 Docker Engine on Linux is the validated client; the proxy uses generic Registry
 HTTP API V2 behavior rather than provider-specific routing.
 
-Concurrent fills have byte, entry, writer and lifetime bounds. Independently
-authorized followers can wait briefly for the same fill; timeout uses one fresh
-upstream GET, not stale authorization. Optional loopback-only Prometheus metrics
-expose resource use and fixed request/cache outcomes.
+Concurrent fills have byte, entry, writer and lifetime bounds. Authorization grants
+are process-local, fixed-lived, conservatively constrained by HTTP freshness, and
+bounded by `cache.max_authorization_entries`. Optional loopback-only Prometheus
+metrics expose resource use and fixed request/cache outcomes.
 
 - [Architecture](docs/architecture.md): request flow, security boundaries, cache
   ownership, and design rationale.

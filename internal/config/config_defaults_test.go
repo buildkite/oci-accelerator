@@ -27,6 +27,8 @@ dial_timeout: null
 	assertEqual(t, "Cache.MaxEntries", c.Cache.MaxEntries, DefaultCacheMaxEntries)
 	assertEqual(t, "Cache.FillTimeout", c.Cache.FillTimeout, DefaultCacheFillTimeout)
 	assertEqual(t, "Cache.FillWaitTimeout", c.Cache.FillWaitTimeout, time.Second)
+	assertEqual(t, "Cache.AuthorizationTTL", c.Cache.AuthorizationTTL, 30*time.Second)
+	assertEqual(t, "Cache.MaxAuthorizationEntries", c.Cache.MaxAuthorizationEntries, 10000)
 	assertEqual(t, "DialTimeout", c.DialTimeout, 10*time.Second)
 	assertEqual(t, "TLSHandshakeTimeout", c.TLSHandshakeTimeout, 10*time.Second)
 	assertEqual(t, "ResponseHeaderTimeout", c.ResponseHeaderTimeout, 30*time.Second)
@@ -53,6 +55,8 @@ cache:
   max_entries: 99
   fill_timeout: 3m
   fill_wait_timeout: 0s
+  authorization_ttl: 0s
+  max_authorization_entries: 42
 dial_timeout: 1s
 tls_handshake_timeout: 2s
 response_header_timeout: 3s
@@ -73,6 +77,8 @@ max_leaf_certificates: 8
 	assertEqual(t, "Cache.MaxEntries", c.Cache.MaxEntries, 99)
 	assertEqual(t, "Cache.FillTimeout", c.Cache.FillTimeout, 3*time.Minute)
 	assertEqual(t, "Cache.FillWaitTimeout", c.Cache.FillWaitTimeout, time.Duration(0))
+	assertEqual(t, "Cache.AuthorizationTTL", c.Cache.AuthorizationTTL, time.Duration(0))
+	assertEqual(t, "Cache.MaxAuthorizationEntries", c.Cache.MaxAuthorizationEntries, 42)
 	assertEqual(t, "DialTimeout", c.DialTimeout, time.Second)
 	assertEqual(t, "TLSHandshakeTimeout", c.TLSHandshakeTimeout, 2*time.Second)
 	assertEqual(t, "ResponseHeaderTimeout", c.ResponseHeaderTimeout, 3*time.Second)

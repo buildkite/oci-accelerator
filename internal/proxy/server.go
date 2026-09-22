@@ -23,17 +23,18 @@ const maxHeaderBytes = 64 << 10
 
 // Proxy is an HTTP CONNECT forward proxy.
 type Proxy struct {
-	cfg          config.Config                                           // static proxy configuration supplied at construction
-	server       *http.Server                                            // outer HTTP server accepting client CONNECT requests
-	configured   map[string]struct{}                                     // registries eligible for TLS interception and caching
-	signer       *ca.Authority                                           // certificate authority for signing intercepted TLS hosts
-	logger       *slog.Logger                                            // structured logger for proxy events
-	transport    *http.Transport                                         // HTTP transport used for upstream requests
-	cache        *cache.Store                                            // layer cache store; nil disables caching
-	destinations map[string]struct{}                                     // hosts allowed as CONNECT targets (registries plus redirects)
-	lookupIP     func(context.Context, string) ([]net.IPAddr, error)     // DNS resolver hook, overridable in tests
-	dialIP       func(context.Context, string, string) (net.Conn, error) // upstream dialer hook, overridable in tests
-	metrics      *metrics                                                // request and cache counters
+	cfg           config.Config                                           // static proxy configuration supplied at construction
+	server        *http.Server                                            // outer HTTP server accepting client CONNECT requests
+	configured    map[string]struct{}                                     // registries eligible for TLS interception and caching
+	signer        *ca.Authority                                           // certificate authority for signing intercepted TLS hosts
+	logger        *slog.Logger                                            // structured logger for proxy events
+	transport     *http.Transport                                         // HTTP transport used for upstream requests
+	cache         *cache.Store                                            // layer cache store; nil disables caching
+	authorization *authorizationCache                                     // bounded, process-local approvals shared across connections
+	destinations  map[string]struct{}                                     // hosts allowed as CONNECT targets (registries plus redirects)
+	lookupIP      func(context.Context, string) ([]net.IPAddr, error)     // DNS resolver hook, overridable in tests
+	dialIP        func(context.Context, string, string) (net.Conn, error) // upstream dialer hook, overridable in tests
+	metrics       *metrics                                                // request and cache counters
 
 	mu       sync.Mutex                // guards the mutable fields below
 	listener net.Listener              // active listener; nil before Serve or after shutdown
@@ -72,19 +73,20 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 	}
 
 	p := &Proxy{
-		cfg:          cfg,
-		signer:       signer,
-		logger:       logger,
-		transport:    transport,
-		cache:        store,
-		metrics:      newMetrics(),
-		configured:   make(map[string]struct{}, len(cfg.Registries)),
-		destinations: make(map[string]struct{}),
-		conns:        make(map[*trackedConn]struct{}),
-		tunnels:      make(map[net.Conn]struct{}),
-		inners:       make(map[*http.Server]struct{}),
-		lookupIP:     net.DefaultResolver.LookupIPAddr,
-		dialIP:       (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext,
+		cfg:           cfg,
+		signer:        signer,
+		logger:        logger,
+		transport:     transport,
+		cache:         store,
+		authorization: newAuthorizationCache(cfg.Cache.AuthorizationTTL, cfg.Cache.MaxAuthorizationEntries),
+		metrics:       newMetrics(),
+		configured:    make(map[string]struct{}, len(cfg.Registries)),
+		destinations:  make(map[string]struct{}),
+		conns:         make(map[*trackedConn]struct{}),
+		tunnels:       make(map[net.Conn]struct{}),
+		inners:        make(map[*http.Server]struct{}),
+		lookupIP:      net.DefaultResolver.LookupIPAddr,
+		dialIP:        (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext,
 	}
 
 	transport.DialContext = p.dialUpstream

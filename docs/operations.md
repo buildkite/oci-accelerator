@@ -1,8 +1,9 @@
 # Operating OCI Accelerator with Docker Engine
 
 OCI Accelerator is an HTTP CONNECT proxy that intercepts configured HTTPS registries and
-caches verified SHA-256 blobs and digest manifests. Every cached delivery still requires an
-upstream GET for current authorization; there is no offline or stale fallback.
+caches verified SHA-256 blobs and digest manifests. By default it may reuse an exact-request
+upstream authorization grant for 30 seconds. Set `cache.authorization_ttl: 0s` to require an
+upstream authorization GET for every delivery. There is no offline or failed-request fallback.
 
 Linux Docker Engine is the validated client. Docker Desktop, Windows, containerd, and
 BuildKit-specific integration are not validated.
@@ -21,7 +22,8 @@ Edit `registries` before starting. Registry names have no scheme or path; omitte
 443. Matching includes the port. IPv4, bracketed IPv6, and explicitly configured private
 registries are supported. Relative directories are resolved from the configuration file.
 Unknown or duplicate keys, extra YAML documents, invalid zero values, and malformed durations
-are rejected. `cache.fill_wait_timeout: 0s` is the one permitted zero duration. Null values
+are rejected. `cache.fill_wait_timeout: 0s` and `cache.authorization_ttl: 0s` are the permitted
+zero durations. Null values
 retain scalar defaults, but null list elements are invalid. String fields reject non-string
 scalars. Numeric limits require decimal YAML integers without leading zeros: floats, quoted
 numbers, octal/hex forms, and underscores are rejected. `ca_dir` and `cache.dir` must both be
@@ -135,6 +137,8 @@ is static and changes take effect after restart.
 | `cache.max_entries` | 100000 entry slots, including fills and pending cleanup |
 | `cache.fill_timeout` | `10m`; expiry ends cache admission, not upstream forwarding |
 | `cache.fill_wait_timeout` | `1s`; `0s` disables waiting for an existing fill |
+| `cache.authorization_ttl` | `30s`; maximum fixed lifetime of a process-local approval; `0s` requires an upstream GET for every delivery |
+| `cache.max_authorization_entries` | 10000; positive bound on in-memory authorization grants |
 | `dial_timeout`, `tls_handshake_timeout` | `10s` each |
 | `response_header_timeout` | `30s`; also bounds incoming request headers |
 | `idle_timeout` | `2m` for idle tunnels and I/O |
@@ -146,12 +150,12 @@ CONNECT and upstream response headers are limited to 64 KiB. Upstream connection
 at 16 per destination, with 32 idle globally and 8 idle per destination. Bodies stream rather than
 accumulate in memory. Active transfers have idle-I/O deadlines, not total download deadlines.
 Kernel filesystem calls cannot be preempted, so fill expiry and shutdown are not hard deadlines
-when storage stalls. The entry limit bounds index size, not process RSS; tune it to available
-memory.
+when storage stalls. The body-entry and authorization-entry limits bound their respective
+indexes, not total process RSS; tune both to available memory. Restart clears all grants.
 
 Intercepted traffic uses TLS 1.2 or newer and HTTP/1.1. Only bodyless GET, HEAD, and OPTIONS are
 allowed. Mutations, upgrades, authority conflicts, and non-origin-form requests are denied. Tag,
-digest, HEAD, Range, and conditional requests always go upstream.
+`/v2/`, HEAD, Range, and conditional requests always go upstream.
 
 The proxy follows up to five redirects only for eligible query-free SHA-256 blob and digest
 manifest GETs. Redirects must use verified HTTPS and pass destination checks; userinfo,
@@ -199,10 +203,24 @@ repository, digest, object kind, exact Accept values, and observed Content-Type;
 hashed as received. Tags, HEAD, Range, conditional and non-identity encoded responses,
 unknown-length bodies, no-store traffic, and unsupported Vary dimensions bypass storage.
 
-Every cache delivery requires a current terminal upstream 200 and matching length, media type, and
-digest metadata when present. Authorization denials, rate limits, outages, TLS failures, and
-metadata mismatches never fall back to stale data. Current upstream headers are returned rather
-than saved authentication metadata.
+Only full immutable digest blob and manifest GETs can reuse authorization. Grants are keyed by a
+process-local HMAC of the original canonical URL and every forwarded end-to-end header, preserving
+exact values and value order; anonymous requests are distinct. They are fixed-lived from an
+eligible terminal `200`, never renewed on hits, never persisted, and never refreshed or coalesced
+in the background. Tokens are opaque, so revocation or expiry can take effect as late as the
+grant's original expiry. Set `cache.authorization_ttl: 0s` for the old every-delivery upstream
+authorization guarantee.
+
+Every redirect hop must be reusable: `no-cache`, `no-store`, `private`, stale restrictions,
+`Set-Cookie`, `Authentication-Info`, or `WWW-Authenticate` prevent a grant. `max-age`, `s-maxage`,
+and `Expires`, adjusted by `Age` and `Date`, only shorten its lifetime. A fast hit additionally
+requires a present verified body and reconstructs only content type, length, digest, a current
+Date, and `Cache-Control: private, no-store`. Downstream caches must not extend the grant's
+lifetime. If the body is absent, the request goes upstream.
+
+`401`, `403`, `404`, `410`, and authoritative nonreusable responses invalidate the exact grant.
+Timeouts, DNS/TLS failures, `429`, and `5xx` preserve it until its original expiry, but the failed
+request is still returned: there is no failed-request fallback. TLS verification remains enabled.
 
 Use one process per cache directory. Its parent must be owner-controlled; unsafe or unusable
 configured storage fails startup. The limit charges body size plus 4 KiB metadata per entry,
@@ -302,10 +320,14 @@ Real Docker cold, warm, restart, authentication, and trust behavior requires Lin
 Docker Engine, passwordless sudo, `mount`, a non-loopback IPv4 interface, and
 permission to create private PID/mount namespaces and mount procfs:
 
-The multiplatform fixture withholds selected configuration and layer
-bodies during warm and restarted-proxy phases while still authorizing every GET
-and returning valid metadata. Each phase uses fresh Docker state, so successful
-verified pulls prove proxy-cache delivery rather than Docker's local cache.
+The single-platform fixture uses the default authorization TTL and fresh Docker
+stores to verify zero additional blob GETs on a warm pull. After proxy restart,
+the same stored bodies require fresh upstream approval.
+
+The multiplatform fixture uses `cache.authorization_ttl: 0s`, withholds selected
+configuration and layer bodies during warm and restarted-proxy phases, and still
+authorizes every GET with valid metadata. Each phase uses fresh Docker state, so
+successful verified pulls prove proxy-cache delivery rather than Docker's local cache.
 Manifest bodies remain live: Docker reorders `Accept` values across requests,
 which intentionally produces distinct representation keys. Manifest delivery is
 therefore a compatibility check, not cache-hit proof. Tag mutation and access to

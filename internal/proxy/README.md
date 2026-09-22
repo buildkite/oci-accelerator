@@ -19,6 +19,8 @@ design rationale, see the
 | `forwarding.go` | The inner reverse proxy to upstream registries: request validation, header stripping, and the logging/metrics response writer |
 | `registry_transport.go` | Upstream `RoundTrip`, bounded redirect following, cross-origin header stripping, and fill-wait retry |
 | `dial.go` | SSRF-hardened DNS resolution/dialing (`dialUpstream`, `publicIP`) and upstream idle deadlines |
+| `authorization.go` | Process-local HMAC request fingerprints and bounded fixed-TTL authorization grants |
+| `authorization_freshness.go` | Redirect-hop HTTP freshness and authentication-header grant restrictions |
 | `cache_policy.go` | Immutable OCI object recognition, request/response cache eligibility, media types, and metadata/key derivation |
 | `cache.go` | `registryTransport` hit/miss/fill orchestration and `waitForFill` coalescing after the caller's accepted upstream GET |
 | `cache_body.go` | Streaming upstream-byte accounting and cache-fill commit/abort ownership |
@@ -111,8 +113,12 @@ serves a hit, coalesces onto an in-progress fill (`waitForFill`), or starts a ne
 fill. `cache_body.go` mirrors the upstream stream into `internal/cache` and
 commits or aborts the fill as the response body is consumed or closed.
 
-Every cache delivery still requires the client's own authorized upstream GET to
-succeed first; a hit substitutes bytes, never authorization. See the
+For full immutable digest GETs, a live exact-request authorization grant can avoid
+another upstream GET. The default fixed TTL is 30 seconds; setting
+`cache.authorization_ttl` to zero requires the client's own successful upstream
+GET for every delivery. Grants are bounded, process-local HMAC fingerprints of the
+canonical URL and all forwarded end-to-end headers, and a fast hit still requires
+a verified body. See the
 [architecture guide](../../docs/architecture.md#authorization-before-cache-use).
 
 ## Security boundaries
