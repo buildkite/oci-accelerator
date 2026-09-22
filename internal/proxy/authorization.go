@@ -21,23 +21,23 @@ import (
 // namespace as grants, so neither credentials nor unbounded tombstones survive
 // a request. Removing an entry also fences out its outstanding checks.
 type authorizationCache struct {
-	mu      sync.Mutex
-	secret  [32]byte
-	ttl     time.Duration
-	limit   int
-	entries map[[32]byte]*authorizationEntry
-	lru     list.List
+	mu      sync.Mutex                       // guards all fields below against concurrent requests
+	secret  [32]byte                         // per-process HMAC key for fingerprinting requests
+	ttl     time.Duration                    // maximum lifetime granted to any cached authorization
+	limit   int                              // maximum number of entries before LRU eviction
+	entries map[[32]byte]*authorizationEntry // fingerprint to entry lookup for grants and pending checks
+	lru     list.List                        // recency ordering of entries, newest at the front
 }
 
 type authorizationEntry struct {
-	key     [32]byte
-	element *list.Element
-	grant   *authorizationGrant
+	key     [32]byte            // request fingerprint keying this entry in the cache
+	element *list.Element       // this entry's node in the LRU list, for O(1) reordering and removal
+	grant   *authorizationGrant // cached grant, or nil while a check is pending or after invalidation
 }
 
 type authorizationGrant struct {
-	meta    cache.Metadata
-	expires time.Time
+	meta    cache.Metadata // cached object metadata to serve without re-authorizing upstream
+	expires time.Time      // instant past which the grant is stale and must not be reused
 }
 
 func newAuthorizationCache(ttl time.Duration, limit int) *authorizationCache {
@@ -51,7 +51,11 @@ func newAuthorizationCache(ttl time.Duration, limit int) *authorizationCache {
 }
 
 func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
+	// Normalize the host to a canonical host:port authority.
 	authority, _ := hostport.Parse(req.URL.Host, "443")
+
+	// Merge header names that differ only by case into lowercased buckets,
+	// visiting them in sorted order so folding is deterministic.
 	names := make([]string, 0, len(req.Header))
 	for name := range req.Header {
 		names = append(names, name)
@@ -64,6 +68,8 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 		// exact values, including non-UTF-8 bytes allowed in HTTP field values.
 		headers[canonical] = append(headers[canonical], req.Header[name]...)
 	}
+
+	// Keyed HMAC with a length-prefixed writer so field boundaries are unambiguous.
 	mac := hmac.New(sha256.New, c.secret[:])
 	write := func(value string) {
 		var size [8]byte
@@ -71,9 +77,13 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 		mac.Write(size[:])
 		mac.Write([]byte(value))
 	}
+
+	// Absorb the request line: method, scheme, authority, path, and query.
 	for _, value := range []string{req.Method, req.URL.Scheme, authority.String(), req.URL.EscapedPath(), req.URL.RawQuery} {
 		write(value)
 	}
+
+	// Absorb the folded headers in sorted order, each with its value count.
 	names = names[:0]
 	for name := range headers {
 		names = append(names, name)
@@ -86,6 +96,8 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 			write(value)
 		}
 	}
+
+	// Finalize the digest into a fixed-size cache key.
 	var key [32]byte
 	copy(key[:], mac.Sum(nil))
 	return key
@@ -93,8 +105,10 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 
 func (c *authorizationCache) start(req *http.Request) (*authorizationEntry, *authorizationGrant) {
 	key := c.fingerprint(req)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	e := c.entries[key]
 	if e == nil {
 		if len(c.entries) == c.limit {

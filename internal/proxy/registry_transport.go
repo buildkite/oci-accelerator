@@ -88,16 +88,24 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
 
+	// Authorization-grant caching state, populated only when it applies here.
 	var entry *authorizationEntry
 	var deadline time.Time
 	var requestLifetime time.Duration
 	if t.authorization != nil && t.cache != nil && eligible {
+		// Derive how long this request permits a cached grant to be reused.
 		requestLifetime = authorizationLifetime(req.Header, t.authorization.ttl, time.Time{}, time.Time{}, false)
+
+		// Never exceed a tighter lifetime inherited from an earlier hop.
 		if original, ok := req.Context().Value(authorizationLifetimeKey{}).(time.Duration); ok {
 			requestLifetime = min(requestLifetime, original)
 		}
+
+		// Register this request against the shared grant, obtaining the current one.
 		var grant *authorizationGrant
 		entry, grant = t.authorization.start(req)
+
+		// If reuse is allowed and we may block, serve straight from a cached grant.
 		if permitted && requestLifetime > 0 && mayWait {
 			if resp := t.authorizedResponse(req, entry, grant, stats); resp != nil {
 				return resp, false, nil
