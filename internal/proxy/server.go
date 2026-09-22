@@ -23,24 +23,25 @@ const maxHeaderBytes = 64 << 10
 
 // Proxy is an HTTP CONNECT forward proxy.
 type Proxy struct {
-	cfg          config.Config
-	server       *http.Server
-	configured   map[string]struct{}
-	signer       *ca.Authority
-	logger       *slog.Logger
-	transport    *http.Transport
-	cache        *cache.Store
-	destinations map[string]struct{}
-	lookupIP     func(context.Context, string) ([]net.IPAddr, error)
-	dialIP       func(context.Context, string, string) (net.Conn, error)
-	metrics      *metrics
+	cfg          config.Config                                           // static proxy configuration supplied at construction
+	server       *http.Server                                            // outer HTTP server accepting client CONNECT requests
+	configured   map[string]struct{}                                     // registries eligible for TLS interception and caching
+	signer       *ca.Authority                                           // certificate authority for signing intercepted TLS hosts
+	logger       *slog.Logger                                            // structured logger for proxy events
+	transport    *http.Transport                                         // HTTP transport used for upstream requests
+	cache        *cache.Store                                            // layer cache store; nil disables caching
+	destinations map[string]struct{}                                     // hosts allowed as CONNECT targets (registries plus redirects)
+	lookupIP     func(context.Context, string) ([]net.IPAddr, error)     // DNS resolver hook, overridable in tests
+	dialIP       func(context.Context, string, string) (net.Conn, error) // upstream dialer hook, overridable in tests
+	metrics      *metrics                                                // request and cache counters
 
-	mu       sync.Mutex
-	listener net.Listener
-	conns    map[*trackedConn]struct{}
-	tunnels  map[net.Conn]struct{}
-	inners   map[*http.Server]struct{}
-	closing  bool
+	mu       sync.Mutex                // guards the mutable fields below
+	listener net.Listener              // active listener; nil before Serve or after shutdown
+	conns    map[*trackedConn]struct{} // live client connections accepted by the outer server
+	tunnels  map[net.Conn]struct{}     // live upstream connections for passthrough CONNECT tunnels
+	inners   map[*http.Server]struct{} // per-connection inner servers handling intercepted TLS
+	closing  bool                      // set once shutdown starts to reject new inflight work
+
 	// inflight covers CONNECT handlers, including dials, relays and interception.
 	// Add happens under mu while closing is false, before Shutdown can Wait.
 	// Handlers finish only after relay pumps exit and cache bodies are closed.
@@ -53,6 +54,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+
 	transport := &http.Transport{
 		Proxy:                  nil,
 		DisableCompression:     true,
@@ -68,6 +70,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 			NextProtos: []string{"http/1.1"},
 		},
 	}
+
 	p := &Proxy{
 		cfg:          cfg,
 		signer:       signer,
@@ -83,7 +86,9 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		lookupIP:     net.DefaultResolver.LookupIPAddr,
 		dialIP:       (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext,
 	}
+
 	transport.DialContext = p.dialUpstream
+
 	for _, registry := range cfg.Registries {
 		p.configured[registry.String()] = struct{}{}
 		p.destinations[registry.String()] = struct{}{}
@@ -91,6 +96,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 	for _, destination := range cfg.RedirectAllowlist {
 		p.destinations[destination.String()] = struct{}{}
 	}
+
 	p.server = &http.Server{
 		Handler:                      p,
 		DisableGeneralOptionsHandler: true,

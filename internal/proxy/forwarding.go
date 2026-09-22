@@ -86,7 +86,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		r = r.WithContext(context.WithValue(ctx, statsKey{}, stats))
 
 		// Wrap the writer to track status/bytes and apply idle write deadlines.
-		lw := &loggingWriter{ResponseWriter: w, status: http.StatusOK, idleTimeout: p.cfg.IdleTimeout}
+		mw := &meteredWriter{ResponseWriter: w, status: http.StatusOK, idleTimeout: p.cfg.IdleTimeout}
 
 		// On return, record final metrics and emit the structured request log.
 		defer func() {
@@ -94,21 +94,21 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			if completed {
 				outcome = "complete"
 			}
-			p.metrics.finish(stats, outcome, lw.status, time.Since(started), lw.bytes)
-			p.logger.Info("registry request", "registry", target.String(), "status", lw.status, "duration", time.Since(started), "bytes", lw.bytes, "outcome", outcome,
+			p.metrics.finish(stats, outcome, mw.status, time.Since(started), mw.bytes)
+			p.logger.Info("registry request", "registry", target.String(), "status", mw.status, "duration", time.Since(started), "bytes", mw.bytes, "outcome", outcome,
 				"cache", stats.cache, "fill", stats.fill, "admission", stats.admission, "wait", stats.wait, "fallback", stats.fallback, "reject", stats.reject, "upstream_body_bytes", stats.upstreamBytes)
 		}()
 
 		// Forward to the reverse proxy only if the request passes the intercept contract.
-		if !rejectInvalidRequest(lw, r, target) {
-			rp.ServeHTTP(lw, r)
+		if !rejectInvalidRequest(mw, r, target) {
+			rp.ServeHTTP(mw, r)
 		}
 		completed = true
 	})
 }
 
 // rejectInvalidRequest returns true when the request must not reach the reverse proxy.
-func rejectInvalidRequest(lw *loggingWriter, r *http.Request, target hostport.HostPort) bool {
+func rejectInvalidRequest(lw *meteredWriter, r *http.Request, target hostport.HostPort) bool {
 	switch {
 
 	// Require request URI to be a plain absolute path (origin-form): non-empty,
@@ -152,38 +152,6 @@ func readOnlyMethod(method string) bool {
 	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 }
 
-type loggingWriter struct {
-	http.ResponseWriter
-	status      int
-	bytes       int64
-	wroteFinal  bool
-	idleTimeout time.Duration
-}
-
-func (w *loggingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
-func (w *loggingWriter) WriteHeader(code int) {
-	w.setWriteDeadline()
-	if code >= 200 && !w.wroteFinal {
-		w.status, w.wroteFinal = code, true
-	}
-	w.ResponseWriter.WriteHeader(code)
-}
-func (w *loggingWriter) setWriteDeadline() {
-	if w.idleTimeout > 0 {
-		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(w.idleTimeout))
-	}
-}
-func (w *loggingWriter) Write(b []byte) (int, error) {
-	w.setWriteDeadline()
-	n, err := w.ResponseWriter.Write(b)
-	w.bytes += int64(n)
-	return n, err
-}
-func (w *loggingWriter) Flush() {
-	w.setWriteDeadline()
-	_ = http.NewResponseController(w.ResponseWriter).Flush()
-}
-
 func headerHasToken(h http.Header, name, token string) bool {
 	for _, value := range h.Values(name) {
 		for _, part := range strings.Split(value, ",") {
@@ -193,4 +161,40 @@ func headerHasToken(h http.Header, name, token string) bool {
 		}
 	}
 	return false
+}
+
+type meteredWriter struct {
+	http.ResponseWriter
+	status      int
+	bytes       int64
+	wroteFinal  bool
+	idleTimeout time.Duration
+}
+
+func (w *meteredWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *meteredWriter) WriteHeader(code int) {
+	w.setWriteDeadline()
+	if code >= 200 && !w.wroteFinal {
+		w.status, w.wroteFinal = code, true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *meteredWriter) setWriteDeadline() {
+	if w.idleTimeout > 0 {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(w.idleTimeout))
+	}
+}
+
+func (w *meteredWriter) Write(b []byte) (int, error) {
+	w.setWriteDeadline()
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
+}
+
+func (w *meteredWriter) Flush() {
+	w.setWriteDeadline()
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }

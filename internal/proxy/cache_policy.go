@@ -43,12 +43,9 @@ func (p requestPolicy) cacheable() bool { return p == policyCacheable }
 
 type policyKey struct{}
 
-// cacheHeaderRejection reports why the headers forbid caching, or "" if they
-// permit it. The checks and their order are the single source of truth for the
-// caching decision; cacheHeaders is derived from it. The returned reason is a
-// fixed, low-cardinality label used only for diagnostics — it never changes the
-// decision itself.
+// cacheHeaderRejection reports why the headers forbid caching, or "" if they permit it.
 func cacheHeaderRejection(h http.Header, digest string) string {
+	// Reject when Cache-Control explicitly forbids storing the response.
 	for _, value := range h.Values("Cache-Control") {
 		for _, directive := range strings.Split(value, ",") {
 			name, _, _ := strings.Cut(directive, "=")
@@ -57,6 +54,8 @@ func cacheHeaderRejection(h http.Header, digest string) string {
 			}
 		}
 	}
+
+	// Reject when Vary makes the response depend on any request header other than Accept.
 	for _, value := range h.Values("Vary") {
 		for _, name := range strings.Split(value, ",") {
 			if !strings.EqualFold(strings.TrimSpace(name), "Accept") {
@@ -64,11 +63,14 @@ func cacheHeaderRejection(h http.Header, digest string) string {
 			}
 		}
 	}
+
+	// Reject when the upstream digest disagrees with the digest we requested.
 	for _, value := range h.Values("Docker-Content-Digest") {
 		if value != digest {
 			return "digest_mismatch"
 		}
 	}
+
 	return ""
 }
 

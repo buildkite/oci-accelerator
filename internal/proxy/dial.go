@@ -12,16 +12,20 @@ import (
 func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.DialTimeout)
 	defer cancel()
+
 	a, err := hostport.Parse(address, "443")
 	if err != nil {
 		// The address is unparseable, so there is no safe host to name.
 		return nil, p.refuseDial("", errDialAddress)
 	}
+
 	_, permitted := p.destinations[a.String()]
+
 	ips, err := p.lookupIP(ctx, a.Host())
 	if err != nil || len(ips) == 0 {
 		return nil, p.refuseDial(a.String(), errDialResolve)
 	}
+
 	// Validate the entire answer before making any connection. Never resolve
 	// the hostname again after validation (DNS rebinding).
 	for _, ip := range ips {
@@ -29,6 +33,8 @@ func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.
 			return nil, p.refuseDial(a.String(), errDialForbidden)
 		}
 	}
+
+	// Try each address in turn, dividing the remaining dial budget evenly among the addresses not yet attempted.
 	deadline, _ := ctx.Deadline() // WithTimeout above always supplies a deadline.
 	for i, ip := range ips {
 		if ctx.Err() != nil {
@@ -43,6 +49,7 @@ func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.
 			return &idleReadWriteConn{Conn: conn, timeout: p.cfg.IdleTimeout}, nil
 		}
 	}
+
 	return nil, p.refuseDial(a.String(), errDialConnect)
 }
 
