@@ -228,7 +228,7 @@ func TestAuthorizationRechecksPreserveTransientAndInvalidateDenials(t *testing.T
 	e, grant := tr.authorization.start(req)
 	expired := *grant
 	expired.expires = time.Now().Add(-time.Second)
-	tr.authorization.complete(e, &expired)
+	tr.authorization.commit(e, &expired)
 	status.Store(503)
 	fetch(true, 503, "upstream result\n")
 }
@@ -312,6 +312,75 @@ func TestAuthorizationGrantCannotServeIncompleteFill(t *testing.T) {
 	assertAuthorizationBody(t, resp, 403, "revoked\n")
 	if gets.Load() != 2 {
 		t.Fatal("incomplete fill skipped the upstream check")
+	}
+}
+
+// TestAuthorizationMissCommitsGrant guards the grantAttempt contract that a
+// cache miss must still register an in-flight attempt so a terminal success
+// commits a grant. A refactor that skipped registration on the miss path would
+// silently disable grant caching for every request that is not already a hit.
+func TestAuthorizationMissCommitsGrant(t *testing.T) {
+	const body = "committed on miss"
+	for _, redirect := range []bool{false, true} {
+		name := "direct"
+		if redirect {
+			name = "redirect"
+		}
+		t.Run(name, func(t *testing.T) {
+			var originGets, cdnGets atomic.Int32
+			var cdn *httptest.Server
+			if redirect {
+				cdn = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					cdnGets.Add(1)
+					blobHeaders(w, body)
+					io.WriteString(w, body)
+				}))
+				defer cdn.Close()
+			}
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				originGets.Add(1)
+				if redirect {
+					w.Header().Set("Location", cdn.URL+"/signed?secret=temporary")
+					w.WriteHeader(307)
+					return
+				}
+				blobHeaders(w, body)
+				io.WriteString(w, body)
+			}))
+			defer origin.Close()
+
+			p, _ := cacheFixture(t, origin, 1<<20, nil)
+			tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, 10)}
+			if redirect {
+				a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
+				p.destinations[a.String()] = struct{}{}
+				p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
+			}
+			req := authorizationRequest(t, origin.URL+blobURL(body), "Bearer client")
+
+			// First request is a cache miss: it must reach upstream and, on the
+			// terminal 200, commit a grant despite serving no cached body.
+			resp, _, err := tr.roundTrip(req, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAuthorizationBody(t, resp, 200, body)
+
+			// The immediately following request must be a fast hit served from
+			// the committed grant, without any further upstream traffic.
+			beforeOrigin, beforeCdn := originGets.Load(), cdnGets.Load()
+			resp, _, err = tr.roundTrip(req.Clone(req.Context()), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAuthorizationBody(t, resp, 200, body)
+			if resp.Header.Get("Cache-Control") != "private, no-store" {
+				t.Fatalf("second request was not a grant fast hit: %v", resp.Header)
+			}
+			if originGets.Load() != beforeOrigin || cdnGets.Load() != beforeCdn {
+				t.Fatalf("fast hit went upstream: origin +%d cdn +%d", originGets.Load()-beforeOrigin, cdnGets.Load()-beforeCdn)
+			}
+		})
 	}
 }
 

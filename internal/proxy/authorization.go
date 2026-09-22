@@ -50,6 +50,58 @@ func newAuthorizationCache(ttl time.Duration, limit int) *authorizationCache {
 	return c
 }
 
+func (c *authorizationCache) start(req *http.Request) (*authorizationEntry, *authorizationGrant) {
+	key := c.fingerprint(req)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	e := c.entries[key]
+	if e == nil {
+		if len(c.entries) == c.limit {
+			c.remove(c.lru.Back().Value.(*authorizationEntry))
+		}
+		e = &authorizationEntry{key: key}
+		e.element = c.lru.PushFront(e)
+		c.entries[key] = e
+	} else {
+		c.lru.MoveToFront(e.element)
+	}
+	if e.grant != nil && !time.Now().Before(e.grant.expires) {
+		e.grant = nil
+	}
+	return e, e.grant
+}
+
+// commit records a successful authorization on e's entry. It fences successes
+// whose entry was invalidated or evicted while the request was in flight: the
+// grant is stored only if e is still the current entry for its identity.
+func (c *authorizationCache) commit(e *authorizationEntry, grant *authorizationGrant) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries[e.key] == e {
+		e.grant = grant
+	}
+}
+
+// invalidate abandons any cached authorization for e's identity. It removes the
+// current entry even if a later attempt replaced e, so a denial or nonreusable
+// response cannot be overridden by a concurrent success. A transient failure
+// must not call invalidate: it leaves the existing grant intact.
+func (c *authorizationCache) invalidate(e *authorizationEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if current := c.entries[e.key]; current != nil {
+		c.remove(current)
+	}
+}
+
+func (c *authorizationCache) valid(e *authorizationEntry, g *authorizationGrant) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.entries[e.key] == e && e.grant == g && time.Now().Before(g.expires)
+}
+
 func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	// Normalize the host to a canonical host:port authority.
 	authority, _ := hostport.Parse(req.URL.Host, "443")
@@ -103,53 +155,9 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	return key
 }
 
-func (c *authorizationCache) start(req *http.Request) (*authorizationEntry, *authorizationGrant) {
-	key := c.fingerprint(req)
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	e := c.entries[key]
-	if e == nil {
-		if len(c.entries) == c.limit {
-			c.remove(c.lru.Back().Value.(*authorizationEntry))
-		}
-		e = &authorizationEntry{key: key}
-		e.element = c.lru.PushFront(e)
-		c.entries[key] = e
-	} else {
-		c.lru.MoveToFront(e.element)
-	}
-	if e.grant != nil && !time.Now().Before(e.grant.expires) {
-		e.grant = nil
-	}
-	return e, e.grant
-}
-
 func (c *authorizationCache) remove(e *authorizationEntry) {
 	delete(c.entries, e.key)
 	c.lru.Remove(e.element)
-}
-
-// complete fences successes whose entry was invalidated or evicted while the
-// request was in flight. Denials invalidate even a replacement entry for this
-// identity. A transient failure does not call complete at all.
-func (c *authorizationCache) complete(e *authorizationEntry, grant *authorizationGrant) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if grant == nil {
-		if current := c.entries[e.key]; current != nil {
-			c.remove(current)
-		}
-	} else if c.entries[e.key] == e {
-		e.grant = grant
-	}
-}
-
-func (c *authorizationCache) valid(e *authorizationEntry, g *authorizationGrant) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.entries[e.key] == e && e.grant == g && time.Now().Before(g.expires)
 }
 
 func (t registryTransport) authorizedResponse(req *http.Request, e *authorizationEntry, g *authorizationGrant, stats *requestStats) *http.Response {

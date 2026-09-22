@@ -75,7 +75,7 @@ func TestAuthorizationStoreExpiryDoesNotRenewOnHit(t *testing.T) {
 		r := authorizationRequest(t, "https://registry.test/v2/x", "Bearer x")
 		e, _ := c.start(r)
 		g := &authorizationGrant{meta: cache.Metadata{Key: "x"}, expires: time.Now().Add(c.ttl)}
-		c.complete(e, g)
+		c.commit(e, g)
 		time.Sleep(20 * time.Second)
 		if gotEntry, got := c.start(r); gotEntry != e || got != g {
 			t.Fatal("grant expired too early")
@@ -96,16 +96,16 @@ func TestAuthorizationStoreBoundsPendingAndFencesCompletion(t *testing.T) {
 	e2, _ := c.start(r2)
 	c.start(r1) // r1 is most recently used, so pending r2 must be evicted.
 	c.start(r3)
-	c.complete(e2, &authorizationGrant{expires: time.Now().Add(time.Minute)})
+	c.commit(e2, &authorizationGrant{expires: time.Now().Add(time.Minute)})
 	if _, got := c.start(r2); got != nil {
 		t.Fatal("evicted pending completion restored a grant")
 	}
 
 	old, _ := c.start(r1)
-	c.complete(old, nil)
+	c.invalidate(old)
 	replacement, _ := c.start(r1)
 	grant := &authorizationGrant{expires: time.Now().Add(time.Minute)}
-	c.complete(old, grant)
+	c.commit(old, grant)
 	if replacement == old {
 		t.Fatal("invalidation did not create a new entry")
 	}
@@ -123,14 +123,14 @@ func TestAuthorizationDenialAfterEvictionInvalidatesReplacement(t *testing.T) {
 	old, _ := c.start(req)
 	c.start(authorizationRequest(t, "https://registry.test/v2/b", "Bearer b"))
 	replacement, _ := c.start(req)
-	c.complete(replacement, &authorizationGrant{expires: time.Now().Add(time.Minute)})
+	c.commit(replacement, &authorizationGrant{expires: time.Now().Add(time.Minute)})
 	// The older check's denial is still authoritative even though pressure
 	// evicted its bookkeeping entry before the replacement was approved.
-	c.complete(old, nil)
+	c.invalidate(old)
 	if _, grant := c.start(req); grant != nil {
 		t.Fatal("eviction hid a denial from the replacement grant")
 	}
-	c.complete(replacement, &authorizationGrant{expires: time.Now().Add(time.Minute)})
+	c.commit(replacement, &authorizationGrant{expires: time.Now().Add(time.Minute)})
 	if _, grant := c.start(req); grant != nil {
 		t.Fatal("invalidation allowed a late replacement approval")
 	}
@@ -147,12 +147,12 @@ func TestAuthorizationStoreConcurrentSafety(t *testing.T) {
 				r := authorizationRequest(t, fmt.Sprintf("https://registry.test/v2/%d", i%16), fmt.Sprintf("Bearer %d", worker%4))
 				e, g := c.start(r)
 				if g == nil {
-					c.complete(e, &authorizationGrant{expires: time.Now().Add(time.Minute)})
+					c.commit(e, &authorizationGrant{expires: time.Now().Add(time.Minute)})
 				} else {
 					c.valid(e, g)
 				}
 				if i%11 == 0 {
-					c.complete(e, nil)
+					c.invalidate(e)
 				}
 			}
 		}(worker)

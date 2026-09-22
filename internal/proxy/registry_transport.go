@@ -82,72 +82,42 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 		policy = policyBypass
 	}
 
-	// Seed variables for the following loop
+	// Seed the eligibility, permission, and redirect-tracking state used below.
 	eligible := policy.eligible()
 	permitted := policy.cacheable()
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
 
-	// Authorization-grant caching state, populated only when it applies here.
-	var entry *authorizationEntry
-	var deadline time.Time
-	var requestLifetime time.Duration
-	if t.authorization != nil && t.cache != nil && eligible {
-		// Derive how long this request permits a cached grant to be reused.
-		requestLifetime = authorizationLifetime(req.Header, t.authorization.ttl, time.Time{}, time.Time{}, false)
-
-		// Never exceed a tighter lifetime inherited from an earlier hop.
-		if original, ok := req.Context().Value(authorizationLifetimeKey{}).(time.Duration); ok {
-			requestLifetime = min(requestLifetime, original)
-		}
-
-		// Register this request against the shared grant, obtaining the current one.
-		var grant *authorizationGrant
-		entry, grant = t.authorization.start(req)
-
-		// If reuse is allowed and we may block, serve straight from a cached grant.
-		if permitted && requestLifetime > 0 && mayWait {
-			if resp := t.authorizedResponse(req, entry, grant, stats); resp != nil {
-				return resp, false, nil
-			}
-		}
+	// Fast path: try to serve entirely from a cached authorization grant. On a
+	// hit this returns without upstream I/O; otherwise attempt carries the
+	// registered in-flight bookkeeping (or is nil when grant caching does not
+	// apply) for the upstream path below to settle.
+	resp, attempt := t.beginGrantAttempt(req, object, eligible, permitted, mayWait, stats)
+	if resp != nil {
+		return resp, false, nil
 	}
 
-	// Loop to follow redirect hops.
+	// Upstream path: follow redirect hops, then hand off to resolveResponse.
 	for hops := 0; ; hops++ {
 
 		// Single network round trip for this hop via the shared stdlib transport
 		// (t.upstream); this registryTransport wraps it with retry, redirects, caching.
-		sent := time.Now()
 		resp, err := t.upstream.RoundTrip(current)
 		if err != nil {
 			return nil, false, err
 		}
+
 		received := time.Now()
-		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 && resp.StatusCode <= 599
-		if entry != nil && !transient {
-			lifetime := authorizationLifetime(resp.Header, requestLifetime, sent, received, true)
-			hopDeadline := received.Add(lifetime)
-			if deadline.IsZero() || hopDeadline.Before(deadline) {
-				deadline = hopDeadline
-			}
-			if !permitted || lifetime <= 0 || !cacheHeaders(resp.Header, object.digest) {
-				t.authorization.complete(entry, nil)
-			}
-		}
+
+		// Narrow the grant deadline to this hop's freshness, abandoning it if the
+		// hop forbids caching. Must precede settle so the deadline is set.
+		attempt.narrow(resp, received, permitted)
 
 		// This hop is terminal: either not cache-eligible, or not a redirect to follow.
 		// resolveResponse is the single exit — it meters the body and either bypasses
 		// (ineligible) or caches (hit/fill) before returning the response to the client.
 		if !eligible || !redirectStatus(resp.StatusCode) {
-			if entry != nil && !transient {
-				meta, ok := objectMetadata(req, resp)
-				if ok && permitted && received.Before(deadline) {
-					t.authorization.complete(entry, &authorizationGrant{meta: meta, expires: deadline})
-				} else {
-					t.authorization.complete(entry, nil)
-				}
-			}
+			attempt.settle(req, resp, received, permitted)
 			return t.resolveResponse(req, resp, permitted, mayWait, stats)
 		}
 
@@ -160,18 +130,14 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 
 		// Limit redirect depth to 5 hops
 		if hops == 5 {
-			if entry != nil {
-				t.authorization.complete(entry, nil)
-			}
+			attempt.abandon()
 			return nil, false, errRedirect
 		}
 
 		// Resolve and validate Location. Refuse anything unsafe or already seen.
 		next, err := redirectURL(current.URL, resp.Header.Get("Location"))
 		if err != nil || seen[next.String()] {
-			if entry != nil {
-				t.authorization.complete(entry, nil)
-			}
+			attempt.abandon()
 			return nil, false, errRedirect
 		}
 
@@ -206,6 +172,12 @@ func buildRedirectRequest(ctx context.Context, current *http.Request, next *url.
 
 func redirectStatus(status int) bool {
 	return status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+}
+
+// isTransient reports whether a status is a retryable upstream failure whose
+// response must not disturb a cached authorization grant.
+func isTransient(status int) bool {
+	return status == http.StatusTooManyRequests || (status >= 500 && status <= 599)
 }
 
 func redirectURL(base *url.URL, location string) (*url.URL, error) {

@@ -211,9 +211,11 @@ in the background. Tokens are opaque, so revocation or expiry can take effect as
 grant's original expiry. Set `cache.authorization_ttl: 0s` for the old every-delivery upstream
 authorization guarantee.
 
-Every redirect hop must be reusable: `no-cache`, `no-store`, `private`, stale restrictions,
-`Set-Cookie`, `Authentication-Info`, or `WWW-Authenticate` prevent a grant. `max-age`, `s-maxage`,
-and `Expires`, adjusted by `Age` and `Date`, only shorten its lifetime. A fast hit additionally
+Every redirect hop must be reusable: `no-cache`, `no-store`, `private`, `min-fresh`, `Pragma`,
+`Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or `WWW-Authenticate` prevent a grant. Only the explicit
+`max-age` and `s-maxage` ceilings shorten a grant's lifetime below the configured
+`authorization_ttl`; `Age`, `Date`, and `Expires` are ignored, so a grant never outlives that TTL
+but may be trusted for up to the full residual TTL regardless of upstream age. A fast hit additionally
 requires a present verified body and reconstructs only content type, length, digest, a current
 Date, and `Cache-Control: private, no-store`. Downstream caches must not extend the grant's
 lifetime. If the body is absent, the request goes upstream.

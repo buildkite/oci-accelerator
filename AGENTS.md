@@ -50,6 +50,10 @@
   requirements.
 - Prefer many small, focused Go files over a few large files. Organize files
   by coherent responsibility, keeping closely related code together.
+- Order declarations within a file in newspaper style: the most important,
+  highest-level declarations first, with supporting detail beneath. Types and
+  entry points lead; callers precede callees; private helpers sink below the
+  code that uses them.
 
 ## Executable verification
 

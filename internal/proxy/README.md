@@ -20,7 +20,8 @@ design rationale, see the
 | `registry_transport.go` | Upstream `RoundTrip`, bounded redirect following, cross-origin header stripping, and fill-wait retry |
 | `dial.go` | SSRF-hardened DNS resolution/dialing (`dialUpstream`, `publicIP`) and upstream idle deadlines |
 | `authorization.go` | Process-local HMAC request fingerprints and bounded fixed-TTL authorization grants |
-| `authorization_freshness.go` | Redirect-hop HTTP freshness and authentication-header grant restrictions |
+| `authorization_freshness.go` | Redirect-hop cacheability check and `max-age`/`s-maxage` grant lifetime ceiling |
+| `authorization_attempt.go` | The `grantAttempt` lifecycle across redirect hops: fast-path hit, per-hop deadline narrowing, and commit/invalidate settling |
 | `cache_policy.go` | Immutable OCI object recognition, request/response cache eligibility, media types, and metadata/key derivation |
 | `cache.go` | `registryTransport` hit/miss/fill orchestration and `waitForFill` coalescing after the caller's accepted upstream GET |
 | `cache_body.go` | Streaming upstream-byte accounting and cache-fill commit/abort ownership |

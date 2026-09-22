@@ -71,12 +71,14 @@ approval may continue to authorize an exact-fingerprint hit until the grant's
 original expiry.
 
 Approval is conservative across every redirect hop. Any `no-cache`, `no-store`,
-`private`, stale, or otherwise nonreusable HTTP freshness restriction prevents a
-grant. `max-age`, `s-maxage`, and `Expires`, corrected using `Age` and `Date`, can
-only shorten the configured TTL; restrictions at any hop apply. Without an explicit
-upstream lifetime, age consumes the configured TTL rather than receiving a fresh
-budget. Any hop containing
-`Set-Cookie`, `Authentication-Info`, or `WWW-Authenticate` also prevents reuse.
+`private`, `min-fresh`, `Pragma`, or otherwise nonreusable HTTP freshness restriction
+prevents a grant. Only the explicit `max-age` and `s-maxage` ceilings can shorten the
+configured TTL; restrictions at any hop apply. `Age`, `Date`, and `Expires` are not
+consulted, so a grant never outlives the configured TTL but is not further reduced by
+upstream age: cached objects are immutable and digest-verified, and the short TTL bounds
+any over-trust. Any hop containing
+`Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or `WWW-Authenticate`
+also prevents reuse.
 
 A fast hit requires both a live exact grant and a present, verified body. It returns
 that body with only reconstructed Content-Type, Content-Length,
