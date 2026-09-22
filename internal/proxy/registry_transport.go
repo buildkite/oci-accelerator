@@ -91,7 +91,7 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	// Fast path: serve from a cached authorization grant with no upstream I/O.
 	// On a miss, attempt carries the in-flight entry for the upstream path below
 	// to settle, or is nil when grant caching does not apply.
-	resp, attempt := t.beginGrantAttempt(req, object, eligible, permitted, mayWait, stats)
+	resp, attempt := t.beginGrantAttempt(req, object, cacheShaped, permitted, mayWait, stats)
 	if resp != nil {
 		return resp, false, nil
 	}

@@ -87,6 +87,10 @@ downstream caches cannot extend the authorization lifetime. If the body is absen
 cannot be verified, the request goes upstream; a grant is never a body or failure
 fallback. Existing body-cache admission and request-bypass rules are unchanged.
 
+A bypass whose Range or conditional headers are stripped as hop-by-hop can become
+an identical forwarded GET. Its response still participates in grant invalidation,
+but the original bypass prohibits fast serving, grant creation, and redirect following.
+
 An upstream `401`, `403`, `404`, or `410`, or another authoritative response that
 cannot establish reuse, invalidates the exact grant. Timeouts, DNS or TLS errors,
 `408`, `429`, and `5xx` responses preserve an existing grant only until its original

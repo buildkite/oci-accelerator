@@ -91,6 +91,73 @@ func TestAuthorizationFastHitsMatchEntireRequest(t *testing.T) {
 	}
 }
 
+func TestAuthorizationStrippedBypassInvalidatesGrant(t *testing.T) {
+	const body = "verified object"
+	for _, header := range []string{"Range", "If-None-Match"} {
+		for _, code := range []int{200, 401, 403} {
+			t.Run(fmt.Sprintf("%s/%d", header, code), func(t *testing.T) {
+				var gets atomic.Int32
+				origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Header.Get(header) != "" || r.Header.Get("Connection") != "" {
+						t.Error("hop-by-hop bypass headers reached upstream")
+					}
+					if r.Header.Get("Accept-Encoding") != "identity" {
+						t.Error("forwarded requests differ in Accept-Encoding")
+					}
+					switch gets.Add(1) {
+					case 1:
+						blobHeaders(w, body)
+						io.WriteString(w, body)
+					case 2:
+						blobHeaders(w, body)
+						w.WriteHeader(code)
+						io.WriteString(w, body)
+					default:
+						http.Error(w, "revoked", 403)
+					}
+				}))
+				defer origin.Close()
+				p, client := cacheFixture(t, origin, 1<<20, nil)
+				p.authorization = newAuthorizationCache(time.Minute, 10)
+				base := authorizationRequest(t, origin.URL+blobURL(body), "Bearer client")
+				// net/http adds gzip only to non-Range requests by default.
+				// Keep the forwarded identities equal after hop-header stripping.
+				base.Header.Set("Accept-Encoding", "identity")
+				fetch := func(req *http.Request, status int, wantBody string) {
+					t.Helper()
+					resp, err := client.Do(req.Clone(req.Context()))
+					if err != nil {
+						t.Fatal(err)
+					}
+					assertAuthorizationBody(t, resp, status, wantBody)
+				}
+				fetch(base, 200, body)
+				fetch(base, 200, body)
+				if gets.Load() != 1 {
+					t.Fatal("expected a live grant before bypass")
+				}
+				bypass := base.Clone(base.Context())
+				bypass.Header.Set("Connection", header)
+				value := "bytes=0-1"
+				if header == "If-None-Match" {
+					value = `"etag"`
+				}
+				bypass.Header.Set(header, value)
+				fetch(bypass, code, body)
+				if gets.Load() != 2 {
+					t.Fatal("original bypass used the fast path")
+				}
+				// A denial must invalidate the old grant. Even a complete 200
+				// for the forwarded GET must not commit a grant for a bypass.
+				fetch(base, 403, "revoked\n")
+				if gets.Load() != 3 {
+					t.Fatal("bypass retained or committed a reusable grant")
+				}
+			})
+		}
+	}
+}
+
 func TestAuthorizationRedirectRestrictions(t *testing.T) {
 	const body = "verified redirected bytes"
 	for _, restriction := range []string{"", "Set-Cookie", "Authentication-Info", "WWW-Authenticate", "Cache-Control"} {

@@ -26,8 +26,12 @@ type grantAttempt struct {
 // later settle, or is nil when grant caching does not apply. A cache miss still
 // returns a non-nil attempt: the entry must remain registered so a terminal
 // success can commit a grant.
-func (t registryTransport) beginGrantAttempt(req *http.Request, object immutableObject, eligible, permitted, mayWait bool, stats *requestStats) (*http.Response, *grantAttempt) {
-	if t.authorization == nil || t.cache == nil || !eligible {
+//
+// Use the forwarded request's shape to register even an original bypass whose
+// Range or conditional headers were stripped. Its response can invalidate a
+// matching grant, but permitted remains false so it cannot serve or commit one.
+func (t registryTransport) beginGrantAttempt(req *http.Request, object immutableObject, cacheShaped, permitted, mayWait bool, stats *requestStats) (*http.Response, *grantAttempt) {
+	if t.authorization == nil || t.cache == nil || !cacheShaped {
 		return nil, nil
 	}
 
