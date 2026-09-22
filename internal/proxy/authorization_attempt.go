@@ -38,10 +38,10 @@ func (t registryTransport) beginGrantAttempt(req *http.Request, object immutable
 		requestLifetime = min(requestLifetime, original)
 	}
 
-	// Register this request against the shared grant, obtaining the current one.
+	// Register this request's in-flight entry, obtaining any current grant.
 	entry, grant := t.authorization.start(req)
 
-	// If reuse is allowed and we may block, serve straight from a cached grant.
+	// Serve from a cached grant if reuse is allowed and we may wait.
 	if permitted && requestLifetime > 0 && mayWait {
 		if resp := t.authorizedResponse(req, entry, grant, stats); resp != nil {
 			return resp, nil
