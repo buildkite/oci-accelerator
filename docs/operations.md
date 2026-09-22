@@ -221,8 +221,10 @@ Date, and `Cache-Control: private, no-store`. Downstream caches must not extend 
 lifetime. If the body is absent, the request goes upstream.
 
 `401`, `403`, `404`, `410`, and authoritative nonreusable responses invalidate the exact grant.
-Timeouts, DNS/TLS failures, `429`, and `5xx` preserve it until its original expiry, but the failed
-request is still returned: there is no failed-request fallback. TLS verification remains enabled.
+Timeouts, DNS/TLS failures, `408`, `429`, and `5xx` preserve it until its original expiry, unless
+the response carries `Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or
+`WWW-Authenticate`. These headers invalidate the grant regardless of status. The failed request
+is still returned: there is no failed-request fallback. TLS verification remains enabled.
 
 Use one process per cache directory. Its parent must be owner-controlled; unsafe or unusable
 configured storage fails startup. The limit charges body size plus 4 KiB metadata per entry,

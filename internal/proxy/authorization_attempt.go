@@ -60,9 +60,16 @@ func (t registryTransport) beginGrantAttempt(req *http.Request, object immutable
 // grant outright if the hop forbids caching. It must run before settle so the
 // deadline reflects the terminal hop. permitted is passed per hop because
 // caching permission erodes across the redirect chain. Transient failures are
-// ignored so the existing grant is preserved.
+// ignored unless they carry authentication-state headers.
 func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted bool) {
-	if a == nil || isTransient(resp.StatusCode) {
+	if a == nil {
+		return
+	}
+	if hasAuthenticationState(resp.Header) {
+		a.cache.invalidate(a.entry)
+		return
+	}
+	if isTransient(resp.StatusCode) {
 		return
 	}
 
@@ -80,8 +87,8 @@ func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted
 
 // settle commits a grant for an eligible terminal response, or invalidates the
 // entry otherwise. It relies on narrow having run for the same hop, so the
-// deadline is already set. Transient failures are ignored so the existing grant
-// is preserved.
+// deadline and authentication-state restrictions have already been applied.
+// Transient failures cannot establish a grant.
 func (a *grantAttempt) settle(req *http.Request, resp *http.Response, received time.Time, permitted bool) {
 	if a == nil || isTransient(resp.StatusCode) {
 		return

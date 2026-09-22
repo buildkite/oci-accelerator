@@ -174,9 +174,9 @@ func redirectStatus(status int) bool {
 }
 
 // isTransient reports whether a status is a retryable upstream failure whose
-// response must not disturb a cached authorization grant.
+// status alone must not disturb a cached authorization grant.
 func isTransient(status int) bool {
-	return status == http.StatusTooManyRequests || (status >= 500 && status <= 599)
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || (status >= 500 && status <= 599)
 }
 
 func redirectURL(base *url.URL, location string) (*url.URL, error) {

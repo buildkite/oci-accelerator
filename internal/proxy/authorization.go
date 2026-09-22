@@ -89,7 +89,7 @@ func (c *authorizationCache) commit(e *authorizationEntry, grant *authorizationG
 // invalidate abandons any cached authorization for e's identity. It removes the
 // current entry even if a later attempt replaced e, so a denial or nonreusable
 // response cannot be overridden by a concurrent success. A transient failure
-// must not call invalidate: it leaves the existing grant intact.
+// without authentication-state headers leaves the existing grant intact.
 func (c *authorizationCache) invalidate(e *authorizationEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

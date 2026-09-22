@@ -16,10 +16,8 @@ type authorizationLifetimeKey struct{}
 // a short TTL that already bounds every grant.
 func authorizationLifetime(h http.Header, limit time.Duration) time.Duration {
 	// Per-message state we cannot safely reuse across requests forbids caching.
-	for _, name := range []string{"Set-Cookie", "Authentication-Info", "Proxy-Authentication-Info", "WWW-Authenticate"} {
-		if _, present := h[http.CanonicalHeaderKey(name)]; present {
-			return 0
-		}
+	if hasAuthenticationState(h) {
+		return 0
 	}
 
 	// Pragma (typically no-cache) signals the message must not be reused.
@@ -63,6 +61,15 @@ func authorizationLifetime(h http.Header, limit time.Duration) time.Duration {
 	}
 
 	return max(0, min(limit, lifetime))
+}
+
+func hasAuthenticationState(h http.Header) bool {
+	for _, name := range []string{"Set-Cookie", "Authentication-Info", "Proxy-Authentication-Info", "WWW-Authenticate"} {
+		if _, present := h[http.CanonicalHeaderKey(name)]; present {
+			return true
+		}
+	}
+	return false
 }
 
 func authorizationSeconds(value string) (time.Duration, bool) {

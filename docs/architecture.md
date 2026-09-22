@@ -89,9 +89,10 @@ fallback. Existing body-cache admission and request-bypass rules are unchanged.
 
 An upstream `401`, `403`, `404`, or `410`, or another authoritative response that
 cannot establish reuse, invalidates the exact grant. Timeouts, DNS or TLS errors,
-`429`, and `5xx` responses preserve an existing grant only until its original
-expiry, but the failed request itself is returned: it never falls back to the
-cached body. TLS verification is never disabled.
+`408`, `429`, and `5xx` responses preserve an existing grant only until its original
+expiry, unless the response carries any of the authentication-state headers above.
+Those headers invalidate the grant regardless of status. The failed request itself
+is returned: it never falls back to the cached body. TLS verification is never disabled.
 
 ## Redirect boundary
 

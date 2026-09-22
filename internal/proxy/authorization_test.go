@@ -179,7 +179,7 @@ func TestAuthorizationRechecksPreserveTransientAndInvalidateDenials(t *testing.T
 		assertAuthorizationBody(t, resp, wantStatus, wantBody)
 	}
 	fetch(true, 200, body)
-	for _, code := range []int{429, 500, 503} {
+	for _, code := range []int{408, 429, 500, 503} {
 		status.Store(int32(code))
 		fetch(false, code, "upstream result\n")
 		before := gets.Load()
@@ -231,6 +231,51 @@ func TestAuthorizationRechecksPreserveTransientAndInvalidateDenials(t *testing.T
 	tr.authorization.commit(e, &expired)
 	status.Store(503)
 	fetch(true, 503, "upstream result\n")
+}
+
+func TestAuthorizationTransientAuthenticationStateInvalidatesGrant(t *testing.T) {
+	const body = "authorized object"
+	for _, code := range []int{408, 429, 500, 503} {
+		for _, header := range []string{"Set-Cookie", "Authentication-Info", "Proxy-Authentication-Info", "WWW-Authenticate"} {
+			t.Run(fmt.Sprintf("%d/%s", code, header), func(t *testing.T) {
+				var gets atomic.Int32
+				origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if gets.Add(1) == 1 {
+						blobHeaders(w, body)
+						io.WriteString(w, body)
+						return
+					}
+					// Even an empty authentication-state header forbids reuse.
+					w.Header().Set(header, "")
+					http.Error(w, "upstream result", code)
+				}))
+				defer origin.Close()
+				p, _ := cacheFixture(t, origin, 1<<20, nil)
+				tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, 10)}
+				req := authorizationRequest(t, origin.URL+blobURL(body), "Bearer client")
+				for i, fast := range []bool{true, true, false, true} {
+					resp, _, err := tr.roundTrip(req.Clone(req.Context()), fast)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if i < 2 {
+						assertAuthorizationBody(t, resp, 200, body)
+						if gets.Load() != 1 {
+							t.Fatal("expected a live grant and cached body before recheck")
+						}
+					} else {
+						assertAuthorizationBody(t, resp, code, "upstream result\n")
+						if _, present := resp.Header[http.CanonicalHeaderKey(header)]; !present {
+							t.Fatal("lost upstream authentication-state header")
+						}
+					}
+				}
+				if gets.Load() != 3 {
+					t.Fatalf("origin requests = %d, want 3 after grant invalidation", gets.Load())
+				}
+			})
+		}
+	}
 }
 
 func TestAuthorizationLateSuccessCannotRestoreDeniedGrant(t *testing.T) {
