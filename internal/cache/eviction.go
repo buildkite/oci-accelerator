@@ -47,6 +47,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func
 	if !s.batchSuffices(candidates, need, needSlots) {
 		return ErrBypass
 	}
+
 	// Select the batch to remove. Admission eviction (maxAttempts > 0) removes at
 	// most maxAttempts victims per call, resuming from the recorded cursor. The
 	// sufficiency gate above guarantees at least one candidate here, so count >= 1

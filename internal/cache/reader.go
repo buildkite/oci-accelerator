@@ -60,19 +60,25 @@ func (r *Reader) Close() error {
 // been replaced. The callbacks are nil in production and are per-call test
 // seams for pausing after verification begins and immediately before a wait.
 func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, beforeWait func()) (*Reader, error) {
+	// Malformed keys can never name a committed entry, so skip the lookup.
 	if !validMeta(meta) {
 		return nil, ErrMiss
 	}
 	for {
+		// Abandon the lookup if the caller has already given up.
 		if ctx.Err() != nil {
 			return nil, ErrMiss
 		}
+
+		// Select a live entry that still matches the requested generation.
 		s.mu.Lock()
 		e := s.entries[meta.Key]
 		if s.closed || e == nil || e.meta != meta || e.invalid || e.claimed {
 			s.mu.Unlock()
 			return nil, ErrMiss
 		}
+
+		// A verification is already in flight: wait for it, then retry the lookup.
 		needsVerification := !e.verified
 		if needsVerification && e.verifying != nil {
 			done := e.verifying
@@ -81,21 +87,32 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 				beforeWait()
 			}
 			select {
+			// Hit when the caller cancels before the verifier finishes.
 			case <-ctx.Done():
 				return nil, ErrMiss
+
+			// Hit when the verifier closes the channel, signaling it is done.
 			case <-done:
 				// Recheck the entry: a canceled verifier permits takeover;
 				// corruption, replacement, or shutdown may instead mean a miss.
 				continue
 			}
 		}
+
+		// Claim the verification so concurrent callers wait rather than duplicate it.
 		if needsVerification {
 			e.verifying = make(chan struct{})
 		}
+
+		// Take a pin under the lock so the entry survives the open below.
 		e.pins++
 		s.readers++
 		s.mu.Unlock()
+
+		// Open (and, if claimed, verify) the body outside the lock.
 		r, err := s.openReader(ctx, e, needsVerification, afterVerificationRead)
+
+		// Release the single-flight claim, waking any callers that were waiting.
 		if needsVerification {
 			s.mu.Lock()
 			close(e.verifying)
@@ -110,17 +127,20 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 // Reader owns that pin; every failure closes the file and releases the pin.
 func (s *Store) openReader(ctx context.Context, e *entry, needsVerification bool, afterVerificationRead func()) (*Reader, error) {
 	meta := e.meta
+
 	f, err := os.Open(e.dir + "/body")
 	if err != nil {
 		s.invalidate(e)
 		return nil, ErrMiss
 	}
+
 	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() || st.Size() != meta.Size {
 		f.Close()
 		s.invalidate(e)
 		return nil, ErrMiss
 	}
+
 	if needsVerification {
 		if err = verifyBody(ctx, f, meta.Digest, afterVerificationRead); err != nil {
 			f.Close()
@@ -139,6 +159,7 @@ func (s *Store) openReader(ctx context.Context, e *entry, needsVerification bool
 			return nil, ErrMiss
 		}
 	}
+
 	s.mu.Lock()
 	// The path may have been replaced since selection. Only the same valid
 	// entry can lend its verification state to this open descriptor.
