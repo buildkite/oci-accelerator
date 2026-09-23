@@ -116,9 +116,14 @@ private key) as read-only; no defensive copies are made.
 
 ### `(*Authority) CertificatePath() string`
 
-Path to the public root certificate (`ca.crt`). The program only logs this path
-at startup; distributing that file to clients (for example into a system or
-container trust store) is up to operators.
+Path to the public root certificate (`ca.crt`), logged at startup.
+
+### `(*Authority) CertificatePEM() []byte`
+
+Returns a fresh PEM encoding of the loaded public root certificate, without
+reading disk or including private key material. The proxy uses it for its
+[public CA download](../proxy/README.md#public-ca-download). Installing trust
+after fingerprint verification remains the operator's responsibility.
 
 ### `(*Authority) Fingerprint() string`
 

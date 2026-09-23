@@ -12,7 +12,8 @@ design rationale, see the
 
 | File | Responsibility |
 | --- | --- |
-| `server.go` | `Proxy` type, `New`, `Serve`/`Shutdown`, and `ServeHTTP` CONNECT dispatch/validation |
+| `server.go` | `Proxy` type, `New`, `Serve`/`Shutdown`, and `ServeHTTP` dispatch/CONNECT validation |
+| `ca_download.go` | Public root CA download on the outer HTTP listener |
 | `connections.go` | Connection tracking (`trackingListener`, `trackedConn`), connection limits, raw-CONNECT header inspection, and connection context |
 | `relay.go` | The opaque bidirectional TCP relay, with an explicit idle timeout and ownership of both connections until its workers finish |
 | `intercept.go` | Shutdown-aware CONNECT takeover and `serveIntercepted`: terminate TLS and serve the supplied handler over a single-connection listener |
@@ -52,12 +53,13 @@ bind or serve.
 
 ### `(*Proxy) Serve(listener net.Listener) error`
 
-Accepts and handles `CONNECT` connections on `listener` until `Shutdown`.
+Accepts and handles `CONNECT` connections and public CA downloads on `listener`
+until `Shutdown`.
 
 ### `(*Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request)`
 
-The `CONNECT` dispatch entry point (registry interception versus opaque relay).
-Exported to satisfy `http.Handler`; normally driven by `Serve`.
+Dispatches `CONNECT` (registry interception versus opaque relay) and the public
+CA download. Exported to satisfy `http.Handler`; normally driven by `Serve`.
 
 ### `(*Proxy) Shutdown(ctx context.Context) error`
 
@@ -68,6 +70,27 @@ Stops accepting, disables intercepted keep-alives, drains in-flight work until
 
 Returns the Prometheus text-format handler for the optional loopback metrics
 listener.
+
+## Public CA download
+
+The outer listener serves bodyless `GET /ca.crt` and `HEAD /ca.crt` without
+authentication. Only the exact origin-form target matches; absolute URLs,
+escaped paths, queries, and unrelated paths remain refused. Other methods on
+that path return `405` with `Allow: GET, HEAD`; bodies and upgrades return `400`.
+CONNECT dispatch and intercepted registry paths are unchanged.
+
+A successful response contains the active signer's public root CA in PEM,
+with `Content-Type: application/x-pem-file`, an attachment filename of `ca.crt`,
+`Content-Length`, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`.
+HEAD returns the same headers without a body. A missing signer returns `503`.
+The handler never reads certificate files or exposes private keys.
+
+Every download response closes the connection, preventing a subsequent CONNECT
+from bypassing the first-request-only wire validation. Downloads share the
+listener's connection and header limits and use `idle_timeout` for writes.
+Operators must verify the downloaded certificate against a fingerprint obtained
+through a trusted channel before installing it; the endpoint does not establish
+trust. See the [installation instructions](../../docs/operations.md#configure-ca-trust-and-docker).
 
 ## Request flow
 

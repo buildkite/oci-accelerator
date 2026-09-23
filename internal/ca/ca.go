@@ -74,6 +74,11 @@ func Open(dir string, maxLeaves int) (*Authority, error) {
 // CertificatePath returns the public CA certificate path.
 func (a *Authority) CertificatePath() string { return filepath.Join(a.dir, certName) }
 
+// CertificatePEM returns a fresh PEM encoding of the loaded public root CA.
+func (a *Authority) CertificatePEM() []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: a.cert.Raw})
+}
+
 // Fingerprint returns the CA certificate's SHA-256 fingerprint as lowercase hex.
 func (a *Authority) Fingerprint() string {
 	sum := sha256.Sum256(a.cert.Raw)
