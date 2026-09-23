@@ -164,9 +164,14 @@ their order remain identity-sensitive.
 - **Read-only interception**: intercepted requests must be origin-form, match
   the expected authority, carry no body, request no protocol upgrade, and use
   GET/HEAD/OPTIONS.
-- **No leaks in logs or errors** (`errors.go`): upstream errors collapse to
-  fixed labels; URLs, signed queries, certificate names, and response data are
-  never logged.
+- **Sanitized request logs** (`forwarding.go`, `errors.go`): completion records
+  and upstream-failure warnings log `url` as the pinned registry's HTTPS authority
+  plus the original escaped path, including cache hits and rejections. Paths are
+  omitted for non-origin-form targets and targets containing a literal `#`.
+  Paths expose repository names, tags, and digests. Query strings, userinfo,
+  fragments, redirect URLs, credentials, certificate names, and response data are
+  omitted; upstream errors collapse to fixed labels. Logging does not add start
+  or redirect events.
 
 ## Concurrency and shutdown
 
