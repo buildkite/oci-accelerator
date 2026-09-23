@@ -200,6 +200,7 @@ func cacheFixture(t *testing.T, origin *httptest.Server, limit int64, logs *byte
 	p, _, c := interceptFixture(t, origin, logs, true)
 	p.cache = s
 	p.cfg.Cache.Dir = dir
+	p.cfg.Cache.FillTimeout = config.DefaultCacheFillTimeout
 	return p, c
 }
 

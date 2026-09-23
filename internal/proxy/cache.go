@@ -73,6 +73,23 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 		return resp, false, nil
 	}
 
+	if fetch, _ := req.Context().Value(rangeFetchKey{}).(*rangeFetch); fetch != nil {
+		if !fetch.stopClient() || fetch.client.Err() != nil || fetch.ctx.Err() != nil {
+			fill.Abort()
+			resp.Body.Close()
+			return nil, false, context.Canceled
+		}
+		fetch.detached = true
+		// Only the pump owns these mutable counters. Request metrics must not
+		// race or double count a fill that outlives the response handler.
+		background := &requestStats{fill: "none"}
+		resp.Body.(*countedBody).stats = background
+		body := &fillingBody{ReadCloser: resp.Body, fill: fill, ctx: req.Context(), stats: background}
+		stats.fill = "background"
+		resp.Body = t.pumpRangeFill(fetch, body)
+		return resp, false, nil
+	}
+
 	// Mirror the upstream stream into the fill as the client reads it.
 	resp.Body = &fillingBody{ReadCloser: resp.Body, fill: fill, ctx: req.Context(), stats: stats}
 	return resp, false, nil

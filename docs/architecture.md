@@ -40,7 +40,7 @@ or separate cache backends.
    proxy-only, and spoofable forwarding headers. Client authentication and
    upstream challenges remain part of the ordinary registry exchange.
 6. Eligible immutable-object GETs pass through redirect and cache policy below.
-   Eligible unconditional SHA-256 blob Range GETs use the warm-range path
+   Eligible unconditional SHA-256 blob Range GETs use the range path
    described below. Other traffic, including tags, `/v2/`, HEAD, conditional
    requests, and ineligible ranges, goes upstream without cache substitution;
    its redirects remain client-handled.
@@ -139,11 +139,12 @@ controls remain essential.
 Only exact, unescaped, query-free SHA-256 blob and digest-manifest GET paths are
 eligible. Tags and unsupported digest algorithms bypass caching. An unconditional
 SHA-256 blob GET with exactly one nonempty Range header is eligible for the
-warm-range path: the proxy removes Range for an upstream full GET, then uses a
+range path: the proxy removes Range for an upstream full GET, then uses a
 matching pinned cache reader, when available, to produce standard single, suffix,
-or multipart byte ranges (including normal `416` handling). On a cold miss the
-existing client-owned fill streams and may cache the full upstream `200`; it does
-not synthesize a partial response for that request.
+or multipart byte ranges (including normal `416` handling). On a cold miss, a
+single range is selected from the forward-only upstream stream as it reaches the
+requested offset. Cold comma-separated ranges fall back to the full upstream `200`
+rather than streaming multipart responses. Warm satisfiable byte ranges return `206`.
 
 Conditional requests (including `If-Range`), ranged manifests, requests forbidden
 from storage by `no-store`, and requests whose Connection header names Range remain
@@ -157,6 +158,10 @@ Response admission and substitution require:
 - a single parseable Content-Type of at most 1024 bytes;
 - no no-store directive and no Vary dimension other than Accept;
 - every present Docker-Content-Digest value exactly matching the requested digest.
+
+Local cold-range selection also requires these terminal response checks. A rejected
+response is forwarded unchanged, usually as a full `200`; the proxy does not issue
+a second GET to retry the client's original Range request.
 
 A digest response header is not required: the original digest-addressed GET and
 accepted redirect chain identify the object, and stored bytes are independently
@@ -182,25 +187,28 @@ commit time. There is no cross-registry or cross-repository deduplication.
 
 A miss streams the upstream body to the client while optionally mirroring it to
 one temporary fill per key. Layers are not buffered in memory. Publication requires
-clean EOF on a live request, exact declared length, and a matching SHA-256. Cache
-write, capacity, expiry, and publication failures abandon storage without replacing
-the valid upstream stream's bytes or errors.
+clean EOF, exact declared length, and a matching SHA-256. Cache write, capacity,
+expiry, and publication failures abandon storage without replacing the valid
+upstream stream's bytes or errors. Partial entries are never published.
 
-For an eligible blob Range GET, this miss behavior deliberately returns the full
-upstream `200`; only an already available pinned, verified reader is seekable and
-therefore converted into a range response.
+An admitted cold ranged fill continues consuming the same full upstream GET
+after the selected bytes end or the client disconnects. It is bounded from request
+start by `cache.fill_timeout` and existing network limits, and stops on shutdown.
+Before admission, when admission is refused, and for ordinary full GETs, transfer
+and fill ownership remains with the request.
 
-The initiating request owns the fill. Matching followers that are not fast grant
-hits first obtain their own accepted GET and metadata, close their upstream bodies,
+Matching followers that are not fast grant hits first obtain their own accepted
+GET and metadata, close their upstream bodies,
 and wait up to `cache.fill_wait_timeout`. A completed fill supplies an ordinary
 pinned, verified reader. Waiters do not see partial files.
 
 Timeout, failed fill, or eviction before reader acquisition triggers one fresh
 GET from the follower's original request through the full authorization and
 redirect path, with no second wait loop. New denials are relayed. Leader
-disconnection aborts its fill and wakes followers; follower cancellation only
-ends its own request. There are no detached downloads or leader handoffs. This
-keeps ownership bounded at the cost of possible duplicate transfer and a second GET.
+disconnection aborts an ordinary full-GET fill and wakes followers; follower
+cancellation only ends its own request. There are no full-GET leader handoffs.
+Detached continuation applies only to admitted ranged fills and never opens a
+second upstream request.
 
 ## Storage, capacity, and recovery
 

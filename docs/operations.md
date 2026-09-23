@@ -151,7 +151,7 @@ is static and changes take effect after restart.
 | `cache.max_bytes` | 32 GiB, including body, metadata, and fill reservations |
 | `cache.max_fills` | 16 concurrent storage writers; excess misses stream uncached |
 | `cache.max_entries` | 100000 entry slots, including fills and pending cleanup |
-| `cache.fill_timeout` | `10m`; expiry ends cache admission, not upstream forwarding |
+| `cache.fill_timeout` | `10m`; bounds ranged fetches from request start and ends ordinary full-GET cache admission |
 | `cache.fill_wait_timeout` | `1s`; `0s` disables waiting for an existing fill |
 | `cache.authorization_ttl` | `30s`; maximum fixed lifetime of a process-local approval; `0s` requires an upstream GET for every delivery |
 | `cache.max_authorization_entries` | 10000; positive bound on in-memory authorization grants |
@@ -164,7 +164,8 @@ is static and changes take effect after restart.
 
 CONNECT and upstream response headers are limited to 64 KiB. Upstream connections are capped
 at 16 per destination, with 32 idle globally and 8 idle per destination. Bodies stream rather than
-accumulate in memory. Active transfers have idle-I/O deadlines, not total download deadlines.
+accumulate in memory. Ranged transfers have the `cache.fill_timeout` total bound from request
+start; other active transfers have idle-I/O deadlines, not total download deadlines.
 Kernel filesystem calls cannot be preempted, so fill expiry and shutdown are not hard deadlines
 when storage stalls. The body-entry and authorization-entry limits bound their respective
 indexes, not total process RSS; tune both to available memory. Restart clears all grants.
@@ -175,9 +176,11 @@ allowed. Mutations, upgrades, authority conflicts, and non-origin-form requests 
 unconditional SHA-256 blob Range GETs still go upstream on every request, as full GETs; a
 validated cache hit is then served with standard single, suffix, or multipart range semantics.
 There is no authorization-grant lookup or update for these requests. Until the full body is
-already cached, the request receives and may cache the full upstream `200` rather than a partial
-response. Ranged manifests, `If-Range` and other conditional requests, no-store requests, and a
-Range header named by Connection remain passthrough.
+already cached, a single range is selected from the full upstream stream and returned as `206`;
+comma-separated ranges fall back to the full `200`. An admitted fill continues reading and
+verifying the same GET after the selected range ends or the client disconnects. Ranged manifests,
+`If-Range` and other conditional requests, no-store requests, and a Range header named by
+Connection remain passthrough.
 
 The proxy follows up to five redirects only for eligible query-free SHA-256 blob and digest
 manifest GETs. Redirects must use verified HTTPS and pass destination checks; userinfo,
@@ -190,8 +193,10 @@ only Accept, Accept-Encoding, and User-Agent, never credentials or cookies. See
 
 JSON logs go to stderr. Request completion records contain bounded status and outcome fields,
 cache/fill/wait/fallback/admission outcomes, duration, downstream body bytes, and bytes consumed
-from the upstream body. The upstream counter excludes transport read-ahead and is not a wire
-traffic measurement. Streaming failures can occur after status 200 has been sent.
+from the upstream body. An admitted detached range fill logs `fill=background`; its request's
+`upstream_body_bytes` excludes the fill pump's bytes. The upstream counter excludes
+transport read-ahead and is not a wire traffic measurement. Streaming failures can occur after
+the response status has been sent.
 
 Request completion records and upstream-failure warnings include a `url` field containing
 the intercepted registry's HTTPS authority and the original escaped request path, including
@@ -218,8 +223,11 @@ Metrics use the `oci_accelerator_` prefix and include:
 - Go heap allocation and goroutine gauges.
 
 Labels are fixed enums and never contain clients, repositories, paths, digests, tokens, or URLs.
-Counters reset on restart. Body counters are recorded when requests complete. Logical cache
-bytes exclude filesystem overhead, and Go heap allocation is not RSS.
+Counters reset on restart. Request-owned body counters are recorded when requests complete. For
+a detached range fill, `oci_accelerator_upstream_body_bytes_total` and
+`oci_accelerator_fills_total` update when its pump completes; store fill statistics remain
+available independently. Logical cache bytes exclude filesystem overhead, and Go heap allocation
+is not RSS.
 
 `oci_accelerator_upstream_get_attempts_total` counts connection-acquisition attempts, including
 transport retries and DNS/dial/TLS failures before a GET is sent. It is not an exact count of
@@ -262,7 +270,8 @@ digest manifests in supported OCI and Docker schema-2 media types. Cache keys pr
 repository, digest, object kind, exact Accept values, and observed Content-Type; bodies are
 hashed as received. Eligible unconditional blob ranges are fetched as full upstream GETs and can
 populate the same full-body cache; a warm validated entry serves standard byte ranges from its
-pinned reader. Cold range misses return the full `200`. Tags, HEAD, ranged manifests,
+pinned reader. A cold single range streams a `206` selection; cold comma-separated ranges return
+the full `200`. Tags, HEAD, ranged manifests,
 conditional and non-identity encoded responses,
 unknown-length bodies, no-store traffic, and unsupported Vary dimensions bypass storage.
 
@@ -304,8 +313,10 @@ Objects requiring more victims can continue bypassing; see the
 
 Concurrent clients authorize independently. One writer fills a key; matching followers may
 wait for it and then open a verified cache entry. Timeout, leader failure, or eviction causes one
-fresh authorized GET. Leader cancellation aborts storage; follower cancellation does not control
-the leader. Entries are published only after complete length and digest verification.
+fresh authorized GET. Ordinary full-GET leader cancellation aborts storage; follower cancellation
+does not control the leader. An admitted ranged fill may finish after range delivery or client
+cancellation, bounded by `cache.fill_timeout` from request start. Ordinary full-GET fills remain
+request-owned. Entries are published only after complete length and digest verification.
 
 Startup removes recognized abandoned fills and discardable incomplete entries, and refuses
 unknown files rather than deleting them. Persisted bodies are rehashed on first reuse, not at
@@ -318,8 +329,9 @@ files; use metrics to inspect resource use.
 SIGINT or SIGTERM stops admission, disables intercepted keepalive, and drains until
 `shutdown_timeout`; remaining connections, including opaque tunnels, are then closed. Shutdown
 waits for handlers and relay pumps to release their resources before closing the cache, even
-beyond the drain deadline. A stuck handler can therefore delay exit. A second signal uses the
-operating system's default termination behavior. In an orb:
+beyond the drain deadline. It also cancels and joins ranged transfers before the caller closes
+the store. A stuck handler can therefore delay exit. A second signal uses the operating system's
+default termination behavior. In an orb:
 
 ```sh
 amp orb service stop registry-proxy
@@ -424,11 +436,11 @@ Linux crash recovery needs Go and a non-loopback IPv4 interface. Isolated tmpfs 
 verification additionally needs passwordless sudo, `nsenter`, `mount`, `dd`,
 `findmnt`, and private PID/mount namespace, procfs, and tmpfs support. The fixture fills
 only its disposable filesystem, not the host root disk. The lifecycle check also verifies
-privileged descendant teardown:
+privileged descendant teardown. ENOSPC checks cover both full and ranged delivery:
 
 ```sh
 OCI_ACCELERATOR_FAULT_E2E=1 go test -v ./integration \
-  -run '^(TestCache(ENOSPC|Crash)Acceptance|TestPrivilegedProcessLifecycle)$' -count=1 -timeout=10m
+  -run '^(TestCache(ENOSPC|Crash)Acceptance|TestRangeCacheENOSPCAcceptance|TestPrivilegedProcessLifecycle)$' -count=1 -timeout=10m
 ```
 
 In an Amp orb, run the entire test runner as a supervised service so its child
@@ -439,7 +451,7 @@ to prevent the service supervisor from automatically rerunning it:
 runner=$(mktemp)
 cat > "$runner" <<'SH'
 OCI_ACCELERATOR_E2E=1 OCI_ACCELERATOR_FAULT_E2E=1 go test -v ./integration \
-  -run '^(TestDockerPullThroughCompiledProxy|TestDockerMultiPlatformThroughCompiledProxy|TestCache(ENOSPC|Crash)Acceptance|TestPrivilegedProcessLifecycle)$' -count=1 -timeout=10m
+  -run '^(TestDockerPullThroughCompiledProxy|TestDockerMultiPlatformThroughCompiledProxy|TestCache(ENOSPC|Crash)Acceptance|TestRangeCacheENOSPCAcceptance|TestPrivilegedProcessLifecycle)$' -count=1 -timeout=10m
 printf 'Acceptance exit status: %s\n' "$?"
 exec sleep infinity
 SH

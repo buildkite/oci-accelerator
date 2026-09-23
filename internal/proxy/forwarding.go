@@ -29,6 +29,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			metrics:         p.metrics,
 			fillWaitTimeout: p.cfg.Cache.FillWaitTimeout,
 			authorization:   p.authorization,
+			startRangeFetch: p.startRangeFetch,
 		},
 
 		// Retarget onto the upstream and strip proxy-revealing / hop-by-hop headers.

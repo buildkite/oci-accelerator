@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -32,11 +33,10 @@ func fullBlobRangeRequest(req *http.Request) (*http.Request, bool) {
 func serveRangeResponse(req *http.Request, resp *http.Response, content io.ReadSeeker) *http.Response {
 	reader, writer := io.Pipe()
 	output := &rangeResponseWriter{header: resp.Header.Clone(), ready: make(chan struct{}), writer: writer}
-	body := &rangeResponseBody{PipeReader: reader, done: make(chan struct{})}
-	source := resp.Body
+	body := &rangeResponseBody{PipeReader: reader, done: make(chan struct{}), closeSource: sync.OnceValue(resp.Body.Close)}
 	go func() {
 		defer close(body.done)
-		defer source.Close()
+		defer body.closeSource()
 		defer writer.Close()
 		// Range errors and multipart responses need their own length. In
 		// particular, never retain the full upstream length on a 416 response.
@@ -58,11 +58,14 @@ func serveRangeResponse(req *http.Request, resp *http.Response, content io.ReadS
 
 type rangeResponseBody struct {
 	*io.PipeReader
-	done chan struct{}
+	done        chan struct{}
+	closeSource func() error
 }
 
 func (b *rangeResponseBody) Close() error {
 	err := b.PipeReader.Close()
+	// Unblock prefix reads too, not just writes to the client-facing pipe.
+	b.closeSource()
 	<-b.done
 	return err
 }

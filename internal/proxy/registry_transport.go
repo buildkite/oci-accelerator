@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/cache"
@@ -22,15 +23,23 @@ type registryTransport struct {
 	metrics         *metrics
 	fillWaitTimeout time.Duration
 	authorization   *authorizationCache
+	startRangeFetch func(context.Context) (*rangeFetch, error)
 }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clientRequest := req
 	ranged, _ := req.Context().Value(rangeRequestKey{}).(bool)
+	var fetch *rangeFetch
 	if ranged {
 		if full, ok := fullBlobRangeRequest(req); ok {
 			req = full
 		}
+		var err error
+		fetch, err = t.startRangeFetch(req.Context())
+		if err != nil {
+			return nil, err
+		}
+		req = req.WithContext(context.WithValue(fetch.ctx, rangeFetchKey{}, fetch))
 	}
 	if req.Method == http.MethodGet {
 		// Count every connection-acquisition attempt (transport retries plus
@@ -53,9 +62,28 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		// Repeat the full authorization/redirect path once, without waiting again.
 		resp, _, err = t.roundTrip(req, false)
 	}
-	if err == nil && ranged {
-		if body, ok := resp.Body.(*cache.Reader); ok {
+	if err != nil {
+		if fetch != nil {
+			fetch.finish()
+		}
+		return nil, err
+	}
+	if ranged {
+		body, cached := resp.Body.(*cache.Reader)
+		if !fetch.detached {
+			resp.Body = &rangeFetchBody{ReadCloser: resp.Body, finish: fetch.finish}
+		}
+		if cached {
 			resp = serveRangeResponse(clientRequest, resp, body)
+		} else if _, eligible := objectMetadata(req, resp); eligible {
+			// A streaming source cannot seek backwards for multipart delivery.
+			// Like nginx, ignore multiple ranges on a cold response.
+			selection := clientRequest
+			if strings.Contains(selection.Header.Get("Range"), ",") {
+				selection = selection.Clone(selection.Context())
+				selection.Header.Del("Range")
+			}
+			resp = serveRangeResponse(selection, resp, &rangeStream{source: resp.Body, size: resp.ContentLength})
 		}
 	}
 	return resp, err
