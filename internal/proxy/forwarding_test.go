@@ -189,12 +189,17 @@ func TestInterceptForwardsRequestAndRelaysSensitiveResponse(t *testing.T) {
 
 func TestRejectedRequestURLLogs(t *testing.T) {
 	for _, tc := range []struct {
-		name, registry, requestURL, wantURL string
-		status                              int
+		name, registry, requestTarget, host, wantURL string
+		status                                       int
 	}{
-		{"method", "registry.example", "https://registry.example/v2/team%2fimage/manifests/latest?token=private-query", "https://registry.example/v2/team%2fimage/manifests/latest", http.StatusMethodNotAllowed},
-		{"authority", "[2001:db8::1]:5443", "https://untrusted.invalid/v2/image?token=private-query", "https://[2001:db8::1]:5443/v2/image", http.StatusMisdirectedRequest},
-		{"absolute-target", "registry.example", "https://private-user:private-password@untrusted.invalid/v2/image?token=private-query#private-fragment", "https://registry.example/v2/image", http.StatusBadRequest},
+		{"method", "registry.example", "/v2/team%2fimage/manifests/latest?token=private-query", "registry.example", "https://registry.example/v2/team%2fimage/manifests/latest", http.StatusMethodNotAllowed},
+		{"authority", "[2001:db8::1]:5443", "/v2/image?token=private-query", "untrusted.invalid", "https://[2001:db8::1]:5443/v2/image", http.StatusMisdirectedRequest},
+		{"absolute-target", "registry.example", "https://private-user:private-password@untrusted.invalid/v2/image?token=private-query#private-fragment", "registry.example", "https://registry.example", http.StatusBadRequest},
+		{"scheme-relative", "registry.example", "//private-user:private-password@untrusted.invalid/v2/image?token=private-query", "registry.example", "https://registry.example", http.StatusBadRequest},
+		{"raw-fragment", "registry.example", "/v2/image#private-fragment", "registry.example", "https://registry.example", http.StatusMethodNotAllowed},
+		{"raw-fragment-before-query", "registry.example", "/v2/image#private-fragment?token=private-query", "registry.example", "https://registry.example", http.StatusMethodNotAllowed},
+		{"raw-fragment-after-query", "registry.example", "/v2/image?token=private-query#private-fragment", "registry.example", "https://registry.example", http.StatusMethodNotAllowed},
+		{"escaped-delimiters", "registry.example", "/v2/image%23tag%3fvalue?token=private-query", "registry.example", "https://registry.example/v2/image%23tag%3fvalue", http.StatusMethodNotAllowed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			target, err := hostport.Parse(tc.registry, "443")
@@ -203,10 +208,9 @@ func TestRejectedRequestURLLogs(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			p := New(config.Config{}, nil, slog.New(slog.NewJSONHandler(&logs, nil)), nil)
-			r := httptest.NewRequest(http.MethodPost, tc.requestURL, nil)
-			if tc.name != "absolute-target" {
-				r.RequestURI = r.URL.RequestURI()
-				r.URL.Scheme, r.URL.Host = "", ""
+			r, err := http.ReadRequest(bufio.NewReader(strings.NewReader("POST " + tc.requestTarget + " HTTP/1.1\r\nHost: " + tc.host + "\r\n\r\n")))
+			if err != nil {
+				t.Fatal(err)
 			}
 			w := httptest.NewRecorder()
 			p.interceptHandler(target).ServeHTTP(w, r)

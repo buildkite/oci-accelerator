@@ -173,7 +173,9 @@ traffic measurement. Streaming failures can occur after status 200 has been sent
 
 Request completion records and upstream-failure warnings include a `url` field containing
 the intercepted registry's HTTPS authority and the original escaped request path, including
-for cache hits and rejected requests. For example:
+for cache hits and rejected requests with origin-form targets. Non-origin-form targets and
+targets containing a literal `#` log only the registry authority, without a path. For example,
+a normal request logs:
 `"url":"https://registry.example/v2/team/image/manifests/latest"`.
 These paths expose repository names, tags, and digests; restrict access to logs accordingly.
 Query strings, userinfo, fragments, redirect URLs, authorization headers, token bodies, and
