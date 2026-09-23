@@ -67,6 +67,74 @@ directory before serving; do not relax the CA loader's checks. Build pods receiv
 only the public ConfigMap, never the private Secret. Protect the namespace with
 RBAC and Secret encryption at rest; a Secret's base64 encoding is not encryption.
 
+### Copy public trust to the build namespace
+
+ConfigMaps are namespace-scoped. Create the `buildkite` namespace, then copy only
+the named public ConfigMap's `ca.crt` field. This transformation drops source
+identity and server-managed metadata (`uid`, `resourceVersion`, timestamps,
+managed fields and owner references) while preserving `immutable: true`:
+
+```sh
+kubectl create namespace buildkite --dry-run=client -o yaml | kubectl apply -f -
+kubectl get configmap oci-accelerator-trust -n oci-accelerator -o json |
+  jq '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"oci-accelerator-trust",namespace:"buildkite"},data:{"ca.crt":.data["ca.crt"]}} + (if has("immutable") then {immutable:.immutable} else {} end)' |
+  kubectl apply -f -
+```
+
+Grant the operator only the namespace/read access needed for that public
+ConfigMap. Never copy, mount, or grant build workloads access to the
+`oci-accelerator-ca` Secret; it contains the CA signing key.
+
+## Docker-in-Docker pull clients
+
+[`dind-pull.yaml`](../deploy/kubernetes/examples/dind-pull.yaml) is a minimal,
+standalone smoke Pod for the `buildkite` namespace. Apply it after copying trust:
+
+```sh
+kubectl apply -f deploy/kubernetes/examples/dind-pull.yaml
+kubectl wait -n buildkite --for=condition=ready pod/dind-pull-smoke --timeout=2m
+kubectl exec -n buildkite dind-pull-smoke -- docker pull alpine:3.22
+```
+
+The example has no API token, trusts only the public CA, and starts
+`docker:28.5.1-dind` privileged with bounded resource starting points and
+ephemeral `/var/lib/docker` and `/var/run`. It copies the projected certificate
+to a regular `.crt` file (Alpine's trust updater does not reliably include
+ConfigMap symlinks), then updates system trust before
+executing `dockerd-entrypoint.sh dockerd` and exposes only the shared Unix socket
+at `/var/run/docker.sock`; it neither disables TLS on an insecure port such as
+2375 nor exposes a Docker TCP listener. Its daemon-only `HTTP_PROXY` and
+`HTTPS_PROXY` point at the in-cluster accelerator. `NO_PROXY` contains only
+loopback and cluster service suffixes--never add a registry hostname, because
+that bypasses acceleration and its authorization path.
+
+For custom Buildkite agents on EKS/EC2, use a production
+custom image pinned by digest rather than the smoke image. Adapt the agent pod
+template so the privileged daemon container owns the two ephemeral volumes and
+the agent CLI container mounts the same `docker-run` volume, uses
+`DOCKER_HOST=unix:///var/run/docker.sock`, and waits for `docker info` before
+accepting work. Set the proxy variables on the daemon container, not globally on
+the Buildkite agent container. Ensure the CLI user's group or socket ownership
+permits access without making the socket universally writable. Preserve any
+custom image entrypoint setup (agent hooks, credentials, certificates and user
+initialization): append the CA update and daemon exec to that setup rather than
+blindly replacing it. The readiness probe in the example is the minimum startup
+gate; production scheduling must likewise prevent commands racing daemon startup.
+
+This deployment is pull-only. Do not opt in a daemon that builds and pushes
+images. Registry credentials remain the Docker client's responsibility. For a
+private ECR registry, authenticate the client to its exact configured hostname:
+
+```sh
+aws ecr get-login-password --region us-east-1 |
+  docker login --username AWS --password-stdin 123456789012.dkr.ecr.us-east-1.amazonaws.com
+```
+
+The default `cache.authorization_ttl` is `30s`: an exact successful immutable
+GET may reuse its short-lived process-local authorization grant. Set it to `0s`
+when every delivery must perform an upstream authorization GET. Neither setting
+creates credentials or permits offline fallback.
+
 ## Probes, metrics and network access
 
 Startup and readiness exec probes call the local `/readyz`; liveness calls
@@ -114,9 +182,65 @@ preserve the CA Secret and distribute no new trust unless deliberately rotating.
 
 ## Deployment checks
 
+Before opting in agents, test with fresh smoke Pods, not only repeated pulls in
+one daemon:
+
+1. Record the public CA fingerprint from the source and copied ConfigMaps and
+   require an exact match:
+
+   ```sh
+   for namespace in oci-accelerator buildkite; do
+     kubectl get configmap oci-accelerator-trust -n "$namespace" -o jsonpath='{.data.ca\.crt}' |
+       openssl x509 -noout -fingerprint -sha256
+   done
+   ```
+
+2. Create a fresh Pod and pull an image by immutable digest (cold). Delete the
+   Pod, create its replacement, and repeat (warm). A second pull in the same Pod
+   can come from Docker's ephemeral local `/var/lib/docker` and does not prove an
+   accelerator hit.
+3. Compare accelerator `oci_accelerator_cache_total` outcomes,
+   `oci_accelerator_upstream_get_attempts_total`, and fill counters across the
+   cold and replacement pulls. Enable the private metrics Service as described
+   above; do not expose it publicly.
+4. Attempt a private pull without login (or with deliberately invalid client
+   credentials) and require denial even when the body is warm. Then log in with
+   valid client credentials and require success. Do not use production
+   credentials for the negative check.
+
+These are operator acceptance procedures, not claims that this repository has
+run the custom Buildkite image on EKS, verified a particular CNI's NetworkPolicy
+enforcement, or runtime-tested public or private registries in your cluster.
+
 `bash .buildkite/check-deployment.sh` installs checksum-pinned Helm, lints the
 chart and tests defaults, opt-in metrics, application configuration, workload
 security and parity with plain manifests. It needs no Kubernetes credentials.
 These checks run in CI. `.agents/setup` also installs pinned Helm, kubectl and
 kind for disposable cluster verification. A local kind volume is not an EBS test,
 and a cluster without an enforcing CNI cannot verify NetworkPolicy isolation.
+
+The opt-in Kubernetes acceptance test uses fresh privileged DinD pods, the real
+Helm package, and the deterministic authenticated TLS registry fixture. Run it
+only against a disposable kind cluster on a Linux amd64 host with Docker,
+Buildx, kind, kubectl, Helm and Go installed:
+
+```sh
+kind create cluster --name oci-accelerator-test
+docker buildx build --load -t oci-accelerator:dev .
+kind load docker-image oci-accelerator:dev --name oci-accelerator-test
+OCI_ACCELERATOR_KUBERNETES_E2E=1 \
+OCI_ACCELERATOR_KUBE_CONTEXT=kind-oci-accelerator-test \
+OCI_ACCELERATOR_KUBE_IMAGE=oci-accelerator:dev \
+  go test ./integration -run '^TestKubernetesPullThroughProxy$' -count=1 -v -timeout=15m
+kind delete cluster --name oci-accelerator-test
+```
+
+The test creates and removes uniquely named namespaces. It requires the host's
+non-loopback IP to be reachable from pods and registry access to pull the DinD
+image. It verifies TLS rejection without client trust, exact image digests,
+upstream request and byte counts on cold/warm/replacement pulls, retained CA and
+PVC cache state, and a fresh upstream 401 for an unauthenticated warmed blob.
+Authorization TTL is explicitly zero in this test. DinD uses `vfs` without
+container networking for portability; it verifies pulls, not container execution
+or custom Buildkite startup. Public-registry compatibility is a separate opt-in
+[Docker acceptance check](operations.md#repeatable-checks).

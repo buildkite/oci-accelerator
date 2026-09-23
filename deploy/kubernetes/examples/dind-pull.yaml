@@ -1,0 +1,72 @@
+# Standalone pull-only DinD smoke client. For production, replace this image
+# with a custom Buildkite agent image pinned by digest and containing Docker.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: buildkite
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dind-pull-smoke
+  namespace: buildkite
+  labels:
+    app.kubernetes.io/name: dind-pull-smoke
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+    - name: dind
+      image: docker:28.5.1-dind
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          cp /proxy-trust/ca.crt /usr/local/share/ca-certificates/oci-accelerator.crt
+          update-ca-certificates
+          exec dockerd-entrypoint.sh dockerd --host=unix:///var/run/docker.sock
+      env:
+        - name: HTTP_PROXY
+          value: http://oci-accelerator.oci-accelerator.svc.cluster.local:3128
+        - name: HTTPS_PROXY
+          value: http://oci-accelerator.oci-accelerator.svc.cluster.local:3128
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,::1,.svc,.cluster.local
+      securityContext:
+        privileged: true
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+          ephemeral-storage: 2Gi
+        limits:
+          cpu: "2"
+          memory: 2Gi
+          ephemeral-storage: 20Gi
+      readinessProbe:
+        exec:
+          command: ["docker", "info"]
+        initialDelaySeconds: 2
+        periodSeconds: 2
+        timeoutSeconds: 2
+        failureThreshold: 30
+      volumeMounts:
+        - name: trust
+          mountPath: /proxy-trust
+          readOnly: true
+        - name: docker-data
+          mountPath: /var/lib/docker
+        - name: docker-run
+          mountPath: /var/run
+  volumes:
+    - name: trust
+      configMap:
+        name: oci-accelerator-trust
+        items:
+          - key: ca.crt
+            path: ca.crt
+    - name: docker-data
+      emptyDir:
+        sizeLimit: 20Gi
+    - name: docker-run
+      emptyDir:
+        sizeLimit: 16Mi

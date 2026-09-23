@@ -466,7 +466,7 @@ OCI_ACCELERATOR_E2E=1 go test -v ./integration \
   -run '^TestDockerPushThroughCompiledProxy$' -count=1 -timeout=10m
 ```
 
-Anonymous Docker Hub/GHCR compatibility uses the same Docker prerequisites and fresh,
+Anonymous Docker Hub/GHCR/public ECR compatibility uses the same Docker prerequisites and fresh,
 credential-free client state. It requires network access and is subject to upstream tag,
 availability, and rate-limit changes. Successful public pulls do not prove cache substitution
 or private-access enforcement; deterministic local tests assert those properties:

@@ -28,7 +28,7 @@ func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
 	proxyPort := freePort(t, "127.0.0.1")
 	proxyCA, cacheDir := filepath.Join(root, "proxy-ca"), filepath.Join(root, "cache")
 	config := filepath.Join(root, "proxy.yaml")
-	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [registry-1.docker.io, ghcr.io]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 268435456\n", proxyPort, proxyCA, cacheDir), 0o600)
+	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [registry-1.docker.io, ghcr.io, public.ecr.aws]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 268435456\n", proxyPort, proxyCA, cacheDir), 0o600)
 
 	suffix := strings.ToLower(rand.Text())
 	prefix := "acc3d-" + suffix[:8]
@@ -47,7 +47,7 @@ func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
 	env := []string{"DOCKER_CONFIG=" + client}
 
 	t.Logf("docker=%s go=%s platform=linux/amd64 proxy_CA_sha256=%s", dockerVersion(t), strings.TrimSpace(run(t, "go", "version")), fingerprint)
-	for i, image := range []string{"docker.io/library/alpine:3.22", "ghcr.io/fluxcd/source-controller:v1.7.4"} {
+	for i, image := range []string{"docker.io/library/alpine:3.22", "ghcr.io/fluxcd/source-controller:v1.7.4", "public.ecr.aws/docker/library/alpine:3.22"} {
 		before := cacheEntries(t, cacheDir)
 		cold := publicPullIdentity(t, prefix+fmt.Sprintf("-%d-cold", i), proxyPort, trust, env, image)
 		added := false
