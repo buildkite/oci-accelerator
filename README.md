@@ -47,6 +47,9 @@ start the proxy, verify/install its public CA, and configure Docker Engine.
 The default listener is loopback-only. Do not expose it publicly: there is no
 proxy-user authentication, and unconfigured CONNECT destinations are opaque tunnels.
 
+For a non-root container image and its storage requirements, see the
+[container guide](docs/container.md).
+
 ## Testing
 
 Run the baseline checks:

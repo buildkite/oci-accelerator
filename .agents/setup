@@ -47,8 +47,8 @@ sudo -n ln -sfn "$go_root/bin/go" /usr/local/bin/go
 sudo -n ln -sfn "$go_root/bin/gofmt" /usr/local/bin/gofmt
 go version
 
-if ! command -v docker >/dev/null || ! command -v dockerd >/dev/null; then
-  echo "Installing Docker Engine (daemon starts separately as an orb service)"
+if ! command -v docker >/dev/null || ! command -v dockerd >/dev/null || ! docker buildx version >/dev/null 2>&1; then
+  echo "Installing Docker Engine and Buildx (daemon starts separately as an orb service)"
   sudo -n install -m 0755 -d /etc/apt/keyrings
   sudo -n curl --fail --silent --show-error --retry 3 --max-time 60 \
     https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
@@ -58,10 +58,11 @@ if ! command -v docker >/dev/null || ! command -v dockerd >/dev/null; then
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $VERSION_CODENAME stable" \
     | sudo -n tee /etc/apt/sources.list.d/docker.list >/dev/null
   sudo -n apt-get update
-  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io
+  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
 fi
 docker --version
 dockerd --version
+docker buildx version
 
 if [[ -f go.mod ]]; then
   echo "Downloading Go module dependencies"
