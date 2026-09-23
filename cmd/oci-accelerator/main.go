@@ -34,6 +34,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		return runInitCA(args[1:], stdout)
 	}
 
+	if len(args) > 0 && args[0] == "bootstrap-ca" {
+		return runBootstrapCA(ctx, args[1:], stdout)
+	}
 	cfg, handled, err := resolveConfig(args, stdout)
 	if err != nil || handled {
 		return err
