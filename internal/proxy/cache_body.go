@@ -28,8 +28,8 @@ type fillingBody struct {
 }
 
 // Read mirrors the upstream stream into the cache fill, never altering the bytes
-// or error the reverse proxy sees. Once the fill has ended (b.fill == nil) every
-// branch below is skipped and the upstream stream passes through untouched.
+// or error the reverse proxy sees. Once the fill has ended (b.fill == nil) the
+// early return skips all fill handling and the upstream stream passes through untouched.
 func (b *fillingBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if b.fill == nil {

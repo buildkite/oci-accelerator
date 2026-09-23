@@ -17,10 +17,12 @@ var ErrInvalid = errors.New("invalid configuration")
 
 const DefaultCacheMaxBytes int64 = 32 << 30
 const (
-	DefaultCacheMaxFills        = 16
-	DefaultCacheMaxEntries      = 100000
-	DefaultCacheFillTimeout     = 10 * time.Minute
-	DefaultCacheFillWaitTimeout = time.Second
+	DefaultCacheMaxFills                = 16
+	DefaultCacheMaxEntries              = 100000
+	DefaultCacheFillTimeout             = 10 * time.Minute
+	DefaultCacheFillWaitTimeout         = time.Second
+	DefaultCacheAuthorizationTTL        = 30 * time.Second
+	DefaultCacheMaxAuthorizationEntries = 10000
 )
 
 type Config struct {
@@ -40,12 +42,14 @@ type Config struct {
 }
 
 type Cache struct {
-	Dir             string
-	MaxBytes        int64
-	MaxFills        int
-	MaxEntries      int
-	FillTimeout     time.Duration
-	FillWaitTimeout time.Duration
+	Dir                     string
+	MaxBytes                int64
+	MaxFills                int
+	MaxEntries              int
+	FillTimeout             time.Duration
+	FillWaitTimeout         time.Duration
+	AuthorizationTTL        time.Duration
+	MaxAuthorizationEntries int
 }
 
 type rawConfig struct {
@@ -65,12 +69,14 @@ type rawConfig struct {
 }
 
 type rawCache struct {
-	Dir             strictString `yaml:"dir"`
-	MaxBytes        strictInt64  `yaml:"max_bytes"`
-	MaxFills        strictInt    `yaml:"max_fills"`
-	MaxEntries      strictInt    `yaml:"max_entries"`
-	FillTimeout     duration     `yaml:"fill_timeout"`
-	FillWaitTimeout duration     `yaml:"fill_wait_timeout"`
+	Dir                     strictString `yaml:"dir"`
+	MaxBytes                strictInt64  `yaml:"max_bytes"`
+	MaxFills                strictInt    `yaml:"max_fills"`
+	MaxEntries              strictInt    `yaml:"max_entries"`
+	FillTimeout             duration     `yaml:"fill_timeout"`
+	FillWaitTimeout         duration     `yaml:"fill_wait_timeout"`
+	AuthorizationTTL        duration     `yaml:"authorization_ttl"`
+	MaxAuthorizationEntries strictInt    `yaml:"max_authorization_entries"`
 }
 
 // Load reads one strict YAML document from path and resolves relative directories
@@ -110,11 +116,13 @@ func defaults() rawConfig {
 	return rawConfig{
 		Listen: "127.0.0.1:3128",
 		Cache: rawCache{
-			MaxBytes:        strictInt64(DefaultCacheMaxBytes),
-			MaxFills:        strictInt(DefaultCacheMaxFills),
-			MaxEntries:      strictInt(DefaultCacheMaxEntries),
-			FillTimeout:     duration(DefaultCacheFillTimeout),
-			FillWaitTimeout: duration(DefaultCacheFillWaitTimeout),
+			MaxBytes:                strictInt64(DefaultCacheMaxBytes),
+			MaxFills:                strictInt(DefaultCacheMaxFills),
+			MaxEntries:              strictInt(DefaultCacheMaxEntries),
+			FillTimeout:             duration(DefaultCacheFillTimeout),
+			FillWaitTimeout:         duration(DefaultCacheFillWaitTimeout),
+			AuthorizationTTL:        duration(DefaultCacheAuthorizationTTL),
+			MaxAuthorizationEntries: strictInt(DefaultCacheMaxAuthorizationEntries),
 		},
 		DialTimeout:           duration(10 * time.Second),
 		TLSHandshakeTimeout:   duration(10 * time.Second),

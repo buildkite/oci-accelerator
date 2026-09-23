@@ -31,8 +31,8 @@ resolved and addresses canonicalized before it is returned.
 
 ### `Cache`
 
-The cache subsection of `Config`: directory, byte and entry ceilings, fill
-concurrency, and the fill and fill-wait timeouts.
+The cache subsection of `Config`: directory, body and authorization entry ceilings,
+fill concurrency, fill timeouts, and the authorization-grant TTL.
 
 ### `ErrInvalid`
 
@@ -70,9 +70,10 @@ scalar leaves a field at its default; a null element in the `registries` or
 typo cannot quietly narrow those sets.
 
 Validation enforces at least one registry authority, non-blank NUL-free
-directory paths, positive limits and timeouts (with a non-negative fill-wait
-timeout), and canonical `host:port` bind addresses. The metrics listener, when
-set, must bind an explicit loopback IP literal.
+directory paths, positive limits and timeouts (with non-negative fill-wait and
+authorization TTLs), and canonical `host:port` bind addresses. The authorization
+entry limit remains positive even when a zero TTL disables grant reuse. The metrics
+listener, when set, must bind an explicit loopback IP literal.
 
 ## Sanitized errors
 

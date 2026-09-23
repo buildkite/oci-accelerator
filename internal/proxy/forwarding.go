@@ -28,6 +28,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			cache:           p.cache,
 			metrics:         p.metrics,
 			fillWaitTimeout: p.cfg.Cache.FillWaitTimeout,
+			authorization:   p.authorization,
 		},
 
 		// Retarget onto the upstream and strip proxy-revealing / hop-by-hop headers.
@@ -83,6 +84,12 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 
 		// Stash policy and stats on the context so the transport can read/update them.
 		ctx := context.WithValue(r.Context(), policyKey{}, policy)
+		if p.authorization != nil {
+			// Preserve revalidation restrictions even if Connection names a
+			// header that the reverse proxy will remove from the outgoing request.
+			lifetime := authorizationLifetime(r.Header, p.authorization.ttl)
+			ctx = context.WithValue(ctx, authorizationLifetimeKey{}, lifetime)
+		}
 		r = r.WithContext(context.WithValue(ctx, statsKey{}, stats))
 
 		// Wrap the writer to track status/bytes and apply idle write deadlines.

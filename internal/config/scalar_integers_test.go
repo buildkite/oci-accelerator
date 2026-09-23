@@ -12,6 +12,8 @@ func TestLoadRejectsNonIntegerNumericLimits(t *testing.T) {
 		{"string_max_fills", "cache: {dir: cache, max_fills: \"7\"}"},
 		{"fractional_max_fills", "cache: {dir: cache, max_fills: 1.5}"},
 		{"fractional_max_entries", "cache: {dir: cache, max_entries: 1.5}"},
+		{"string_max_authorization_entries", "cache: {dir: cache, max_authorization_entries: \"100\"}"},
+		{"fractional_max_authorization_entries", "cache: {dir: cache, max_authorization_entries: 1.5}"},
 		{"boolean_max_connections", "cache: {dir: cache}\nmax_connections: true"},
 		{"fractional_max_connections", "cache: {dir: cache}\nmax_connections: 1.5"},
 		{"fractional_max_leaf_certificates", "cache: {dir: cache}\nmax_leaf_certificates: 1.5"},
@@ -32,6 +34,17 @@ func TestLoadRejectsNonIntegerNumericLimits(t *testing.T) {
 			input := "registries: [example.com]\nca_dir: ca\n" + test.entry + "\n"
 			if _, err := Load(writeConfig(t, input)); !errors.Is(err, ErrInvalid) {
 				t.Errorf("Load(%q) unexpectedly returned %v", test.entry, err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsNonPositiveMaxAuthorizationEntries(t *testing.T) {
+	for _, value := range []string{"0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			input := "registries: [example.com]\nca_dir: ca\ncache: {dir: cache, max_authorization_entries: " + value + "}\n"
+			if _, err := Load(writeConfig(t, input)); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load error = %v, want ErrInvalid", err)
 			}
 		})
 	}

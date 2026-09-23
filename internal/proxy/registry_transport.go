@@ -21,6 +21,7 @@ type registryTransport struct {
 	cache           *cache.Store
 	metrics         *metrics
 	fillWaitTimeout time.Duration
+	authorization   *authorizationCache
 }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -38,8 +39,8 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}))
 	}
 
-	// Coalescing requires this caller's own accepted upstream GET. The first
-	// attempt may then close its body and wait for another fill.
+	// Make our own authorized GET first. This attempt may then close its body
+	// and wait for another request's fill instead of downloading it again.
 	resp, retry, err := t.roundTrip(req, true)
 	if err != nil || !retry {
 		return resp, err
@@ -81,13 +82,21 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 		policy = policyBypass
 	}
 
-	// Seed variables for the following loop
+	// Seed the eligibility, permission, and redirect-tracking state used below.
 	eligible := policy.eligible()
 	permitted := policy.cacheable()
 	current := req
 	seen := map[string]bool{req.URL.String(): true}
 
-	// Loop to follow redirect hops.
+	// Fast path: serve from a cached authorization grant with no upstream I/O.
+	// On a miss, attempt carries the in-flight entry for the upstream path below
+	// to settle, or is nil when grant caching does not apply.
+	resp, attempt := t.beginGrantAttempt(req, object, cacheShaped, permitted, mayWait, stats)
+	if resp != nil {
+		return resp, false, nil
+	}
+
+	// Upstream path: follow redirect hops, then hand off to resolveResponse.
 	for hops := 0; ; hops++ {
 
 		// Single network round trip for this hop via the shared stdlib transport
@@ -97,10 +106,17 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 			return nil, false, err
 		}
 
+		received := time.Now()
+
+		// Narrow the grant deadline to this hop's freshness, abandoning it if the
+		// hop forbids caching. Must precede settle so the deadline is set.
+		attempt.narrow(resp, received, permitted)
+
 		// This hop is terminal: either not cache-eligible, or not a redirect to follow.
 		// resolveResponse is the single exit — it meters the body and either bypasses
 		// (ineligible) or caches (hit/fill) before returning the response to the client.
 		if !eligible || !redirectStatus(resp.StatusCode) {
+			attempt.settle(req, resp, received, permitted)
 			return t.resolveResponse(req, resp, permitted, mayWait, stats)
 		}
 
@@ -113,12 +129,14 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 
 		// Limit redirect depth to 5 hops
 		if hops == 5 {
+			attempt.abandon()
 			return nil, false, errRedirect
 		}
 
 		// Resolve and validate Location. Refuse anything unsafe or already seen.
 		next, err := redirectURL(current.URL, resp.Header.Get("Location"))
 		if err != nil || seen[next.String()] {
+			attempt.abandon()
 			return nil, false, errRedirect
 		}
 
@@ -153,6 +171,12 @@ func buildRedirectRequest(ctx context.Context, current *http.Request, next *url.
 
 func redirectStatus(status int) bool {
 	return status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+}
+
+// isTransient reports whether a status is a retryable upstream failure whose
+// status alone must not disturb a cached authorization grant.
+func isTransient(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || (status >= 500 && status <= 599)
 }
 
 func redirectURL(base *url.URL, location string) (*url.URL, error) {

@@ -2,7 +2,9 @@
 
 OCI Accelerator is a standalone explicit HTTPS proxy with a local disk cache for
 immutable registry content. Docker Engine keeps its image names, credentials, and
-token acquisition. The proxy shares verified bytes, never authorization decisions.
+token acquisition. The proxy can briefly reuse a narrowly keyed upstream approval
+for the same request; it never interprets credentials or shares approval between
+different request fingerprints.
 See the [operating guide](operations.md) for configuration and deployment.
 
 ## Code ownership
@@ -45,28 +47,58 @@ An unconfigured token-service authority is reached through an opaque tunnel.
 
 ## Authorization before cache use
 
-Every cache delivery first issues that client's normal upstream GET for the
-requested object, even for public content or an already-warm entry. Substitution
-requires an accepted terminal `200` and matching representation metadata. A
-successful `/v2/` request, a HEAD response, or another client's permission is not
-authorization for this GET.
+Only full, immutable, digest-addressed blob and manifest GETs can use an
+authorization grant. Before the first reuse, the client's ordinary GET follows the
+complete redirect chain and must end in an eligible `200`; a `/v2/` request, HEAD,
+partial request, tag request, or another fingerprint's approval grants nothing.
+Registries need not authorize HEAD and GET alike, so approval always originates
+from the same GET that would otherwise supply the body.
 
-GET is deliberate: registries need not apply identical authorization policies to
-HEAD and GET. Using the same request as an uncached pull delegates permission to
-the resource server, including any redirect destination, instead of assuming
-HEAD grants access to the body.
+The process computes an HMAC fingerprint over the original canonical URL and all
+forwarded end-to-end request headers. Header names and transport-managed fields
+are normalized to their forwarded form, so wire-equivalent GETs share grant
+invalidation; see the [proxy caching contract](../internal/proxy/README.md#caching).
+Other exact values and their order are retained. Anonymous requests are explicitly distinct
+from authenticated requests. The HMAC key is process-local and never persisted;
+restart therefore clears every grant without retaining credentials, raw header
+values, signed redirect URLs, or reversible cache keys.
 
-On a hit, the proxy closes the unused upstream body and returns verified local
-bytes with the current upstream response headers. It never persists authorization
-headers, cookies, token responses, or signed redirect URLs for later delivery.
-Denials, `401` challenges, `403`, `404`, rate limits, outages, and TLS errors do not
-fall back to cached content. Missing or inconsistent metadata means forwarding
-the upstream response, not guessing from the local entry.
+`cache.authorization_ttl` defaults to `30s`; `0s` disables grant reuse and retains
+the previous guarantee that every cache delivery performs an upstream GET.
+`cache.max_authorization_entries` defaults to 10000 and must be positive. Grants
+are memory-only and bounded by that limit. Their TTL starts at upstream approval
+and is never renewed by hits. There is no background refresh or authorization
+request coalescing. Tokens remain opaque, so a token revoked or expired after
+approval may continue to authorize an exact-fingerprint hit until the grant's
+original expiry.
 
-This can save body transfer, not upstream requests, authorization latency, or
-request-based rate limits. The origin may send data before cancellation; small
-manifests may already have transferred completely. Permission is checked when the
-upstream accepts the request, not continuously during delivery.
+Approval is conservative across every redirect hop. Any `no-cache`, `no-store`,
+`private`, `min-fresh`, `Pragma`, or otherwise nonreusable HTTP freshness restriction
+prevents a grant. Only the explicit `max-age` and `s-maxage` ceilings can shorten the
+configured TTL; restrictions at any hop apply. `Age`, `Date`, and `Expires` are not
+consulted, so a grant never outlives the configured TTL but is not further reduced by
+upstream age: cached objects are immutable and digest-verified, and the short TTL bounds
+any over-trust. Any hop containing
+`Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or `WWW-Authenticate`
+also prevents reuse.
+
+A fast hit requires both a live exact grant and a present, verified body. It returns
+that body with only reconstructed Content-Type, Content-Length,
+Docker-Content-Digest, a current Date, and `Cache-Control: private, no-store` so
+downstream caches cannot extend the authorization lifetime. If the body is absent or
+cannot be verified, the request goes upstream; a grant is never a body or failure
+fallback. Existing body-cache admission and request-bypass rules are unchanged.
+
+A bypass whose Range or conditional headers are stripped as hop-by-hop can become
+an identical forwarded GET. Its response still participates in grant invalidation,
+but the original bypass prohibits fast serving, grant creation, and redirect following.
+
+An upstream `401`, `403`, `404`, or `410`, or another authoritative response that
+cannot establish reuse, invalidates the exact grant. Timeouts, DNS or TLS errors,
+`408`, `429`, and `5xx` responses preserve an existing grant only until its original
+expiry, unless the response carries any of the authentication-state headers above.
+Those headers invalidate the grant regardless of status. The failed request itself
+is returned: it never falls back to the cached body. TLS verification is never disabled.
 
 ## Redirect boundary
 
@@ -86,8 +118,8 @@ On an origin change, only Accept, Accept-Encoding, and User-Agent survive. An
 allowlist of retained headers prevents custom credential headers from leaking,
 not just standard Authorization or Cookie headers. Credentials are not restored
 if a later hop returns to the original origin. Referer is removed on redirects.
-Cache restrictions such as no-store and digest disagreement on intermediate
-responses prevent substitution at the terminal response.
+Cache and grant restrictions on any intermediate response apply to the complete
+chain; terminal success cannot erase them.
 
 These restrictions protect proxy-originated fetches. They do not constrain the
 broader egress available through opaque CONNECT tunnels: deployment network
@@ -135,10 +167,10 @@ clean EOF on a live request, exact declared length, and a matching SHA-256. Cach
 write, capacity, expiry, and publication failures abandon storage without replacing
 the valid upstream stream's bytes or errors.
 
-The initiating request owns the fill. Matching followers first obtain their own
-accepted GET and metadata, close their upstream bodies, and wait up to
-`cache.fill_wait_timeout`. A completed fill supplies an ordinary pinned, verified
-reader and the follower's own response headers. Waiters do not see partial files.
+The initiating request owns the fill. Matching followers that are not fast grant
+hits first obtain their own accepted GET and metadata, close their upstream bodies,
+and wait up to `cache.fill_wait_timeout`. A completed fill supplies an ordinary
+pinned, verified reader. Waiters do not see partial files.
 
 Timeout, failed fill, or eviction before reader acquisition triggers one fresh
 GET from the follower's original request through the full authorization and
@@ -217,8 +249,8 @@ and numeric limits target 64-bit builds. Docker Desktop, Windows, containerd, an
 BuildKit-specific integration are not validated.
 
 There is no shared/distributed storage, multi-instance coordination, background
-prefetch, tag caching, stale/offline mode, cached authorization, proxy-held
-credentials, automatic CA distribution/rotation, or intercepted push support.
+prefetch or grant refresh, tag caching, stale/offline mode, proxy-held credentials,
+automatic CA distribution/rotation, or intercepted push support.
 The repository provides a Go binary, not container packaging.
 
 Deterministic local registry/auth/CDN tests assert bytes, denials, and upstream

@@ -16,6 +16,9 @@ cache:
   max_entries: 100000
   fill_timeout: 10m
   fill_wait_timeout: 1s
+  # Process-local authorization grants. Zero TTL disables grant reuse.
+  authorization_ttl: 30s
+  max_authorization_entries: 10000
 dial_timeout: 10s
 tls_handshake_timeout: 10s
 response_header_timeout: 30s

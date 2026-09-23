@@ -100,7 +100,7 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 	stopDaemon3()
 	counts.waitIdle(t)
 	a2, b2, bad2, _ := counts.snapshot()
-	assertWarmOrigin(t, a1, b1, a2, b2, bad2, image, "warm-same-proxy")
+	assertGrantWarmOrigin(t, a1, b1, a2, b2, bad2, image, "warm-same-proxy")
 	if counts.tagCount(tagPath) <= tag1 {
 		t.Fatal("warm pull did not resolve the tag upstream")
 	}
@@ -178,6 +178,21 @@ func assertWarmOrigin(t *testing.T, beforeA map[string]int, beforeB map[string]i
 	written := afterB[image.layerPath] - beforeB[image.layerPath]
 	if requests != 1 || written < 0 || written >= int64(len(image.layer))/2 {
 		t.Fatalf("%s layer origin traffic requests/bytes=%d/%d, want exactly one request and less than %d bytes", phase, requests, written, len(image.layer)/2)
+	}
+	if bad != 0 {
+		t.Fatalf("%s origin received %d malformed Authorization headers", phase, bad)
+	}
+}
+
+func assertGrantWarmOrigin(t *testing.T, beforeA map[string]int, beforeB map[string]int64, afterA map[string]int, afterB map[string]int64, bad int, image fixtureImage, phase string) {
+	t.Helper()
+	for _, path := range []string{image.layerPath, image.configPath} {
+		if requests := afterA[path] - beforeA[path]; requests != 0 {
+			t.Fatalf("%s blob %s received %d origin GETs, want zero while authorization grant is live", phase, path, requests)
+		}
+		if written := afterB[path] - beforeB[path]; written != 0 {
+			t.Fatalf("%s blob %s received %d origin bytes, want zero while authorization grant is live", phase, path, written)
+		}
 	}
 	if bad != 0 {
 		t.Fatalf("%s origin received %d malformed Authorization headers", phase, bad)
