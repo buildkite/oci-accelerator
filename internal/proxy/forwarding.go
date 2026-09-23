@@ -74,6 +74,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		// Classify the request to decide cache eligibility, climbing the ladder
 		// only as far as the shape and then the headers allow.
 		object, eligible := immutableObjectRequest(r)
+		stats.immutable = eligible
 		policy := policyBypass
 		if eligible {
 			policy = policyEligible
