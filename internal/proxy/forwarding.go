@@ -75,6 +75,11 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		// only as far as the shape and then the headers allow.
 		object, eligible := immutableObjectRequest(r)
 		stats.immutable = eligible
+		fullRange, rangeEligible := fullBlobRangeRequest(r)
+		if rangeEligible && p.cache != nil {
+			object, eligible = immutableObjectRequest(fullRange)
+			r = r.WithContext(context.WithValue(r.Context(), rangeRequestKey{}, true))
+		}
 		policy := policyBypass
 		if eligible {
 			policy = policyEligible

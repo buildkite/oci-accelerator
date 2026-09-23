@@ -44,6 +44,26 @@ func (r *Reader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Seek moves within the pinned, verified file without changing its ownership.
+func (r *Reader) Seek(offset int64, whence int) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return 0, os.ErrClosed
+	}
+	// HTTP range sizing must use the verified representation length, not a
+	// possibly changed physical EOF after the reader was opened.
+	if whence == io.SeekEnd {
+		offset += r.entry.meta.Size
+		whence = io.SeekStart
+	}
+	position, err := r.file.Seek(offset, whence)
+	if err == nil {
+		r.remaining = r.entry.meta.Size - position
+	}
+	return position, err
+}
+
 func (r *Reader) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

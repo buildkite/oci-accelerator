@@ -122,7 +122,7 @@ func TestWarmCacheRequiresEachClientsGETAuthorization(t *testing.T) {
 
 func TestWarmMetadataMismatchAndBypassesForwardOriginBody(t *testing.T) {
 	const body = "good"
-	for _, mode := range []string{"no-store", "request-no-store-hop", "range-hop", "vary", "encoding", "digest", "media", "length", "HEAD", "Range", "conditional", "tag", "query", "206", "304", "416"} {
+	for _, mode := range []string{"no-store", "request-no-store-hop", "range-hop", "vary", "encoding", "digest", "media", "length", "HEAD", "If-Range", "conditional", "tag", "query", "206", "304", "416"} {
 		t.Run(mode, func(t *testing.T) {
 			var warm atomic.Bool
 			var calls atomic.Int32
@@ -175,8 +175,9 @@ func TestWarmMetadataMismatchAndBypassesForwardOriginBody(t *testing.T) {
 				u = origin.URL + "/v2/team/image/manifests/latest"
 			}
 			r, _ := http.NewRequest(method, u, nil)
-			if mode == "Range" {
+			if mode == "If-Range" {
 				r.Header.Set("Range", "bytes=0-3")
+				r.Header.Set("If-Range", `"version"`)
 			}
 			if mode == "conditional" {
 				r.Header.Set("If-Match", `"version"`)

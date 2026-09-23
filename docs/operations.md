@@ -171,7 +171,13 @@ indexes, not total process RSS; tune both to available memory. Restart clears al
 
 Intercepted traffic uses TLS 1.2 or newer and HTTP/1.1. Only bodyless GET, HEAD, and OPTIONS are
 allowed. Mutations, upgrades, authority conflicts, and non-origin-form requests are denied. Tag,
-`/v2/`, HEAD, Range, and conditional requests always go upstream.
+`/v2/`, HEAD, conditional requests, and ineligible ranges always pass through. Eligible
+unconditional SHA-256 blob Range GETs still go upstream on every request, as full GETs; a
+validated cache hit is then served with standard single, suffix, or multipart range semantics.
+There is no authorization-grant lookup or update for these requests. Until the full body is
+already cached, the request receives and may cache the full upstream `200` rather than a partial
+response. Ranged manifests, `If-Range` and other conditional requests, no-store requests, and a
+Range header named by Connection remain passthrough.
 
 The proxy follows up to five redirects only for eligible query-free SHA-256 blob and digest
 manifest GETs. Redirects must use verified HTTPS and pass destination checks; userinfo,
@@ -251,10 +257,13 @@ ratios, not estimates of wire-bandwidth savings; upstream authorization GETs are
 
 ## Cache storage and recovery
 
-The cache admits full, query-free SHA-256 blob GETs (including image configuration blobs) and
+The cache admits query-free SHA-256 blob GETs (including image configuration blobs) and
 digest manifests in supported OCI and Docker schema-2 media types. Cache keys preserve registry,
 repository, digest, object kind, exact Accept values, and observed Content-Type; bodies are
-hashed as received. Tags, HEAD, Range, conditional and non-identity encoded responses,
+hashed as received. Eligible unconditional blob ranges are fetched as full upstream GETs and can
+populate the same full-body cache; a warm validated entry serves standard byte ranges from its
+pinned reader. Cold range misses return the full `200`. Tags, HEAD, ranged manifests,
+conditional and non-identity encoded responses,
 unknown-length bodies, no-store traffic, and unsupported Vary dimensions bypass storage.
 
 Only full immutable digest blob and manifest GETs can reuse authorization. Grants are keyed by a
@@ -274,6 +283,9 @@ but may be trusted for up to the full residual TTL regardless of upstream age. A
 requires a present verified body and reconstructs only content type, length, digest, a current
 Date, and `Cache-Control: private, no-store`. Downstream caches must not extend the grant's
 lifetime. If the body is absent, the request goes upstream.
+
+Eligible blob Range GETs do not consult, create, invalidate, or otherwise update these grants;
+each performs its own full upstream GET before a cached body can serve the range.
 
 `401`, `403`, `404`, `410`, and authoritative nonreusable responses invalidate the exact grant.
 Timeouts, DNS/TLS failures, `408`, `429`, and `5xx` preserve it until its original expiry, unless

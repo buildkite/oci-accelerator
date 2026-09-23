@@ -31,6 +31,9 @@ type grantAttempt struct {
 // Range or conditional headers were stripped. Its response can invalidate a
 // matching grant, but permitted remains false so it cannot serve or commit one.
 func (t registryTransport) beginGrantAttempt(req *http.Request, object immutableObject, cacheShaped, permitted, mayWait bool, stats *requestStats) (*http.Response, *grantAttempt) {
+	if ranged, _ := req.Context().Value(rangeRequestKey{}).(bool); ranged {
+		return nil, nil
+	}
 	if t.authorization == nil || t.cache == nil || !cacheShaped {
 		return nil, nil
 	}

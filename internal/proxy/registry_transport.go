@@ -25,6 +25,13 @@ type registryTransport struct {
 }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clientRequest := req
+	ranged, _ := req.Context().Value(rangeRequestKey{}).(bool)
+	if ranged {
+		if full, ok := fullBlobRangeRequest(req); ok {
+			req = full
+		}
+	}
 	if req.Method == http.MethodGet {
 		// Count every connection-acquisition attempt (transport retries plus
 		// DNS/dial/TLS failures before the GET); requests rejected earlier don't
@@ -42,13 +49,15 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// Make our own authorized GET first. This attempt may then close its body
 	// and wait for another request's fill instead of downloading it again.
 	resp, retry, err := t.roundTrip(req, true)
-	if err != nil || !retry {
-		return resp, err
+	if err == nil && retry {
+		// Repeat the full authorization/redirect path once, without waiting again.
+		resp, _, err = t.roundTrip(req, false)
 	}
-
-	// Timeout, fill failure, or eviction before reader acquisition left no cached
-	// body. Repeat the full authorization/redirect path once, without waiting again.
-	resp, _, err = t.roundTrip(req, false)
+	if err == nil && ranged {
+		if body, ok := resp.Body.(*cache.Reader); ok {
+			resp = serveRangeResponse(clientRequest, resp, body)
+		}
+	}
 	return resp, err
 }
 
