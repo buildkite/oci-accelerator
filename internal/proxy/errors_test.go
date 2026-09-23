@@ -89,11 +89,14 @@ func TestUpstreamFailureLogsAreRedacted(t *testing.T) {
 			if hits.Load() != wantHits {
 				t.Fatalf("upstream requests=%d, want %d", hits.Load(), wantHits)
 			}
-			awaitNoActiveRequests(t, p)
+			shutdown(t, p)
 			if !strings.Contains(logs.String(), "reason="+reason) {
 				t.Fatalf("missing failure category %q in logs %q", reason, logs.String())
 			}
-			for _, secret := range []string{"private-token", "private-cookie", "private-password", "private-signature", testBlobPath} {
+			if got := strings.Count(logs.String(), "url="+origin.URL+testBlobPath+" "); got != 2 {
+				t.Fatalf("expected original URL in failure and completion logs, got %d: %s", got, logs.String())
+			}
+			for _, secret := range []string{"private-token", "private-cookie", "private-password", "private-signature", "storage.invalid"} {
 				if strings.Contains(logs.String(), secret) {
 					t.Errorf("logs contain %q", secret)
 				}

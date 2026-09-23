@@ -45,8 +45,8 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			}
 		},
 		ErrorLog: log.New(io.Discard, "", 0),
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			p.logger.Warn("upstream request failed", "registry", target.String(), "reason", upstreamFailure(err))
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			p.logger.Warn("upstream request failed", "registry", target.String(), "url", requestLogURL(target, r.URL), "reason", upstreamFailure(err))
 			refuse(w, "upstream unavailable", http.StatusBadGateway)
 		},
 
@@ -102,7 +102,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 				outcome = "complete"
 			}
 			p.metrics.finish(stats, outcome, mw.status, time.Since(started), mw.bytes)
-			p.logger.Info("registry request", "registry", target.String(), "status", mw.status, "duration", time.Since(started), "bytes", mw.bytes, "outcome", outcome,
+			p.logger.Info("registry request", "registry", target.String(), "url", requestLogURL(target, r.URL), "status", mw.status, "duration", time.Since(started), "bytes", mw.bytes, "outcome", outcome,
 				"cache", stats.cache, "fill", stats.fill, "admission", stats.admission, "wait", stats.wait, "fallback", stats.fallback, "reject", stats.reject, "upstream_body_bytes", stats.upstreamBytes)
 		}()
 
@@ -112,6 +112,13 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		}
 		completed = true
 	})
+}
+
+// requestLogURL includes only the pinned registry and original escaped path,
+// never query strings, userinfo, fragments, or a client-supplied authority.
+func requestLogURL(target hostport.HostPort, u *url.URL) string {
+	logged := url.URL{Scheme: "https", Host: target.String(), Path: u.Path, RawPath: u.RawPath}
+	return logged.String()
 }
 
 // rejectInvalidRequest returns true when the request must not reach the reverse proxy.

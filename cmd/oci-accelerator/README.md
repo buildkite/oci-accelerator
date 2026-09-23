@@ -70,6 +70,11 @@ certificate path, and the CA fingerprint at startup; it is up to operators to
 distribute that certificate to clients. Diagnostics avoid echoing configuration
 values, addresses, or other potentially sensitive input.
 
+Registry request completion and upstream-failure logs include a sanitized `url`
+with the registry authority and escaped path. Repository names, tags, and digests
+are visible; query strings, userinfo, fragments, and redirect URLs are not. See
+the [logging policy](../../docs/operations.md#logs-and-metrics) for details.
+
 ## Dependencies
 
 `oci-accelerator` wires `internal/config`, `internal/ca`, `internal/cache`, and

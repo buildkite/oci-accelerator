@@ -169,8 +169,16 @@ only Accept, Accept-Encoding, and User-Agent, never credentials or cookies. See
 JSON logs go to stderr. Request completion records contain bounded status and outcome fields,
 cache/fill/wait/fallback/admission outcomes, duration, downstream body bytes, and bytes consumed
 from the upstream body. The upstream counter excludes transport read-ahead and is not a wire
-traffic measurement. Streaming failures can occur after status 200 has been sent. Logs omit
-paths, signed queries, authorization headers, token bodies, and raw upstream errors.
+traffic measurement. Streaming failures can occur after status 200 has been sent.
+
+Request completion records and upstream-failure warnings include a `url` field containing
+the intercepted registry's HTTPS authority and the original escaped request path, including
+for cache hits and rejected requests. For example:
+`"url":"https://registry.example/v2/team/image/manifests/latest"`.
+These paths expose repository names, tags, and digests; restrict access to logs accordingly.
+Query strings, userinfo, fragments, redirect URLs, authorization headers, token bodies, and
+raw upstream errors remain omitted. No request-start or per-redirect records are emitted.
+Opaque CONNECT tunnels do not expose HTTP request URLs to the proxy.
 
 Set `metrics_listen: 127.0.0.1:9090` to serve Prometheus text at `GET /metrics` on a separate
 listener. Hostnames, wildcard/public addresses, zoned IPv6, and port zero are rejected. A bind

@@ -108,7 +108,12 @@ func TestWarmCacheRequiresEachClientsGETAuthorization(t *testing.T) {
 	if !strings.Contains(logs.String(), "cache=hit") || !strings.Contains(logs.String(), "fill=stored") {
 		t.Fatal("missing cache diagnostics")
 	}
-	for _, secret := range []string{"Bearer alice", "Bearer bob", "current=", "team/image"} {
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if strings.Contains(line, `msg="registry request"`) && !strings.Contains(line, "url="+u+" ") {
+			t.Fatalf("request log missing URL: %s", line)
+		}
+	}
+	for _, secret := range []string{"Bearer alice", "Bearer bob", "current="} {
 		if strings.Contains(logs.String(), secret) {
 			t.Fatalf("logged %s", secret)
 		}
@@ -245,7 +250,8 @@ func TestRedirectedCacheAuthorizesCDNAndHonorsRegistryNoStore(t *testing.T) {
 		w.WriteHeader(307)
 	}))
 	defer origin.Close()
-	p, c := cacheFixture(t, origin, 1<<20, nil)
+	var logs bytes.Buffer
+	p, c := cacheFixture(t, origin, 1<<20, &logs)
 	a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
 	p.destinations[a.String()] = struct{}{}
 	p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
@@ -269,6 +275,15 @@ func TestRedirectedCacheAuthorizesCDNAndHonorsRegistryNoStore(t *testing.T) {
 	}
 	if requests.Load() != 4 || storage.Load() != 4 {
 		t.Fatal("missing per-hop authorization")
+	}
+	shutdown(t, p)
+	if got := strings.Count(logs.String(), "url="+u+" "); got != 4 {
+		t.Fatalf("expected original URL in four completion logs, got %d: %s", got, logs.String())
+	}
+	for _, secret := range []string{cdn.URL, "/signed", "temporary", "Bearer client"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Errorf("logs contain redirect or credential %q", secret)
+		}
 	}
 	if err := filepath.WalkDir(p.cfg.Cache.Dir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {

@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -119,11 +121,12 @@ func TestInformationalResponseWriteDeadline(t *testing.T) {
 	}
 }
 func TestInterceptForwardsRequestAndRelaysSensitiveResponse(t *testing.T) {
+	const path = "/v2/team%2Fimage/manifests/latest"
 	const query = "signature=do-not-log-this&opaque=%zz;keep"
 	var requests atomic.Int32
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.Method != http.MethodGet || r.URL.RequestURI() != "/v2/team/image/manifests/latest?"+query {
+		if r.Method != http.MethodGet || r.URL.RequestURI() != path+"?"+query {
 			t.Errorf("request = %s %q", r.Method, r.URL.RequestURI())
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer private-token" {
@@ -146,7 +149,7 @@ func TestInterceptForwardsRequestAndRelaysSensitiveResponse(t *testing.T) {
 
 	var logs bytes.Buffer
 	p, _, client := interceptFixture(t, origin, &logs, true)
-	req, _ := http.NewRequest(http.MethodGet, origin.URL+"/v2/team/image/manifests/latest?"+query, nil)
+	req, _ := http.NewRequest(http.MethodGet, origin.URL+path+"?"+query, nil)
 	req.Header.Set("Authorization", "Bearer private-token")
 	req.Header.Set("Accept", "application/vnd.oci.image.manifest.v1+json")
 	req.Header.Set("Connection", "keep-alive, X-Hop")
@@ -174,10 +177,59 @@ func TestInterceptForwardsRequestAndRelaysSensitiveResponse(t *testing.T) {
 	}
 	client.Transport.(*http.Transport).CloseIdleConnections()
 	shutdown(t, p)
+	if !strings.Contains(logs.String(), "url="+origin.URL+path+" ") {
+		t.Fatalf("missing escaped request URL: %s", logs.String())
+	}
 	for _, secret := range []string{query, "private-token", "proxy-secret", "response-token", "response-cookie"} {
 		if strings.Contains(logs.String(), secret) {
 			t.Errorf("logs contain secret %q: %s", secret, logs.String())
 		}
+	}
+}
+
+func TestRejectedRequestURLLogs(t *testing.T) {
+	for _, tc := range []struct {
+		name, registry, requestURL, wantURL string
+		status                              int
+	}{
+		{"method", "registry.example", "https://registry.example/v2/team%2fimage/manifests/latest?token=private-query", "https://registry.example/v2/team%2fimage/manifests/latest", http.StatusMethodNotAllowed},
+		{"authority", "[2001:db8::1]:5443", "https://untrusted.invalid/v2/image?token=private-query", "https://[2001:db8::1]:5443/v2/image", http.StatusMisdirectedRequest},
+		{"absolute-target", "registry.example", "https://private-user:private-password@untrusted.invalid/v2/image?token=private-query#private-fragment", "https://registry.example/v2/image", http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := hostport.Parse(tc.registry, "443")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			p := New(config.Config{}, nil, slog.New(slog.NewJSONHandler(&logs, nil)), nil)
+			r := httptest.NewRequest(http.MethodPost, tc.requestURL, nil)
+			if tc.name != "absolute-target" {
+				r.RequestURI = r.URL.RequestURI()
+				r.URL.Scheme, r.URL.Host = "", ""
+			}
+			w := httptest.NewRecorder()
+			p.interceptHandler(target).ServeHTTP(w, r)
+			if w.Code != tc.status {
+				t.Fatalf("status = %d, want %d", w.Code, tc.status)
+			}
+			var record struct {
+				Message string `json:"msg"`
+				URL     string `json:"url"`
+				Status  int    `json:"status"`
+			}
+			if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.Message != "registry request" || record.URL != tc.wantURL || record.Status != tc.status {
+				t.Fatalf("unexpected request log: %+v", record)
+			}
+			for _, secret := range []string{"private-", "untrusted.invalid"} {
+				if strings.Contains(logs.String(), secret) {
+					t.Errorf("logs contain %q", secret)
+				}
+			}
+		})
 	}
 }
 
