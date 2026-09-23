@@ -10,19 +10,45 @@ shutdown. For installation and day-to-day operation, see the
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | `main` and `run`, which delegates flag parsing, cache and metrics startup, and graceful-shutdown orchestration to focused helpers (`resolveConfig`, `openCacheStore`, `startMetrics`, `serveUntilSignal`), joining their errors on return |
+| `main.go` | `main` and `run`, which dispatch commands and delegate flag parsing, cache and metrics startup, and graceful-shutdown orchestration to focused helpers (`resolveConfig`, `openCacheStore`, `startMetrics`, `serveUntilSignal`), joining their errors on return |
+| `init_ca.go` | Parses `init-ca --dir`, opens or creates the root CA, and prints its public certificate path and fingerprint |
 | `signal.go` | Builds a shutdown context from SIGINT/SIGTERM and restores default handling so a second signal can force-terminate a stuck cleanup |
 
 ## Usage
 
 ```
 oci-accelerator --config FILE [--check]
+oci-accelerator init-ca --dir DIR
 ```
 
-- `--config FILE` — path to the YAML configuration (required).
+- `--config FILE` — path to the YAML configuration (required for the proxy command).
 - `--check` — validate the configuration and exit without starting the proxy.
+- `init-ca --dir DIR` — create or validate a root CA directory. `--dir` is
+  required; relative paths are resolved from the working directory.
 
-Positional arguments are rejected. Flag-parsing diagnostics are suppressed so
+`init-ca` uses the same [root CA lifecycle](../../internal/ca/README.md#public-interface)
+as proxy startup. It does not load YAML or start the proxy, cache, listeners,
+or network activity. If `DIR` is absent, its existing parent must be safe and
+writable; the command creates the directory, `ca.crt`, and `ca.key` using the
+P-256, ten-year root CA profile. If a valid pair
+already exists, it is validated and reused without changing file contents,
+ownership, or permissions. Empty, invalid, expired, incomplete, symlinked, or
+insecurely permissioned state fails closed. The command never creates parent
+directories.
+
+On success, stdout contains only the public certificate path and its lowercase,
+unseparated SHA-256 fingerprint:
+
+```text
+ca_certificate="path/to/ca.crt"
+ca_sha256=0123456789abcdef...
+```
+
+It never prints private-key contents. `oci-accelerator init-ca --help` describes
+the command, and top-level help lists `init-ca`.
+
+Apart from the `init-ca` subcommand, positional arguments are rejected.
+Flag-parsing diagnostics are suppressed so
 command-line input is never reflected back in an error message. Sanitized
 configuration diagnostics retain fixed fields, line numbers, and categories;
 configuration I/O errors remain generic. Cache diagnostics report only fixed
@@ -30,6 +56,8 @@ lock-conflict, unsafe-state, invalid-limits, filesystem, or active-reader
 categories.
 
 ## Startup wiring
+
+The default proxy command follows this startup sequence:
 
 ```
 main -> shutdownContext (signal.go) -> run

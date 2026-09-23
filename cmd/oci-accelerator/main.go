@@ -30,6 +30,10 @@ func main() {
 
 // run takes ownership of each listener returned by listen.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen func(string, string) (net.Listener, error)) (runErr error) {
+	if len(args) > 0 && args[0] == "init-ca" {
+		return runInitCA(args[1:], stdout)
+	}
+
 	cfg, handled, err := resolveConfig(args, stdout)
 	if err != nil || handled {
 		return err
@@ -83,6 +87,7 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(stdout, "Usage: oci-accelerator --config FILE [--check]")
+			fmt.Fprintln(stdout, "       oci-accelerator init-ca --dir DIR")
 			return config.Config{}, true, nil
 		}
 		return config.Config{}, false, errors.New("invalid command line")

@@ -40,10 +40,16 @@ permissions if it exists:
 
 ```sh
 mkdir -m 0700 data
+bin/oci-accelerator init-ca --dir data/ca
 bin/oci-accelerator --config config.local.yaml
 ```
 
-Keep the containing path trusted and on durable storage. The proxy does not create ancestors.
+`init-ca` provisions only the root CA; it does not load YAML or start the proxy, cache, or any
+network activity. `--dir` is required, and relative paths such as `data/ca` are resolved from
+the working directory. The parent must already exist. On success it prints the public
+certificate path and lowercase SHA-256 fingerprint as `ca_certificate="..."` and
+`ca_sha256=...`; it never prints the private key. Keep the containing path trusted and on
+durable storage. Neither CA initialization nor proxy startup creates ancestors.
 
 Run the process under the host's service manager. In an Amp orb, for example:
 
@@ -61,10 +67,16 @@ cannot be inspected or restricted to image pulls.
 
 ## Configure CA trust and Docker
 
-With the example configuration, first startup creates `data/ca/ca.crt` and
-`data/ca/ca.key`. Leave the CA directory absent initially; do not pre-create an empty
-directory. Its parent must be owned by the proxy user and must not be group- or
-world-writable. Startup logs the certificate path and its SHA-256 fingerprint.
+With the example configuration, the `init-ca` command above creates `data/ca/ca.crt` and
+`data/ca/ca.key` before proxy startup. Alternatively, first startup creates the same files.
+Leave the CA directory absent initially; do not pre-create an empty directory. Its parent must
+be owned by the proxy user and must not be group- or world-writable. A valid existing pair is
+validated and reused unchanged; empty, invalid, expired, incomplete, symlinked, or insecurely
+permissioned state fails. Initialization uses the existing P-256, ten-year root CA profile and
+preserves ownership and permissions of reused state. The command's `ca_sha256` output and
+startup logs provide the same fingerprint for trusted distribution.
+
+Provisioning the CA does not install client trust and does not enable automatic rotation.
 
 On the Docker host, download the public root CA directly from the proxy's HTTP listener.
 Set `PROXY_URL` to its HTTP URL (the same address used for Docker's proxy configuration):
