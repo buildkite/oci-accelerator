@@ -66,9 +66,10 @@ serving, shutdown, and resource cleanup.
 ## Logging and error hygiene
 
 Logs are structured JSON on stderr. The program logs the listen address, the CA
-certificate path, and the CA fingerprint at startup; it is up to operators to
-distribute that certificate to clients. Diagnostics avoid echoing configuration
-values, addresses, or other potentially sensitive input.
+certificate path, and the CA fingerprint at startup. Clients can download the
+public CA from the proxy listener; operators must supply the expected fingerprint
+through a trusted channel before clients install it. Diagnostics avoid echoing
+configuration values, addresses, or other potentially sensitive input.
 
 ## Dependencies
 

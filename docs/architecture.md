@@ -25,8 +25,10 @@ or separate cache backends.
 
 ## Connection and request flow
 
-1. The outer HTTP listener accepts CONNECT only. It validates the target and wire
-   Host, tracks accepted sockets, and enforces the connection limit.
+1. The outer HTTP listener accepts CONNECT and a public root CA download at
+   `GET /ca.crt` and `HEAD /ca.crt`. It validates the CONNECT target and wire
+   Host, tracks accepted sockets, and enforces the connection limit. Downloads
+   close their connection and never enter the registry forwarding path.
 2. An unconfigured authority gets an opaque byte tunnel. The proxy does not
    inspect its TLS, cache its content, or enforce pull-only methods inside it.
 3. A configured registry gets a leaf certificate signed by the persisted CA.
@@ -227,8 +229,12 @@ The proxy creates a ten-year ECDSA P-256 CA only when its configured directory i
 absent. It stages both files and publishes them together; an existing incomplete,
 unsafe, incompatible, or expired CA is an error, not a reason to rotate trust.
 Concurrent initializers adopt a valid published winner without a persistent CA lock.
-Operators provision the trusted parent directory and distribute only the public
-certificate through a trusted channel, checking the startup fingerprint.
+Operators provision the trusted parent directory. Clients can download the public
+certificate from the proxy's HTTP listener, but must verify it against the startup
+fingerprint obtained through a separate trusted channel before installing trust.
+Alternatively, operators distribute the certificate through a trusted channel.
+The endpoint serves only the running process's public CA, never private key material;
+see the [download contract](../internal/proxy/README.md#public-ca-download).
 
 Per-host leaves last at most 24 hours, are capped by CA expiry, and renew within
 one hour of expiry. The bounded leaf cache uses LRU. Detailed filesystem,
@@ -250,7 +256,7 @@ BuildKit-specific integration are not validated.
 
 There is no shared/distributed storage, multi-instance coordination, background
 prefetch or grant refresh, tag caching, stale/offline mode, proxy-held credentials,
-automatic CA distribution/rotation, or intercepted push support.
+automatic CA trust installation/rotation, or intercepted push support.
 The repository provides a Go binary, not container packaging.
 
 Deterministic local registry/auth/CDN tests assert bytes, denials, and upstream

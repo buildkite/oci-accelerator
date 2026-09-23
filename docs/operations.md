@@ -66,22 +66,38 @@ With the example configuration, first startup creates `data/ca/ca.crt` and
 directory. Its parent must be owned by the proxy user and must not be group- or
 world-writable. Startup logs the certificate path and its SHA-256 fingerprint.
 
-Transfer only `ca.crt` to the Docker host over a trusted channel and verify its fingerprint:
+On the Docker host, download the public root CA directly from the proxy's HTTP listener.
+Set `PROXY_URL` to its HTTP URL (the same address used for Docker's proxy configuration):
 
 ```sh
-openssl x509 -in data/ca/ca.crt -noout -fingerprint -sha256
+curl --noproxy '*' --fail --show-error --output ca.crt "$PROXY_URL/ca.crt"
+openssl x509 -in ca.crt -noout -fingerprint -sha256
 ```
+
+Before installing, compare this fingerprint with `ca_sha256` from startup logs obtained
+through a trusted channel, such as SSH or your deployment system. Do not install the
+certificate if they differ or you cannot obtain a trusted expected fingerprint.
+The HTTP download is unauthenticated: an attacker could replace the certificate, and
+a fingerprint fetched over the same connection would not establish authenticity.
+Alternatively, transfer only the public `ca.crt` through an already trusted channel.
 
 OpenSSL displays uppercase colon-separated hex, while startup logs lowercase hex without
 colons. The CA can sign arbitrary server identities, so protect `ca.key` and narrowly scope
 trust.
 
-On rootful Linux Docker Engine, install the public certificate for each intercepted registry:
+After verifying the fingerprint, on rootful Linux Docker Engine install the public
+certificate for each intercepted registry, rather than adding system-wide trust:
 
 ```sh
-sudo install -D -m 0644 data/ca/ca.crt /etc/docker/certs.d/registry-1.docker.io/ca.crt
-sudo install -D -m 0644 data/ca/ca.crt /etc/docker/certs.d/ghcr.io/ca.crt
+sudo install -D -m 0644 ca.crt /etc/docker/certs.d/registry-1.docker.io/ca.crt
+sudo install -D -m 0644 ca.crt /etc/docker/certs.d/ghcr.io/ca.crt
 ```
+
+`GET /ca.crt` and `HEAD /ca.crt` are always available to anyone who can reach the
+proxy listener; they need no registry credentials or additional listener configuration.
+The endpoint serves the root CA loaded by the running process, never the private key.
+It does not install trust or rotate certificates. See the
+[download contract](../internal/proxy/README.md#public-ca-download) for protocol details.
 
 For `registry.example:5000`, use that exact host and port as the directory name. Omit `:443`
 when image names omit it. Never distribute `ca.key` or install it as a Docker client key. See

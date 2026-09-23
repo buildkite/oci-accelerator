@@ -190,11 +190,14 @@ func (p *Proxy) closeAll() {
 
 // ServeHTTP is p.server's http.Handler: net/http calls it per client request,
 // on the connection's goroutine. It dispatches CONNECT to registry interception
-// or an opaque relay, and refuses any other method.
+// or an opaque relay, and serves the public CA download on the outer listener.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-
-	// This proxy only tunnels; reject any non-CONNECT method.
 	if r.Method != http.MethodConnect {
+		// Match only the exact origin-form target, never a forward-proxy URL.
+		if r.RequestURI == "/ca.crt" {
+			p.serveCA(w, r)
+			return
+		}
 		w.Header().Set("Allow", http.MethodConnect)
 		refuse(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
