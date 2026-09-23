@@ -5,7 +5,7 @@ The [Buildkite pipeline](https://buildkite.com/buildkite/oci-accelerator) upload
 `buildkite-agent pipeline upload` bootstrap. Bootstrap settings are managed in
 `buildkite/saas-iac`; this repository owns the uploaded job definitions.
 
-Three independent jobs run on the Open Source cluster's Linux `hosted` queue:
+Four independent jobs run on the Open Source cluster's Linux `hosted` queue:
 
 - Check Go formatting (without rewriting files), run `go vet ./...`, build the
   binary, and validate `config.example.yaml` with `--check`. This temporary build
@@ -13,6 +13,9 @@ Three independent jobs run on the Open Source cluster's Linux `hosted` queue:
   weakening Git's safe-directory checks.
 - Run `go test -count=1 -timeout=10m ./...`.
 - Run `go test -race -count=1 -timeout=10m ./...`.
+- Install checksum-pinned Helm, lint the chart, and check deployment safety,
+  Helm/plain-manifest parity, and optional metrics configuration. This uses no
+  Kubernetes credentials and deploys nothing.
 
 Each job uses the Docker plugin and `golang:1.27.1-bookworm`, which supplies Go and
 the C compiler required for race tests. `GOTOOLCHAIN=local` prevents an implicit
@@ -36,6 +39,7 @@ To reproduce CI locally with Go 1.27.1 and a C compiler, run from the repo root:
 GOTOOLCHAIN=local CGO_ENABLED=1 bash .buildkite/check.sh
 GOTOOLCHAIN=local CGO_ENABLED=1 go test -count=1 -timeout=10m ./...
 GOTOOLCHAIN=local CGO_ENABLED=1 go test -race -count=1 -timeout=10m ./...
+bash .buildkite/check-deployment.sh
 ```
 
 With `buildkite-agent` installed, parse the pipeline without uploading any jobs.

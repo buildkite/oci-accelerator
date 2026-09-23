@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: oci-accelerator
+  labels:
+    app.kubernetes.io/name: oci-accelerator
+    app.kubernetes.io/instance: oci-accelerator
+    app.kubernetes.io/component: proxy

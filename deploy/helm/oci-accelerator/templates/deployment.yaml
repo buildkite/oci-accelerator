@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "oci-accelerator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oci-accelerator
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: proxy
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "oci-accelerator.labels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare-state
+          image: {{ include "oci-accelerator.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-ec"]
+          args:
+            - |
+              mkdir -p /state/ca
+              cp /ca-secret/ca.crt /state/ca/ca.crt
+              cp /ca-secret/ca.key /state/ca/ca.key
+              chmod 0700 /state /state/ca /cache
+              chmod 0644 /state/ca/ca.crt
+              chmod 0600 /state/ca/ca.key
+              chown 10001:10001 /state /state/ca /state/ca/ca.crt /state/ca/ca.key /cache
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+          volumeMounts:
+            - name: state
+              mountPath: /state
+            - name: cache
+              mountPath: /cache
+            - name: ca-secret
+              mountPath: /ca-secret
+              readOnly: true
+      containers:
+        - name: proxy
+          image: {{ include "oci-accelerator.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/etc/oci-accelerator/config.yaml"]
+          ports:
+            - name: proxy
+              containerPort: 3128
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 9090
+            {{- end }}
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            exec:
+              command: ["wget", "-q", "-T", "2", "-O", "/dev/null", "http://127.0.0.1:9090/readyz"]
+            periodSeconds: 5
+            failureThreshold: 60
+            timeoutSeconds: 3
+          readinessProbe:
+            exec:
+              command: ["wget", "-q", "-T", "2", "-O", "/dev/null", "http://127.0.0.1:9090/readyz"]
+            periodSeconds: 5
+            failureThreshold: 3
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["wget", "-q", "-T", "2", "-O", "/dev/null", "http://127.0.0.1:9090/livez"]
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: state
+              mountPath: /state
+            - name: cache
+              mountPath: /cache
+            - name: config
+              mountPath: /etc/oci-accelerator
+              readOnly: true
+      volumes:
+        - name: state
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: cache
+          persistentVolumeClaim:
+            claimName: {{ include "oci-accelerator.cacheClaim" . }}
+        - name: ca-secret
+          secret:
+            secretName: {{ .Release.Name }}-ca
+            defaultMode: 0400
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}

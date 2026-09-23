@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: oci-accelerator-bootstrap
+  namespace: oci-accelerator
+  labels:
+    app.kubernetes.io/name: oci-accelerator
+    app.kubernetes.io/instance: oci-accelerator
+    app.kubernetes.io/component: bootstrap
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oci-accelerator
+        app.kubernetes.io/instance: oci-accelerator
+        app.kubernetes.io/component: bootstrap
+    spec:
+      serviceAccountName: oci-accelerator-bootstrap
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: ghcr.io/buildkite/oci-accelerator:REPLACE_ME
+          args:
+            - bootstrap-ca
+            - --secret
+            - oci-accelerator-ca
+            - --configmap
+            - oci-accelerator-trust
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi

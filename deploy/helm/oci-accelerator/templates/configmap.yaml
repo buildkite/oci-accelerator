@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "oci-accelerator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+data:
+  config.yaml: |
+    listen: 0.0.0.0:3128
+    metrics_listen: {{ ternary "0.0.0.0:9090" "127.0.0.1:9090" .Values.metrics.enabled }}
+    metrics_allow_remote: {{ .Values.metrics.enabled }}
+    registries:
+      {{- toYaml .Values.registries | nindent 6 }}
+    redirect_allowlist:
+      {{- toYaml .Values.redirectAllowlist | nindent 6 }}
+    ca_dir: /state/ca
+    cache:
+      dir: /cache/data
+      max_bytes: {{ .Values.cache.maxBytes | int64 }}
+      max_fills: {{ .Values.cache.maxFills }}
+      max_entries: {{ .Values.cache.maxEntries }}
+      fill_timeout: {{ .Values.cache.fillTimeout }}
+      fill_wait_timeout: {{ .Values.cache.fillWaitTimeout }}
+      authorization_ttl: {{ .Values.cache.authorizationTTL }}
+      max_authorization_entries: {{ .Values.cache.maxAuthorizationEntries }}
+    dial_timeout: {{ .Values.proxy.dialTimeout }}
+    tls_handshake_timeout: {{ .Values.proxy.tlsHandshakeTimeout }}
+    response_header_timeout: {{ .Values.proxy.responseHeaderTimeout }}
+    idle_timeout: {{ .Values.proxy.idleTimeout }}
+    shutdown_timeout: 15s
+    max_connections: {{ .Values.proxy.maxConnections }}
+    max_leaf_certificates: {{ .Values.proxy.maxLeafCertificates }}

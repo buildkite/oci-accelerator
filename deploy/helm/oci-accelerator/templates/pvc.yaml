@@ -1,0 +1,18 @@
+{{- if not .Values.cache.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-cache
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "oci-accelerator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.cache.storageClassName | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.cache.size }}
+{{- end }}

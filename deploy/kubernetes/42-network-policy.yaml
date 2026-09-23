@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oci-accelerator
+  namespace: oci-accelerator
+  labels:
+    app.kubernetes.io/name: oci-accelerator
+    app.kubernetes.io/instance: oci-accelerator
+    app.kubernetes.io/component: proxy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: oci-accelerator
+      app.kubernetes.io/instance: oci-accelerator
+      app.kubernetes.io/component: proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: buildkite
+      ports:
+        - protocol: TCP
+          port: 3128

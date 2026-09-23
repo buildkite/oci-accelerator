@@ -27,6 +27,8 @@ resource use and fixed request/cache outcomes; remote binding requires explicit 
   ownership, and design rationale.
 - [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
   recovery, and repeatable acceptance checks.
+- [Kubernetes guide](docs/kubernetes.md): Helm and plain manifests for a private,
+  single-replica EKS deployment with persistent CA identity and cache storage.
 - Package guides map the code and internal contracts:
   [proxy](internal/proxy/README.md), [ca](internal/ca/README.md),
   [cache](internal/cache/README.md), [config](internal/config/README.md),

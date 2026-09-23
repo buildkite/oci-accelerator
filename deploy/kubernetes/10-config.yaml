@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oci-accelerator
+  namespace: oci-accelerator
+  labels:
+    app.kubernetes.io/name: oci-accelerator
+    app.kubernetes.io/instance: oci-accelerator
+    app.kubernetes.io/component: proxy
+data:
+  config.yaml: |
+    listen: 0.0.0.0:3128
+    metrics_listen: 127.0.0.1:9090
+    registries:
+      - registry-1.docker.io
+      - ghcr.io
+      - public.ecr.aws
+    redirect_allowlist: []
+    ca_dir: /state/ca
+    cache:
+      dir: /cache/data
+      max_bytes: 34359738368
+    shutdown_timeout: 15s

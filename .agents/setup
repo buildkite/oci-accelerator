@@ -64,6 +64,30 @@ docker --version
 dockerd --version
 docker buildx version
 
+tools=$(mktemp -d)
+trap 'rm -rf "$tools" "${temporary:-}"' EXIT
+if ! helm version --short 2>/dev/null | grep -q '^v4.3.0+'; then
+  echo "Installing Helm 4.3.0"
+  bash .buildkite/install-helm.sh "$tools"
+  sudo -n install -m 0755 "$tools/helm" /usr/local/bin/helm
+fi
+if ! kubectl version --client --output=yaml 2>/dev/null | grep -q 'gitVersion: v1.37.0'; then
+  echo "Installing kubectl 1.37.0"
+  url="https://dl.k8s.io/release/v1.37.0/bin/linux/$arch/kubectl"
+  curl -fsSL --retry 3 --max-time 120 "$url" -o "$tools/kubectl"
+  checksum=$(curl -fsSL --retry 3 --max-time 30 "$url.sha256")
+  echo "$checksum  $tools/kubectl" | sha256sum --check
+  sudo -n install -m 0755 "$tools/kubectl" /usr/local/bin/kubectl
+fi
+if ! kind version 2>/dev/null | grep -q '^kind v0.33.0 '; then
+  echo "Installing kind 0.33.0"
+  url="https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-$arch"
+  curl -fsSL --retry 3 --max-time 120 "$url" -o "$tools/kind"
+  checksum=$(curl -fsSL --retry 3 --max-time 30 "$url.sha256sum" | awk '{print $1}')
+  echo "$checksum  $tools/kind" | sha256sum --check
+  sudo -n install -m 0755 "$tools/kind" /usr/local/bin/kind
+fi
+
 if [[ -f go.mod ]]; then
   echo "Downloading Go module dependencies"
   go mod download

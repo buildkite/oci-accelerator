@@ -1,0 +1,48 @@
+image:
+  repository: ghcr.io/buildkite/oci-accelerator
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+buildNamespace: buildkite
+
+cache:
+  existingClaim: ""
+  storageClassName: gp3
+  size: 50Gi
+  maxBytes: 34359738368
+  maxFills: 16
+  maxEntries: 100000
+  fillTimeout: 10m
+  fillWaitTimeout: 1s
+  authorizationTTL: 30s
+  maxAuthorizationEntries: 10000
+
+registries:
+  - registry-1.docker.io
+  - ghcr.io
+  - public.ecr.aws
+redirectAllowlist: []
+
+proxy:
+  dialTimeout: 10s
+  tlsHandshakeTimeout: 10s
+  responseHeaderTimeout: 30s
+  idleTimeout: 2m
+  maxConnections: 256
+  maxLeafCertificates: 256
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi
+
+metrics:
+  enabled: false
+  namespace: monitoring
+  serviceMonitor:
+    enabled: false
+    interval: 30s

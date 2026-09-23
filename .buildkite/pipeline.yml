@@ -2,6 +2,16 @@ agents:
   queue: hosted
 
 steps:
+  - label: ":kubernetes: Deployment packages"
+    key: deployment
+    command: "bash .buildkite/check-deployment.sh"
+    timeout_in_minutes: 10
+    plugins:
+      - docker#v5.14.0:
+          image: golang:1.27.1-bookworm
+          environment:
+            - GOTOOLCHAIN=local
+
   - label: ":go: Format, vet, and build"
     key: checks
     command: "bash .buildkite/check.sh"
