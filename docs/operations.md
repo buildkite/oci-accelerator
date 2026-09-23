@@ -221,6 +221,34 @@ requests received by the registry. `oci_accelerator_cache_rejections_total` repo
 `digest_mismatch` header rejections on eligible responses; another policy check may also prevent
 caching, so these counts do not identify the sole cause of every bypass.
 
+The immutable source delivery counters separate cache- and origin-served `200` responses. Their
+scope, completion semantics, and source attribution are defined in the proxy package's
+[immutable source delivery metrics contract](../internal/proxy/README.md#immutable-source-delivery-metrics).
+For a five-minute cache byte percentage across all instances, apply `rate` before aggregation and
+drop a zero-traffic denominator so dashboards can display N/A:
+
+```promql
+(
+  100 * sum(rate(oci_accelerator_served_bytes_total{source="cache"}[5m]))
+    / sum(rate(oci_accelerator_served_bytes_total[5m]))
+)
+and on () (sum(rate(oci_accelerator_served_bytes_total[5m])) > 0)
+```
+
+The equivalent delivery percentage is:
+
+```promql
+(
+  100 * sum(rate(oci_accelerator_served_entries_total{source="cache"}[5m]))
+    / sum(rate(oci_accelerator_served_entries_total[5m]))
+)
+and on () (sum(rate(oci_accelerator_served_entries_total[5m])) > 0)
+```
+
+For origin percentage, replace `source="cache"` with `source="origin"`, or subtract the cache
+percentage from 100 when traffic is present. Do not coerce no traffic to zero. These are delivery
+ratios, not estimates of wire-bandwidth savings; upstream authorization GETs are independent.
+
 ## Cache storage and recovery
 
 The cache admits full, query-free SHA-256 blob GETs (including image configuration blobs) and

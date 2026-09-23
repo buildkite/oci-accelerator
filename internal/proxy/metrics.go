@@ -26,6 +26,7 @@ type metrics struct {
 	rejects                        map[string]uint64
 	upstream                       uint64
 	upstreamBytes, downstreamBytes uint64
+	servedBytes, servedEntries     map[string]uint64
 	durations                      [len(requestDurationBounds) + 1]uint64
 	durationSum                    float64
 	activeRequests, activeWaits    int64
@@ -33,13 +34,15 @@ type metrics struct {
 
 func newMetrics() *metrics {
 	return &metrics{
-		requests: map[string]uint64{},
-		statuses: map[string]uint64{},
-		cache:    map[string]uint64{},
-		fills:    map[string]uint64{},
-		waits:    map[string]uint64{},
-		fallback: map[string]uint64{},
-		rejects:  map[string]uint64{},
+		requests:      map[string]uint64{},
+		statuses:      map[string]uint64{},
+		cache:         map[string]uint64{},
+		fills:         map[string]uint64{},
+		waits:         map[string]uint64{},
+		fallback:      map[string]uint64{},
+		rejects:       map[string]uint64{},
+		servedBytes:   map[string]uint64{"cache": 0, "origin": 0},
+		servedEntries: map[string]uint64{"cache": 0, "origin": 0},
 	}
 }
 
@@ -49,6 +52,7 @@ type requestStats struct {
 	admission      string
 	reject         string
 	upstreamBytes  int64
+	immutable      bool // Original request is a full immutable-object GET, before header stripping.
 }
 type statsKey struct{}
 
@@ -103,6 +107,10 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeScalar("upstream_get_attempts_total", "counter", m.upstream)
 	writeScalar("upstream_body_bytes_total", "counter", m.upstreamBytes)
 	writeScalar("downstream_bytes_total", "counter", m.downstreamBytes)
+	b.WriteString("# HELP oci_accelerator_served_bytes_total Immutable-object 200 response body bytes written downstream, including interrupted transfers, by body source.\n")
+	writeMap("oci_accelerator_served_bytes_total", "source", m.servedBytes)
+	b.WriteString("# HELP oci_accelerator_served_entries_total Completed immutable-object 200 response deliveries, not unique objects, by body source.\n")
+	writeMap("oci_accelerator_served_entries_total", "source", m.servedEntries)
 	writeScalar("active_requests", "gauge", m.activeRequests)
 	writeScalar("active_waits", "gauge", m.activeWaits)
 	writeScalar("active_connections", "gauge", p.connectionCount())
@@ -160,6 +168,8 @@ func (m *metrics) snapshot() metricsSnapshot {
 		upstream:        m.upstream,
 		upstreamBytes:   m.upstreamBytes,
 		downstreamBytes: m.downstreamBytes,
+		servedBytes:     maps.Clone(m.servedBytes),
+		servedEntries:   maps.Clone(m.servedEntries),
 		durations:       m.durations,
 		durationSum:     m.durationSum,
 		activeRequests:  m.activeRequests,
@@ -170,6 +180,7 @@ func (m *metrics) snapshot() metricsSnapshot {
 type metricsSnapshot struct {
 	requests, statuses, cache, fills, waits, fallback, rejects map[string]uint64
 	upstream, upstreamBytes, downstreamBytes                   uint64
+	servedBytes, servedEntries                                 map[string]uint64
 	durations                                                  [len(requestDurationBounds) + 1]uint64
 	durationSum                                                float64
 	activeRequests, activeWaits                                int64
@@ -217,6 +228,18 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 	}
 	m.upstreamBytes += uint64(s.upstreamBytes)
 	m.downstreamBytes += uint64(downstream)
+	// Scope by request shape and response status, not storage admission. Origin
+	// responses still count when policy or capacity prevents caching them.
+	if s.immutable && status == http.StatusOK {
+		source := "origin"
+		if s.cache == "hit" || s.cache == "wait_hit" {
+			source = "cache"
+		}
+		m.servedBytes[source] += uint64(downstream)
+		if outcome == "complete" {
+			m.servedEntries[source]++
+		}
+	}
 	i := 0
 	for i < len(requestDurationBounds) && d > requestDurationBounds[i] {
 		i++

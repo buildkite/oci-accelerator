@@ -152,6 +152,30 @@ Ignored `Header` entries for `Host`, `Content-Length`, `Transfer-Encoding`, and
 `Trailer` therefore do not create separate grants. Other end-to-end values and
 their order remain identity-sensitive.
 
+## Immutable source delivery metrics
+
+`oci_accelerator_served_bytes_total{source="cache|origin"}` and
+`oci_accelerator_served_entries_total{source="cache|origin"}` classify delivery
+of the original `immutableObjectRequest` shape: query-free `GET`s for a full,
+unescaped SHA-256 digest blob or manifest, without `Range` or `If-*` headers.
+Only `200` responses qualify. Error responses, `HEAD`, tags, ranges,
+conditionals, queries, and opaque tunnels are excluded.
+
+The bytes counter records actual bytes accepted by the downstream response
+writer, including partial delivery when a transfer aborts. The entries counter
+increments only when delivery completes; it counts deliveries, not unique
+digests, successful cache fills, or digest-integrity attestations. `source="cache"`
+covers ordinary hits, authorization-grant hits, and `wait_hit`; cold fills and
+responses bypassing storage because of no-store policy, capacity, or unsupported
+metadata are `source="origin"`.
+
+Attribution describes the response body source, independently of upstream
+authorization GETs; it does not change forwarding or security behavior. Both
+source values are exposed as zero before traffic, counters update at request end,
+and process restart resets them. Existing aggregate traffic and request metrics
+are unchanged. These counters measure application deliveries, not wire bandwidth
+or bandwidth savings.
+
 ## Security boundaries
 
 - **SSRF hardening** (`dial.go`): the entire DNS answer is validated before

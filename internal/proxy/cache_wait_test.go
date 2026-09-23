@@ -95,7 +95,7 @@ func TestCacheFillWaitCoalescesAuthorizedBlobAndManifest(t *testing.T) {
 			}
 			awaitNoActiveRequests(t, p)
 			m := p.metrics.snapshot()
-			if m.upstream != 2 || m.cache["miss"] != 1 || m.cache["wait_hit"] != 1 || m.waits["complete"] != 1 {
+			if m.upstream != 2 || m.cache["miss"] != 1 || m.cache["wait_hit"] != 1 || m.waits["complete"] != 1 || m.servedBytes["origin"] != uint64(len(tc.body)) || m.servedBytes["cache"] != uint64(len(tc.body)) || m.servedEntries["origin"] != 1 || m.servedEntries["cache"] != 1 {
 				t.Fatalf("coalesced metrics = %+v", m)
 			}
 		})
@@ -236,6 +236,13 @@ func TestCacheFillWaitTimeoutRetriesOnceAndZeroWaitDoesNotRetry(t *testing.T) {
 			m := p.metrics.snapshot()
 			if m.upstream != uint64(tc.wantCalls) || (tc.wait > 0 && (m.waits["timeout"] != 1 || m.fallback["retry"] != 1)) || (tc.wait == 0 && (m.waits["timeout"] != 0 || m.fallback["retry"] != 0)) {
 				t.Fatalf("timeout metrics = %+v", m)
+			}
+			wantEntries := uint64(2)
+			if tc.denied {
+				wantEntries = 1
+			}
+			if m.servedEntries["origin"] != wantEntries || m.servedBytes["origin"] != wantEntries*uint64(len(body)) || m.servedEntries["cache"] != 0 || m.servedBytes["cache"] != 0 {
+				t.Fatalf("fallback delivery metrics = %+v", m)
 			}
 		})
 	}

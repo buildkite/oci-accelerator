@@ -21,7 +21,7 @@ func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {
 	m.upstream = 2
 	m.activeRequests = 6
 	m.activeWaits = 7
-	s := &requestStats{cache: "miss", fill: "stored", wait: "complete", fallback: "retry", reject: "vary", upstreamBytes: 3}
+	s := &requestStats{cache: "miss", fill: "stored", wait: "complete", fallback: "retry", reject: "vary", upstreamBytes: 3, immutable: true}
 	m.finish(s, "complete", http.StatusOK, 20*time.Millisecond, 4)
 	want := metricsSnapshot{
 		requests:        map[string]uint64{"complete": 1},
@@ -34,6 +34,8 @@ func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {
 		upstream:        2,
 		upstreamBytes:   3,
 		downstreamBytes: 4,
+		servedBytes:     map[string]uint64{"cache": 0, "origin": 4},
+		servedEntries:   map[string]uint64{"cache": 0, "origin": 1},
 		durations:       [8]uint64{0, 1},
 		durationSum:     .02,
 		activeRequests:  5,
@@ -43,7 +45,7 @@ func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("snapshot = %+v, want %+v", got, want)
 	}
-	for _, counts := range []map[string]uint64{got.requests, got.statuses, got.cache, got.fills, got.waits, got.fallback, got.rejects} {
+	for _, counts := range []map[string]uint64{got.requests, got.statuses, got.cache, got.fills, got.waits, got.fallback, got.rejects, got.servedBytes, got.servedEntries} {
 		for key := range counts {
 			counts[key]++
 		}
@@ -66,14 +68,15 @@ func TestHTTPTransferMetricsColdWarmDeniedNoStoreCorruptAndFailure(t *testing.T)
 		name, mode                                     string
 		requests, gets, upstreamBytes, downstreamBytes uint64
 		cache, fills, statuses                         map[string]uint64
+		servedBytes, servedEntries                     map[string]uint64
 		storeSuccess, storeFailure                     int64
 	}{
-		{"cold", "cold", 1, 1, uint64(len(good)), uint64(len(good)), map[string]uint64{"miss": 1}, map[string]uint64{"stored": 1}, map[string]uint64{"2xx": 1}, 1, 0},
-		{"warm", "warm", 2, 2, uint64(len(good)), uint64(2 * len(good)), map[string]uint64{"miss": 1, "hit": 1}, map[string]uint64{"stored": 1}, map[string]uint64{"2xx": 2}, 1, 0},
-		{"denied", "denied", 1, 1, uint64(len("denied")), uint64(len("denied")), map[string]uint64{"bypass": 1}, map[string]uint64{}, map[string]uint64{"4xx": 1}, 0, 0},
-		{"no-store", "no-store", 1, 1, uint64(len(good)), uint64(len(good)), map[string]uint64{"bypass": 1}, map[string]uint64{}, map[string]uint64{"2xx": 1}, 0, 0},
-		{"corrupt-digest", "corrupt", 1, 1, uint64(len(good)), uint64(len(good)), map[string]uint64{"miss": 1}, map[string]uint64{"failed": 1}, map[string]uint64{"2xx": 1}, 0, 1},
-		{"upstream-5xx", "failure", 1, 1, uint64(len("failure")), uint64(len("failure")), map[string]uint64{"bypass": 1}, map[string]uint64{}, map[string]uint64{"5xx": 1}, 0, 0},
+		{"cold", "cold", 1, 1, uint64(len(good)), uint64(len(good)), map[string]uint64{"miss": 1}, map[string]uint64{"stored": 1}, map[string]uint64{"2xx": 1}, map[string]uint64{"cache": 0, "origin": uint64(len(good))}, map[string]uint64{"cache": 0, "origin": 1}, 1, 0},
+		{"warm", "warm", 2, 2, uint64(len(good)), uint64(2 * len(good)), map[string]uint64{"miss": 1, "hit": 1}, map[string]uint64{"stored": 1}, map[string]uint64{"2xx": 2}, map[string]uint64{"cache": uint64(len(good)), "origin": uint64(len(good))}, map[string]uint64{"cache": 1, "origin": 1}, 1, 0},
+		{"denied", "denied", 1, 1, uint64(len("denied")), uint64(len("denied")), map[string]uint64{"bypass": 1}, map[string]uint64{}, map[string]uint64{"4xx": 1}, map[string]uint64{"cache": 0, "origin": 0}, map[string]uint64{"cache": 0, "origin": 0}, 0, 0},
+		{"no-store", "no-store", 1, 1, uint64(len(good)), uint64(len(good)), map[string]uint64{"bypass": 1}, map[string]uint64{}, map[string]uint64{"2xx": 1}, map[string]uint64{"cache": 0, "origin": uint64(len(good))}, map[string]uint64{"cache": 0, "origin": 1}, 0, 0},
+		{"corrupt-digest", "corrupt", 1, 1, uint64(len(good)), uint64(len(good)), map[string]uint64{"miss": 1}, map[string]uint64{"failed": 1}, map[string]uint64{"2xx": 1}, map[string]uint64{"cache": 0, "origin": uint64(len(good))}, map[string]uint64{"cache": 0, "origin": 1}, 0, 1},
+		{"upstream-5xx", "failure", 1, 1, uint64(len("failure")), uint64(len("failure")), map[string]uint64{"bypass": 1}, map[string]uint64{}, map[string]uint64{"5xx": 1}, map[string]uint64{"cache": 0, "origin": 0}, map[string]uint64{"cache": 0, "origin": 0}, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var gets atomic.Int32
@@ -117,7 +120,7 @@ func TestHTTPTransferMetricsColdWarmDeniedNoStoreCorruptAndFailure(t *testing.T)
 				awaitNoActiveRequests(t, p)
 			}
 			m, st := p.metrics.snapshot(), p.cache.Stats()
-			if uint64(gets.Load()) != tc.gets || m.upstream != tc.gets || m.upstreamBytes != tc.upstreamBytes || m.downstreamBytes != tc.downstreamBytes || m.requests["complete"] != tc.requests || fmt.Sprint(m.cache) != fmt.Sprint(tc.cache) || fmt.Sprint(m.fills) != fmt.Sprint(tc.fills) || fmt.Sprint(m.statuses) != fmt.Sprint(tc.statuses) || st.FillSuccess != tc.storeSuccess || st.FillFailure != tc.storeFailure {
+			if uint64(gets.Load()) != tc.gets || m.upstream != tc.gets || m.upstreamBytes != tc.upstreamBytes || m.downstreamBytes != tc.downstreamBytes || m.requests["complete"] != tc.requests || fmt.Sprint(m.cache) != fmt.Sprint(tc.cache) || fmt.Sprint(m.fills) != fmt.Sprint(tc.fills) || fmt.Sprint(m.statuses) != fmt.Sprint(tc.statuses) || !reflect.DeepEqual(m.servedBytes, tc.servedBytes) || !reflect.DeepEqual(m.servedEntries, tc.servedEntries) || st.FillSuccess != tc.storeSuccess || st.FillFailure != tc.storeFailure {
 				t.Fatalf("gets=%d metrics=%+v store=%+v", gets.Load(), m, st)
 			}
 		})
@@ -273,7 +276,7 @@ func TestMetricsHandlerIsBoundedAndRedacted(t *testing.T) {
 	w := httptest.NewRecorder()
 	p.MetricsHandler().ServeHTTP(w, r)
 	body := w.Body.String()
-	for _, want := range []string{"oci_accelerator_upstream_get_attempts_total 2", `oci_accelerator_requests_total{outcome="complete"} 1`, "oci_accelerator_heap_alloc_bytes"} {
+	for _, want := range []string{"oci_accelerator_upstream_get_attempts_total 2", `oci_accelerator_requests_total{outcome="complete"} 1`, `oci_accelerator_served_bytes_total{source="cache"} 0`, `oci_accelerator_served_bytes_total{source="origin"} 0`, `oci_accelerator_served_entries_total{source="cache"} 0`, `oci_accelerator_served_entries_total{source="origin"} 0`, "oci_accelerator_heap_alloc_bytes"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in %s", want, body)
 		}
@@ -282,6 +285,130 @@ func TestMetricsHandlerIsBoundedAndRedacted(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("metrics leaked %q", forbidden)
 		}
+	}
+}
+
+func TestImmutableObjectMetricsBlobManifestAndAuthorizationGrantHits(t *testing.T) {
+	const blob = "short blob"
+	const manifest = `{"schemaVersion":2,"deliberately":"longer manifest"}`
+	var gets atomic.Int32
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gets.Add(1)
+		body := blob
+		if strings.Contains(r.URL.Path, "/manifests/") {
+			body = manifest
+		}
+		blobHeaders(w, body)
+		if body == manifest {
+			w.Header().Set("Content-Type", manifestMediaTypes[0])
+		}
+		io.WriteString(w, body)
+	}))
+	defer origin.Close()
+	p, client := cacheFixture(t, origin, 1<<20, nil)
+	p.authorization = newAuthorizationCache(time.Minute, 10)
+	// Unequal sizes and hit counts distinguish byte share from entry share.
+	for _, tc := range []struct {
+		path, body string
+		requests   int
+	}{
+		{blobURL(blob), blob, 3},
+		{manifestURL("team/image", manifest), manifest, 2},
+	} {
+		for range tc.requests {
+			resp, got := getBlob(t, client, origin.URL+tc.path, "Bearer metrics")
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || got != tc.body {
+				t.Fatalf("delivery = %d %q, want 200 %q", resp.StatusCode, got, tc.body)
+			}
+			awaitNoActiveRequests(t, p)
+		}
+	}
+	if gets.Load() != 2 {
+		t.Fatalf("origin GETs = %d, want one per object and none for grant hits", gets.Load())
+	}
+	w := httptest.NewRecorder()
+	p.MetricsHandler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	for _, want := range []string{
+		fmt.Sprintf(`oci_accelerator_served_bytes_total{source="cache"} %d`, 2*len(blob)+len(manifest)),
+		fmt.Sprintf(`oci_accelerator_served_bytes_total{source="origin"} %d`, len(blob)+len(manifest)),
+		`oci_accelerator_served_entries_total{source="cache"} 3`,
+		`oci_accelerator_served_entries_total{source="origin"} 2`,
+	} {
+		if !strings.Contains(w.Body.String(), want+"\n") {
+			t.Errorf("missing %q\n%s", want, w.Body.String())
+		}
+	}
+}
+
+func TestImmutableObjectMetricsExcludeBypassesAndCountInterruptedBytesOnly(t *testing.T) {
+	m := newMetrics()
+	m.activeRequests = 4
+	for _, stats := range []*requestStats{
+		{immutable: false, cache: "hit"}, // query, unsupported digest, or an original conditional/range request
+		{immutable: true, cache: "miss"}, // interrupted origin delivery
+		{immutable: true, cache: "hit"},  // interrupted cached delivery
+	} {
+		m.finish(stats, "aborted", http.StatusOK, time.Millisecond, 7)
+	}
+	m.finish(&requestStats{immutable: true, cache: "miss"}, "complete", http.StatusBadGateway, time.Millisecond, 7)
+	got := m.snapshot()
+	if want := (map[string]uint64{"cache": 7, "origin": 7}); !reflect.DeepEqual(got.servedBytes, want) {
+		t.Fatalf("served bytes = %v, want %v", got.servedBytes, want)
+	}
+	if want := (map[string]uint64{"cache": 0, "origin": 0}); !reflect.DeepEqual(got.servedEntries, want) {
+		t.Fatalf("served entries = %v, want %v", got.servedEntries, want)
+	}
+}
+
+func TestImmutableObjectMetricsExcludeUnsupportedRequests(t *testing.T) {
+	const body = "bypass body"
+	var calls atomic.Int32
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get("Range") != "" || r.Header.Get("If-None-Match") != "" || r.Header.Get("Connection") != "" {
+			t.Error("hop headers reached origin")
+		}
+		blobHeaders(w, body)
+		io.WriteString(w, body)
+	}))
+	defer origin.Close()
+	p, client := cacheFixture(t, origin, 1<<20, nil)
+	for _, tc := range []struct {
+		method, path, header, value string
+	}{
+		{http.MethodGet, blobURL(body), "Range", "bytes=0-1"},
+		{http.MethodGet, blobURL(body), "If-None-Match", `"etag"`},
+		{http.MethodGet, "/v2/team/image/manifests/latest", "", ""},
+		{http.MethodGet, blobURL(body) + "?token=example", "", ""},
+		{http.MethodHead, blobURL(body), "", ""},
+	} {
+		req, err := http.NewRequest(tc.method, origin.URL+tc.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.header != "" {
+			req.Header.Set("Connection", tc.header)
+			req.Header.Set(tc.header, tc.value)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		want := body
+		if tc.method == http.MethodHead {
+			want = ""
+		}
+		if err != nil || resp.StatusCode != http.StatusOK || string(got) != want {
+			t.Fatalf("bypass = %d %q %v, want 200 %q", resp.StatusCode, got, err, want)
+		}
+	}
+	awaitNoActiveRequests(t, p)
+	m := p.metrics.snapshot()
+	if calls.Load() != 5 || m.servedBytes["cache"] != 0 || m.servedBytes["origin"] != 0 || m.servedEntries["cache"] != 0 || m.servedEntries["origin"] != 0 {
+		t.Fatalf("unsupported request metrics: calls=%d metrics=%+v", calls.Load(), m)
 	}
 }
 

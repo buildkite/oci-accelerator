@@ -391,6 +391,15 @@ func TestFillCancellationAndCacheFailurePreserveTransfer(t *testing.T) {
 			if s := p.cache.Stats(); s.Fills != 0 || s.Reserved != 0 || s.Entries != 0 {
 				t.Fatalf("incomplete fill published/leaked %+v", s)
 			}
+			awaitNoActiveRequests(t, p)
+			m := p.metrics.snapshot()
+			wantBytes, wantEntries := uint64(len(body)), uint64(1)
+			if mode == "truncated" || mode == "cancel" || mode == "shutdown" {
+				wantBytes, wantEntries = 1, 0
+			}
+			if m.servedBytes["origin"] != wantBytes || m.servedEntries["origin"] != wantEntries || m.servedBytes["cache"] != 0 || m.servedEntries["cache"] != 0 {
+				t.Fatalf("failed fill delivery metrics = %+v, want origin bytes=%d entries=%d", m, wantBytes, wantEntries)
+			}
 		})
 	}
 }
