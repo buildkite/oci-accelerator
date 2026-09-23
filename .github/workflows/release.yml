@@ -1,0 +1,106 @@
+name: Publish image and Helm chart
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New release version, without v (requires an existing vX.Y.Z tag)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ghcr-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'buildkite/oci-accelerator' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ inputs.version }}
+      IMAGE: ghcr.io/buildkite/oci-accelerator
+    steps:
+      - name: Validate version
+        shell: bash
+        run: |
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo 'Use a new stable X.Y.Z version without a v prefix' >&2
+            exit 1
+          }
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: refs/tags/v${{ inputs.version }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check source and package chart
+        shell: bash
+        run: |
+          bash .buildkite/check.sh
+          go test -count=1 ./...
+          go test -race -count=1 ./...
+          bash .buildkite/install-helm.sh "$RUNNER_TEMP/tools"
+          export PATH="$RUNNER_TEMP/tools:$PATH"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+          helm lint deploy/helm/oci-accelerator --set-string image.tag="$VERSION"
+          OCI_ACCELERATOR_DEPLOYMENT_TESTS=1 go test ./integration -run 'TestHelm|TestPlainDeployment' -count=1
+          mkdir -p "$RUNNER_TEMP/release"
+          helm package deploy/helm/oci-accelerator --version "$VERSION" --app-version "$VERSION" --destination "$RUNNER_TEMP/release"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build native smoke image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: oci-accelerator:release-smoke
+
+      - name: Check native container
+        run: bash integration/container_smoke.sh oci-accelerator:release-smoke
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-platform image
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/buildkite/oci-accelerator:${{ inputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/buildkite/oci-accelerator
+            org.opencontainers.image.version=${{ inputs.version }}
+
+      - name: Publish OCI chart
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io --username "$GHCR_USER" --password-stdin
+          trap 'helm registry logout ghcr.io' EXIT
+          helm push "$RUNNER_TEMP/release/oci-accelerator-$VERSION.tgz" oci://ghcr.io/buildkite/charts
+          {
+            echo "Image: \`$IMAGE@$IMAGE_DIGEST\`"
+            echo "Chart: \`oci://ghcr.io/buildkite/charts/oci-accelerator\`, version \`$VERSION\`"
+            echo 'Verify both packages are public before advertising this release.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -25,6 +25,9 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 Running the smoke test on arm64 still requires an arm64 host or QEMU; a successful
 cross-build is not runtime verification for that architecture.
 
+See the [release guide](releases.md) for manually publishing the image and OCI
+Helm chart to GHCR. Building locally does not publish a release.
+
 Mount a configuration file read-only and pass `--config /path/to/config.yaml`.
 Bind `listen` to `0.0.0.0:3128` inside the container. Expose it only to trusted
 clients; there is no proxy-user authentication. See the

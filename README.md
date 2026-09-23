@@ -29,6 +29,8 @@ resource use and fixed request/cache outcomes; remote binding requires explicit 
   recovery, and repeatable acceptance checks.
 - [Kubernetes guide](docs/kubernetes.md): Helm and plain manifests for a private,
   single-replica EKS deployment with persistent CA identity and cache storage.
+- [Image and chart releases](docs/releases.md): manual GHCR publication and
+  installation by immutable image digest.
 - Package guides map the code and internal contracts:
   [proxy](internal/proxy/README.md), [ca](internal/ca/README.md),
   [cache](internal/cache/README.md), [config](internal/config/README.md),

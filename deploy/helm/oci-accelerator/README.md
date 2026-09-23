@@ -33,3 +33,7 @@ The init container requires UID 0 and `CHOWN`, `FOWNER`, `DAC_OVERRIDE` to prepa
 private volume paths, including on retries. The serving process is non-root with
 all capabilities dropped. Do not add a serving-Pod `fsGroup`: it would broaden
 cache permissions on replacement. See the [Kubernetes guide](../../../docs/kubernetes.md).
+
+For OCI chart installation and manual image/chart publication to GHCR, see the
+[release guide](../../../docs/releases.md). No image or chart is published merely
+by merging the deployment package.
