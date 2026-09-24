@@ -13,6 +13,11 @@ while a cold multipart request falls back to the full `200` response.
 Docker Engine on Linux is the validated client; the proxy uses generic Registry
 HTTP API V2 behavior rather than provider-specific routing.
 
+Docker pushes and other registry writes pass through by default, with upstream
+permissions enforced by the registry. Uploads stream without populating the cache;
+Docker owns authentication, upload sessions, and redirects. Deletion does not
+invalidate existing pull grants, which remain valid until their original expiry.
+
 Concurrent fills have byte, entry, writer and lifetime bounds. Authorization grants
 are process-local, fixed-lived, conservatively constrained by HTTP freshness, and
 bounded by `cache.max_authorization_entries`. Optional Prometheus metrics expose

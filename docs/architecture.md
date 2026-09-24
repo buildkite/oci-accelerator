@@ -30,12 +30,13 @@ or separate cache backends.
    Host, tracks accepted sockets, and enforces the connection limit. Downloads
    close their connection and never enter the registry forwarding path.
 2. An unconfigured authority gets an opaque byte tunnel. The proxy does not
-   inspect its TLS, cache its content, or enforce pull-only methods inside it.
+   inspect its TLS, cache its content, or enforce methods inside it.
 3. A configured registry gets a leaf certificate signed by the persisted CA.
    Client TLS SNI, when present, and every intercepted HTTP authority must agree
    with CONNECT. The connection cannot switch upstream authorities.
-4. Intercepted requests use HTTP/1.1 and origin-form targets. Only bodyless GET,
-   HEAD, and OPTIONS are allowed; mutations and upgrades are rejected.
+4. Intercepted requests use HTTP/1.1 and origin-form targets. GET, HEAD, and
+   OPTIONS remain bodyless. POST, PUT, PATCH, and DELETE stream upstream without
+   caching or path filtering. Other methods and upgrades are rejected.
 5. The proxy forwards through verified upstream TLS, stripping hop-by-hop,
    proxy-only, and spoofable forwarding headers. Client authentication and
    upstream challenges remain part of the ordinary registry exchange.
@@ -48,6 +49,14 @@ or separate cache backends.
 Bearer tokens are opaque to the proxy. It does not parse their scopes, acquire or
 refresh tokens, fetch challenge realms, or hold central registry credentials.
 An unconfigured token-service authority is reached through an opaque tunnel.
+
+Writes are enabled by default, and the upstream registry enforces write
+permissions. The proxy neither owns upload sessions nor replays uploads to follow
+redirects. Upload locations and opaque query parameters pass through to the client.
+Successful writes, including deletions, leave existing pull authorization grants
+unchanged: an exact approved GET may still use its cached body until expiry.
+See the [write forwarding contract](../internal/proxy/README.md#write-passthrough)
+for streaming, inactivity limits, and retry ownership.
 
 ## Authorization before cache use
 
@@ -287,7 +296,7 @@ BuildKit-specific integration are not validated.
 
 There is no shared/distributed storage, multi-instance coordination, background
 prefetch or grant refresh, tag caching, stale/offline mode, proxy-held credentials,
-automatic CA trust installation/rotation, or intercepted push support.
+automatic CA trust installation/rotation, or push caching.
 The repository provides a Go binary, not container packaging.
 
 Deterministic local registry/auth/CDN tests assert bytes, denials, and upstream
