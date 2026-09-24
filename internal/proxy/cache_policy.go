@@ -55,12 +55,20 @@ func cacheHeaderRejection(h http.Header, digest string) string {
 		}
 	}
 
-	// Reject when Vary makes the response depend on any request header other than Accept.
+	// Reject when Vary makes the response depend on any request header other than
+	// Accept. Accept-Encoding is also tolerated when this representation is
+	// unencoded: CDNs such as CloudFront advertise it for identity bodies, which
+	// are the same digest-verified bytes whatever encoding the client accepts.
 	for _, value := range h.Values("Vary") {
 		for _, name := range strings.Split(value, ",") {
-			if !strings.EqualFold(strings.TrimSpace(name), "Accept") {
-				return "vary"
+			name = strings.TrimSpace(name)
+			if strings.EqualFold(name, "Accept") {
+				continue
 			}
+			if strings.EqualFold(name, "Accept-Encoding") && identityEncoded(h) {
+				continue
+			}
+			return "vary"
 		}
 	}
 
@@ -91,9 +99,8 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 		return cache.Metadata{}, false
 	}
 
-	// Reject any transfer/content encoding other than a single "identity".
-	encoding := resp.Header.Values("Content-Encoding")
-	if len(encoding) > 1 || len(encoding) == 1 && !strings.EqualFold(encoding[0], "identity") {
+	// Reject any content encoding other than a single "identity".
+	if !identityEncoded(resp.Header) {
 		return cache.Metadata{}, false
 	}
 
@@ -132,6 +139,12 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 		Size:      resp.ContentLength,
 		MediaType: media[0],
 	}, true
+}
+
+// identityEncoded reports whether h has no Content-Encoding or a single "identity".
+func identityEncoded(h http.Header) bool {
+	encoding := h.Values("Content-Encoding")
+	return len(encoding) == 0 || len(encoding) == 1 && strings.EqualFold(encoding[0], "identity")
 }
 
 // manifestMediaTypes is the canonical set of OCI and Docker manifest media

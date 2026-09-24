@@ -156,7 +156,10 @@ Response admission and substitution require:
 - terminal `200`, known Content-Length, no Content-Range or trailers;
 - absent or identity Content-Encoding, without transport decompression;
 - a single parseable Content-Type of at most 1024 bytes;
-- no no-store directive and no Vary dimension other than Accept;
+- no no-store directive and no Vary dimension other than Accept, or Accept-Encoding
+  when Content-Encoding is absent or identity. CDNs such as CloudFront add
+  `Vary: Accept-Encoding` to identity layer bodies, whose bytes do not depend on the
+  client's accepted encodings and are hashed against the digest;
 - every present Docker-Content-Digest value exactly matching the requested digest.
 
 Local cold-range selection also requires these terminal response checks. A rejected
