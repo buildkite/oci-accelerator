@@ -223,11 +223,14 @@ func cacheDiagnostic(prefix string, err error) error {
 // the proxy's connection admission limit. Probes never contact upstream services.
 func newMetricsServer(cfg config.Config, p *proxy.Proxy) *http.Server {
 	mux := http.NewServeMux()
+
 	mux.Handle("GET /metrics", p.MetricsHandler())
+
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
 	})
+
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if !p.Ready() {
@@ -236,6 +239,7 @@ func newMetricsServer(cfg config.Config, p *proxy.Proxy) *http.Server {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+
 	return &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: cfg.ResponseHeaderTimeout,

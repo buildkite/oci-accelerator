@@ -6,5 +6,6 @@ package proxy
 func (p *Proxy) Ready() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	return p.listener != nil && !p.closing && p.signer != nil
 }

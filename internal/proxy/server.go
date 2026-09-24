@@ -122,12 +122,14 @@ func (p *Proxy) Serve(listener net.Listener) error {
 	if max <= 0 {
 		max = 1
 	}
+
 	tl := &trackingListener{
 		Listener: listener,
 		p:        p,
 		slots:    make(chan struct{}, max),
 		done:     make(chan struct{}),
 	}
+
 	p.mu.Lock()
 	if p.listener != nil {
 		p.mu.Unlock()
@@ -135,10 +137,13 @@ func (p *Proxy) Serve(listener net.Listener) error {
 	}
 	p.listener = tl
 	p.mu.Unlock()
+
 	err := p.server.Serve(tl)
+
 	p.mu.Lock()
 	p.listener = nil
 	p.mu.Unlock()
+
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		return nil
 	}

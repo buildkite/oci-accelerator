@@ -7,6 +7,7 @@ listen: 127.0.0.1:3128
 registries:
   - registry-1.docker.io
   - ghcr.io
+  - public.ecr.aws
 # Optional private HTTPS storage destinations; does not enable interception.
 redirect_allowlist: []
 ca_dir: ./data/ca
