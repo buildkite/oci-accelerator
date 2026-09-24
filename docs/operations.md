@@ -187,8 +187,9 @@ Kernel filesystem calls cannot be preempted, so fill expiry and shutdown are not
 when storage stalls. The body-entry and authorization-entry limits bound their respective
 indexes, not total process RSS; tune both to available memory. Restart clears all grants.
 
-Intercepted traffic uses TLS 1.2 or newer and HTTP/1.1. Only bodyless GET, HEAD, and OPTIONS are
-allowed. Mutations, upgrades, authority conflicts, and non-origin-form requests are denied. Tag,
+Intercepted traffic uses TLS 1.2 or newer and HTTP/1.1. GET, HEAD, and OPTIONS remain bodyless;
+POST, PUT, PATCH, and DELETE stream upstream without caching or path filtering. Upgrades,
+other methods, authority conflicts, and non-origin-form requests are denied. Tag,
 `/v2/`, HEAD, conditional requests, and ineligible ranges always pass through. Eligible
 unconditional SHA-256 blob Range GETs still go upstream on every request, as full GETs; a
 validated cache hit is then served with standard single, suffix, or multipart range semantics.
@@ -198,6 +199,15 @@ comma-separated ranges fall back to the full `200`. An admitted fill continues r
 verifying the same GET after the selected range ends or the client disconnects. Ranged manifests,
 `If-Range` and other conditional requests, no-store requests, and a Range header named by
 Connection remain passthrough.
+
+Docker push uses the same proxy and CA configuration as pull; no write setting is needed.
+The registry enforces write permissions using Docker's credentials. Uploads do not warm the
+cache, and the proxy does not manage upload sessions or follow write redirects. Active uploads
+are limited by `idle_timeout` for stalled I/O, not `cache.fill_timeout` or a total upload size.
+Successful deletion does not invalidate existing pull authorization grants. Previously approved
+exact GETs may still serve cached content until the original grant expiry; set
+`cache.authorization_ttl: 0s` when every cache delivery must check current upstream access.
+See the [write forwarding contract](../internal/proxy/README.md#write-passthrough).
 
 The proxy follows up to five redirects only for eligible query-free SHA-256 blob and digest
 manifest GETs. Redirects must use verified HTTPS and pass destination checks; userinfo,
@@ -443,6 +453,17 @@ the old digest remain covered.
 OCI_ACCELERATOR_E2E=1 go test -v ./integration \
   -run '^(TestDockerPullThroughCompiledProxy|TestDockerMultiPlatformThroughCompiledProxy)$' \
   -count=1 -timeout=10m
+```
+
+Push acceptance loads a deterministic image locally, verifies that read-only credentials
+cannot publish, and pushes with write credentials through the compiled proxy. It checks the
+registry's uploaded config and layer bytes and confirms the proxy cache remains empty. Fresh
+Docker daemons then verify a cold pull and a warm pull with no additional blob GETs. This uses
+the same prerequisites and default authorization TTL as the single-platform pull test:
+
+```sh
+OCI_ACCELERATOR_E2E=1 go test -v ./integration \
+  -run '^TestDockerPushThroughCompiledProxy$' -count=1 -timeout=10m
 ```
 
 Anonymous Docker Hub/GHCR compatibility uses the same Docker prerequisites and fresh,
