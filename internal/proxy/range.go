@@ -16,7 +16,8 @@ type rangeRequestKey struct{}
 // fullBlobRangeRequest separates the client's range selection from the full
 // representation fetched upstream. Conditional and non-blob requests bypass it.
 func fullBlobRangeRequest(req *http.Request) (*http.Request, bool) {
-	// Reject unless there is exactly one well-formed Range header the client did not mark hop-by-hop.
+	// Require one non-empty Range header that is not marked hop-by-hop.
+	// ServeContent validates the range syntax later.
 	if len(req.Header.Values("Range")) != 1 || req.Header.Get("Range") == "" || headerHasToken(req.Header, "Connection", "Range") {
 		return nil, false
 	}
@@ -52,7 +53,7 @@ func serveRangeResponse(req *http.Request, resp *http.Response, content io.ReadS
 		// particular, never retain the full upstream length on a 416 response.
 		output.header.Del("Content-Length")
 
-		// Seeks within content and writes only the req's requested byte subset (with 206/Content-Range headers) into output.
+		// Let ServeContent handle range selection, multipart framing, and errors.
 		http.ServeContent(output, req, "", time.Time{}, content)
 	}()
 

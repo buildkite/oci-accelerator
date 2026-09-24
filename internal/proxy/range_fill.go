@@ -46,10 +46,11 @@ func (p *Proxy) startRangeFetch(client context.Context) (*rangeFetch, error) {
 	return fetch, nil
 }
 
-// pumpRangeFill copies source into the returned pipe reader (the client's response
-// body) on a goroutine, owning source and its fill until EOF or failure. fetch's
-// contexts unblock the pipe on client disconnect or shutdown and run fetch.finish
-// on exit. If the client stops reading, it keeps draining source to finish the fill.
+// pumpRangeFill streams source through a client-facing pipe and owns source
+// and its fill until completion or failure. After the pipe closes, it keeps
+// draining while the fill remains active and the fetch context is live.
+// Client cancellation, shutdown, and the fill deadline unblock pipe writes;
+// the pump calls fetch.finish on exit.
 func (t registryTransport) pumpRangeFill(fetch *rangeFetch, source *fillingBody) io.ReadCloser {
 	reader, writer := io.Pipe()
 	stopClient := context.AfterFunc(fetch.client, func() { reader.CloseWithError(fetch.client.Err()) })

@@ -84,7 +84,6 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 		// Mark the fetch detached so the response path won't tie the body's close to fetch.finish.
 		fetch.detached = true
 
-		// Hand the fill its own stats so the background pump can't race or double count request metrics.
 		// Only the pump owns these mutable counters. Request metrics must not
 		// race or double count a fill that outlives the response handler.
 		background := &requestStats{fill: "none"}

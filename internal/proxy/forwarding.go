@@ -78,7 +78,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		stats.immutable = eligible
 
 		// Treat a byte-range blob GET as a full-blob fetch so the whole object
-		// can be cached, marking the request so only its requested range is returned.
+		// can be cached, marking the request for downstream range handling.
 		fullRange, rangeEligible := fullBlobRangeRequest(r)
 		if rangeEligible && p.cache != nil {
 			object, eligible = immutableObjectRequest(fullRange)

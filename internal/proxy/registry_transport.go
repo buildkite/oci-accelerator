@@ -32,8 +32,8 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	ranged, _ := req.Context().Value(rangeRequestKey{}).(bool)
 	var fetch *rangeFetch
 
-	// Coalesce a range request into a single shared full-blob fetch
-	// so concurrent range readers reuse one upstream download.
+	// Fetch the full representation for this range request. Each request
+	// authorizes upstream independently, but may wait for another cache fill.
 	if ranged {
 		if full, ok := fullBlobRangeRequest(req); ok {
 			req = full
@@ -71,7 +71,7 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		resp, _, err = t.roundTrip(req, false)
 	}
 
-	// On failure, release the coalesced fetch so waiting readers are not stranded.
+	// On failure, release this range fetch's in-flight lifecycle accounting.
 	if err != nil {
 		if fetch != nil {
 			fetch.finish()
@@ -79,11 +79,11 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 
-	// Carve the caller's requested range out of the shared full-blob response.
+	// Apply downstream range handling where the response supports it.
 	if ranged {
 		body, cached := resp.Body.(*cache.Reader)
 
-		// Wrap the body so closing it releases the shared fetch, unless it was detached.
+		// Unless the fill owns the fetch, finish it when the response body closes.
 		if !fetch.detached {
 			resp.Body = &rangeFetchBody{ReadCloser: resp.Body, finish: fetch.finish}
 		}
