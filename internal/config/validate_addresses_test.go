@@ -81,3 +81,15 @@ func TestLoadCanonicalizesMetricsListen(t *testing.T) {
 		t.Fatalf("metrics_listen = %q, want 127.0.0.1:9090", c.MetricsListen)
 	}
 }
+
+func TestRemoteMetricsRequiresExplicitBooleanOptIn(t *testing.T) {
+	for _, value := range []string{"false", "null", "'true'", "yes", "1", "[]", "{}"} {
+		if _, err := Load(writeConfig(t, validConfig+"metrics_listen: '0.0.0.0:9090'\nmetrics_allow_remote: "+value+"\n")); !errors.Is(err, ErrInvalid) {
+			t.Errorf("remote metrics accepted opt-in %s: %v", value, err)
+		}
+	}
+	c, err := Load(writeConfig(t, validConfig+"metrics_listen: '0.0.0.0:09090'\nmetrics_allow_remote: true\n"))
+	if err != nil || c.MetricsListen != "0.0.0.0:9090" {
+		t.Fatalf("explicit remote metrics: %q, %v", c.MetricsListen, err)
+	}
+}

@@ -27,7 +27,7 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}
 	metricsListen := string(raw.MetricsListen)
 	if metricsListen != "" {
-		metricsListen, err = canonicalBindAddress(metricsListen, true)
+		metricsListen, err = canonicalBindAddress(metricsListen, !bool(raw.MetricsAllowRemote))
 		if err != nil {
 			return Config{}, fmt.Errorf("metrics_listen: %w", err)
 		}

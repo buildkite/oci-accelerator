@@ -15,8 +15,8 @@ HTTP API V2 behavior rather than provider-specific routing.
 
 Concurrent fills have byte, entry, writer and lifetime bounds. Authorization grants
 are process-local, fixed-lived, conservatively constrained by HTTP freshness, and
-bounded by `cache.max_authorization_entries`. Optional loopback-only Prometheus
-metrics expose resource use and fixed request/cache outcomes.
+bounded by `cache.max_authorization_entries`. Optional Prometheus metrics expose
+resource use and fixed request/cache outcomes; remote binding requires explicit opt-in.
 
 - [Architecture](docs/architecture.md): request flow, security boundaries, cache
   ownership, and design rationale.

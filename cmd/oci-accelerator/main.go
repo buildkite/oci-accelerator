@@ -157,7 +157,7 @@ func startMetrics(cfg config.Config, p *proxy.Proxy, listen func(string, string)
 	if err != nil {
 		return nil, nil, errors.New("cannot listen on configured metrics address")
 	}
-	metricsServer := newMetricsServer(cfg, p.MetricsHandler())
+	metricsServer := newMetricsServer(cfg, p)
 	metricsDone := make(chan struct{})
 	var metricsErr error
 	go func() {
@@ -219,11 +219,27 @@ func cacheDiagnostic(prefix string, err error) error {
 	return fmt.Errorf("%s: %s", prefix, category)
 }
 
-// newMetricsServer builds the metrics HTTP server, serving handler at
-// GET /metrics with cfg's timeouts and a discarded error log.
-func newMetricsServer(cfg config.Config, handler http.Handler) *http.Server {
+// newMetricsServer serves metrics and local lifecycle probes independently of
+// the proxy's connection admission limit. Probes never contact upstream services.
+func newMetricsServer(cfg config.Config, p *proxy.Proxy) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", handler)
+
+	mux.Handle("GET /metrics", p.MetricsHandler())
+
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if !p.Ready() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
 	return &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: cfg.ResponseHeaderTimeout,

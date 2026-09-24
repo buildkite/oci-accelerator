@@ -11,7 +11,7 @@ individual settings and operating guidance, see the
 | --- | --- |
 | `config.go` | `Config`/`Cache` structs, defaults, and `Load` (open, strict single-document decode, resolve) |
 | `validate.go` | Semantic validation, bind-address canonicalization, authority-list parsing, and path resolution |
-| `scalar.go` | Strict YAML scalar types (`strictString`, `strictInt`, `strictInt64`, `duration`) that reject type coercion |
+| `scalar.go` | Strict YAML scalar types (`strictString`, `strictBool`, `strictInt`, `strictInt64`, `duration`) that reject type coercion |
 | `errors.go` | Read-error tracking and sanitized decode-error messages |
 
 ## Public interface
@@ -73,7 +73,9 @@ Validation enforces at least one registry authority, non-blank NUL-free
 directory paths, positive limits and timeouts (with non-negative fill-wait and
 authorization TTLs), and canonical `host:port` bind addresses. The authorization
 entry limit remains positive even when a zero TTL disables grant reuse. The metrics
-listener, when set, must bind an explicit loopback IP literal.
+listener, when set, must bind an explicit loopback IP literal unless
+`metrics_allow_remote: true` explicitly permits remote scraping. That flag
+requires an actual YAML boolean; quoted strings and YAML 1.1 `yes` are rejected.
 
 ## Sanitized errors
 

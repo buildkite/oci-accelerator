@@ -2,7 +2,7 @@
 
 The command-line entry point. It parses flags, loads and validates the
 configuration, wires the certificate authority, cache, and proxy together,
-optionally serves loopback Prometheus metrics, and orchestrates graceful
+optionally serves Prometheus metrics and lifecycle probes, and orchestrates graceful
 shutdown. For installation and day-to-day operation, see the
 [operating guide](../../docs/operations.md).
 
@@ -68,7 +68,7 @@ main -> shutdownContext (signal.go) -> run
   5. openCacheStore: cache.OpenWithLimits(cfg.Cache...) -> internal/cache (skipped if no dir)
   6. listen(cfg.Listen)
   7. proxy.New(cfg, signer, logger, store)          -> internal/proxy
-  8. startMetrics: optional loopback metrics server on cfg.MetricsListen (GET /metrics)
+  8. startMetrics: optional metrics/probe server on cfg.MetricsListen (/metrics, /livez, /readyz)
   9. serveUntilSignal: go p.Serve(listener); select on {ctx.Done, serve done, metrics done}
  10. serveUntilSignal: p.Shutdown(timeout); then run closes the cache and listeners and joins all errors
 ```

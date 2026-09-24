@@ -55,6 +55,7 @@ type Cache struct {
 type rawConfig struct {
 	Listen                strictString    `yaml:"listen"`
 	MetricsListen         strictString    `yaml:"metrics_listen"`
+	MetricsAllowRemote    strictBool      `yaml:"metrics_allow_remote"`
 	Registries            []*strictString `yaml:"registries"`
 	RedirectAllowlist     []*strictString `yaml:"redirect_allowlist"`
 	CADir                 strictString    `yaml:"ca_dir"`
