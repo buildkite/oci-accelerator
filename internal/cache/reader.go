@@ -48,9 +48,11 @@ func (r *Reader) Read(p []byte) (int, error) {
 func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if r.closed {
 		return 0, os.ErrClosed
 	}
+
 	// HTTP range sizing must use the verified representation length, not a
 	// possibly changed physical EOF after the reader was opened.
 	if whence == io.SeekEnd {

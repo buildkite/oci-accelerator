@@ -28,8 +28,12 @@ type registryTransport struct {
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clientRequest := req
+
 	ranged, _ := req.Context().Value(rangeRequestKey{}).(bool)
 	var fetch *rangeFetch
+
+	// Coalesce a range request into a single shared full-blob fetch
+	// so concurrent range readers reuse one upstream download.
 	if ranged {
 		if full, ok := fullBlobRangeRequest(req); ok {
 			req = full
@@ -39,8 +43,12 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if err != nil {
 			return nil, err
 		}
+
+		// Carry fetch on the context for resolveResponse (cache.go) to detach and pump the fill.
 		req = req.WithContext(context.WithValue(fetch.ctx, rangeFetchKey{}, fetch))
 	}
+
+	// Instrument GETs so every upstream connection acquisition bumps the metric.
 	if req.Method == http.MethodGet {
 		// Count every connection-acquisition attempt (transport retries plus
 		// DNS/dial/TLS failures before the GET); requests rejected earlier don't
@@ -62,18 +70,26 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		// Repeat the full authorization/redirect path once, without waiting again.
 		resp, _, err = t.roundTrip(req, false)
 	}
+
+	// On failure, release the coalesced fetch so waiting readers are not stranded.
 	if err != nil {
 		if fetch != nil {
 			fetch.finish()
 		}
 		return nil, err
 	}
+
+	// Carve the caller's requested range out of the shared full-blob response.
 	if ranged {
 		body, cached := resp.Body.(*cache.Reader)
+
+		// Wrap the body so closing it releases the shared fetch, unless it was detached.
 		if !fetch.detached {
 			resp.Body = &rangeFetchBody{ReadCloser: resp.Body, finish: fetch.finish}
 		}
+
 		if cached {
+			// Cached body is seekable, so serve the exact requested range(s).
 			resp = serveRangeResponse(clientRequest, resp, body)
 		} else if _, eligible := objectMetadata(req, resp); eligible {
 			// A streaming source cannot seek backwards for multipart delivery.

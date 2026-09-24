@@ -36,7 +36,7 @@ type Proxy struct {
 	dialIP        func(context.Context, string, string) (net.Conn, error) // upstream dialer hook, overridable in tests
 	metrics       *metrics                                                // request and cache counters
 	rangeContext  context.Context                                         // shutdown cancellation for range transfers
-	cancelRanges  context.CancelFunc
+	cancelRanges  context.CancelFunc                                      // cancels rangeContext, invoked by Shutdown
 
 	mu       sync.Mutex                // guards the mutable fields below
 	listener net.Listener              // active listener; nil before Serve or after shutdown
@@ -90,6 +90,9 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		lookupIP:      net.DefaultResolver.LookupIPAddr,
 		dialIP:        (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext,
 	}
+
+	// Range fills detach from their client, so they need a separate signal
+	// to stop at shutdown rather than hang draining.
 	p.rangeContext, p.cancelRanges = context.WithCancel(context.Background())
 
 	transport.DialContext = p.dialUpstream
