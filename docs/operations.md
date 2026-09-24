@@ -164,8 +164,11 @@ is static and changes take effect after restart.
 
 CONNECT and upstream response headers are limited to 64 KiB. Upstream connections are capped
 at 16 per destination, with 32 idle globally and 8 idle per destination. Bodies stream rather than
-accumulate in memory. Ranged transfers have the `cache.fill_timeout` total bound from request
-start; other active transfers have idle-I/O deadlines, not total download deadlines.
+accumulate in memory. For eligible blob range requests, `cache.fill_timeout` bounds the upstream
+fetch, starting before the first upstream GET, including when cache-fill admission is refused.
+Admitted background fills remain subject to that same deadline. Delivery from an already-open
+cached reader is not limited by `cache.fill_timeout`; idle-I/O deadlines and shutdown handling
+still apply. Other active transfers have idle-I/O deadlines, not total download deadlines.
 Kernel filesystem calls cannot be preempted, so fill expiry and shutdown are not hard deadlines
 when storage stalls. The body-entry and authorization-entry limits bound their respective
 indexes, not total process RSS; tune both to available memory. Restart clears all grants.
