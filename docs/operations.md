@@ -103,6 +103,7 @@ certificate for each intercepted registry, rather than adding system-wide trust:
 ```sh
 sudo install -D -m 0644 ca.crt /etc/docker/certs.d/registry-1.docker.io/ca.crt
 sudo install -D -m 0644 ca.crt /etc/docker/certs.d/ghcr.io/ca.crt
+sudo install -D -m 0644 ca.crt /etc/docker/certs.d/public.ecr.aws/ca.crt
 ```
 
 `GET /ca.crt` and `HEAD /ca.crt` are always available to anyone who can reach the
