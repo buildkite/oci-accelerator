@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,22 +16,20 @@ import (
 )
 
 func TestPlainDeploymentSafety(t *testing.T) {
-	checkDeployment(t, plainDeployment(t), "oci-accelerator-bootstrap", false)
+	checkDeployment(t, plainDeployment(t), false)
 }
 
 func TestHelmDeploymentParity(t *testing.T) {
 	requireHelm(t)
 	plain := plainDeployment(t)
 	helm := renderChart(t)
-	checkDeployment(t, helm, "oci-accelerator-bootstrap-1", false)
+	checkDeployment(t, helm, false)
 	if !reflect.DeepEqual(deploymentConfig(t, plain), deploymentConfig(t, helm)) {
 		t.Fatal("Helm and plain manifests resolve to different default application configurations")
 	}
-	for _, kind := range []string{"Deployment", "Service", "NetworkPolicy", "Role", "PersistentVolumeClaim"} {
+	for _, kind := range []string{"Deployment", "Service", "NetworkPolicy", "PersistentVolumeClaim"} {
 		name := "oci-accelerator"
-		if kind == "Role" {
-			name += "-bootstrap"
-		} else if kind == "PersistentVolumeClaim" {
+		if kind == "PersistentVolumeClaim" {
 			name += "-cache"
 		}
 		if kind == "Deployment" {
@@ -41,10 +40,6 @@ func TestHelmDeploymentParity(t *testing.T) {
 				if !reflect.DeepEqual(a[field], b[field]) {
 					t.Errorf("proxy %s differs between packages", field)
 				}
-			}
-		} else if kind == "Role" {
-			if !reflect.DeepEqual(plain[kind+"/"+name]["rules"], helm[kind+"/"+name]["rules"]) {
-				t.Error("bootstrap permissions differ between packages")
 			}
 		} else {
 			if !reflect.DeepEqual(plain[kind+"/"+name]["spec"], helm[kind+"/"+name]["spec"]) {
@@ -57,7 +52,7 @@ func TestHelmDeploymentParity(t *testing.T) {
 func TestHelmDeploymentOptions(t *testing.T) {
 	requireHelm(t)
 	remote := renderChart(t, "--set", "metrics.enabled=true,metrics.serviceMonitor.enabled=true,metrics.namespace=observability,buildNamespace=builders")
-	checkDeployment(t, remote, "oci-accelerator-bootstrap-1", true)
+	checkDeployment(t, remote, true)
 	policy := nested(remote["NetworkPolicy/oci-accelerator"], "spec")["ingress"].([]any)
 	for i, namespace := range []string{"builders", "observability"} {
 		rule := policy[i].(map[string]any)
@@ -88,48 +83,7 @@ func TestHelmDeploymentOptions(t *testing.T) {
 	}
 }
 
-func TestHelmBootstrapNamesStayBoundedAcrossRevisions(t *testing.T) {
-	requireHelm(t)
-	// Render the chart's actual naming helper with a future revision, rather
-	// than reproducing its truncation/hash algorithm in the assertion.
-	chart := t.TempDir()
-	if err := os.Mkdir(filepath.Join(chart, "templates"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	helper, err := os.ReadFile("../deploy/helm/oci-accelerator/templates/_helpers.tpl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for path, data := range map[string][]byte{
-		"Chart.yaml":             []byte("apiVersion: v2\nname: name-test\nversion: 0.1.0\n"),
-		"templates/_helpers.tpl": helper,
-		"templates/job.yaml": []byte(`apiVersion: batch/v1
-kind: Job
-metadata:
-  name: {{ include "oci-accelerator.bootstrapJobName" (dict "Release" (dict "Name" .Release.Name "Revision" 2147483647)) }}
-`),
-	} {
-		if err := os.WriteFile(filepath.Join(chart, path), data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	seen := make(map[string]bool)
-	for _, release := range []string{strings.Repeat("a", 53), strings.Repeat("a", 52) + "b"} {
-		output, err := exec.Command("helm", "template", release, chart).CombinedOutput()
-		if err != nil {
-			t.Fatalf("long release name: %v: %s", err, output)
-		}
-		for _, object := range decodeDeployment(t, output) {
-			name := nested(object, "metadata")["name"].(string)
-			if len(name) > 63 || !strings.HasSuffix(name, "-bootstrap-2147483647") || seen[name] {
-				t.Fatalf("invalid or colliding Job name %q", name)
-			}
-			seen[name] = true
-		}
-	}
-}
-
-func checkDeployment(t *testing.T, objects map[string]map[string]any, jobName string, remote bool) {
+func checkDeployment(t *testing.T, objects map[string]map[string]any, remote bool) {
 	t.Helper()
 	deployment := objects["Deployment/oci-accelerator"]
 	spec := nested(deployment, "spec")
@@ -140,8 +94,14 @@ func checkDeployment(t *testing.T, objects map[string]map[string]any, jobName st
 	if pod["automountServiceAccountToken"] != false || nested(pod, "securityContext")["fsGroup"] != nil {
 		t.Fatal("serving pod must have no API token or fsGroup permission mutation")
 	}
-	if objects["Secret/oci-accelerator-ca"] != nil || objects["ConfigMap/oci-accelerator-trust"] != nil {
-		t.Fatal("CA identity must be owned by bootstrap, not deployment templates")
+	for key := range objects {
+		kind, name, _ := strings.Cut(key, "/")
+		if slices.Contains([]string{"Job", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"}, kind) || kind == "ServiceAccount" && strings.Contains(name, "bootstrap") {
+			t.Fatalf("deployment package must not contain bootstrap API resource %s", key)
+		}
+		if kind == "Secret" || kind == "ConfigMap" && strings.HasSuffix(name, "-trust") {
+			t.Fatalf("deployment templates must not own operator-provisioned CA resource %s", key)
+		}
 	}
 	proxy := proxyContainer(t, objects)
 	security := nested(proxy, "securityContext")
@@ -153,9 +113,9 @@ func checkDeployment(t *testing.T, objects map[string]map[string]any, jobName st
 			t.Fatal("serving container directly mounts the projected private Secret")
 		}
 	}
-	bootstrap := nested(objects["Job/"+jobName], "spec", "template", "spec")
-	if bootstrap["serviceAccountName"] != "oci-accelerator-bootstrap" || bootstrap["automountServiceAccountToken"] != true {
-		t.Fatal("bootstrap must use its separate API identity")
+	secret := nested(named(t, pod["volumes"].([]any), "ca-secret"), "secret")
+	if secret["secretName"] != "oci-accelerator-ca" || secret["optional"] != nil {
+		t.Fatal("serving pod must require the preexisting CA Secret")
 	}
 	ports := nested(objects["Service/oci-accelerator"], "spec")["ports"].([]any)
 	wantPorts := 1

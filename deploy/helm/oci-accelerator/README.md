@@ -2,10 +2,15 @@
 
 Installs one pull-only OCI proxy for Buildkite DinD workloads in an EKS cluster. The default release name is `oci-accelerator`.
 
+Create the target namespace and complete the Kubernetes guide's
+[one-time CA provisioning](../../../docs/kubernetes.md#one-time-ca-provisioning) before
+installing. Use explicit context, namespace, and release values; the chart
+expects operator-owned `<release>-ca` and `<release>-trust` resources.
+
 ```sh
 helm upgrade --install oci-accelerator ./deploy/helm/oci-accelerator \
-  --namespace oci-accelerator --create-namespace \
-  --set-string image.digest="$IMAGE_DIGEST" --wait --wait-for-jobs --timeout 10m
+  --kube-context production-eks --namespace oci-accelerator \
+  --set-string image.digest="$IMAGE_DIGEST" --wait --timeout 10m
 ```
 
 Use the Service at `oci-accelerator.oci-accelerator.svc:3128`. Install `oci-accelerator-trust` into DinD clients as a trusted CA. Add exact private ECR registry hosts to `registries`; this chart is for pull traffic and does not support pushes.
@@ -24,7 +29,10 @@ Use the Service at `oci-accelerator.oci-accelerator.svc:3128`. Install `oci-acce
 | `metrics.enabled` | `false` | Expose port 9090 to `metrics.namespace` |
 | `metrics.serviceMonitor.enabled` | `false` | Create a ServiceMonitor (requires its CRD and metrics) |
 
-The bootstrap Job creates immutable `oci-accelerator-ca` and `oci-accelerator-trust` resources without Helm ownership. Back up the CA Secret: uninstall intentionally leaves it, its public trust ConfigMap, and the cache PVC behind. Delete retained resources manually only when deliberately discarding the proxy identity and cache.
+The chart does not create, reconcile, or own CA resources. Back up the original
+signing key: uninstall leaves the operator-owned CA Secret, public trust
+ConfigMap, and cache PVC behind. Immutability does not protect identity from
+deletion; do not delete retained CA resources during routine recovery.
 
 The ingress policy trusts every pod in `buildNamespace`; it is not an egress firewall and does not restrict proxy destinations. Keep that namespace controlled and configure DinD clients with only the public trust ConfigMap, never the CA Secret.
 

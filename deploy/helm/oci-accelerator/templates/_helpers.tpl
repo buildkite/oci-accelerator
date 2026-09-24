@@ -19,12 +19,3 @@ app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- define "oci-accelerator.cacheClaim" -}}
 {{- default (printf "%s-cache" .Release.Name) .Values.cache.existingClaim -}}
 {{- end }}
-
-{{- define "oci-accelerator.bootstrapJobName" -}}
-{{- $name := printf "%s-bootstrap-%v" .Release.Name .Release.Revision -}}
-{{- if le (len $name) 63 -}}
-{{ $name }}
-{{- else -}}
-{{ printf "%s-%s-bootstrap-%v" (.Release.Name | trunc 32 | trimSuffix "-") (.Release.Name | sha256sum | trunc 8) .Release.Revision }}
-{{- end -}}
-{{- end }}

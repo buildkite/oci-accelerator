@@ -17,9 +17,10 @@ deployment is not multi-AZ failover. It does not run on Fargate with this storag
 
 Choose either the [Helm chart](../deploy/helm/oci-accelerator/README.md) or
 [plain manifests](../deploy/kubernetes/README.md), not both for the same instance.
-Supply one built/published image digest to both bootstrap and serving containers.
-The plain manifests contain an intentional image placeholder; the chart requires
-an explicit image tag or digest. Neither assumes an unpublished release exists.
+Provision the CA once before installing either package, using the same
+built/published image digest as the serving container. The plain manifests
+contain an intentional image placeholder; the chart requires an explicit image
+tag or digest. Neither assumes an unpublished release exists.
 
 Defaults are one replica, a private ClusterIP Service, a 50 GiB PVC and a 32 GiB
 cache. CPU/memory requests are 250m/256Mi with limits of 2 CPU/1Gi; these are
@@ -40,26 +41,83 @@ strict Pod Security Restricted admission therefore needs a reviewed exception
 for this workload. Do not set `fsGroup` on serving pods: kubelet can otherwise
 broaden existing cache permissions, which the application correctly rejects.
 
-## CA bootstrap
+## One-time CA provisioning
 
-Run the image as a separate Kubernetes Job with a mounted service account and
-a writable temporary directory:
+The operator, not Kubernetes or Helm, owns CA installation. Set every value
+explicitly, use a persistent local parent directory outside the source tree, and
+run this before installing the serving workload. For Helm, resource names are
+`<release>-ca` and `<release>-trust`; the plain manifests use
+`oci-accelerator-ca` and `oci-accelerator-trust` (so set `RELEASE` to
+`oci-accelerator`). `IMAGE` must be the exact image digest that will serve:
 
-```sh
-oci-accelerator bootstrap-ca --secret oci-accelerator-ca --configmap oci-accelerator-trust
+```bash
+set -euo pipefail
+CONTEXT=production-eks
+NAMESPACE=oci-accelerator
+RELEASE=oci-accelerator
+IMAGE=ghcr.io/buildkite/oci-accelerator@sha256:REPLACE_ME
+CA_PARENT="$HOME/.local/share/oci-accelerator-production"
+
+kubectl --context "$CONTEXT" get namespace "$NAMESPACE" >/dev/null
+secret="$(kubectl --context "$CONTEXT" -n "$NAMESPACE" get secret \
+  "$RELEASE-ca" --ignore-not-found -o name)"
+trust="$(kubectl --context "$CONTEXT" -n "$NAMESPACE" get configmap \
+  "$RELEASE-trust" --ignore-not-found -o name)"
+if [[ -n "$secret" || -n "$trust" ]]; then
+  printf 'CA resources already exist; reuse them or follow recovery below.\n' >&2
+  exit 1
+fi
+
+install -d -m 0700 "$CA_PARENT"
+docker run --rm --user "$(id -u):$(id -g)" \
+  --mount "type=bind,src=$CA_PARENT,dst=/state" \
+  "$IMAGE" init-ca --dir /state/ca
+
+kubectl --context "$CONTEXT" -n "$NAMESPACE" create secret generic "$RELEASE-ca" \
+  --from-file=ca.crt="$CA_PARENT/ca/ca.crt" \
+  --from-file=ca.key="$CA_PARENT/ca/ca.key" --dry-run=client -o json |
+  jq '.immutable=true' |
+  kubectl --context "$CONTEXT" -n "$NAMESPACE" create -f -
+kubectl --context "$CONTEXT" -n "$NAMESPACE" create configmap "$RELEASE-trust" \
+  --from-file=ca.crt="$CA_PARENT/ca/ca.crt" --dry-run=client -o json |
+  jq '.immutable=true' |
+  kubectl --context "$CONTEXT" -n "$NAMESPACE" create -f -
 ```
 
-The command generates the CA using oci-accelerator and stores it in an immutable
-Secret. Only the public certificate goes in the immutable ConfigMap, which can
-be distributed to DinD clients. The serving process does not need API access.
-See the [bootstrap package](../internal/bootstrap/README.md) for exact permissions,
-retry behavior and limits.
+For a new identity, leave the `ca` child directory absent: `init-ca` creates it
+with private permissions. For recovery, restore the original pair there with
+its private ownership and permissions; `init-ca` validates and reuses it rather
+than generating a replacement. The initial lookups distinguish API failures from absent
+objects and stop if either identity resource exists. The create-only pipelines
+fail closed on any stage and deliberately do not apply or overwrite identity.
+Never pass CA files through Helm values or commit them to YAML.
 
-Preserve and securely back up the Secret independently of the disposable cache.
-Do not rotate it on upgrades or remove it when uninstalling the serving workload.
-If the Secret is lost but the public ConfigMap remains, bootstrap fails rather
-than changing client trust. If both are lost, restoration requires the original
-Secret or explicit new-CA distribution to every client.
+If Secret creation succeeds but ConfigMap creation fails, retain the original
+files. Do not generate another CA or delete resources to bypass `AlreadyExists`.
+Verify that the local public certificate matches the Secret, then run only the
+ConfigMap create pipeline above:
+
+```bash
+openssl x509 -in "$CA_PARENT/ca/ca.crt" -outform DER | openssl dgst -sha256
+kubectl --context "$CONTEXT" -n "$NAMESPACE" get secret "$RELEASE-ca" \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d |
+  openssl x509 -outform DER | openssl dgst -sha256
+```
+
+The two hashes must match exactly. This compares only public certificates and
+does not expose the signing key. If the original files are unavailable, stop
+and restore them from backup rather than manufacturing mismatched trust.
+
+If the Secret is lost but the trust ConfigMap survives, restore and validate the
+original pair with `init-ca`, compare its public certificate with the ConfigMap,
+and run only the Secret create pipeline. If both resources are lost, the full
+procedure can reuse the restored pair. Never delete surviving trust to bypass
+the preflight check or generate a new identity during recovery.
+
+Back up the original `ca.crt` and `ca.key` securely and test restoration.
+Immutability prevents in-place changes, not deletion. Helm and the plain
+manifests do not own, reconcile, rotate, or remove these resources during
+install, upgrade, or uninstall.
 
 Kubernetes Secret projections do not meet the proxy's filesystem ownership and
 symlink requirements directly. Copy the two files into a private UID-10001-owned
@@ -74,11 +132,13 @@ the named public ConfigMap's `ca.crt` field. This transformation drops source
 identity and server-managed metadata (`uid`, `resourceVersion`, timestamps,
 managed fields and owner references) while preserving `immutable: true`:
 
-```sh
-kubectl create namespace buildkite --dry-run=client -o yaml | kubectl apply -f -
-kubectl get configmap oci-accelerator-trust -n oci-accelerator -o json |
+```bash
+set -euo pipefail
+kubectl --context "$CONTEXT" create namespace buildkite --dry-run=client -o yaml |
+  kubectl --context "$CONTEXT" apply -f -
+kubectl --context "$CONTEXT" get configmap "$RELEASE-trust" -n "$NAMESPACE" -o json |
   jq '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"oci-accelerator-trust",namespace:"buildkite"},data:{"ca.crt":.data["ca.crt"]}} + (if has("immutable") then {immutable:.immutable} else {} end)' |
-  kubectl apply -f -
+  kubectl --context "$CONTEXT" apply -f -
 ```
 
 Grant the operator only the namespace/read access needed for that public
@@ -161,11 +221,23 @@ startup enforcement mode are cluster prerequisites, not installed by this packag
 
 ## Upgrades and recovery
 
-Helm runs a revision-named bootstrap Job on install/upgrade; it verifies retained
-identity rather than rotating it. Use `--wait --wait-for-jobs` and inspect failed
-Jobs before proceeding. The plain bootstrap Job has a fixed name: after editing
-its image, delete only that Job and reapply it (or wait for completed-Job TTL
-cleanup). Do not delete its Secret or trust ConfigMap.
+Existing deployments retain their valid CA identity. There is no automatic
+consistency reconciliation: before distributing trust, the operator must verify
+that the Secret's public certificate matches the trust ConfigMap (using the
+explicit `CONTEXT`, `NAMESPACE`, and `RELEASE` values from provisioning):
+
+```bash
+kubectl --context "$CONTEXT" -n "$NAMESPACE" get secret "$RELEASE-ca" \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d |
+  openssl x509 -outform DER | openssl dgst -sha256
+kubectl --context "$CONTEXT" -n "$NAMESPACE" get configmap "$RELEASE-trust" \
+  -o jsonpath='{.data.ca\.crt}' |
+  openssl x509 -outform DER | openssl dgst -sha256
+```
+
+Require equal hashes. A missing Secret blocks the serving Pod's volume mount;
+an invalid certificate/key pair fails the CA loader rather than silently
+replacing identity.
 
 Helm config changes roll the serving pod via a checksum annotation. For plain
 manifests, reapply the ConfigMap and explicitly restart the Deployment; the
@@ -173,7 +245,7 @@ application does not reload configuration. Verify readiness and a new DinD pull
 after each upgrade. Cached files must survive replacement and retain private
 permissions; CA fingerprints must remain unchanged.
 
-Helm uninstall retains the cache PVC and bootstrap-created CA/trust resources.
+Helm uninstall retains the cache PVC and operator-created CA/trust resources.
 When reinstalling, `cache.existingClaim` can reuse the retained PVC. For plain
 manifests, remove only the serving Deployment, Service and associated policy when
 stopping the proxy. **Do not delete the namespace**: that also deletes the CA
@@ -235,7 +307,9 @@ OCI_ACCELERATOR_KUBE_IMAGE=oci-accelerator:dev \
 kind delete cluster --name oci-accelerator-test
 ```
 
-The test creates and removes uniquely named namespaces. It requires the host's
+The test runs `init-ca` locally and provisions immutable CA resources before
+installing the chart; no in-cluster provisioner is used. It creates and removes
+uniquely named namespaces. It requires the host's
 non-loopback IP to be reachable from pods and registry access to pull the DinD
 image. It verifies TLS rejection without client trust, exact image digests,
 upstream request and byte counts on cold/warm/replacement pulls, retained CA and

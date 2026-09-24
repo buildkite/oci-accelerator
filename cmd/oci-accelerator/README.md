@@ -13,14 +13,12 @@ shutdown. For installation and day-to-day operation, see the
 | `main.go` | `main` and `run`, which dispatch commands and delegate flag parsing, cache and metrics startup, and graceful-shutdown orchestration to focused helpers (`resolveConfig`, `openCacheStore`, `startMetrics`, `serveUntilSignal`), joining their errors on return |
 | `init_ca.go` | Parses `init-ca --dir`, opens or creates the root CA, and prints its public certificate path and fingerprint |
 | `signal.go` | Builds a shutdown context from SIGINT/SIGTERM and restores default handling so a second signal can force-terminate a stuck cleanup |
-| `bootstrap.go` | Separate Kubernetes CA bootstrap command, never invoked by normal proxy startup |
 
 ## Usage
 
 ```
 oci-accelerator --config FILE [--check]
 oci-accelerator init-ca --dir DIR
-oci-accelerator bootstrap-ca --secret NAME --configmap NAME
 ```
 
 - `--config FILE` — path to the YAML configuration (required for the proxy command).
@@ -49,11 +47,7 @@ ca_sha256=0123456789abcdef...
 It never prints private-key contents. `oci-accelerator init-ca --help` describes
 the command, and top-level help lists `init-ca`.
 
-`bootstrap-ca` uses a mounted Kubernetes service account to create or verify the
-CA Secret and public ConfigMap. It needs no proxy configuration; see the
-[Kubernetes guide](../../docs/kubernetes.md#ca-bootstrap).
-
-Apart from the `init-ca` and `bootstrap-ca` subcommands, positional arguments are rejected.
+Apart from the `init-ca` subcommand, positional arguments are rejected.
 Flag-parsing diagnostics are suppressed so
 command-line input is never reflected back in an error message. Sanitized
 configuration diagnostics retain fixed fields, line numbers, and categories;
@@ -113,5 +107,4 @@ the [logging policy](../../docs/operations.md#logs-and-metrics) for details.
 ## Dependencies
 
 `oci-accelerator` wires `internal/config`, `internal/ca`, `internal/cache`, and
-`internal/proxy` together, delegates Kubernetes CA provisioning to
-`internal/bootstrap`, and otherwise depends only on the standard library.
+`internal/proxy` together, and otherwise depends only on the standard library.

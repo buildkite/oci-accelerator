@@ -67,12 +67,16 @@ an existing version, or delete artifacts clients may already use.
 ## Install a published release
 
 Set `VERSION` to an existing chart version and `IMAGE_DIGEST` to the release's
-multi-platform image index digest (including the `sha256:` prefix):
+multi-platform image index digest (including the `sha256:` prefix). First create
+the target namespace and complete the Kubernetes guide's
+[one-time CA provisioning](kubernetes.md#one-time-ca-provisioning) with an explicit context,
+namespace, release name, and
+`IMAGE=ghcr.io/buildkite/oci-accelerator@$IMAGE_DIGEST`. Then install:
 
 ```sh
 helm upgrade --install oci-accelerator oci://ghcr.io/buildkite/charts/oci-accelerator \
-  --version "$VERSION" --namespace oci-accelerator --create-namespace \
-  --set-string image.digest="$IMAGE_DIGEST" --wait --wait-for-jobs --timeout 10m
+  --version "$VERSION" --kube-context production-eks --namespace oci-accelerator \
+  --set-string image.digest="$IMAGE_DIGEST" --wait --timeout 10m
 ```
 
 This command writes cluster resources; run it only against the intended cluster

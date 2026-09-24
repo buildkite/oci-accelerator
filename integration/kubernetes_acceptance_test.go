@@ -31,7 +31,7 @@ func TestKubernetesPullThroughProxy(t *testing.T) {
 	if proxyImage == "" {
 		t.Fatal("OCI_ACCELERATOR_KUBE_IMAGE is required (for example oci-accelerator:dev, preloaded into kind)")
 	}
-	requireCommands(t, "kubectl", "helm")
+	requireCommands(t, "kubectl", "helm", "go")
 
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
 	proxyNS, buildNS := "acc-proxy-"+suffix, "acc-build-"+suffix
@@ -42,6 +42,32 @@ func TestKubernetesPullThroughProxy(t *testing.T) {
 	kube(t, kubeContext, "create", "namespace", buildNS)
 
 	root := t.TempDir()
+	caDir := filepath.Join(root, "proxy-ca")
+	proxyBinary := filepath.Join(root, "oci-accelerator")
+	boundedCommand(t, 3*time.Minute, "go", "build", "-o", proxyBinary, "../cmd/oci-accelerator")
+	boundedCommand(t, time.Minute, proxyBinary, "init-ca", "--dir", caDir)
+	localCA, err := os.ReadFile(filepath.Join(caDir, "ca.crt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	localKey, err := os.ReadFile(filepath.Join(caDir, "ca.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	localFingerprint := publicFingerprint(t, localCA)
+	createJSON(t, kubeContext, map[string]any{
+		"apiVersion": "v1", "kind": "Secret", "immutable": true,
+		"metadata": map[string]any{"name": "accelerator-ca", "namespace": proxyNS},
+		"data":     map[string]string{"ca.crt": base64.StdEncoding.EncodeToString(localCA), "ca.key": base64.StdEncoding.EncodeToString(localKey)},
+	})
+	createJSON(t, kubeContext, map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap", "immutable": true,
+		"metadata": map[string]any{"name": "accelerator-trust", "namespace": proxyNS},
+		"data":     map[string]string{"ca.crt": string(localCA)},
+	})
+	caSecretUID := kube(t, kubeContext, "-n", proxyNS, "get", "secret", "accelerator-ca", "-o", "jsonpath={.metadata.uid}")
+	trustUID := kube(t, kubeContext, "-n", proxyNS, "get", "configmap", "accelerator-trust", "-o", "jsonpath={.metadata.uid}")
+
 	ip := nonLoopbackIPv4(t)
 	origin, image, counts := startRegistry(t, root, ip, makeImageWithPayload(t, deterministicLargePayload()))
 	t.Cleanup(origin.Close)
@@ -50,7 +76,7 @@ func TestKubernetesPullThroughProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyJSON(t, kubeContext, map[string]any{
+	createJSON(t, kubeContext, map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
 		"metadata": map[string]any{"name": "fixture-origin-trust", "namespace": proxyNS},
 		"data":     map[string]string{"ca.crt": string(originCA)},
@@ -58,7 +84,7 @@ func TestKubernetesPullThroughProxy(t *testing.T) {
 
 	repository, tag := splitImage(t, proxyImage)
 	helm(t, kubeContext, "upgrade", "--install", "accelerator", "../deploy/helm/oci-accelerator",
-		"--namespace", proxyNS, "--wait", "--wait-for-jobs", "--timeout", "5m",
+		"--namespace", proxyNS, "--wait", "--timeout", "5m",
 		"--set-string", "image.repository="+repository, "--set-string", "image.tag="+tag,
 		"--set-string", "image.pullPolicy=IfNotPresent", "--set-string", "cache.storageClassName=standard",
 		"--set-string", "cache.size=1Gi", "--set-string", "cache.authorizationTTL=0s",
@@ -71,8 +97,11 @@ func TestKubernetesPullThroughProxy(t *testing.T) {
 
 	proxyTrust := kube(t, kubeContext, "-n", proxyNS, "get", "configmap", "accelerator-trust", "-o", "jsonpath={.data.ca\\.crt}")
 	fingerprint := publicFingerprint(t, []byte(proxyTrust))
-	// Copy only the persisted public certificate, never the bootstrap Secret.
-	applyJSON(t, kubeContext, map[string]any{
+	if fingerprint != localFingerprint {
+		t.Fatalf("distributed public CA differs from init-ca output: %s != %s", fingerprint, localFingerprint)
+	}
+	// Copy only the persisted public certificate, never the signing-key Secret.
+	createJSON(t, kubeContext, map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
 		"metadata": map[string]any{"name": "accelerator-trust", "namespace": buildNS},
 		"data":     map[string]string{"ca.crt": proxyTrust},
@@ -120,6 +149,12 @@ func TestKubernetesPullThroughProxy(t *testing.T) {
 	if got := publicFingerprint(t, []byte(proxyTrust2)); got != fingerprint {
 		t.Fatalf("proxy public CA changed after pod replacement: %s != %s", got, fingerprint)
 	}
+	if got := kube(t, kubeContext, "-n", proxyNS, "get", "secret", "accelerator-ca", "-o", "jsonpath={.metadata.uid}"); got != caSecretUID {
+		t.Fatalf("CA Secret was replaced with UID %s, want retained UID %s", got, caSecretUID)
+	}
+	if got := kube(t, kubeContext, "-n", proxyNS, "get", "configmap", "accelerator-trust", "-o", "jsonpath={.metadata.uid}"); got != trustUID {
+		t.Fatalf("trust ConfigMap was replaced with UID %s, want retained UID %s", got, trustUID)
+	}
 	startDinD(t, kubeContext, buildNS, "restart", proxyURL, authority, true)
 	pullAndVerifyPod(t, kubeContext, buildNS, "restart", authority, image)
 	counts.waitIdle(t)
@@ -152,7 +187,7 @@ func startDinD(t *testing.T, kubeContext, namespace, name, proxyURL, authority s
 	setup := "mkdir -p /root/.docker /etc/docker; printf '%s' '" + fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, authority, auth) + "' >/root/.docker/config.json\n"
 	setup += "printf '%s' '{\"features\":{\"containerd-snapshotter\":false}}' >/etc/docker/daemon.json\n"
 	container["args"] = []string{setup + startup + " --storage-driver=vfs --iptables=false --bridge=none"}
-	applyJSON(t, kubeContext, pod)
+	createJSON(t, kubeContext, pod)
 	kube(t, kubeContext, "-n", namespace, "wait", "--for=condition=Ready", "pod/"+name, "--timeout=90s")
 }
 
@@ -238,7 +273,7 @@ func podCommand(kubeContext, namespace, pod string, timeout time.Duration, comma
 	return string(out), err
 }
 
-func applyJSON(t *testing.T, kubeContext string, object any) {
+func createJSON(t *testing.T, kubeContext string, object any) {
 	t.Helper()
 	b, err := json.Marshal(object)
 	if err != nil {
@@ -246,10 +281,11 @@ func applyJSON(t *testing.T, kubeContext string, object any) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeContext, "apply", "-f", "-")
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeContext, "create", "-f", "-")
 	cmd.Stdin = strings.NewReader(string(b))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("kubectl apply failed: %v: %s", err, trim(string(out)))
+	if err := cmd.Run(); err != nil {
+		// API diagnostics may echo submitted Secret data.
+		t.Fatalf("kubectl create failed: %v", err)
 	}
 }
 

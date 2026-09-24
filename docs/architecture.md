@@ -297,11 +297,13 @@ BuildKit-specific integration are not validated.
 There is no shared/distributed storage, multi-instance coordination, background
 prefetch or grant refresh, tag caching, stale/offline mode, proxy-held credentials,
 automatic CA trust installation/rotation, or push caching.
-The repository provides a Go binary, not container packaging.
+The repository provides a Go binary, a [container image](container.md), and
+[Helm and plain Kubernetes manifests](kubernetes.md). CA identity is provisioned
+once by the operator with `init-ca`; deployments consume existing CA resources.
 
 Deterministic local registry/auth/CDN tests assert bytes, denials, and upstream
 request counts. Docker acceptance uses fresh daemon stores to distinguish proxy
-hits from Docker's own cache. Public Docker Hub/GHCR pulls are compatibility
+hits from Docker's own cache. Public Docker Hub/GHCR/public ECR pulls are compatibility
 checks, not proof of private access enforcement or warm-hit substitution.
 Fault tests exercise process termination and private tmpfs exhaustion, not
 power-loss or faulty-device certification. Load checks measure local paced
