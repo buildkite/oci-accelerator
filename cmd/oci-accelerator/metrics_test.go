@@ -8,12 +8,28 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/buildkite/oci-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/proxy"
 )
+
+func TestLifecycleProbesBeforeServing(t *testing.T) {
+	p := proxy.New(config.Config{}, nil, nil, nil)
+	server := newMetricsServer(config.Config{}, p)
+	for path, want := range map[string]int{"/livez": http.StatusOK, "/readyz": http.StatusServiceUnavailable} {
+		response := httptest.NewRecorder()
+		server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != want || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s: status %d, headers %v", path, response.Code, response.Header())
+		}
+	}
+}
 
 func newTestListener(t *testing.T) *net.TCPListener {
 	t.Helper()
@@ -158,6 +174,8 @@ shutdown_timeout: 100ms
 					wantContent []byte
 				}{
 					{path: "/metrics", wantStatus: http.StatusOK, wantContent: []byte("oci_accelerator_")},
+					{path: "/livez", wantStatus: http.StatusOK},
+					{path: "/readyz", wantStatus: http.StatusOK},
 					{path: "/", wantStatus: http.StatusNotFound},
 					{path: "/debug/pprof/", wantStatus: http.StatusNotFound},
 				}

@@ -27,6 +27,7 @@ design rationale, see the
 | `cache.go` | `registryTransport` hit/miss/fill orchestration and `waitForFill` coalescing after the caller's accepted upstream GET |
 | `cache_body.go` | Streaming upstream-byte accounting and cache-fill commit/abort ownership |
 | `metrics.go` | Per-request statistics and Prometheus text-format metrics: recording and rendering |
+| `health.go` | Readiness state independent of upstream reachability and cache admission |
 | `errors.go` | Upstream error sentinels, dial-refusal reasons, and fixed, non-leaking log labels |
 
 Tests use `<owner>[_<topic>]_test.go`, named for the responsibility they verify
@@ -68,8 +69,14 @@ Stops accepting, disables intercepted keep-alives, drains in-flight work until
 
 ### `(*Proxy) MetricsHandler() http.Handler`
 
-Returns the Prometheus text-format handler for the optional loopback metrics
-listener.
+Returns the Prometheus text-format handler for the separate metrics listener,
+which is loopback-only unless explicitly configured otherwise.
+
+### `(*Proxy) Ready() bool`
+
+Reports an initialized signer and an active serving loop that is not draining.
+Performs no upstream, DNS or filesystem I/O. The command exposes it as
+`GET /readyz` beside metrics, outside proxy connection admission limits.
 
 ## Public CA download
 

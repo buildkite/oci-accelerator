@@ -243,8 +243,10 @@ cryptographic profile, and API contracts live in the [CA package guide](../inter
 The listener defaults to loopback and has no proxy-user authentication. Upstream
 image authorization does not protect an open CONNECT relay against abuse. Use
 private network access controls for remote clients. The optional metrics listener
-is separate and literal-loopback-only; counters use fixed labels without sensitive
-request identifiers. See [logs and metrics](operations.md#logs-and-metrics).
+is separate and literal-loopback-only unless remote binding is explicitly enabled;
+remote scraping requires private network controls. Counters use fixed labels without
+sensitive request identifiers. Local lifecycle probes share that listener, not the
+proxy connection pool. See [logs and metrics](operations.md#logs-and-metrics).
 
 ## Limits of support and verification
 

@@ -155,7 +155,8 @@ is static and changes take effect after restart.
 | Setting | Default or requirement |
 | --- | --- |
 | `listen` | `127.0.0.1:3128`; host:port with a nonzero numeric port; empty/wildcard hosts bind all interfaces |
-| `metrics_listen` | Disabled; optional literal loopback IP and nonzero port |
+| `metrics_listen` | Disabled; optional host:port with a nonzero numeric port; literal loopback IP required unless `metrics_allow_remote` is `true` |
+| `metrics_allow_remote` | `false`; explicit boolean opt-in to non-loopback metrics/probe binding |
 | `registries` | Required, nonempty list of distinct canonical authorities |
 | `redirect_allowlist` | Optional private HTTPS storage authorities; does not enable interception |
 | `ca_dir` | Required private persistent state directory |
@@ -211,9 +212,15 @@ raw upstream errors remain omitted. No request-start or per-redirect records are
 Opaque CONNECT tunnels do not expose HTTP request URLs to the proxy.
 
 Set `metrics_listen: 127.0.0.1:9090` to serve Prometheus text at `GET /metrics` on a separate
-listener. Hostnames, wildcard/public addresses, zoned IPv6, and port zero are rejected. A bind
-failure prevents startup. There is no metrics route on the CONNECT listener, admin API, or pprof
-endpoint. Keep metrics local and do not expose them through a portal or public reverse proxy.
+listener. Non-loopback binds are rejected unless `metrics_allow_remote: true` is explicitly
+set. Remote scraping has no authentication: restrict access with private network controls;
+never expose this endpoint publicly or through a portal. A bind failure prevents startup.
+There is no metrics route on the CONNECT listener, admin API, or pprof endpoint.
+
+The same listener serves `GET /livez` (process responsiveness) and `GET /readyz`
+(initialized and serving, not shutting down). They never contact upstream registries or
+depend on cache capacity. They are independent of the proxy connection limit. Kubernetes
+can use local exec probes with a loopback bind when remote scraping is disabled.
 
 Metrics use the `oci_accelerator_` prefix and include:
 

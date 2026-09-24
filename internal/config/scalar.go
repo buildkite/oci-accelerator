@@ -9,6 +9,24 @@ import (
 
 type duration time.Duration
 
+// strictBool requires an actual YAML boolean, not YAML 1.1 string coercions.
+type strictBool bool
+
+func (b *strictBool) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
+		return nil
+	}
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!bool" {
+		return invalidNode(node, "must be a boolean")
+	}
+	value, err := strconv.ParseBool(node.Value)
+	if err != nil {
+		return invalidNode(node, "must be a boolean")
+	}
+	*b = strictBool(value)
+	return nil
+}
+
 // strictString prevents YAML from coercing other scalar types into strings.
 // Null scalar fields retain their defaults; pointer list elements remain nil.
 type strictString string
