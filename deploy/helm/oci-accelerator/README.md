@@ -1,6 +1,6 @@
 # OCI Accelerator Helm chart
 
-Installs one pull-only OCI proxy for Buildkite DinD workloads in an EKS cluster. The default release name is `oci-accelerator`.
+Installs one OCI pull cache with push passthrough for Buildkite DinD workloads in an EKS cluster. The default release name is `oci-accelerator`.
 
 Create the target namespace and complete the Kubernetes guide's
 [one-time CA provisioning](../../../docs/kubernetes.md#one-time-ca-provisioning) before
@@ -13,7 +13,7 @@ helm upgrade --install oci-accelerator ./deploy/helm/oci-accelerator \
   --set-string image.digest="$IMAGE_DIGEST" --wait --timeout 10m
 ```
 
-Use the Service at `oci-accelerator.oci-accelerator.svc:3128`. Install `oci-accelerator-trust` into DinD clients as a trusted CA. Add exact private ECR registry hosts to `registries`; this chart is for pull traffic and does not support pushes.
+Use the Service at `oci-accelerator.oci-accelerator.svc:3128`. Install `oci-accelerator-trust` into DinD clients as a trusted CA. Add exact private ECR registry hosts to `registries`. Pulls and pushes use the same client configuration; writes stream uncached under registry authorization. See the [operating guide](../../../docs/operations.md) and [write contract](../../../internal/proxy/README.md#write-passthrough).
 
 ## Important values
 

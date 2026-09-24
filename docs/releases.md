@@ -82,5 +82,5 @@ helm upgrade --install oci-accelerator oci://ghcr.io/buildkite/charts/oci-accele
 This command writes cluster resources; run it only against the intended cluster
 with deployment approval. Follow the [Kubernetes guide](kubernetes.md) for EBS
 prerequisites, public trust distribution, private-registry configuration and
-pull-only DinD opt-in. Never put signing keys or registry credentials in the
+DinD opt-in. Never put signing keys or registry credentials in the
 published image, chart, or plain manifests.

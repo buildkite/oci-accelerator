@@ -1,6 +1,6 @@
 # Kubernetes manifests
 
-These plain manifests deploy a single pull-only OCI Accelerator for same-cluster
+These plain manifests deploy a single OCI pull cache with push passthrough for same-cluster
 Buildkite agents on EKS/EC2. See the authoritative [Kubernetes guide](../../docs/kubernetes.md)
 for trust and agent configuration.
 

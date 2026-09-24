@@ -2,8 +2,9 @@
 
 The container runs as UID/GID `10001`, includes upstream TLS trust roots, and
 accepts the same arguments as the [command](../cmd/oci-accelerator/README.md).
-It does not contain configuration or credentials. It remains a **pull-only**
-proxy: pushing to intercepted registries is unsupported.
+It does not contain configuration or credentials. Pull and push clients use the
+same proxy and CA configuration; see the [operating guide](operations.md) and the
+proxy package's [write contract](../internal/proxy/README.md#write-passthrough).
 
 Build and smoke-test a local image with Docker Buildx:
 

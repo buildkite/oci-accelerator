@@ -1,10 +1,10 @@
 # Kubernetes deployment
 
-The Kubernetes target is a single pull-only accelerator in the same EKS cluster
-as custom Buildkite agents using Docker-in-Docker. It does not configure the
-nodes' container runtime. **Do not opt build-and-push daemons into this deployment:**
-pushes to intercepted registries are rejected. Proxy downtime can cause pulls to
-fail; there is no automatic direct-to-registry fallback.
+The Kubernetes target is a single accelerator in the same EKS cluster as custom
+Buildkite agents using Docker-in-Docker. It does not configure the nodes'
+container runtime. Pull and build-and-push daemons use the same configuration.
+Proxy downtime can cause pushes and pulls to fail; there is no automatic
+direct-to-registry fallback.
 
 ## Install on EKS
 
@@ -145,15 +145,15 @@ Grant the operator only the namespace/read access needed for that public
 ConfigMap. Never copy, mount, or grant build workloads access to the
 `oci-accelerator-ca` Secret; it contains the CA signing key.
 
-## Docker-in-Docker pull clients
+## Docker-in-Docker clients
 
-[`dind-pull.yaml`](../deploy/kubernetes/examples/dind-pull.yaml) is a minimal,
+[`dind.yaml`](../deploy/kubernetes/examples/dind.yaml) is a minimal,
 standalone smoke Pod for the `buildkite` namespace. Apply it after copying trust:
 
 ```sh
-kubectl apply -f deploy/kubernetes/examples/dind-pull.yaml
-kubectl wait -n buildkite --for=condition=ready pod/dind-pull-smoke --timeout=2m
-kubectl exec -n buildkite dind-pull-smoke -- docker pull alpine:3.22
+kubectl apply -f deploy/kubernetes/examples/dind.yaml
+kubectl wait -n buildkite --for=condition=ready pod/dind-smoke --timeout=2m
+kubectl exec -n buildkite dind-smoke -- docker pull alpine:3.22
 ```
 
 The example has no API token, trusts only the public CA, and starts
@@ -181,19 +181,31 @@ initialization): append the CA update and daemon exec to that setup rather than
 blindly replacing it. The readiness probe in the example is the minimum startup
 gate; production scheduling must likewise prevent commands racing daemon startup.
 
-This deployment is pull-only. Do not opt in a daemon that builds and pushes
-images. Registry credentials remain the Docker client's responsibility. For a
-private ECR registry, authenticate the client to its exact configured hostname:
+Registry credentials and upload sessions, retries, and recovery remain the
+Docker client's responsibility. The registry authenticates and authorizes those
+credentials. Writes stream uncached and never populate the pull cache; see the
+[operating guide](operations.md#configuration-and-limits) and authoritative
+[write contract](../internal/proxy/README.md#write-passthrough). For a private ECR
+registry, authenticate the client to its exact configured hostname:
 
 ```sh
 aws ecr get-login-password --region us-east-1 |
   docker login --username AWS --password-stdin 123456789012.dkr.ecr.us-east-1.amazonaws.com
 ```
 
+To smoke-test push, have the operator create a disposable private test repository
+and writer credential, log this client in, then publish a unique non-production
+tag (for example, tag a local test image as
+`$TEST_REGISTRY/$TEST_REPOSITORY:$RUN_ID` and push that exact reference). Do not
+publish guessed or shared public tags. Confirm a read-only credential is denied
+and the writer is accepted, then pull the published reference from a fresh Pod.
+
 The default `cache.authorization_ttl` is `30s`: an exact successful immutable
 GET may reuse its short-lived process-local authorization grant. Set it to `0s`
 when every delivery must perform an upstream authorization GET. Neither setting
-creates credentials or permits offline fallback.
+creates credentials or permits offline fallback. Successful writes and deletes
+do not invalidate existing grants; use `0s` when access changes must be checked
+on every cache delivery.
 
 ## Probes, metrics and network access
 
@@ -279,6 +291,10 @@ one daemon:
    credentials) and require denial even when the body is warm. Then log in with
    valid client credentials and require success. Do not use production
    credentials for the negative check.
+5. Against an operator-owned test repository, require a read-only client's push
+   to be denied and a writer's push to succeed. Verify the uploaded bytes, that
+   existing cache entries are unchanged, and that a fresh Pod can pull the
+   published image. Use unique test tags and credentials.
 
 These are operator acceptance procedures, not claims that this repository has
 run the custom Buildkite image on EKS, verified a particular CNI's NetworkPolicy
@@ -303,7 +319,7 @@ kind load docker-image oci-accelerator:dev --name oci-accelerator-test
 OCI_ACCELERATOR_KUBERNETES_E2E=1 \
 OCI_ACCELERATOR_KUBE_CONTEXT=kind-oci-accelerator-test \
 OCI_ACCELERATOR_KUBE_IMAGE=oci-accelerator:dev \
-  go test ./integration -run '^TestKubernetesPullThroughProxy$' -count=1 -v -timeout=15m
+  go test ./integration -run '^TestKubernetesPullAndPushThroughProxy$' -count=1 -v -timeout=15m
 kind delete cluster --name oci-accelerator-test
 ```
 
@@ -313,8 +329,11 @@ uniquely named namespaces. It requires the host's
 non-loopback IP to be reachable from pods and registry access to pull the DinD
 image. It verifies TLS rejection without client trust, exact image digests,
 upstream request and byte counts on cold/warm/replacement pulls, retained CA and
-PVC cache state, and a fresh upstream 401 for an unauthenticated warmed blob.
-Authorization TTL is explicitly zero in this test. DinD uses `vfs` without
-container networking for portability; it verifies pulls, not container execution
-or custom Buildkite startup. Public-registry compatibility is a separate opt-in
+PVC cache state, and a fresh upstream 401 for an unauthenticated warmed blob. It
+also pushes from a pull Pod to a separate local registry fixture, verifies reader
+denial, writer success and exact uploaded bytes, unchanged cache entries after
+the push, and a fresh Pod pull of the published image. Authorization TTL is
+explicitly zero in this test. DinD uses `vfs` without container networking for
+portability; it does not validate container execution or custom Buildkite
+startup. Public-registry compatibility is a separate opt-in
 [Docker acceptance check](operations.md#repeatable-checks).

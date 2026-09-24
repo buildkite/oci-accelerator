@@ -1,4 +1,4 @@
-# Standalone pull-only DinD smoke client. For production, replace this image
+# Standalone DinD pull/push smoke client. For production, replace this image
 # with a custom Buildkite agent image pinned by digest and containing Docker.
 apiVersion: v1
 kind: Namespace
@@ -8,10 +8,10 @@ metadata:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: dind-pull-smoke
+  name: dind-smoke
   namespace: buildkite
   labels:
-    app.kubernetes.io/name: dind-pull-smoke
+    app.kubernetes.io/name: dind-smoke
 spec:
   automountServiceAccountToken: false
   restartPolicy: Never
