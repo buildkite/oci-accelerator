@@ -68,6 +68,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		MaxResponseHeaderBytes: maxHeaderBytes,
 		TLSHandshakeTimeout:    cfg.TLSHandshakeTimeout,
 		ResponseHeaderTimeout:  cfg.ResponseHeaderTimeout,
+		ExpectContinueTimeout:  time.Second,
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			NextProtos: []string{"http/1.1"},

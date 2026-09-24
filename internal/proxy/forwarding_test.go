@@ -208,7 +208,7 @@ func TestRejectedRequestURLLogs(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			p := New(config.Config{}, nil, slog.New(slog.NewJSONHandler(&logs, nil)), nil)
-			r, err := http.ReadRequest(bufio.NewReader(strings.NewReader("POST " + tc.requestTarget + " HTTP/1.1\r\nHost: " + tc.host + "\r\n\r\n")))
+			r, err := http.ReadRequest(bufio.NewReader(strings.NewReader("TRACE " + tc.requestTarget + " HTTP/1.1\r\nHost: " + tc.host + "\r\n\r\n")))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -247,7 +247,7 @@ func TestInterceptAuthorityTargetsAndMethods(t *testing.T) {
 	defer origin.Close()
 	p, proxyAddr, client := interceptFixture(t, origin, nil, true)
 
-	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		req, _ := http.NewRequest(method, origin.URL+"/v2/", nil)
 		resp, err := client.Do(req)
 		if err != nil || resp.StatusCode != http.StatusNoContent || resp.Header.Get("X-Method") != method {
@@ -256,7 +256,7 @@ func TestInterceptAuthorityTargetsAndMethods(t *testing.T) {
 		resp.Body.Close()
 	}
 	baseline := hits.Load()
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodConnect, http.MethodTrace} {
+	for _, method := range []string{http.MethodConnect, http.MethodTrace, "CUSTOM"} {
 		req, _ := http.NewRequest(method, origin.URL+"/v2/", nil)
 		resp, err := client.Do(req)
 		if err != nil || resp.StatusCode != http.StatusMethodNotAllowed {
