@@ -35,6 +35,8 @@ type Proxy struct {
 	lookupIP      func(context.Context, string) ([]net.IPAddr, error)     // DNS resolver hook, overridable in tests
 	dialIP        func(context.Context, string, string) (net.Conn, error) // upstream dialer hook, overridable in tests
 	metrics       *metrics                                                // request and cache counters
+	rangeContext  context.Context                                         // shutdown cancellation for range transfers
+	cancelRanges  context.CancelFunc                                      // cancels rangeContext, invoked by Shutdown
 
 	mu       sync.Mutex                // guards the mutable fields below
 	listener net.Listener              // active listener; nil before Serve or after shutdown
@@ -43,7 +45,7 @@ type Proxy struct {
 	inners   map[*http.Server]struct{} // per-connection inner servers handling intercepted TLS
 	closing  bool                      // set once shutdown starts to reject new inflight work
 
-	// inflight covers CONNECT handlers, including dials, relays and interception.
+	// inflight covers CONNECT handlers and client-independent range transfers.
 	// Add happens under mu while closing is false, before Shutdown can Wait.
 	// Handlers finish only after relay pumps exit and cache bodies are closed.
 	inflight sync.WaitGroup
@@ -88,6 +90,10 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		lookupIP:      net.DefaultResolver.LookupIPAddr,
 		dialIP:        (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext,
 	}
+
+	// Range fills detach from their client, so they need a separate signal
+	// to stop at shutdown rather than hang draining.
+	p.rangeContext, p.cancelRanges = context.WithCancel(context.Background())
 
 	transport.DialContext = p.dialUpstream
 
@@ -153,6 +159,7 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 		inners = append(inners, inner)
 	}
 	p.mu.Unlock()
+	p.cancelRanges()
 	for _, inner := range inners {
 		inner.SetKeepAlivesEnabled(false)
 	}

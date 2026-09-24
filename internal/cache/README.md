@@ -85,10 +85,11 @@ Stream bytes into a staged fill (hashing and enforcing `Size`), then either
 atomically publish it (`Commit`, after verifying `Size` and `Digest`) or discard
 it (`Abort`). A partial object is never published.
 
-### `(*Reader) Read(p []byte) (int, error)` · `Close() error`
+### `(*Reader) Read(p []byte) (int, error)` · `Seek(offset int64, whence int) (int64, error)` · `Close() error`
 
-Stream a committed body; a short read before `Size` signals corruption. `Close`
-releases the pin exactly once.
+Stream or seek within a committed body; seeking preserves the pin and updates the
+remaining-length corruption check for subsequent reads. A short read before the
+expected end signals corruption. `Close` releases the pin exactly once.
 
 ### `AdmissionError` · `AdmissionReason`
 
@@ -114,6 +115,7 @@ Reading a committed entry:
 Get(ctx, meta)  pins the entry, verifies its body once if unverified, and
                 returns a Reader
 Reader.Read     streams the body; a short read before Size signals corruption
+Reader.Seek     repositions within the same pinned, verified body
 Reader.Close    releases the pin exactly once
 ```
 

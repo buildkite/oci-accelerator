@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/cache"
@@ -22,9 +23,32 @@ type registryTransport struct {
 	metrics         *metrics
 	fillWaitTimeout time.Duration
 	authorization   *authorizationCache
+	startRangeFetch func(context.Context) (*rangeFetch, error)
 }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clientRequest := req
+
+	ranged, _ := req.Context().Value(rangeRequestKey{}).(bool)
+	var fetch *rangeFetch
+
+	// Fetch the full representation for this range request. Each request
+	// authorizes upstream independently, but may wait for another cache fill.
+	if ranged {
+		if full, ok := fullBlobRangeRequest(req); ok {
+			req = full
+		}
+		var err error
+		fetch, err = t.startRangeFetch(req.Context())
+		if err != nil {
+			return nil, err
+		}
+
+		// Carry fetch on the context for resolveResponse (cache.go) to detach and pump the fill.
+		req = req.WithContext(context.WithValue(fetch.ctx, rangeFetchKey{}, fetch))
+	}
+
+	// Instrument GETs so every upstream connection acquisition bumps the metric.
 	if req.Method == http.MethodGet {
 		// Count every connection-acquisition attempt (transport retries plus
 		// DNS/dial/TLS failures before the GET); requests rejected earlier don't
@@ -42,13 +66,42 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// Make our own authorized GET first. This attempt may then close its body
 	// and wait for another request's fill instead of downloading it again.
 	resp, retry, err := t.roundTrip(req, true)
-	if err != nil || !retry {
-		return resp, err
+	if err == nil && retry {
+		// Repeat the full authorization/redirect path once, without waiting again.
+		resp, _, err = t.roundTrip(req, false)
 	}
 
-	// Timeout, fill failure, or eviction before reader acquisition left no cached
-	// body. Repeat the full authorization/redirect path once, without waiting again.
-	resp, _, err = t.roundTrip(req, false)
+	// On failure, release this range fetch's in-flight lifecycle accounting.
+	if err != nil {
+		if fetch != nil {
+			fetch.finish()
+		}
+		return nil, err
+	}
+
+	// Apply downstream range handling where the response supports it.
+	if ranged {
+		body, cached := resp.Body.(*cache.Reader)
+
+		// Unless the fill owns the fetch, finish it when the response body closes.
+		if !fetch.detached {
+			resp.Body = &rangeFetchBody{ReadCloser: resp.Body, finish: fetch.finish}
+		}
+
+		if cached {
+			// Cached body is seekable, so serve the exact requested range(s).
+			resp = serveRangeResponse(clientRequest, resp, body)
+		} else if _, eligible := objectMetadata(req, resp); eligible {
+			// A streaming source cannot seek backwards for multipart delivery.
+			// Like nginx, ignore multiple ranges on a cold response.
+			selection := clientRequest
+			if strings.Contains(selection.Header.Get("Range"), ",") {
+				selection = selection.Clone(selection.Context())
+				selection.Header.Del("Range")
+			}
+			resp = serveRangeResponse(selection, resp, &rangeStream{source: resp.Body, size: resp.ContentLength})
+		}
+	}
 	return resp, err
 }
 

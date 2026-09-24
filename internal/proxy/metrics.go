@@ -214,7 +214,8 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 	m.requests[outcome]++
 	m.statuses[statusClass(status)]++
 	m.cache[s.cache]++
-	if s.fill != "none" {
+	// Detached range fills report their outcome when their pump finishes.
+	if s.fill != "none" && s.fill != "background" {
 		m.fills[s.fill]++
 	}
 	if s.wait != "" {

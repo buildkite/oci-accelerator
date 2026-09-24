@@ -18,7 +18,10 @@ design rationale, see the
 | `relay.go` | The opaque bidirectional TCP relay, with an explicit idle timeout and ownership of both connections until its workers finish |
 | `intercept.go` | Shutdown-aware CONNECT takeover and `serveIntercepted`: terminate TLS and serve the supplied handler over a single-connection listener |
 | `forwarding.go` | The inner reverse proxy to upstream registries: request validation, header stripping, and the logging/metrics response writer |
-| `registry_transport.go` | Upstream `RoundTrip`, bounded redirect following, cross-origin header stripping, and fill-wait retry |
+| `registry_transport.go` | Upstream `RoundTrip`, bounded redirect following, cross-origin header stripping, fill-wait retry, and range-path selection |
+| `range.go` | Eligible blob Range conversion to full upstream GETs and standard range response adaptation |
+| `range_stream.go` | Forward-only cold single-range selection from a full upstream stream |
+| `range_fill.go` | Bounded ranged-fetch ownership and detached admitted-fill pumping |
 | `dial.go` | SSRF-hardened DNS resolution/dialing (`dialUpstream`, `publicIP`) and upstream idle deadlines |
 | `authorization.go` | Process-local HMAC request fingerprints and bounded fixed-TTL authorization grants |
 | `authorization_freshness.go` | Redirect-hop cacheability check and `max-age`/`s-maxage` grant lifetime ceiling |
@@ -130,8 +133,8 @@ the deadline is not an absolute limit on the duration of a streaming response.
 ## Caching
 
 The cache only stores immutable, digest-addressed objects. `cache_policy.go` recognizes
-`GET /v2/<repo>/{blobs,manifests}/sha256:<digest>` requests with no range or
-conditional headers, derives a metadata key, and checks response eligibility
+`GET /v2/<repo>/{blobs,manifests}/sha256:<digest>` requests, derives a metadata key,
+and checks response eligibility
 (media type, encoding, and cache-control/vary/digest headers). `cache.go` either
 serves a hit, coalesces onto an in-progress fill (`waitForFill`), or starts a new
 fill. `cache_body.go` mirrors the upstream stream into `internal/cache` and
@@ -144,6 +147,21 @@ GET for every delivery. Grants are bounded, process-local HMAC fingerprints of t
 canonical URL and all forwarded end-to-end headers, and a fast hit still requires
 a verified body. See the
 [architecture guide](../../docs/architecture.md#authorization-before-cache-use).
+
+With a cache configured, an unconditional SHA-256 blob GET with one nonempty Range
+header takes a separate path. `range.go` removes Range for a full upstream GET and
+marks the request so it cannot read or write authorization grants. A pinned,
+verified `cache.Reader` serves warm single, suffix, multipart, and unsatisfiable
+ranges. On a cold miss, `rangeStream` selects a single range as the full stream
+reaches its offset; comma-separated ranges fall back to the full `200`.
+
+If a cold ranged response is admitted, its pump owns the fill and continues the
+same upstream GET after delivery ends or the client disconnects. Its lifetime is
+bounded from request start by `cache.fill_timeout`, existing network limits, and
+proxy shutdown; no partial entry is published. Non-admitted ranged responses and
+ordinary full-GET fills remain request-owned. Conditional requests including
+`If-Range`, ranged manifests, no-store requests, and Range named by Connection
+remain passthrough.
 
 Fingerprints account for HTTP/1.1 transport-managed headers: `Host` is represented
 by the pinned URL authority, bodyless GETs emit no length or transfer headers, and
@@ -201,10 +219,11 @@ or bandwidth savings.
 
 `Proxy.mu` guards the listener and the sets of tracked connections, tunnels, and
 inner servers. An `inflight` `WaitGroup` covers CONNECT handlers, dials, relays,
-and interception. `Shutdown` stops accepting, disables intercepted keep-alives,
-drains until its context expires, then closes remaining sockets; it waits for
-handlers and relay pumps to release their resources — including cache bodies —
-before returning, so a stuck handler can delay exit beyond the deadline.
+interception, and client-independent ranged fills. `Shutdown` stops accepting,
+disables intercepted keep-alives, cancels ranged transfers, and drains until its
+context expires before closing remaining sockets. It joins handlers, relay pumps,
+and ranged fills before returning, so the caller can then close the store; a stuck
+handler can delay exit beyond the deadline.
 
 ## Dependencies
 

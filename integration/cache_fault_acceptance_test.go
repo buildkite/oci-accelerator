@@ -22,6 +22,15 @@ import (
 // TestCacheENOSPCAcceptance deliberately exhausts a private tmpfs. It is kept
 // opt-in because it requires passwordless sudo and Linux mount namespaces.
 func TestCacheENOSPCAcceptance(t *testing.T) {
+	testCacheENOSPC(t, false)
+}
+
+func TestRangeCacheENOSPCAcceptance(t *testing.T) {
+	testCacheENOSPC(t, true)
+}
+
+func testCacheENOSPC(t *testing.T, ranged bool) {
+	t.Helper()
 	if os.Getenv("OCI_ACCELERATOR_FAULT_E2E") != "1" {
 		t.Skip("set OCI_ACCELERATOR_FAULT_E2E=1 to run the cache fault acceptance test")
 	}
@@ -40,6 +49,9 @@ func TestCacheENOSPCAcceptance(t *testing.T) {
 	gets := map[string]int{}
 	bytesSent := map[string]int64{}
 	origin, originPort, originCA := startNamedTLS(t, root, "fault-origin-ca", ip.String(), ip, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			t.Error("partial request forwarded instead of a full cache fill")
+		}
 		mu.Lock()
 		gets[r.URL.Path]++
 		n := gets[r.URL.Path]
@@ -106,9 +118,30 @@ exec sudo -n -u \#%d -g \#%d env SSL_CERT_FILE=%s %s --config %s`,
 	}
 
 	client := faultProxyClient(t, proxyPort, filepath.Join(proxyCA, "ca.crt"))
-	got := faultGet(t, client, "https://"+authority+faultPath)
-	if !bytes.Equal(got, faultBody) {
-		t.Fatalf("fault transfer digest=%s want=%s bytes=%d/%d", faultDigest(got), faultDigest(faultBody), len(got), len(faultBody))
+	get := func(path string) []byte {
+		if !ranged {
+			return faultGet(t, client, "https://"+authority+path)
+		}
+		req, _ := http.NewRequest(http.MethodGet, "https://"+authority+path, nil)
+		req.Header.Set("Range", "bytes=1024-")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil || resp.StatusCode != http.StatusPartialContent {
+			t.Fatalf("range response: status=%d err=%v", resp.StatusCode, err)
+		}
+		return body
+	}
+	wantFault, wantRecovery := faultBody, recoveryBody
+	if ranged {
+		wantFault, wantRecovery = faultBody[1024:], recoveryBody[1024:]
+	}
+	got := get(faultPath)
+	if !bytes.Equal(got, wantFault) {
+		t.Fatalf("fault transfer digest=%s want=%s bytes=%d/%d", faultDigest(got), faultDigest(wantFault), len(got), len(wantFault))
 	}
 	// Independently demonstrate that the same filesystem is actually at ENOSPC.
 	if out, err := ns("dd", "if=/dev/zero", "of="+filepath.Join(mountpoint, "enospc-probe"), "bs=65536", "count=8", "conv=fsync", "status=none"); err == nil || !strings.Contains(strings.ToLower(out), "no space left on device") {
@@ -123,10 +156,10 @@ exec sudo -n -u \#%d -g \#%d env SSL_CERT_FILE=%s %s --config %s`,
 	if out, err := ns("rm", "-f", filepath.Join(mountpoint, "ballast")); err != nil {
 		t.Fatalf("remove owned ballast: %v: %s", err, out)
 	}
-	cold := faultGet(t, client, "https://"+authority+recoveryPath)
-	warm := faultGet(t, client, "https://"+authority+recoveryPath)
-	if !bytes.Equal(cold, recoveryBody) || !bytes.Equal(warm, recoveryBody) {
-		t.Fatalf("recovered cache returned wrong bytes: cold=%s warm=%s want=%s", faultDigest(cold), faultDigest(warm), faultDigest(recoveryBody))
+	cold := get(recoveryPath)
+	warm := get(recoveryPath)
+	if !bytes.Equal(cold, wantRecovery) || !bytes.Equal(warm, wantRecovery) {
+		t.Fatalf("recovered cache returned wrong bytes: cold=%s warm=%s want=%s", faultDigest(cold), faultDigest(warm), faultDigest(wantRecovery))
 	}
 	mu.Lock()
 	faultGets, faultBytes := gets[faultPath], bytesSent[faultPath]

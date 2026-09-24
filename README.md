@@ -6,6 +6,10 @@ digest-manifest caching. By default, recently approved requests can reuse a veri
 body without another upstream GET for up to 30 seconds; setting
 `cache.authorization_ttl: 0s` restores authorization on every delivery. Tags remain
 uncached, and there is no offline or failed-request fallback.
+Eligible blob Range GETs always perform a full upstream GET without using authorization
+grants. Warm entries serve standard single and multipart ranges; a cold single range is
+selected while the full body streams and may continue filling the cache after delivery,
+while a cold multipart request falls back to the full `200` response.
 Docker Engine on Linux is the validated client; the proxy uses generic Registry
 HTTP API V2 behavior rather than provider-specific routing.
 
