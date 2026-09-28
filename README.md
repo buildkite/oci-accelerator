@@ -42,6 +42,25 @@ go build -o bin/oci-accelerator ./cmd/oci-accelerator
 bin/oci-accelerator --config config.example.yaml --check
 ```
 
+The repository also provides an Alpine-based container image and a hardened
+Compose deployment. Build and provision it with:
+
+```sh
+docker compose build
+sudo install -d -o 10001 -g 10001 -m 0700 data/identity
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --mount type=bind,src="$PWD/data/identity",dst=/var/lib/oci-accelerator/identity \
+  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/identity/ca
+docker compose run --rm --no-deps oci-accelerator \
+  --config /etc/oci-accelerator/config.yaml --check
+docker compose up -d
+```
+
+The CA child directory must be absent before provisioning. See
+[container deployment](docs/operations.md#container-deployment) for storage,
+trust, health-check, multi-platform build, and recovery details.
+
 Follow the [operating guide](docs/operations.md) to configure registry authorities,
 start the proxy, verify/install its public CA, and configure Docker Engine.
 The default listener is loopback-only. Do not expose it publicly: there is no
@@ -60,6 +79,7 @@ go vet ./...
 Real Docker acceptance is opt-in and uses fresh isolated daemon state with local
 fixtures. See the [operating guide](docs/operations.md#repeatable-checks)
 for commands, prerequisites, cleanup, tested versions, and limitations.
+Container packaging has a separate opt-in integration check documented there.
 Amp orb development, including the supervised Docker daemon, is covered in the
 [operating guide](docs/operations.md#docker-in-amp-orbs).
 

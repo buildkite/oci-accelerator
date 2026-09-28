@@ -65,10 +65,87 @@ network access controls, and a firewall. The proxy has no client authentication:
 can reach it can open an opaque CONNECT tunnel to arbitrary hosts and ports. Such tunnels
 cannot be inspected or restricted to image pulls.
 
+## Container deployment
+
+The root `Dockerfile` builds a static Go binary in an Alpine-based image named
+`oci-accelerator:local`. It runs as numeric user and group `10001:10001`, with
+`/usr/local/bin/oci-accelerator` as its entrypoint and
+`--config /etc/oci-accelerator/config.yaml` as its default arguments.
+
+The supplied Compose service builds from the repository root and uses that local image. It
+publishes only `127.0.0.1:3128`, keeps the root filesystem read-only, drops all capabilities,
+sets `no-new-privileges`, and mounts:
+
+- `./config.container.yaml` read-only at `/etc/oci-accelerator/config.yaml`;
+- `./data/identity` read-only at `/var/lib/oci-accelerator/identity`, without Compose creating
+  a missing host path (`create_host_path: false`); and
+- the named `cache` volume at `/var/lib/oci-accelerator/storage`.
+
+The container configuration uses `/var/lib/oci-accelerator/identity/ca` for `ca_dir`,
+`/var/lib/oci-accelerator/storage/cache` for `cache.dir`, the same registry list as
+`config.example.yaml`, and a loopback-only metrics listener at `127.0.0.1:9090`. Metrics are
+not published to the host. The image health check calls `http://127.0.0.1:9090/readyz` with
+`wget`; an unhealthy result is diagnostic and does not itself trigger a restart. Keep this
+listener enabled at that address, or override the healthcheck when changing the YAML.
+Readiness does not check upstream connectivity or disk capacity. Compose uses
+`restart: unless-stopped` and a 40-second stop grace period, allowing for the application's
+15-second shutdown timeout and metrics cleanup. Increase it if you raise `shutdown_timeout`.
+
+Build the image, create its identity parent with the runtime ownership, and initialize the CA:
+
+```sh
+docker compose build
+sudo install -d -o 10001 -g 10001 -m 0700 data/identity
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --mount type=bind,src="$PWD/data/identity",dst=/var/lib/oci-accelerator/identity \
+  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/identity/ca
+```
+
+On first provisioning, leave the `data/identity/ca` child absent so `init-ca` creates it.
+An existing valid pair is reused. Never bake `ca.key` into an image. Preserve the identity
+bind independently of the replaceable cache volume, and follow
+[Configure CA trust and Docker](#configure-ca-trust-and-docker) to verify the fingerprint
+and install only the public certificate for Docker clients.
+
+Validate the mounted configuration, then start the service:
+
+```sh
+docker compose run --rm --no-deps oci-accelerator \
+  --config /etc/oci-accelerator/config.yaml --check
+docker compose up -d
+```
+
+`--check` validates configuration only; it does not inspect the mounted CA or cache state.
+Do not modify the live cache. To recreate it, stop the service and remove its named volumes:
+
+```sh
+docker compose down -v
+```
+
+This permanently deletes the cache volume. It does not delete the CA in the separate
+`./data/identity` bind mount.
+
+For local architecture-specific images, Buildx can load one platform at a time:
+
+```sh
+docker buildx build --platform linux/amd64 --load -t oci-accelerator:amd64 .
+docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
+```
+
+Building or running the arm64 image requires a native arm64 host or configured emulation:
+Go compilation runs on the builder's architecture, but Alpine's runtime setup executes on
+the target architecture. If a
+multi-platform OCI archive is required, use a Buildx builder with the `docker-container`
+driver and an OCI output instead of `--load`; no image publishing workflow is provided.
+Container builds require a Linux Docker daemon with Buildx; the deployment example uses Compose.
+
 ## Configure CA trust and Docker
 
-With the example configuration, the `init-ca` command above creates `data/ca/ca.crt` and
-`data/ca/ca.key` before proxy startup. Alternatively, first startup creates the same files.
+The native [build and start](#build-and-start) example creates `data/ca/ca.crt` and
+`data/ca/ca.key`; native first startup can also create the same files. The
+[container workflow](#container-deployment) instead provisions `data/identity/ca/ca.crt`
+and `data/identity/ca/ca.key` on the host before starting with a read-only identity mount.
 Leave the CA directory absent initially; do not pre-create an empty directory. Its parent must
 be owned by the proxy user and must not be group- or world-writable. A valid existing pair is
 validated and reused unchanged; empty, invalid, expired, incomplete, symlinked, or insecurely
@@ -386,8 +463,8 @@ redistribute `ca.crt`, and remove old client trust. Rotation is not automatic.
 ## Docker in Amp orbs
 
 Amp runs `.agents/setup` when preparing a fresh orb. It installs checksum-verified
-Go 1.27.1, C build tools for race-enabled tests, and Docker Engine if missing, and
-downloads Go module dependencies. Re-running it is safe:
+Go 1.27.1, C build tools for race-enabled tests, and Docker Engine, Buildx, and Compose if
+missing, and downloads Go module dependencies. Re-running it is safe:
 
 ```sh
 .agents/setup
@@ -422,6 +499,24 @@ go vet ./...
 Plain process-lifecycle tests run on Unix without requiring procfs. Linux namespace
 tests are isolated from non-Linux builds; Docker, ENOSPC, and load acceptance tests
 skip on non-Linux hosts even when opted in.
+
+The container packaging integration check is opt-in and requires a local rootful Linux
+Docker daemon at `/var/run/docker.sock`. Run it as root to inspect private UID 10001 state.
+Building images additionally requires Buildx; the deployment example uses Compose. Set the
+optional platform variable when the selected image must run with a specific Docker platform:
+
+```sh
+sudo env PATH="$PATH" OCI_ACCELERATOR_CONTAINER_IMAGE=oci-accelerator:local \
+  go test -count=1 -timeout=5m -v ./integration -run '^TestContainer'
+
+# Optional, for example:
+sudo env PATH="$PATH" OCI_ACCELERATOR_CONTAINER_IMAGE=oci-accelerator:arm64 \
+OCI_ACCELERATOR_CONTAINER_PLATFORM=linux/arm64 \
+  go test -count=1 -timeout=5m -v ./integration -run '^TestContainer'
+```
+
+Runtime arm64 verification requires native arm64 or Docker emulation. The sudo, mount, and
+fresh-daemon prerequisites described below still apply to acceptance checks that use them.
 
 The following integration checks are opt-in because they need additional host capabilities.
 The Docker checks build the current binary and use isolated Docker state, processes, and CA

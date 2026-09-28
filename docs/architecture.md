@@ -286,6 +286,15 @@ remote scraping requires private network controls. Counters use fixed labels wit
 sensitive request identifiers. Local lifecycle probes share that listener, not the
 proxy connection pool. See [logs and metrics](operations.md#logs-and-metrics).
 
+The container deployment preserves these boundaries: it runs as numeric user
+`10001:10001` with a read-only root filesystem, no Linux capabilities, and
+`no-new-privileges`. Its persistent CA identity is a separate read-only host bind and its
+cache is a named volume. Only the loopback proxy port is published; the loopback metrics
+listener remains inside the container for the image readiness check. The health check reports
+readiness but does not provide an automatic recovery policy. See
+[container deployment](operations.md#container-deployment) for provisioning and lifecycle
+commands.
+
 ## Limits of support and verification
 
 The CLI requires a nonblank cache directory; there is no configuration switch for
@@ -297,7 +306,8 @@ BuildKit-specific integration are not validated.
 There is no shared/distributed storage, multi-instance coordination, background
 prefetch or grant refresh, tag caching, stale/offline mode, proxy-held credentials,
 automatic CA trust installation/rotation, or push caching.
-The repository provides a Go binary, not container packaging.
+The repository provides local container packaging, but no image publication, Kubernetes
+manifests, or container CI workflow.
 
 Deterministic local registry/auth/CDN tests assert bytes, denials, and upstream
 request counts. Docker acceptance uses fresh daemon stores to distinguish proxy
