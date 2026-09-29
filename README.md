@@ -47,6 +47,33 @@ start the proxy, verify/install its public CA, and configure Docker Engine.
 The default listener is loopback-only. Do not expose it publicly: there is no
 proxy-user authentication, and unconfigured CONNECT destinations are opaque tunnels.
 
+## Run in a container
+
+From the repository root on a Linux Docker host, review `config.container.yaml`,
+then build and start the Alpine image without Compose. Docker creates the named
+volumes with the required ownership; the proxy generates its CA on first startup
+and reuses it on subsequent starts.
+
+```sh
+docker build -t oci-accelerator:local .
+docker run -d --name oci-accelerator --restart unless-stopped \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --stop-timeout 40 -p 127.0.0.1:3128:3128 \
+  --mount type=bind,src="$PWD/config.container.yaml",dst=/etc/oci-accelerator/config.yaml,readonly \
+  --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
+  --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
+  oci-accelerator:local
+docker logs oci-accelerator
+docker inspect --format '{{.State.Health.Status}}' oci-accelerator
+```
+
+Before pulling through the proxy, [verify/install the public CA and configure Docker
+Engine](docs/operations.md#configure-ca-trust-and-docker). Never distribute `ca.key`.
+Stop with `docker stop oci-accelerator`; removing the container preserves both named
+volumes. **Do not use `docker compose down -v` unless you intend to delete both the
+CA and cache.** For Compose, architecture-specific builds, and cache recovery,
+see [container deployment](docs/operations.md#container-deployment).
+
 ## Testing
 
 Run the baseline checks:
@@ -60,11 +87,14 @@ go vet ./...
 Real Docker acceptance is opt-in and uses fresh isolated daemon state with local
 fixtures. See the [operating guide](docs/operations.md#repeatable-checks)
 for commands, prerequisites, cleanup, tested versions, and limitations.
+Container packaging has a separate opt-in integration check documented there.
 Amp orb development, including the supervised Docker daemon, is covered in the
 [operating guide](docs/operations.md#docker-in-amp-orbs).
 
 ## Buildkite CI
 
-The Buildkite pipeline runs Go formatting, vet, build, and the deterministic
-test suites on every change. See the [CI guide](.buildkite/README.md) for the
-job breakdown, container image, and how to reproduce and dry-run it locally.
+The Buildkite pipeline runs Go formatting, vet, build, deterministic tests, and
+multi-platform container builds on every change. Successful current `main` builds
+publish amd64/arm64 images to `buildkite/oci-accelerator:latest`, replacing that tag.
+See the [CI guide](.buildkite/README.md) for publishing prerequisites,
+credentials, and local verification.

@@ -34,3 +34,17 @@ steps:
           environment:
             - GOTOOLCHAIN=local
             - CGO_ENABLED=1
+
+  - label: ":docker: Build amd64 and arm64 image"
+    key: image
+    command: "bash .buildkite/image.sh check"
+    timeout_in_minutes: 20
+
+  - label: ":docker: Publish build and latest tags to Docker Hub"
+    key: publish
+    if: 'build.branch == "main" && build.tag == null && build.pull_request.id == null'
+    depends_on: [checks, tests, race, image]
+    command: "bash .buildkite/image.sh publish"
+    timeout_in_minutes: 20
+    concurrency: 1
+    concurrency_group: "docker-hub/buildkite/oci-accelerator"

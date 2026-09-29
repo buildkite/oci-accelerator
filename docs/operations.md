@@ -65,10 +65,91 @@ network access controls, and a firewall. The proxy has no client authentication:
 can reach it can open an opaque CONNECT tunnel to arbitrary hosts and ports. Such tunnels
 cannot be inspected or restricted to image pulls.
 
+## Container deployment
+
+The root `Dockerfile` builds a static Go binary in an Alpine-based image named
+`oci-accelerator:local`. It runs as numeric user and group `10001:10001`, with
+`/usr/local/bin/oci-accelerator` as its entrypoint and
+`--config /etc/oci-accelerator/config.yaml` as its default arguments.
+
+The supplied Compose service builds from the repository root and uses that local image. It
+publishes only `127.0.0.1:3128`, keeps the root filesystem read-only, drops all capabilities,
+sets `no-new-privileges`, and mounts:
+
+- `./config.container.yaml` read-only at `/etc/oci-accelerator/config.yaml`;
+- the named `oci-accelerator-ca` volume writable at `/var/lib/oci-accelerator`; and
+- the separate named `oci-accelerator-cache` volume writable at `/var/lib/oci-accelerator/cache`.
+
+The CA volume mounts the parent so startup can atomically create its `ca/` child.
+The image leaves that child absent and gives the parent and cache directory UID/GID
+10001 and mode 0700. Docker copies these permissions into fresh volumes, so no host
+directory provisioning or root entrypoint is needed. The CA volume remains writable
+at runtime. Existing valid CA files are reused, not replaced. Never bake `ca.key`
+into an image. The volume names match the root README's `docker run` example; run
+only one proxy against them at a time. Compose warns when reusing volumes created by
+`docker run` because it does not own those volumes. These examples do not migrate
+existing host bind-mounted data; starting with new volumes creates a new CA that clients must trust.
+
+The container configuration uses `/var/lib/oci-accelerator/ca` for `ca_dir`,
+`/var/lib/oci-accelerator/cache` for `cache.dir`, the same registry list as
+`config.example.yaml`, and a loopback-only metrics listener at `127.0.0.1:9090`. Metrics are
+not published to the host. The image health check calls `http://127.0.0.1:9090/readyz` with
+`wget`; an unhealthy result is diagnostic and does not itself trigger a restart. Keep this
+listener enabled at that address, or override the healthcheck when changing the YAML.
+Readiness does not check upstream connectivity or disk capacity. Compose uses
+`restart: unless-stopped` and a 40-second stop grace period, allowing for the application's
+15-second shutdown timeout and metrics cleanup. Increase it if you raise `shutdown_timeout`.
+
+Build the image, validate configuration, then start the service:
+
+```sh
+docker compose build
+docker compose run --rm --no-deps oci-accelerator \
+  --config /etc/oci-accelerator/config.yaml --check
+docker compose up -d
+```
+
+`--check` validates configuration only; it does not inspect the mounted CA or cache state.
+First startup generates the CA. Follow [Configure CA trust and Docker](#configure-ca-trust-and-docker)
+to verify its fingerprint and install only the public certificate for Docker clients.
+Do not modify the live cache. To reset the disposable cache, stop the service and remove
+only its volume:
+
+```sh
+docker compose down
+docker volume rm oci-accelerator-cache
+docker compose up -d
+```
+
+This permanently deletes cached content and creates a fresh cache volume, preserving
+`oci-accelerator-ca`. Plain `docker compose down` preserves both volumes.
+**`docker compose down -v` deletes both Compose-managed volumes, including the signing CA.** Preserve the CA
+volume independently of the replaceable cache; deleting it causes the next startup to
+generate a new identity and requires redistributing client trust.
+
+For local architecture-specific images, Buildx can load one platform at a time:
+
+```sh
+docker buildx build --platform linux/amd64 --load -t oci-accelerator:amd64 .
+docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
+```
+
+Building or running the arm64 image requires a native arm64 host or configured emulation:
+Go compilation runs on the builder's architecture, but Alpine's runtime setup executes on
+the target architecture. If a
+multi-platform OCI archive is required, use a Buildx builder with the `docker-container`
+driver and an OCI output instead of `--load`. Buildkite validates both architectures
+and publishes successful current `main` builds to `buildkite/oci-accelerator:latest`;
+see the [publishing workflow and prerequisites](../.buildkite/README.md#docker-hub-releases).
+Container builds require a Linux Docker daemon with Buildx; the deployment example uses Compose.
+
 ## Configure CA trust and Docker
 
-With the example configuration, the `init-ca` command above creates `data/ca/ca.crt` and
-`data/ca/ca.key` before proxy startup. Alternatively, first startup creates the same files.
+The native example uses `data/ca/ca.crt` and `data/ca/ca.key` on the host. The
+[container workflow](#container-deployment) keeps them under `ca/` in the
+`oci-accelerator-ca` named volume. Both generate the CA on first startup. Use the
+ownership required by the chosen deployment: the native process user or container
+UID 10001. Existing files owned by another user fail validation.
 Leave the CA directory absent initially; do not pre-create an empty directory. Its parent must
 be owned by the proxy user and must not be group- or world-writable. A valid existing pair is
 validated and reused unchanged; empty, invalid, expired, incomplete, symlinked, or insecurely
@@ -386,8 +467,8 @@ redistribute `ca.crt`, and remove old client trust. Rotation is not automatic.
 ## Docker in Amp orbs
 
 Amp runs `.agents/setup` when preparing a fresh orb. It installs checksum-verified
-Go 1.27.1, C build tools for race-enabled tests, and Docker Engine if missing, and
-downloads Go module dependencies. Re-running it is safe:
+Go 1.27.1, C build tools for race-enabled tests, and Docker Engine, Buildx, and Compose if
+missing, and downloads Go module dependencies. Re-running it is safe:
 
 ```sh
 .agents/setup
@@ -423,14 +504,37 @@ Plain process-lifecycle tests run on Unix without requiring procfs. Linux namesp
 tests are isolated from non-Linux builds; Docker, ENOSPC, and load acceptance tests
 skip on non-Linux hosts even when opted in.
 
+The container packaging integration check is opt-in and requires a local rootful Linux
+Docker daemon at `/var/run/docker.sock`. Run it as root to inspect private UID 10001 state.
+Use a disposable test host or orb: fixture daemons share the host network namespace and
+can remove Docker's default `docker0` bridge, disrupting unrelated containers. A dedicated
+test network keeps the proxy reachable but does not isolate this host-side effect.
+Building images additionally requires Buildx; the deployment example uses Compose. Set the
+optional platform variable when the selected image must run with a specific Docker platform:
+
+```sh
+sudo env PATH="$PATH" OCI_ACCELERATOR_CONTAINER_IMAGE=oci-accelerator:local \
+  go test -count=1 -timeout=5m -v ./integration -run '^TestContainer'
+
+# Optional, for example:
+sudo env PATH="$PATH" OCI_ACCELERATOR_CONTAINER_IMAGE=oci-accelerator:arm64 \
+OCI_ACCELERATOR_CONTAINER_PLATFORM=linux/arm64 \
+  go test -count=1 -timeout=5m -v ./integration -run '^TestContainer'
+```
+
+Runtime arm64 verification requires native arm64 or Docker emulation. The sudo, mount, and
+fresh-daemon prerequisites described below still apply to acceptance checks that use them.
+
 The following integration checks are opt-in because they need additional host capabilities.
 The Docker checks build the current binary and use isolated Docker state, processes, and CA
 trust; local checks use private registry fixtures. They never execute pulled images. Test
 cleanup terminates and reaps owned processes before removing their private directories,
-without altering host trust or unrelated Docker state. Privileged fixtures run inside private
-PID and mount namespaces; termination also removes daemonized descendants. Diagnostics use
-private log files capped at the first 64 KiB, discarding later output. Amp is not a prerequisite. Acceptance
-tests remain manual-only, with no CI jobs or merge gates. A skipped opt-in check is not a pass.
+without installing host CA trust. Run Docker acceptance only on a disposable host or orb;
+its private data roots do not isolate host networking. Privileged fixtures run inside private
+PID and mount namespaces, not network namespaces; termination also removes daemonized descendants.
+Diagnostics use private log files capped at the first 64 KiB, discarding later output. Amp is
+not a prerequisite. Acceptance tests remain manual-only, with no CI jobs or merge gates.
+A skipped opt-in check is not a pass.
 
 Real Docker cold, warm, restart, authentication, and trust behavior requires Linux, Go,
 Docker Engine, passwordless sudo, `mount`, a non-loopback IPv4 interface, and

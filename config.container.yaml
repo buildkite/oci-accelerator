@@ -1,0 +1,13 @@
+# Container paths are absolute; mount this file read-only.
+listen: 0.0.0.0:3128
+# Required by the image healthcheck. Do not publish this port.
+metrics_listen: 127.0.0.1:9090
+registries:
+  - registry-1.docker.io
+  - ghcr.io
+  - public.ecr.aws
+ca_dir: /var/lib/oci-accelerator/ca
+cache:
+  dir: /var/lib/oci-accelerator/cache
+  max_bytes: 34359738368
+# Other limits retain application defaults; see config.example.yaml.

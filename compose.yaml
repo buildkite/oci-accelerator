@@ -1,0 +1,32 @@
+services:
+  oci-accelerator:
+    build: .
+    image: oci-accelerator:local
+    ports:
+      - "127.0.0.1:3128:3128"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 40s
+    volumes:
+      - type: bind
+        source: ./config.container.yaml
+        target: /etc/oci-accelerator/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: ca
+        target: /var/lib/oci-accelerator
+      - type: volume
+        source: cache
+        target: /var/lib/oci-accelerator/cache
+
+volumes:
+  ca:
+    name: oci-accelerator-ca
+  cache:
+    name: oci-accelerator-cache

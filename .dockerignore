@@ -1,0 +1,8 @@
+# Only compilation inputs enter the build context; never send local CA keys or data.
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
