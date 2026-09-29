@@ -13,6 +13,11 @@ case "$mode" in
       echo 'Publishing requires a non-PR main branch build, not a tag' >&2
       exit 1
     fi
+    build_number=${BUILDKITE_BUILD_NUMBER:-}
+    if [[ ! "$build_number" =~ ^[1-9][0-9]*$ ]]; then
+      echo 'Publishing requires a positive BUILDKITE_BUILD_NUMBER' >&2
+      exit 1
+    fi
     git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
     head=$(git rev-parse HEAD)
     if [[ "$head" != "${BUILDKITE_COMMIT:-}" ]]; then
@@ -52,7 +57,7 @@ fi
 docker buildx create --name "$builder" --driver docker-container --bootstrap
 build_args=(--builder "$builder" --platform linux/amd64,linux/arm64)
 if [[ "$mode" == publish ]]; then
-  build_args+=(--tag "$image:latest" --push)
+  build_args+=(--tag "$image:build-$build_number" --tag "$image:latest" --push)
 else
   build_args+=(--output "type=oci,dest=$temporary/image.tar")
 fi

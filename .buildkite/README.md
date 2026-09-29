@@ -34,9 +34,11 @@ builders, archives, and Docker configuration are removed when the script exits.
 ## Docker Hub releases
 
 After all four checks pass, a non-PR `main` branch build automatically runs
-[`image.sh publish`](image.sh), replacing `buildkite/oci-accelerator:latest` with a
-multi-platform amd64/arm64 image. PRs, other branches, and Git-tag builds never
-publish. No versioned image tags are produced and Git-tag builds can remain disabled.
+[`image.sh publish`](image.sh), publishing the same multi-platform amd64/arm64
+image as both `buildkite/oci-accelerator:latest` and `build-<number>` using the
+Buildkite build number (for example, `buildkite/oci-accelerator:build-108`).
+`latest` is replaced on each publication. PRs, other branches, and Git-tag builds
+never publish; Git-tag builds can remain disabled.
 
 Publishing is serialized with a concurrency group. At the start of the publish
 job, the script fetches `origin/main`, verifies the checkout matches
@@ -51,7 +53,9 @@ It logs in as `buildkite` using the organization access token from Buildkite sec
 The secret is retrieved only after the Git checks and is not passed into build
 containers. Authentication and build/push failures fail the job. Keep `latest`
 mutable in Docker Hub. Pin deployments to an image digest when reproducibility
-or rollback is needed; pulling `latest` later may return a different image.
+or rollback is needed; pulling `latest` later may return a different image. A retry
+of the same build can also replace its `build-<number>` tag. The two tag updates
+are not transactional; inspect both tags if publication fails partway through.
 
 Before publishing, configure these external prerequisites:
 

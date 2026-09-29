@@ -41,10 +41,12 @@ func TestImagePipeline(t *testing.T) {
 		wantError, wantSecret, wantBuild, wantPush     bool
 	}{
 		{name: "check without credentials", mode: "check", wantBuild: true},
-		{name: "publish latest from shallow main", wantSecret: true, wantBuild: true, wantPush: true},
+		{name: "publish build number and latest from shallow main", wantSecret: true, wantBuild: true, wantPush: true},
 		{name: "feature branch", branch: "feature", wantError: true},
 		{name: "tag build", tag: "v1.2.3", wantError: true},
 		{name: "pull request", pr: "16", wantError: true},
+		{name: "missing build number", failure: "number-missing", wantError: true},
+		{name: "invalid build number", failure: "number-invalid", wantError: true},
 		{name: "outdated queued build", checkout: "older"},
 		{name: "unmerged commit claiming main", checkout: "unmerged"},
 		{name: "mismatched build commit", failure: "commit", wantError: true},
@@ -117,11 +119,17 @@ printf fixture-token
 			if tc.failure == "commit" {
 				commit = strings.Repeat("0", 40)
 			}
+			number := "108"
+			if mode == "check" || tc.failure == "number-missing" {
+				number = ""
+			} else if tc.failure == "number-invalid" {
+				number = "108/invalid"
+			}
 			cmd := exec.Command("bash", script, mode)
 			cmd.Dir = repo
 			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
 				"BUILDKITE_BRANCH="+branch, "BUILDKITE_TAG="+tc.tag, "BUILDKITE_PULL_REQUEST="+pr, "BUILDKITE_COMMIT="+commit,
-				"IMAGE_TEST_ROOT="+root, "IMAGE_TEST_FAILURE="+tc.failure)
+				"BUILDKITE_BUILD_NUMBER="+number, "IMAGE_TEST_ROOT="+root, "IMAGE_TEST_FAILURE="+tc.failure)
 			out, err := cmd.CombinedOutput()
 			if (err != nil) != tc.wantError {
 				t.Fatalf("error = %v, want error %v: %s", err, tc.wantError, out)
@@ -140,8 +148,8 @@ printf fixture-token
 			if tc.wantBuild && !strings.Contains(string(calls), "--platform linux/amd64,linux/arm64") {
 				t.Fatalf("missing platform pair: %s", calls)
 			}
-			if tc.wantPush && (!strings.Contains(string(calls), "--tag docker.io/buildkite/oci-accelerator:latest --push") || strings.Count(string(calls), "--tag ") != 1) {
-				t.Fatalf("expected only the mutable latest tag: %s", calls)
+			if tc.wantPush && (!strings.Contains(string(calls), "--tag docker.io/buildkite/oci-accelerator:build-108 --tag docker.io/buildkite/oci-accelerator:latest --push") || strings.Count(string(calls), "--tag ") != 2) {
+				t.Fatalf("expected the build number and latest tags: %s", calls)
 			}
 			if config, err := os.ReadFile(filepath.Join(root, "docker-config")); err == nil {
 				if _, err := os.Stat(strings.TrimSpace(string(config))); !os.IsNotExist(err) {

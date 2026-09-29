@@ -40,7 +40,7 @@ steps:
     command: "bash .buildkite/image.sh check"
     timeout_in_minutes: 20
 
-  - label: ":docker: Publish latest to Docker Hub"
+  - label: ":docker: Publish build and latest tags to Docker Hub"
     key: publish
     if: 'build.branch == "main" && build.tag == null && build.pull_request.id == null'
     depends_on: [checks, tests, race, image]
