@@ -19,7 +19,7 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ./data/identity/ca
+        source: ./data/ca
         target: /var/lib/oci-accelerator/ca
         read_only: true
         bind:

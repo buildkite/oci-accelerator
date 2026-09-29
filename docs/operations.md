@@ -77,7 +77,7 @@ publishes only `127.0.0.1:3128`, keeps the root filesystem read-only, drops all 
 sets `no-new-privileges`, and mounts:
 
 - `./config.container.yaml` read-only at `/etc/oci-accelerator/config.yaml`;
-- `./data/identity/ca` read-only at `/var/lib/oci-accelerator/ca`, without Compose creating
+- `./data/ca` read-only at `/var/lib/oci-accelerator/ca`, without Compose creating
   a missing host path (`create_host_path: false`); and
 - the named `cache` volume at `/var/lib/oci-accelerator/cache`.
 
@@ -91,23 +91,23 @@ Readiness does not check upstream connectivity or disk capacity. Compose uses
 `restart: unless-stopped` and a 40-second stop grace period, allowing for the application's
 15-second shutdown timeout and metrics cleanup. Increase it if you raise `shutdown_timeout`.
 
-Build the image, create its identity parent with the runtime ownership, and initialize the CA:
+Build the image, create the CA parent with the runtime ownership, and initialize the CA:
 
 ```sh
 docker compose build
-sudo install -d -o 10001 -g 10001 -m 0700 data/identity
+sudo install -d -o 10001 -g 10001 -m 0700 data
 docker run --rm --network none --read-only --cap-drop ALL \
   --security-opt no-new-privileges \
-  --mount type=bind,src="$PWD/data/identity",dst=/var/lib/oci-accelerator \
+  --mount type=bind,src="$PWD/data",dst=/var/lib/oci-accelerator \
   oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/ca
 ```
 
-On first provisioning, leave the `data/identity/ca` child absent so `init-ca` creates it.
+On first provisioning, leave the `data/ca` child absent so `init-ca` creates it.
 Initialization mounts the parent writable so the application can atomically create `ca/`;
 normal operation mounts only that populated child read-only. The image owns the common
 runtime parent and cache directory as UID 10001 with mode 0700; fresh cache volumes inherit
 that ownership. An existing valid CA pair is reused. Never bake `ca.key` into an image.
-Preserve the identity bind independently of the replaceable cache volume, and follow
+Preserve the CA bind independently of the replaceable cache volume, and follow
 [Configure CA trust and Docker](#configure-ca-trust-and-docker) to verify the fingerprint
 and install only the public certificate for Docker clients.
 
@@ -127,7 +127,7 @@ docker compose down -v
 ```
 
 This permanently deletes the cache volume. It does not delete the CA in the separate
-`./data/identity/ca` bind mount.
+`./data/ca` bind mount.
 
 For local architecture-specific images, Buildx can load one platform at a time:
 
@@ -145,10 +145,11 @@ Container builds require a Linux Docker daemon with Buildx; the deployment examp
 
 ## Configure CA trust and Docker
 
-The native [build and start](#build-and-start) example creates `data/ca/ca.crt` and
-`data/ca/ca.key`; native first startup can also create the same files. The
-[container workflow](#container-deployment) instead provisions `data/identity/ca/ca.crt`
-and `data/identity/ca/ca.key` on the host before starting with a read-only identity mount.
+Both examples use `data/ca/ca.crt` and `data/ca/ca.key` on the host. Native first startup
+can create them; the [container workflow](#container-deployment) provisions them before
+starting with a read-only CA mount. Use the ownership required by the chosen deployment:
+the native process user or container UID 10001. Existing files owned by another user fail
+validation.
 Leave the CA directory absent initially; do not pre-create an empty directory. Its parent must
 be owned by the proxy user and must not be group- or world-writable. A valid existing pair is
 validated and reused unchanged; empty, invalid, expired, incomplete, symlinked, or insecurely
@@ -505,6 +506,9 @@ skip on non-Linux hosts even when opted in.
 
 The container packaging integration check is opt-in and requires a local rootful Linux
 Docker daemon at `/var/run/docker.sock`. Run it as root to inspect private UID 10001 state.
+Use a disposable test host or orb: fixture daemons share the host network namespace and
+can remove Docker's default `docker0` bridge, disrupting unrelated containers. A dedicated
+test network keeps the proxy reachable but does not isolate this host-side effect.
 Building images additionally requires Buildx; the deployment example uses Compose. Set the
 optional platform variable when the selected image must run with a specific Docker platform:
 
@@ -525,10 +529,12 @@ The following integration checks are opt-in because they need additional host ca
 The Docker checks build the current binary and use isolated Docker state, processes, and CA
 trust; local checks use private registry fixtures. They never execute pulled images. Test
 cleanup terminates and reaps owned processes before removing their private directories,
-without altering host trust or unrelated Docker state. Privileged fixtures run inside private
-PID and mount namespaces; termination also removes daemonized descendants. Diagnostics use
-private log files capped at the first 64 KiB, discarding later output. Amp is not a prerequisite. Acceptance
-tests remain manual-only, with no CI jobs or merge gates. A skipped opt-in check is not a pass.
+without installing host CA trust. Run Docker acceptance only on a disposable host or orb;
+its private data roots do not isolate host networking. Privileged fixtures run inside private
+PID and mount namespaces, not network namespaces; termination also removes daemonized descendants.
+Diagnostics use private log files capped at the first 64 KiB, discarding later output. Amp is
+not a prerequisite. Acceptance tests remain manual-only, with no CI jobs or merge gates.
+A skipped opt-in check is not a pass.
 
 Real Docker cold, warm, restart, authentication, and trust behavior requires Linux, Go,
 Docker Engine, passwordless sudo, `mount`, a non-loopback IPv4 interface, and

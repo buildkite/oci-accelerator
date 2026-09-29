@@ -43,23 +43,8 @@ bin/oci-accelerator --config config.example.yaml --check
 ```
 
 The repository also provides an Alpine-based container image and a hardened
-Compose deployment. Build and provision it with:
-
-```sh
-docker compose build
-sudo install -d -o 10001 -g 10001 -m 0700 data/identity
-docker run --rm --network none --read-only --cap-drop ALL \
-  --security-opt no-new-privileges \
-  --mount type=bind,src="$PWD/data/identity",dst=/var/lib/oci-accelerator \
-  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/ca
-docker compose run --rm --no-deps oci-accelerator \
-  --config /etc/oci-accelerator/config.yaml --check
-docker compose up -d
-```
-
-The CA child directory must be absent before provisioning. See
-[container deployment](docs/operations.md#container-deployment) for storage,
-trust, health-check, multi-platform build, and recovery details.
+Compose deployment. Follow [container deployment](docs/operations.md#container-deployment)
+for builds, CA provisioning, startup, storage, health checks, and recovery.
 
 Follow the [operating guide](docs/operations.md) to configure registry authorities,
 start the proxy, verify/install its public CA, and configure Docker Engine.

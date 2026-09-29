@@ -57,22 +57,33 @@ func TestContainerImageLifecycle(t *testing.T) {
 			t.Errorf("remove owned cache volume: %v: %s", r.err, r.output)
 		}
 	})
-	identity := filepath.Join(root, "identity")
-	run(t, "sudo", "-n", "mkdir", "-p", identity)
-	run(t, "sudo", "-n", "chown", "10001:10001", identity)
-	run(t, "sudo", "-n", "chmod", "0700", identity)
+	identity := filepath.Join(root, "data")
+	bad := filepath.Join(root, "bad-ca")
+	for _, dir := range []string{identity, bad} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(dir, 10001, 10001); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// The image must neither silently generate a CA at runtime nor replace bad supplied state.
 	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+identity+",dst=/var/lib/oci-accelerator,readonly")
 	if _, err := os.Stat(filepath.Join(identity, "ca")); !os.IsNotExist(err) {
 		t.Fatalf("missing read-only CA was created: %v", err)
 	}
-	bad := filepath.Join(root, "bad-identity")
-	run(t, "sudo", "-n", "mkdir", "-p", filepath.Join(bad, "ca"))
-	run(t, "sudo", "-n", "sh", "-c", "printf bad > "+shell(filepath.Join(bad, "ca", "ca.crt"))+"; printf bad > "+shell(filepath.Join(bad, "ca", "ca.key"))+"; chown -R 10001:10001 "+shell(bad))
-	run(t, "sudo", "-n", "chmod", "0700", bad, filepath.Join(bad, "ca"))
-	run(t, "sudo", "-n", "chmod", "0600", filepath.Join(bad, "ca", "ca.key"))
-	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+filepath.Join(bad, "ca")+",dst=/var/lib/oci-accelerator/ca,readonly")
+	for _, name := range []string{"ca.crt", "ca.key"} {
+		path := filepath.Join(bad, name)
+		writeFile(t, path, "bad", 0o600)
+		if err := os.Chown(path, 10001, 10001); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+bad+",dst=/var/lib/oci-accelerator/ca,readonly")
 
 	initArgs := append([]string{"run", "--rm"}, platform...)
 	initArgs = append(initArgs, "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--mount", "type=bind,src="+identity+",dst=/var/lib/oci-accelerator", imageName, "init-ca", "--dir", "/var/lib/oci-accelerator/ca")
