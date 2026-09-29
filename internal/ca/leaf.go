@@ -43,6 +43,7 @@ func newLeafCache() leafCache {
 }
 
 // Certificate returns a currently valid certificate for a DNS name or IP address.
+// Leaves last 24 hours and are cached LRU up to maxLeaves.
 // The returned certificate is shared with the cache and other callers. Callers
 // must not modify it or any nested data, including Leaf, certificate bytes, and
 // the private key.

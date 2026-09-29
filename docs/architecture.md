@@ -278,8 +278,9 @@ The endpoint serves only the running process's public CA, never private key mate
 see the [download contract](../internal/proxy/README.md#public-ca-download).
 
 Per-host leaves last at most 24 hours, are capped by CA expiry, and renew within
-one hour of expiry. The bounded leaf cache uses LRU. Detailed filesystem,
-cryptographic profile, and API contracts live in the [CA package guide](../internal/ca/README.md).
+one hour of expiry. The bounded leaf cache uses LRU. See the
+[CA directory requirements](operations.md#ca-directory-requirements) for filesystem and
+profile checks; API contracts are documented in the `internal/ca` package source.
 
 The listener defaults to loopback and has no proxy-user authentication. Upstream
 image authorization does not protect an open CONNECT relay against abuse. Use

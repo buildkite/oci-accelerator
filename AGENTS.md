@@ -50,6 +50,10 @@
   requirements.
 - Prefer many small, focused Go files over a few large files. Organize files
   by coherent responsibility, keeping closely related code together.
+- Name test files `<owner>[_<topic>]_test.go` after the source file or
+  responsibility they verify, not the fixture or entry point they call. Keep
+  shared fixtures in `test_helpers_test.go`; keep helpers used by a single
+  suite in that suite's file.
 - Order declarations within a file in newspaper style: the most important,
   highest-level declarations first, with supporting detail beneath. Types and
   entry points lead; callers precede callees; private helpers sink below the

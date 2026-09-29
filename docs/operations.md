@@ -438,6 +438,30 @@ startup; subsequent access checks size and relies on private directory ownership
 Restart reconstructs approximate LRU order from commit times. Do not edit or delete live cache
 files; use metrics to inspect resource use.
 
+## CA directory requirements
+
+Proxy startup and `init-ca` apply the same checks to `ca_dir`. They create the CA directory,
+`ca.crt`, and `ca.key` only when the directory is absent, and never create its parent:
+provision the parent and ensure its durability first, so that permissions do not depend on the
+umask and a crash cannot lose newly created ancestors.
+
+- The immediate parent must be a non-symlink directory with no group or other write access.
+- The parent, the CA directory, and both files must be owned by the process's effective user.
+  Another user's installation is rejected even when running as root. Ancestors above the
+  parent are not checked; keep the containing path trusted.
+- The CA directory must be a non-symlink directory with mode 0700. `ca.crt` and `ca.key` must be
+  regular files granting no more than 0644 and 0600 respectively; stricter modes are accepted.
+  New installations use exactly those modes.
+- Each PEM file is limited to 64 KiB.
+- The certificate must match the generated profile: a self-signed X.509 v3 CA with an ECDSA P-256
+  key, ECDSA-SHA256 signature, and only key usage, basic constraints, and subject key identifier
+  extensions. Matching the profile establishes compatibility, not provenance.
+
+Every startup re-checks the files, profile, key pairing, and validity period. Empty, incomplete,
+expired, mismatched, oversized, symlinked, foreign-owned, or incorrectly permissioned state fails
+startup without replacing or modifying any file. Errors name the failing check but never include
+certificate or private-key contents.
+
 ## Shutdown, recovery, and CA replacement
 
 SIGINT or SIGTERM stops admission, disables intercepted keepalive, and drains until
@@ -452,15 +476,21 @@ amp orb service stop registry-proxy
 ```
 
 Preserve `ca_dir` across restarts. The CA is valid for ten years; generated leaf certificates
-last at most 24 hours and renew under the same CA within an hour of expiry. Expected modes are
-0700 for the directory, 0600 for the key, and 0644 for the certificate. Empty, incomplete,
-expired, mismatched, symlinked, or incorrectly permissioned state fails startup without
-replacement. Back up both CA files securely and use one proxy process per CA directory.
+last at most 24 hours and renew under the same CA within an hour of expiry. State that fails the
+[CA directory requirements](#ca-directory-requirements) stops startup without replacement. Back
+up both CA files securely and use one proxy process per CA directory.
 
-CA initialization uses no persistent lock. After interrupted first initialization, stop all
-initializers before examining `.ca-init-*` staging directories in the CA parent. Remove only
-exact paths confirmed abandoned, following the [CA cleanup guidance](../internal/ca/README.md#orphaned-initialization-directories);
-never delete an established CA to repair startup. To replace a CA, stop the proxy, archive the
+CA initialization stages the certificate and key in a private `.ca-init-*` directory under the
+CA parent, then atomically renames it into place. Concurrent initializers adopt the published
+winner; there is no persistent lock. A crash or SIGKILL can leave a staging directory behind. It
+does not prevent later startup and is never adopted or removed automatically, because it may
+belong to another active initializer. To clean up, stop every process that can initialize a CA
+in that parent and keep them stopped. Inspect only that trusted parent and remove orphaned
+`.ca-init-*` directories by their exact paths; never use a wildcard deletion or remove the
+configured CA directory. Staging directories may contain private keys: keep their restrictive
+permissions and do not print or copy their contents.
+
+Never delete an established CA to repair startup. To replace a CA, stop the proxy, archive the
 old CA securely, configure a new absent directory, start the proxy, verify the new fingerprint,
 redistribute `ca.crt`, and remove old client trust. Rotation is not automatic.
 

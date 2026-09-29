@@ -28,10 +28,10 @@ resource use and fixed request/cache outcomes; remote binding requires explicit 
 - [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
   recovery, and repeatable acceptance checks.
 - Package guides map the code and internal contracts:
-  [proxy](internal/proxy/README.md), [ca](internal/ca/README.md),
-  [cache](internal/cache/README.md), [config](internal/config/README.md), and
-  [hostport](internal/hostport/README.md), with the command documented under
-  [Usage](#usage) and [cache benchmarks](internal/cache/benchmarks.md) for performance investigation.
+  [proxy](internal/proxy/README.md), [cache](internal/cache/README.md),
+  [config](internal/config/README.md), and [hostport](internal/hostport/README.md),
+  with the command documented under [Usage](#usage) and
+  [cache benchmarks](internal/cache/benchmarks.md) for performance investigation.
 - [Working rules](AGENTS.md): contribution, review, and verification requirements.
 
 ## Build and configure
@@ -58,7 +58,7 @@ oci-accelerator init-ca --dir DIR
 - `init-ca --dir DIR` — create or validate a root CA directory. `--dir` is
   required; relative paths are resolved from the working directory.
 
-`init-ca` uses the same [root CA lifecycle](internal/ca/README.md#public-interface)
+`init-ca` applies the same [CA directory requirements](docs/operations.md#ca-directory-requirements)
 as proxy startup. It does not load YAML or start the proxy, cache, listeners,
 or network activity. If `DIR` is absent, its existing parent must be safe and
 writable; the command creates the directory, `ca.crt`, and `ca.key` using the
@@ -78,6 +78,28 @@ ca_sha256=0123456789abcdef...
 
 It never prints private-key contents. `oci-accelerator init-ca --help` describes
 the command, and top-level help lists `init-ca`.
+
+## Certificate minting
+
+Docker trusts the proxy's persistent, self-signed root CA once. When the proxy
+intercepts a CONNECT to a configured registry authority, it terminates TLS with a
+leaf certificate for that host, signed by the root on demand. Other CONNECT
+destinations remain opaque tunnels and never receive CA-issued certificates.
+
+A TLS certificate is only valid for the names in its SAN, so each intercepted
+host needs its own leaf chaining to the trusted root. Issuing leaves on demand
+keeps the root identity independent of the configured registry list and avoids
+generating unused certificates.
+
+- Each leaf covers a single DNS name or IP address and is valid for 24 hours.
+- A new leaf is signed when none is cached, when the cached leaf is not currently
+  valid (including after a clock rollback), or when it is within one hour of expiry.
+- Leaf validity is capped at the root's expiry. A leaf already expiring with the
+  root is reused even in its final hour, because renewing cannot extend its
+  lifetime. A root that is not currently valid prevents both issuance and reuse.
+- Leaves and their private keys exist only in memory. The cache holds at most
+  `max_leaf_certificates` entries (default 256) and evicts the least recently
+  used; every hit and renewal refreshes an entry's recency.
 
 ## Run in a container
 
