@@ -33,51 +33,44 @@ builders, archives, and Docker configuration are removed when the script exits.
 
 ## Docker Hub releases
 
-After all four checks pass, a non-PR tag build such as `v1.2.3` automatically runs
-[`image.sh publish`](image.sh). Only stable `vMAJOR.MINOR.PATCH` tags without leading
-zeroes qualify; prereleases and branch builds never publish. The script fetches the
-tag and complete `origin/main` history, verifies the tag matches both the checkout
-and `BUILDKITE_COMMIT`, and requires that commit to be an ancestor of `origin/main`.
+After all four checks pass, a non-PR `main` branch build automatically runs
+[`image.sh publish`](image.sh), replacing `buildkite/oci-accelerator:latest` with a
+multi-platform amd64/arm64 image. PRs, other branches, and Git-tag builds never
+publish. No versioned image tags are produced and Git-tag builds can remain disabled.
+
+Publishing is serialized with a concurrency group. At the start of the publish
+job, the script fetches `origin/main`, verifies the checkout matches
+`BUILDKITE_COMMIT`, and skips publication if it is no longer the main tip. Combined
+with serialization, this prevents an older queued or retried build from overwriting
+an image published by a newer main build. Main can advance while a publish job is
+running; the newer build publishes afterward if its checks pass. A clean checkout,
+including no untracked or ignored files, is required.
 
 It logs in as `buildkite` using the organization access token from Buildkite secret
 `OCI_ACCELERATOR_DOCKER_HUB_TOKEN`, passed directly to `docker login --password-stdin`.
 The secret is retrieved only after the Git checks and is not passed into build
-containers. The step builds and pushes one multi-platform image to
-`buildkite/oci-accelerator:1.2.3` and `buildkite/oci-accelerator:latest`.
+containers. Authentication and build/push failures fail the job. Keep `latest`
+mutable in Docker Hub. Pin deployments to an image digest when reproducibility
+or rollback is needed; pulling `latest` later may return a different image.
 
-Publishing is serialized with a concurrency group. An existing version tag is
-rejected; authentication and registry lookup failures also stop publication.
-Configure Docker Hub immutable version tags as an additional guard against other
-writers. `latest` remains mutable and follows the most recently published release,
-not necessarily the highest semantic version. Registry updates to the version and
-`latest` tags are not transactional: a partial push requires operator inspection,
-and a retry refuses to overwrite a version already published.
+Before publishing, configure these external prerequisites:
 
-Before enabling releases, configure these external prerequisites:
-
-1. In `buildkite/saas-iac`, add `build_tags = true` to
-   `module "pipeline_oci_accelerator"` in `public-tf/pipelines.tf`, and apply it
-   through that repository's infrastructure workflow. Repository YAML cannot
-   enable GitHub tag webhooks; do not override the Terraform-managed bootstrap.
-2. Create the Docker Hub repository and grant the organization token read/write
+1. Create the Docker Hub repository and grant the organization token read/write
    access only to `buildkite/oci-accelerator`. Store it as the named Buildkite secret
    in the Open Source cluster. Never put the token in this repository.
-3. Restrict secret access outside repository-controlled YAML. For this pipeline,
-   an access policy can require the pipeline ID, webhook source, and release ref:
+2. Restrict secret access outside repository-controlled YAML to this pipeline's
+   trusted `main` webhook builds:
 
    ```yaml
    - pipeline_id: "01a07f28-efda-4ad5-a6cd-383fd12df30c"
      build_source: "webhook"
-     build_branch: "v*"
+     build_branch: "main"
    ```
 
-   GitHub tag webhooks set both `BUILDKITE_BRANCH` and `BUILDKITE_TAG` to the tag
-   name. This policy does not distinguish a tag from a similarly named branch or
-   prove main ancestry. Protect creation and modification of **both** `v*` tags
-   and `v*` branches in GitHub, permitting only trusted release maintainers.
-   Untrusted PR/branch code must not be able to satisfy the secret policy by
-   choosing a release-like branch name. Script checks and step conditions are
-   defense in depth, not a credential boundary against modified repository code.
+   Protect `main` in GitHub and keep tag builds disabled (a tag named `main` would
+   have the same branch claim). Script checks and step conditions are defense in
+   depth, not a credential boundary against modified repository code. Do not grant
+   the token to untrusted PR/branch builds.
 
 ## Local verification
 

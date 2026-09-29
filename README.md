@@ -94,7 +94,7 @@ Amp orb development, including the supervised Docker daemon, is covered in the
 ## Buildkite CI
 
 The Buildkite pipeline runs Go formatting, vet, build, deterministic tests, and
-multi-platform container builds on every change. Stable version tags on `main`
-publish amd64/arm64 images to `buildkite/oci-accelerator` after those checks pass.
-See the [CI guide](.buildkite/README.md) for release-enablement prerequisites,
+multi-platform container builds on every change. Successful current `main` builds
+publish amd64/arm64 images to `buildkite/oci-accelerator:latest`, replacing that tag.
+See the [CI guide](.buildkite/README.md) for publishing prerequisites,
 credentials, and local verification.

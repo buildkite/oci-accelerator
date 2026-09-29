@@ -307,8 +307,11 @@ BuildKit-specific integration are not validated.
 There is no shared/distributed storage, multi-instance coordination, background
 prefetch or grant refresh, tag caching, stale/offline mode, proxy-held credentials,
 automatic CA trust installation/rotation, or push caching.
-The repository provides local container packaging, but no image publication, Kubernetes
-manifests, or container CI workflow.
+The repository provides container packaging, multi-platform image builds in CI, and
+automatic publication of successful current `main` builds to Docker Hub's `latest`
+tag once publishing credentials are configured. See the
+[CI guide](../.buildkite/README.md#docker-hub-releases) for prerequisites and safeguards.
+Kubernetes manifests and automated container runtime acceptance in CI are not provided.
 
 Deterministic local registry/auth/CDN tests assert bytes, denials, and upstream
 request counts. Docker acceptance uses fresh daemon stores to distinguish proxy
