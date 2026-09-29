@@ -49,28 +49,19 @@ proxy-user authentication, and unconfigured CONNECT destinations are opaque tunn
 
 ## Run in a container
 
-From the repository root on a Linux Docker host, build the Alpine image and prepare
-the bind-mounted CA and cache. Leave `data/ca` absent on first use; `init-ca` creates
-it and reuses an existing valid CA on subsequent runs.
+From the repository root on a Linux Docker host, review `config.container.yaml`,
+then build and start the Alpine image without Compose. Docker creates the named
+volumes with the required ownership; the proxy generates its CA on first startup
+and reuses it on subsequent starts.
 
 ```sh
 docker build -t oci-accelerator:local .
-sudo install -d -o 10001 -g 10001 -m 0700 data data/cache
-docker run --rm --network none --read-only --cap-drop ALL \
-  --security-opt no-new-privileges \
-  --mount type=bind,src="$PWD/data",dst=/var/lib/oci-accelerator \
-  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/ca
-```
-
-Review `config.container.yaml`, then start the proxy without Compose:
-
-```sh
 docker run -d --name oci-accelerator --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --stop-timeout 40 -p 127.0.0.1:3128:3128 \
   --mount type=bind,src="$PWD/config.container.yaml",dst=/etc/oci-accelerator/config.yaml,readonly \
-  --mount type=bind,src="$PWD/data/ca",dst=/var/lib/oci-accelerator/ca,readonly \
-  --mount type=bind,src="$PWD/data/cache",dst=/var/lib/oci-accelerator/cache \
+  --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
+  --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
   oci-accelerator:local
 docker logs oci-accelerator
 docker inspect --format '{{.State.Health.Status}}' oci-accelerator
@@ -78,8 +69,9 @@ docker inspect --format '{{.State.Health.Status}}' oci-accelerator
 
 Before pulling through the proxy, [verify/install the public CA and configure Docker
 Engine](docs/operations.md#configure-ca-trust-and-docker). Never distribute `ca.key`.
-Stop with `docker stop oci-accelerator`; removing the container leaves `data/ca` and
-`data/cache` intact. For Compose, architecture-specific builds, and cache recovery,
+Stop with `docker stop oci-accelerator`; removing the container preserves both named
+volumes. **Do not use `docker compose down -v` unless you intend to delete both the
+CA and cache.** For Compose, architecture-specific builds, and cache recovery,
 see [container deployment](docs/operations.md#container-deployment).
 
 ## Testing

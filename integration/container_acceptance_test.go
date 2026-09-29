@@ -50,23 +50,31 @@ func TestContainerImageLifecycle(t *testing.T) {
 	writeFile(t, config, fmt.Sprintf("listen: 0.0.0.0:3128\nmetrics_listen: 127.0.0.1:9090\nregistries: [%q]\nca_dir: /var/lib/oci-accelerator/ca\ncache:\n  dir: /var/lib/oci-accelerator/cache\n  max_bytes: 33554432\n", authority), 0o644)
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
-	identity := filepath.Join(root, "data")
+	identity := "oci-accelerator-ca-" + suffix
+	cache := "oci-accelerator-cache-" + suffix
+	for _, volume := range []string{identity, cache} {
+		run(t, "docker", "volume", "create", volume)
+		t.Cleanup(func() {
+			if r := dockerCombinedLocal("volume", "rm", volume); r.err != nil {
+				t.Errorf("remove owned volume: %v: %s", r.err, r.output)
+			}
+		})
+	}
+	identityRoot := strings.TrimSpace(run(t, "docker", "volume", "inspect", identity, "--format", "{{.Mountpoint}}"))
 	bad := filepath.Join(root, "bad-ca")
-	for _, dir := range []string{identity, filepath.Join(identity, "cache"), bad} {
-		if err := os.Mkdir(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chown(dir, 10001, 10001); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.Mkdir(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(bad, 10001, 10001); err != nil {
+		t.Fatal(err)
 	}
 
-	// The image must neither silently generate a CA at runtime nor replace bad supplied state.
-	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+identity+",dst=/var/lib/oci-accelerator,readonly")
-	if _, err := os.Stat(filepath.Join(identity, "ca")); !os.IsNotExist(err) {
+	// A missing read-only CA must fail; a writable fresh volume is initialized below.
+	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=volume,src="+identity+",dst=/var/lib/oci-accelerator,readonly")
+	if _, err := os.Stat(filepath.Join(identityRoot, "ca")); !os.IsNotExist(err) {
 		t.Fatalf("missing read-only CA was created: %v", err)
 	}
 	for _, name := range []string{"ca.crt", "ca.key"} {
@@ -76,13 +84,13 @@ func TestContainerImageLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+bad+",dst=/var/lib/oci-accelerator/ca,readonly")
-
-	initArgs := append([]string{"run", "--rm"}, platform...)
-	initArgs = append(initArgs, "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--mount", "type=bind,src="+identity+",dst=/var/lib/oci-accelerator", imageName, "init-ca", "--dir", "/var/lib/oci-accelerator/ca")
-	run(t, "docker", initArgs...)
-	caPath := filepath.Join(identity, "ca", "ca.crt")
-	fingerprint := certFingerprint(t, caPath)
+	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+bad+",dst=/var/lib/oci-accelerator/ca")
+	for _, name := range []string{"ca.crt", "ca.key"} {
+		contents, err := os.ReadFile(filepath.Join(bad, name))
+		if err != nil || string(contents) != "bad" {
+			t.Fatalf("invalid writable CA file %s was replaced: %v", name, err)
+		}
+	}
 
 	name := "oci-accelerator-" + suffix
 	// Match Compose's dedicated bridge: fixture daemons disable the default bridge.
@@ -100,16 +108,18 @@ func TestContainerImageLifecycle(t *testing.T) {
 			t.Errorf("remove owned container: %v: %s", r.err, r.output)
 		}
 	})
-	startContainer(t, name, imageName, platform, identity, config, originCAPath(root))
+	startContainer(t, name, imageName, platform, identity, cache, config, originCAPath(root))
 	proxyPort := containerPort(t, name)
 	waitContainerHealthy(t, name)
+	caPath := filepath.Join(identityRoot, "ca", "ca.crt")
+	fingerprint := certFingerprint(t, caPath)
 	state := strings.TrimSpace(run(t, "docker", "inspect", name, "--format", `{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{range .Mounts}}{{.Destination}}={{.RW}}:{{.Type}};{{end}}`))
-	if !strings.HasPrefix(state, "10001:10001|true|[\"ALL\"]|") || !strings.Contains(state, "/etc/oci-accelerator/config.yaml=false:bind;") || !strings.Contains(state, "/var/lib/oci-accelerator/ca=false:bind;") || !strings.Contains(state, "/var/lib/oci-accelerator/cache=true:bind;") {
+	if !strings.HasPrefix(state, "10001:10001|true|[\"ALL\"]|") || !strings.Contains(state, "/etc/oci-accelerator/config.yaml=false:bind;") || !strings.Contains(state, "/var/lib/oci-accelerator=true:volume;") || !strings.Contains(state, "/var/lib/oci-accelerator/cache=true:volume;") {
 		t.Fatalf("unexpected live container isolation: %s", state)
 	}
-	storage := strings.TrimSpace(run(t, "docker", "exec", name, "stat", "-c", "%u:%g:%a", "/var/lib/oci-accelerator/cache"))
-	if storage != "10001:10001:700" {
-		t.Fatalf("cache bind ownership/mode = %s, want 10001:10001:700", storage)
+	storage := strings.TrimSpace(run(t, "docker", "exec", name, "stat", "-c", "%u:%g:%a", "/var/lib/oci-accelerator", "/var/lib/oci-accelerator/ca", "/var/lib/oci-accelerator/cache"))
+	if storage != "10001:10001:700\n10001:10001:700\n10001:10001:700" {
+		t.Fatalf("CA parent, CA, and cache ownership/modes = %s, want 10001:10001:700 each", storage)
 	}
 
 	clientDir := dockerAuthDir(t, root, "container", authority, registryUser, registryPass)
@@ -131,7 +141,7 @@ func TestContainerImageLifecycle(t *testing.T) {
 	assertDeniedViaProxy(t, proxyPort, caPath, authority, fixture.layerPath)
 
 	stopContainer(t, name)
-	startContainer(t, name, imageName, platform, identity, config, originCAPath(root))
+	startContainer(t, name, imageName, platform, identity, cache, config, originCAPath(root))
 	waitContainerHealthy(t, name)
 	if got := certFingerprint(t, caPath); got != fingerprint {
 		t.Fatalf("CA changed across recreation: %s != %s", got, fingerprint)
@@ -148,10 +158,10 @@ func TestContainerImageLifecycle(t *testing.T) {
 		a1[fixture.layerPath], b1[fixture.layerPath], a2[fixture.layerPath]-a1[fixture.layerPath], b2[fixture.layerPath]-b1[fixture.layerPath], a3[fixture.layerPath]-a2[fixture.layerPath], b3[fixture.layerPath]-b2[fixture.layerPath])
 }
 
-func startContainer(t *testing.T, name, image string, platform []string, identity, config, originCA string) {
+func startContainer(t *testing.T, name, image string, platform []string, identity, cache, config, originCA string) {
 	t.Helper()
 	args := append([]string{"run"}, platform...)
-	args = append(args, "-d", "--name", name, "--network", name, "--health-interval", "1s", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::3128", "-e", "SSL_CERT_FILE=/run/origin-ca.crt", "--mount", "type=bind,src="+filepath.Join(identity, "cache")+",dst=/var/lib/oci-accelerator/cache", "--mount", "type=bind,src="+filepath.Join(identity, "ca")+",dst=/var/lib/oci-accelerator/ca,readonly", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+originCA+",dst=/run/origin-ca.crt,readonly", image)
+	args = append(args, "-d", "--name", name, "--network", name, "--health-interval", "1s", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::3128", "-e", "SSL_CERT_FILE=/run/origin-ca.crt", "--mount", "type=volume,src="+cache+",dst=/var/lib/oci-accelerator/cache", "--mount", "type=volume,src="+identity+",dst=/var/lib/oci-accelerator", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+originCA+",dst=/run/origin-ca.crt,readonly", image)
 	run(t, "docker", args...)
 }
 

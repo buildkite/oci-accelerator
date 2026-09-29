@@ -18,14 +18,15 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - type: bind
-        source: ./data/ca
-        target: /var/lib/oci-accelerator/ca
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ./data/cache
+      - type: volume
+        source: ca
+        target: /var/lib/oci-accelerator
+      - type: volume
+        source: cache
         target: /var/lib/oci-accelerator/cache
-        bind:
-          create_host_path: false
+
+volumes:
+  ca:
+    name: oci-accelerator-ca
+  cache:
+    name: oci-accelerator-cache
