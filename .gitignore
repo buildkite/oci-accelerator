@@ -3,3 +3,4 @@
 /data/
 /config.local.yaml
 /.idea/
+.DS_Store

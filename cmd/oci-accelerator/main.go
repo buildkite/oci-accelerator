@@ -24,11 +24,16 @@ func main() {
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, net.Listen); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		// Every failure, usage or runtime, exits 2; only zero versus non-zero is meaningful.
 		os.Exit(2)
 	}
 }
 
-// run takes ownership of each listener returned by listen.
+// run dispatches init-ca or starts the proxy and serves until ctx is cancelled.
+// It takes ownership of each listener returned by listen, which tests replace to
+// avoid binding real sockets. Deferred cleanup runs in reverse startup order
+// (metrics server, proxy listener, then cache), and its errors are joined with
+// any serving or shutdown error.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen func(string, string) (net.Listener, error)) (runErr error) {
 	if len(args) > 0 && args[0] == "init-ca" {
 		return runInitCA(args[1:], stdout)
@@ -204,6 +209,8 @@ func serveUntilSignal(ctx context.Context, p *proxy.Proxy, listener net.Listener
 	return errors.Join(serveErr, shutdownErr)
 }
 
+// cacheDiagnostic reduces err to a fixed category, because cache errors can
+// include filesystem paths that must not reach logs or stderr.
 func cacheDiagnostic(prefix string, err error) error {
 	category := "filesystem failure"
 	switch {
