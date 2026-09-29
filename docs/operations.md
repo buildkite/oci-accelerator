@@ -138,7 +138,9 @@ Building or running the arm64 image requires a native arm64 host or configured e
 Go compilation runs on the builder's architecture, but Alpine's runtime setup executes on
 the target architecture. If a
 multi-platform OCI archive is required, use a Buildx builder with the `docker-container`
-driver and an OCI output instead of `--load`; no image publishing workflow is provided.
+driver and an OCI output instead of `--load`. Buildkite validates both architectures
+and publishes version-tagged releases to Docker Hub; see the
+[release workflow and prerequisites](../.buildkite/README.md#docker-hub-releases).
 Container builds require a Linux Docker daemon with Buildx; the deployment example uses Compose.
 
 ## Configure CA trust and Docker
