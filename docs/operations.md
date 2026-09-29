@@ -77,12 +77,12 @@ publishes only `127.0.0.1:3128`, keeps the root filesystem read-only, drops all 
 sets `no-new-privileges`, and mounts:
 
 - `./config.container.yaml` read-only at `/etc/oci-accelerator/config.yaml`;
-- `./data/identity` read-only at `/var/lib/oci-accelerator/identity`, without Compose creating
+- `./data/identity/ca` read-only at `/var/lib/oci-accelerator/ca`, without Compose creating
   a missing host path (`create_host_path: false`); and
-- the named `cache` volume at `/var/lib/oci-accelerator/storage`.
+- the named `cache` volume at `/var/lib/oci-accelerator/cache`.
 
-The container configuration uses `/var/lib/oci-accelerator/identity/ca` for `ca_dir`,
-`/var/lib/oci-accelerator/storage/cache` for `cache.dir`, the same registry list as
+The container configuration uses `/var/lib/oci-accelerator/ca` for `ca_dir`,
+`/var/lib/oci-accelerator/cache` for `cache.dir`, the same registry list as
 `config.example.yaml`, and a loopback-only metrics listener at `127.0.0.1:9090`. Metrics are
 not published to the host. The image health check calls `http://127.0.0.1:9090/readyz` with
 `wget`; an unhealthy result is diagnostic and does not itself trigger a restart. Keep this
@@ -98,13 +98,16 @@ docker compose build
 sudo install -d -o 10001 -g 10001 -m 0700 data/identity
 docker run --rm --network none --read-only --cap-drop ALL \
   --security-opt no-new-privileges \
-  --mount type=bind,src="$PWD/data/identity",dst=/var/lib/oci-accelerator/identity \
-  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/identity/ca
+  --mount type=bind,src="$PWD/data/identity",dst=/var/lib/oci-accelerator \
+  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/ca
 ```
 
 On first provisioning, leave the `data/identity/ca` child absent so `init-ca` creates it.
-An existing valid pair is reused. Never bake `ca.key` into an image. Preserve the identity
-bind independently of the replaceable cache volume, and follow
+Initialization mounts the parent writable so the application can atomically create `ca/`;
+normal operation mounts only that populated child read-only. The image owns the common
+runtime parent and cache directory as UID 10001 with mode 0700; fresh cache volumes inherit
+that ownership. An existing valid CA pair is reused. Never bake `ca.key` into an image.
+Preserve the identity bind independently of the replaceable cache volume, and follow
 [Configure CA trust and Docker](#configure-ca-trust-and-docker) to verify the fingerprint
 and install only the public certificate for Docker clients.
 
@@ -124,7 +127,7 @@ docker compose down -v
 ```
 
 This permanently deletes the cache volume. It does not delete the CA in the separate
-`./data/identity` bind mount.
+`./data/identity/ca` bind mount.
 
 For local architecture-specific images, Buildx can load one platform at a time:
 

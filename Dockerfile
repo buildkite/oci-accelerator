@@ -16,9 +16,9 @@ LABEL org.opencontainers.image.source="https://github.com/buildkite/oci-accelera
 RUN apk add --no-cache ca-certificates \
     && addgroup -S -g 10001 accelerator \
     && adduser -S -D -H -u 10001 -G accelerator accelerator \
-    && mkdir -p /var/lib/oci-accelerator/identity /var/lib/oci-accelerator/storage \
-    && chown 10001:10001 /var/lib/oci-accelerator/identity /var/lib/oci-accelerator/storage \
-    && chmod 0700 /var/lib/oci-accelerator/identity /var/lib/oci-accelerator/storage
+    && mkdir -p /var/lib/oci-accelerator/ca /var/lib/oci-accelerator/cache \
+    && chown -R 10001:10001 /var/lib/oci-accelerator \
+    && chmod 0700 /var/lib/oci-accelerator /var/lib/oci-accelerator/ca /var/lib/oci-accelerator/cache
 COPY --from=build /out/oci-accelerator /usr/local/bin/oci-accelerator
 USER 10001:10001
 EXPOSE 3128

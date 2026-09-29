@@ -47,7 +47,7 @@ func TestContainerImageLifecycle(t *testing.T) {
 	defer origin.Close()
 	authority := origin.Listener.Addr().String()
 	config := filepath.Join(root, "config.yaml")
-	writeFile(t, config, fmt.Sprintf("listen: 0.0.0.0:3128\nmetrics_listen: 127.0.0.1:9090\nregistries: [%q]\nca_dir: /var/lib/oci-accelerator/identity/ca\ncache:\n  dir: /var/lib/oci-accelerator/storage/cache\n  max_bytes: 33554432\n", authority), 0o644)
+	writeFile(t, config, fmt.Sprintf("listen: 0.0.0.0:3128\nmetrics_listen: 127.0.0.1:9090\nregistries: [%q]\nca_dir: /var/lib/oci-accelerator/ca\ncache:\n  dir: /var/lib/oci-accelerator/cache\n  max_bytes: 33554432\n", authority), 0o644)
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	volume := "oci-accelerator-acceptance-" + suffix
@@ -63,7 +63,7 @@ func TestContainerImageLifecycle(t *testing.T) {
 	run(t, "sudo", "-n", "chmod", "0700", identity)
 
 	// The image must neither silently generate a CA at runtime nor replace bad supplied state.
-	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+identity+",dst=/var/lib/oci-accelerator/identity,readonly")
+	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+identity+",dst=/var/lib/oci-accelerator,readonly")
 	if _, err := os.Stat(filepath.Join(identity, "ca")); !os.IsNotExist(err) {
 		t.Fatalf("missing read-only CA was created: %v", err)
 	}
@@ -72,10 +72,10 @@ func TestContainerImageLifecycle(t *testing.T) {
 	run(t, "sudo", "-n", "sh", "-c", "printf bad > "+shell(filepath.Join(bad, "ca", "ca.crt"))+"; printf bad > "+shell(filepath.Join(bad, "ca", "ca.key"))+"; chown -R 10001:10001 "+shell(bad))
 	run(t, "sudo", "-n", "chmod", "0700", bad, filepath.Join(bad, "ca"))
 	run(t, "sudo", "-n", "chmod", "0600", filepath.Join(bad, "ca", "ca.key"))
-	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+bad+",dst=/var/lib/oci-accelerator/identity,readonly")
+	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+filepath.Join(bad, "ca")+",dst=/var/lib/oci-accelerator/ca,readonly")
 
 	initArgs := append([]string{"run", "--rm"}, platform...)
-	initArgs = append(initArgs, "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--mount", "type=bind,src="+identity+",dst=/var/lib/oci-accelerator/identity", imageName, "init-ca", "--dir", "/var/lib/oci-accelerator/identity/ca")
+	initArgs = append(initArgs, "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--mount", "type=bind,src="+identity+",dst=/var/lib/oci-accelerator", imageName, "init-ca", "--dir", "/var/lib/oci-accelerator/ca")
 	run(t, "docker", initArgs...)
 	caPath := filepath.Join(identity, "ca", "ca.crt")
 	fingerprint := certFingerprint(t, caPath)
@@ -100,11 +100,11 @@ func TestContainerImageLifecycle(t *testing.T) {
 	proxyPort := containerPort(t, name)
 	waitContainerHealthy(t, name)
 	state := strings.TrimSpace(run(t, "docker", "inspect", name, "--format", `{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{range .Mounts}}{{.Destination}}={{.RW}};{{end}}`))
-	if !strings.HasPrefix(state, "10001:10001|true|[\"ALL\"]|") || !strings.Contains(state, "/etc/oci-accelerator/config.yaml=false;") || !strings.Contains(state, "/var/lib/oci-accelerator/identity=false;") {
+	if !strings.HasPrefix(state, "10001:10001|true|[\"ALL\"]|") || !strings.Contains(state, "/etc/oci-accelerator/config.yaml=false;") || !strings.Contains(state, "/var/lib/oci-accelerator/ca=false;") || !strings.Contains(state, "/var/lib/oci-accelerator/cache=true;") {
 		t.Fatalf("unexpected live container isolation: %s", state)
 	}
 	storageArgs := append([]string{"run", "--rm"}, platform...)
-	storageArgs = append(storageArgs, "--network", "none", "--entrypoint", "stat", "--mount", "type=volume,src="+volume+",dst=/var/lib/oci-accelerator/storage", imageName, "-c", "%u:%g:%a", "/var/lib/oci-accelerator/storage")
+	storageArgs = append(storageArgs, "--network", "none", "--entrypoint", "stat", "--mount", "type=volume,src="+volume+",dst=/var/lib/oci-accelerator/cache", imageName, "-c", "%u:%g:%a", "/var/lib/oci-accelerator/cache")
 	storage := strings.TrimSpace(run(t, "docker", storageArgs...))
 	if storage != "10001:10001:700" {
 		t.Fatalf("storage volume copy-up ownership/mode = %s, want 10001:10001:700", storage)
@@ -149,7 +149,7 @@ func TestContainerImageLifecycle(t *testing.T) {
 func startContainer(t *testing.T, name, image string, platform []string, volume, identity, config, originCA string) {
 	t.Helper()
 	args := append([]string{"run"}, platform...)
-	args = append(args, "-d", "--name", name, "--network", name, "--health-interval", "1s", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::3128", "-e", "SSL_CERT_FILE=/run/origin-ca.crt", "--mount", "type=volume,src="+volume+",dst=/var/lib/oci-accelerator/storage", "--mount", "type=bind,src="+identity+",dst=/var/lib/oci-accelerator/identity,readonly", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+originCA+",dst=/run/origin-ca.crt,readonly", image)
+	args = append(args, "-d", "--name", name, "--network", name, "--health-interval", "1s", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::3128", "-e", "SSL_CERT_FILE=/run/origin-ca.crt", "--mount", "type=volume,src="+volume+",dst=/var/lib/oci-accelerator/cache", "--mount", "type=bind,src="+filepath.Join(identity, "ca")+",dst=/var/lib/oci-accelerator/ca,readonly", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=bind,src="+originCA+",dst=/run/origin-ca.crt,readonly", image)
 	run(t, "docker", args...)
 }
 

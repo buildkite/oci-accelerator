@@ -19,14 +19,14 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ./data/identity
-        target: /var/lib/oci-accelerator/identity
+        source: ./data/identity/ca
+        target: /var/lib/oci-accelerator/ca
         read_only: true
         bind:
           create_host_path: false
       - type: volume
         source: cache
-        target: /var/lib/oci-accelerator/storage
+        target: /var/lib/oci-accelerator/cache
 
 volumes:
   cache:

@@ -50,8 +50,8 @@ docker compose build
 sudo install -d -o 10001 -g 10001 -m 0700 data/identity
 docker run --rm --network none --read-only --cap-drop ALL \
   --security-opt no-new-privileges \
-  --mount type=bind,src="$PWD/data/identity",dst=/var/lib/oci-accelerator/identity \
-  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/identity/ca
+  --mount type=bind,src="$PWD/data/identity",dst=/var/lib/oci-accelerator \
+  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/ca
 docker compose run --rm --no-deps oci-accelerator \
   --config /etc/oci-accelerator/config.yaml --check
 docker compose up -d

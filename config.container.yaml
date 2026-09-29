@@ -6,8 +6,8 @@ registries:
   - registry-1.docker.io
   - ghcr.io
   - public.ecr.aws
-ca_dir: /var/lib/oci-accelerator/identity/ca
+ca_dir: /var/lib/oci-accelerator/ca
 cache:
-  dir: /var/lib/oci-accelerator/storage/cache
+  dir: /var/lib/oci-accelerator/cache
   max_bytes: 34359738368
 # Other limits retain application defaults; see config.example.yaml.
