@@ -216,6 +216,93 @@ func TestWarmMetadataMismatchAndBypassesForwardOriginBody(t *testing.T) {
 	}
 }
 
+func TestRedirectedCacheStoresIdentityBlobVaryingOnAcceptEncoding(t *testing.T) {
+	const body = "good"
+	for _, tc := range []struct {
+		name       string
+		encoding   string
+		grants     bool
+		wantBody   string
+		wantStore  int
+		wantGets   int32
+		wantReject string
+	}{
+		{name: "identity", wantBody: body, wantStore: 1, wantGets: 2, wantReject: `reject=""`},
+		{name: "identity with grants", grants: true, wantBody: body, wantStore: 1, wantGets: 1, wantReject: `reject=""`},
+		{name: "gzip", encoding: "gzip", wantBody: "evil", wantGets: 2, wantReject: "reject=vary"},
+		{name: "gzip with grants", encoding: "gzip", grants: true, wantBody: "evil", wantGets: 2, wantReject: "reject=vary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests, storage atomic.Int32
+			// Like CloudFront, advertise Vary: Accept-Encoding for a gzip-accepting client.
+			cdn := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				out := body
+				if storage.Add(1) > 1 {
+					out = "evil"
+				}
+				if r.Header.Get("Accept-Encoding") != "gzip" {
+					t.Errorf("Accept-Encoding = %q, want client value forwarded", r.Header.Get("Accept-Encoding"))
+				}
+				blobHeaders(w, out)
+				w.Header().Set("Vary", "Accept-Encoding")
+				if tc.encoding != "" {
+					w.Header().Set("Content-Encoding", tc.encoding)
+				}
+				io.WriteString(w, out)
+			}))
+			defer cdn.Close()
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Location", cdn.URL+"/signed")
+				w.WriteHeader(307)
+			}))
+			defer origin.Close()
+			var logs bytes.Buffer
+			p, c := cacheFixture(t, origin, 1<<20, &logs)
+			if tc.grants {
+				p.authorization = newAuthorizationCache(time.Minute, 10)
+			}
+			a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
+			p.destinations[a.String()] = struct{}{}
+			p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
+
+			u := origin.URL + blobURL(body)
+			var got []string
+			for i := 0; i < 2; i++ {
+				r, _ := http.NewRequest("GET", u, nil)
+				r.Header.Set("Authorization", "Bearer client")
+				// Set explicitly, as Docker's client does, which also disables transparent decompression.
+				r.Header.Set("Accept-Encoding", "gzip")
+				resp, err := c.Do(r)
+				if err != nil {
+					t.Fatal(err)
+				}
+				b, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, string(b))
+			}
+			if got[0] != body || got[1] != tc.wantBody {
+				t.Fatalf("bodies = %q, want [%q %q]", got, body, tc.wantBody)
+			}
+			// Without a grant every GET is authorized at each hop, and a hit replaces only
+			// the storage body; a live grant serves the second GET with no upstream I/O.
+			if requests.Load() != tc.wantGets || storage.Load() != tc.wantGets {
+				t.Fatalf("registry/storage requests = %d/%d, want %d each", requests.Load(), storage.Load(), tc.wantGets)
+			}
+			if got := p.cache.Stats().Entries; got != tc.wantStore {
+				t.Fatalf("cache entries = %d, want %d", got, tc.wantStore)
+			}
+			shutdown(t, p)
+			if n := strings.Count(logs.String(), tc.wantReject); n != 2 {
+				t.Fatalf("logs contain %q %d times, want 2: %s", tc.wantReject, n, logs.String())
+			}
+		})
+	}
+}
+
 func TestRedirectedCacheAuthorizesCDNAndHonorsRegistryNoStore(t *testing.T) {
 	const body = "good"
 	var requests, storage atomic.Int32

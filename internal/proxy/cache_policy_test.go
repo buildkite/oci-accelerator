@@ -235,7 +235,11 @@ func TestCacheHeaderRejectionAgreesWithCacheHeaders(t *testing.T) {
 		{"cacheable vary accept", http.Header{"Vary": {"Accept"}}, ""},
 		{"cacheable matching digest", http.Header{"Docker-Content-Digest": {testBlobDigest}}, ""},
 		{"no store", http.Header{"Cache-Control": {"no-store"}}, "no_store"},
-		{"vary accept and encoding", http.Header{"Vary": {"Accept, Accept-Encoding"}}, "vary"},
+		{"cacheable vary accept and encoding", http.Header{"Vary": {"Accept, Accept-Encoding"}}, ""},
+		{"cacheable vary encoding identity", http.Header{"Vary": {"accept-encoding"}, "Content-Encoding": {"identity"}}, ""},
+		{"vary encoding gzip", http.Header{"Vary": {"Accept-Encoding"}, "Content-Encoding": {"gzip"}}, "vary"},
+		{"vary encoding repeated identity", http.Header{"Vary": {"Accept-Encoding"}, "Content-Encoding": {"identity", "identity"}}, "vary"},
+		{"vary encoding and other", http.Header{"Vary": {"Accept-Encoding", "Cookie"}}, "vary"},
 		{"vary other", http.Header{"Vary": {"Cookie"}}, "vary"},
 		{"digest mismatch", http.Header{"Docker-Content-Digest": {"sha256:" + strings.Repeat("b", 64)}}, "digest_mismatch"},
 	} {
@@ -259,7 +263,7 @@ func TestCachedResponseRecordsVaryAndDigestBypassReasons(t *testing.T) {
 	}{
 		{
 			name:       "vary",
-			mutate:     func(h http.Header) { h.Set("Vary", "Accept, Accept-Encoding") },
+			mutate:     func(h http.Header) { h.Set("Vary", "Accept, Cookie") },
 			wantReason: "vary",
 		},
 		{
