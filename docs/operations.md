@@ -79,7 +79,7 @@ sets `no-new-privileges`, and mounts:
 - `./config.container.yaml` read-only at `/etc/oci-accelerator/config.yaml`;
 - `./data/ca` read-only at `/var/lib/oci-accelerator/ca`, without Compose creating
   a missing host path (`create_host_path: false`); and
-- the named `cache` volume at `/var/lib/oci-accelerator/cache`.
+- `./data/cache` writable at `/var/lib/oci-accelerator/cache`, also requiring an existing host path.
 
 The container configuration uses `/var/lib/oci-accelerator/ca` for `ca_dir`,
 `/var/lib/oci-accelerator/cache` for `cache.dir`, the same registry list as
@@ -91,11 +91,11 @@ Readiness does not check upstream connectivity or disk capacity. Compose uses
 `restart: unless-stopped` and a 40-second stop grace period, allowing for the application's
 15-second shutdown timeout and metrics cleanup. Increase it if you raise `shutdown_timeout`.
 
-Build the image, create the CA parent with the runtime ownership, and initialize the CA:
+Build the image, prepare the host directories with the runtime ownership, and initialize the CA:
 
 ```sh
 docker compose build
-sudo install -d -o 10001 -g 10001 -m 0700 data
+sudo install -d -o 10001 -g 10001 -m 0700 data data/cache
 docker run --rm --network none --read-only --cap-drop ALL \
   --security-opt no-new-privileges \
   --mount type=bind,src="$PWD/data",dst=/var/lib/oci-accelerator \
@@ -105,9 +105,10 @@ docker run --rm --network none --read-only --cap-drop ALL \
 On first provisioning, leave the `data/ca` child absent so `init-ca` creates it.
 Initialization mounts the parent writable so the application can atomically create `ca/`;
 normal operation mounts only that populated child read-only. The image owns the common
-runtime parent and cache directory as UID 10001 with mode 0700; fresh cache volumes inherit
-that ownership. An existing valid CA pair is reused. Never bake `ca.key` into an image.
-Preserve the CA bind independently of the replaceable cache volume, and follow
+runtime parent as UID 10001 with mode 0700. Bind mounts retain host ownership and permissions:
+`data/cache` must be owned by UID 10001 with mode 0700; image permissions do not repair it.
+An existing valid CA pair is reused. Never bake `ca.key` into an image.
+Preserve the CA bind independently of the replaceable cache directory, and follow
 [Configure CA trust and Docker](#configure-ca-trust-and-docker) to verify the fingerprint
 and install only the public certificate for Docker clients.
 
@@ -120,14 +121,19 @@ docker compose up -d
 ```
 
 `--check` validates configuration only; it does not inspect the mounted CA or cache state.
-Do not modify the live cache. To recreate it, stop the service and remove its named volumes:
+Do not modify the live cache. To reset the disposable cache, stop the service, remove only
+its host directory, and recreate it with the required ownership:
 
 ```sh
-docker compose down -v
+docker compose down
+sudo rm -rf -- ./data/cache
+sudo install -d -o 10001 -g 10001 -m 0700 data/cache
+docker compose up -d
 ```
 
-This permanently deletes the cache volume. It does not delete the CA in the separate
-`./data/ca` bind mount.
+This permanently deletes cached content, not `./data/ca`. Neither `docker compose down`
+nor `docker compose down -v` deletes bind-mounted host data. Do not remove the whole `data`
+directory when clearing the cache.
 
 For local architecture-specific images, Buildx can load one platform at a time:
 

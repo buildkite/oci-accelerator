@@ -289,7 +289,7 @@ proxy connection pool. See [logs and metrics](operations.md#logs-and-metrics).
 The container deployment preserves these boundaries: it runs as numeric user
 `10001:10001` with a read-only root filesystem, no Linux capabilities, and
 `no-new-privileges`. Its persistent CA identity is a separate read-only host bind and its
-cache is a named volume. Only the loopback proxy port is published; the loopback metrics
+cache is a writable host bind. Only the loopback proxy port is published; the loopback metrics
 listener remains inside the container for the image readiness check. The health check reports
 readiness but does not provide an automatic recovery policy. See
 [container deployment](operations.md#container-deployment) for provisioning and lifecycle

@@ -24,9 +24,8 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - type: volume
-        source: cache
+      - type: bind
+        source: ./data/cache
         target: /var/lib/oci-accelerator/cache
-
-volumes:
-  cache:
+        bind:
+          create_host_path: false

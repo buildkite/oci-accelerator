@@ -42,14 +42,45 @@ go build -o bin/oci-accelerator ./cmd/oci-accelerator
 bin/oci-accelerator --config config.example.yaml --check
 ```
 
-The repository also provides an Alpine-based container image and a hardened
-Compose deployment. Follow [container deployment](docs/operations.md#container-deployment)
-for builds, CA provisioning, startup, storage, health checks, and recovery.
-
 Follow the [operating guide](docs/operations.md) to configure registry authorities,
 start the proxy, verify/install its public CA, and configure Docker Engine.
 The default listener is loopback-only. Do not expose it publicly: there is no
 proxy-user authentication, and unconfigured CONNECT destinations are opaque tunnels.
+
+## Run in a container
+
+From the repository root on a Linux Docker host, build the Alpine image and prepare
+the bind-mounted CA and cache. Leave `data/ca` absent on first use; `init-ca` creates
+it and reuses an existing valid CA on subsequent runs.
+
+```sh
+docker build -t oci-accelerator:local .
+sudo install -d -o 10001 -g 10001 -m 0700 data data/cache
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --mount type=bind,src="$PWD/data",dst=/var/lib/oci-accelerator \
+  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/ca
+```
+
+Review `config.container.yaml`, then start the proxy without Compose:
+
+```sh
+docker run -d --name oci-accelerator --restart unless-stopped \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --stop-timeout 40 -p 127.0.0.1:3128:3128 \
+  --mount type=bind,src="$PWD/config.container.yaml",dst=/etc/oci-accelerator/config.yaml,readonly \
+  --mount type=bind,src="$PWD/data/ca",dst=/var/lib/oci-accelerator/ca,readonly \
+  --mount type=bind,src="$PWD/data/cache",dst=/var/lib/oci-accelerator/cache \
+  oci-accelerator:local
+docker logs oci-accelerator
+docker inspect --format '{{.State.Health.Status}}' oci-accelerator
+```
+
+Before pulling through the proxy, [verify/install the public CA and configure Docker
+Engine](docs/operations.md#configure-ca-trust-and-docker). Never distribute `ca.key`.
+Stop with `docker stop oci-accelerator`; removing the container leaves `data/ca` and
+`data/cache` intact. For Compose, architecture-specific builds, and cache recovery,
+see [container deployment](docs/operations.md#container-deployment).
 
 ## Testing
 
