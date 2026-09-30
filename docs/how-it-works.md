@@ -167,30 +167,36 @@ not read tokens, check their scopes or expiry, or hold credentials of its own.
 
 ### Approval on each request
 
-For a cacheable `GET`, the accelerator always sends Docker's request upstream
-first, following any redirects. Only a cacheable `200 OK` counts as approval.
+Without a reusable authorization grant, the accelerator sends Docker's cacheable
+`GET` upstream first, following any redirects. Only a cacheable `200 OK` counts as approval.
 The body then comes from disk if cached, or streams from upstream while filling
 the cache. Any other response, such as `401` or `404`, goes back to Docker
 unchanged. `HEAD`, `GET /v2/`, and tag requests approve nothing.
 
-A cache hit still sends the request upstream, including any redirects, though
-not the download, and may count toward registry rate limits.
+A cache hit without a reusable grant still sends the request upstream, including
+any redirects, though not the download, and may count toward registry rate limits.
 
 ### Authorization grants
 
-After an approval, an identical request is served from disk without contacting
-the upstream registry for `cache.authorization_ttl` (30 seconds by default, and `0s` disables
-grants).
+After an approval, an identical request can be served from disk without contacting
+the upstream registry. `cache.anonymous_authorization_ttl` defaults to 15 minutes
+for requests without `Authorization`. `cache.authorization_ttl` independently
+defaults to 30 seconds for requests with `Authorization`, including an empty value.
+Set either TTL to `0s` to disable reuse for that class. Setting both to `0s` checks
+the upstream registry on every delivery.
 
-- **Identical requests only.** Grants match on the URL and every forwarded
-  header, including `Authorization`, so one client never uses another's
-  approval.
+- **Identical requests only.** Grants match on the URL and every forwarded header.
+  Requests with different `Authorization`, cookies, or other header values do not
+  share approvals. Anonymous approvals cannot serve requests carrying `Authorization`.
 - **Fixed lifetime.** It starts at approval, and hits don't extend it. A shorter
   `max-age` or `s-maxage` on the request or any response shortens it.
-- **Memory only.** Grants are cleared on restart and bounded by
-  `cache.max_authorization_entries` (10000 by default).
+- **Memory only.** Grants are never persisted, are cleared on restart, and both
+  classes share the `cache.max_authorization_entries` bound (10000 by default).
 - **Bytes are shared, approvals are not.** Any client the upstream registry approves can
   receive the cached copy, whoever filled it.
+
+If you make a public repository private, an existing anonymous approval can still
+serve an identical request until it expires, up to 15 minutes by default.
 
 No grant is created if the request or any response in the redirect chain has
 any of the following:

@@ -88,12 +88,12 @@ OCI_ACCELERATOR_CONTAINER_PLATFORM=linux/arm64 \
 
 Uses the [Docker prerequisites](#docker-prerequisites).
 
-- **Single-platform** (`TestDockerPullThroughCompiledProxy`): uses the default authorization TTL
-  and fresh Docker stores to verify zero additional blob GETs on a warm pull. After proxy
-  restart, the same stored bodies require fresh upstream approval.
+- **Single-platform** (`TestDockerPullThroughCompiledProxy`): uses the default credentialed
+  authorization TTL and fresh Docker stores to verify zero additional blob GETs on a warm
+  pull. After proxy restart, the same stored bodies require fresh upstream approval.
 - **Multiplatform** (`TestDockerMultiPlatformThroughCompiledProxy`): uses
-  `cache.authorization_ttl: 0s`, withholds selected configuration and layer bodies during warm
-  and restarted-proxy phases, and still authorizes every GET with valid metadata. Each phase uses
+  both authorization TTLs set to `0s`, withholds selected configuration and layer bodies during
+  warm and restarted-proxy phases, and still authorizes every GET with valid metadata. Each phase uses
   fresh Docker state, so successful verified pulls prove proxy-cache delivery rather than
   Docker's local cache.
   - Manifest bodies remain live: Docker reorders `Accept` values across requests, which
@@ -109,8 +109,8 @@ OCI_ACCELERATOR_E2E=1 go test -v ./integration \
 
 ### Push
 
-Uses the same [Docker prerequisites](#docker-prerequisites) and default authorization TTL as the
-single-platform pull test.
+Uses the same [Docker prerequisites](#docker-prerequisites) and default credentialed authorization
+TTL as the single-platform pull test.
 
 1. Loads a deterministic image locally.
 2. Verifies that read-only credentials cannot publish.

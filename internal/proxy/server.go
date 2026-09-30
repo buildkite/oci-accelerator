@@ -81,7 +81,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		logger:        logger,
 		transport:     transport,
 		cache:         store,
-		authorization: newAuthorizationCache(cfg.Cache.AuthorizationTTL, cfg.Cache.MaxAuthorizationEntries),
+		authorization: newAuthorizationCache(cfg.Cache.AuthorizationTTL, cfg.Cache.AnonymousAuthorizationTTL, cfg.Cache.MaxAuthorizationEntries),
 		metrics:       newMetrics(),
 		configured:    make(map[string]struct{}, len(cfg.Registries)),
 		destinations:  make(map[string]struct{}),

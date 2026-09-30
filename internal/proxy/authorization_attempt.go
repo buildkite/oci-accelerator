@@ -43,7 +43,7 @@ func (t registryTransport) beginGrantAttempt(req *http.Request, object immutable
 
 	// Derive how long this request permits a cached grant to be reused, never
 	// exceeding a tighter lifetime inherited from an earlier hop.
-	requestLifetime := authorizationLifetime(req.Header, t.authorization.ttl)
+	requestLifetime := authorizationLifetime(req.Header, t.authorization.lifetime(req.Header))
 	if original, ok := req.Context().Value(authorizationLifetimeKey{}).(time.Duration); ok {
 		requestLifetime = min(requestLifetime, original)
 	}

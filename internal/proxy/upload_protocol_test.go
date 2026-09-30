@@ -54,7 +54,7 @@ func TestUploadProtocolPassthrough(t *testing.T) {
 	}))
 	defer origin.Close()
 	p, client := cacheFixture(t, origin, 1<<20, nil)
-	p.authorization = newAuthorizationCache(time.Minute, 10)
+	p.authorization = newAuthorizationCache(time.Minute, time.Minute, 10)
 	for i, step := range steps {
 		req, _ := http.NewRequest(step.method, origin.URL+step.path, strings.NewReader(step.body))
 		req.Header.Set("Authorization", "Bearer push-token")
@@ -158,7 +158,7 @@ func TestWritesBypassCacheAndLeavePullGrantUnchanged(t *testing.T) {
 	}))
 	defer origin.Close()
 	p, client := cacheFixture(t, origin, 1<<20, nil)
-	p.authorization = newAuthorizationCache(time.Minute, 10)
+	p.authorization = newAuthorizationCache(time.Minute, time.Minute, 10)
 	request := func(method string, status int, want string) {
 		t.Helper()
 		req, _ := http.NewRequest(method, origin.URL+blobURL(content), nil)

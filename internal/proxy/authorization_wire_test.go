@@ -38,7 +38,7 @@ func TestAuthorizationWireEquivalentDenialInvalidatesGrant(t *testing.T) {
 			}))
 			defer origin.Close()
 			p, _ := cacheFixture(t, origin, 1<<20, nil)
-			p.authorization = newAuthorizationCache(time.Minute, 10)
+			p.authorization = newAuthorizationCache(time.Minute, time.Minute, 10)
 			target, err := hostport.Parse(strings.TrimPrefix(origin.URL, "https://"), "443")
 			if err != nil {
 				t.Fatal(err)

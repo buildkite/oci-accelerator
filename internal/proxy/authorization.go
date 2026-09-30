@@ -22,13 +22,16 @@ import (
 // a request. Removing an entry also fences out its outstanding checks. The HMAC
 // key is never persisted, so restart clears every grant, and no credentials,
 // raw header values, signed redirect URLs, or reversible keys are retained.
+// Both request classes share the entry limit. Each approval has a fixed expiry
+// selected by header presence, and hits never renew it.
 type authorizationCache struct {
-	mu      sync.Mutex                       // guards all fields below against concurrent requests
-	secret  [32]byte                         // per-process HMAC key for fingerprinting requests
-	ttl     time.Duration                    // maximum lifetime granted to any cached authorization
-	limit   int                              // maximum number of entries before LRU eviction
-	entries map[[32]byte]*authorizationEntry // fingerprint to entry lookup for grants and pending checks
-	lru     list.List                        // recency ordering of entries, newest at the front
+	mu               sync.Mutex                       // guards all fields below against concurrent requests
+	secret           [32]byte                         // per-process HMAC key for fingerprinting requests
+	authorizationTTL time.Duration                    // maximum lifetime for requests carrying Authorization, even empty
+	anonymousTTL     time.Duration                    // maximum lifetime for requests without Authorization
+	limit            int                              // maximum number of entries before LRU eviction
+	entries          map[[32]byte]*authorizationEntry // fingerprint to entry lookup for grants and pending checks
+	lru              list.List                        // recency ordering of entries, newest at the front
 }
 
 type authorizationEntry struct {
@@ -42,11 +45,11 @@ type authorizationGrant struct {
 	expires time.Time      // instant past which the grant is stale and must not be reused
 }
 
-func newAuthorizationCache(ttl time.Duration, limit int) *authorizationCache {
-	if ttl <= 0 || limit <= 0 {
+func newAuthorizationCache(authorizationTTL, anonymousTTL time.Duration, limit int) *authorizationCache {
+	if (authorizationTTL <= 0 && anonymousTTL <= 0) || limit <= 0 {
 		return nil
 	}
-	c := &authorizationCache{ttl: ttl, limit: limit, entries: make(map[[32]byte]*authorizationEntry)}
+	c := &authorizationCache{authorizationTTL: authorizationTTL, anonymousTTL: anonymousTTL, limit: limit, entries: make(map[[32]byte]*authorizationEntry)}
 	// crypto/rand.Read terminates the process if secure randomness is unavailable.
 	rand.Read(c.secret[:])
 	return c
@@ -218,4 +221,15 @@ func (t registryTransport) authorizedResponse(req *http.Request, e *authorizatio
 			"Date":          {time.Now().UTC().Format(http.TimeFormat)},
 		},
 	}
+}
+
+// lifetime selects the TTL by header presence, not credential validity. An
+// empty Authorization is still credentialed, and zero disables its class.
+func (c *authorizationCache) lifetime(h http.Header) time.Duration {
+	for name := range h {
+		if strings.EqualFold(name, "Authorization") {
+			return c.authorizationTTL
+		}
+	}
+	return c.anonymousTTL
 }

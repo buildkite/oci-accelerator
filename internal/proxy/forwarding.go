@@ -99,7 +99,12 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		if p.authorization != nil {
 			// Preserve revalidation restrictions even if Connection names a
 			// header that the reverse proxy will remove from the outgoing request.
-			lifetime := authorizationLifetime(r.Header, p.authorization.ttl)
+			lifetime := authorizationLifetime(r.Header, p.authorization.lifetime(r.Header))
+			if headerHasToken(r.Header, "Connection", "Authorization") {
+				// Stripping credentials must not let this request borrow or
+				// create an anonymous approval for the forwarded identity.
+				lifetime = 0
+			}
 			ctx = context.WithValue(ctx, authorizationLifetimeKey{}, lifetime)
 		}
 		r = r.WithContext(context.WithValue(ctx, statsKey{}, stats))

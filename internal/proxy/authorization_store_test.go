@@ -24,7 +24,7 @@ func authorizationRequest(t *testing.T, rawURL, authorization string) *http.Requ
 }
 
 func TestAuthorizationFingerprintContract(t *testing.T) {
-	c := newAuthorizationCache(time.Second, 10)
+	c := newAuthorizationCache(time.Second, time.Second, 10)
 	base := authorizationRequest(t, "https://REGISTRY.test:443/v2/a%2Fb?x=1", "Bearer token")
 	base.Header["X-Multi"] = []string{"first", "second"}
 	base.Header["X-Empty"] = []string{}
@@ -63,7 +63,7 @@ func TestAuthorizationFingerprintContract(t *testing.T) {
 	if c.fingerprint(a) == c.fingerprint(b) {
 		t.Fatal("distinct non-UTF-8 header bytes collided")
 	}
-	other := newAuthorizationCache(time.Second, 10)
+	other := newAuthorizationCache(time.Second, time.Second, 10)
 	if c.fingerprint(base) == other.fingerprint(base) {
 		t.Fatal("process-local secrets did not separate fingerprints")
 	}
@@ -71,10 +71,10 @@ func TestAuthorizationFingerprintContract(t *testing.T) {
 
 func TestAuthorizationStoreExpiryDoesNotRenewOnHit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		c := newAuthorizationCache(30*time.Second, 2)
+		c := newAuthorizationCache(30*time.Second, 30*time.Second, 2)
 		r := authorizationRequest(t, "https://registry.test/v2/x", "Bearer x")
 		e, _ := c.start(r)
-		g := &authorizationGrant{meta: cache.Metadata{Key: "x"}, expires: time.Now().Add(c.ttl)}
+		g := &authorizationGrant{meta: cache.Metadata{Key: "x"}, expires: time.Now().Add(c.authorizationTTL)}
 		c.commit(e, g)
 		time.Sleep(20 * time.Second)
 		if gotEntry, got := c.start(r); gotEntry != e || got != g {
@@ -87,8 +87,44 @@ func TestAuthorizationStoreExpiryDoesNotRenewOnHit(t *testing.T) {
 	})
 }
 
+func TestAuthorizationCacheSelectsIndependentLifetimes(t *testing.T) {
+	c := newAuthorizationCache(3*time.Second, 17*time.Second, 10)
+	authorized := authorizationRequest(t, "https://registry.test/v2/x", "Bearer token")
+	anonymous := authorizationRequest(t, "https://registry.test/v2/x", "")
+	empty := authorizationRequest(t, "https://registry.test/v2/x", "")
+	empty.Header["Authorization"] = []string{""}
+
+	if got := c.lifetime(authorized.Header); got != 3*time.Second {
+		t.Fatalf("authorized lifetime = %v, want 3s", got)
+	}
+	if got := c.lifetime(anonymous.Header); got != 17*time.Second {
+		t.Fatalf("anonymous lifetime = %v, want 17s", got)
+	}
+	if got := c.lifetime(empty.Header); got != 3*time.Second {
+		t.Fatalf("present-empty Authorization lifetime = %v, want 3s", got)
+	}
+	if c.fingerprint(authorized) == c.fingerprint(anonymous) || c.fingerprint(empty) == c.fingerprint(anonymous) {
+		t.Fatal("authorized, present-empty, and anonymous identities were not separated")
+	}
+}
+
+func TestAuthorizationCacheIndependentDisablement(t *testing.T) {
+	if newAuthorizationCache(0, 0, 10) != nil {
+		t.Fatal("both zero lifetimes enabled cache")
+	}
+	if newAuthorizationCache(time.Second, 0, 10) == nil {
+		t.Fatal("credentialed lifetime alone did not enable cache")
+	}
+	if newAuthorizationCache(0, time.Second, 10) == nil {
+		t.Fatal("anonymous lifetime alone did not enable cache")
+	}
+	if newAuthorizationCache(time.Second, time.Second, 0) != nil {
+		t.Fatal("invalid entry limit enabled cache")
+	}
+}
+
 func TestAuthorizationStoreBoundsPendingAndFencesCompletion(t *testing.T) {
-	c := newAuthorizationCache(time.Minute, 2)
+	c := newAuthorizationCache(time.Minute, time.Minute, 2)
 	r1 := authorizationRequest(t, "https://registry.test/v2/1", "Bearer 1")
 	r2 := authorizationRequest(t, "https://registry.test/v2/2", "Bearer 2")
 	r3 := authorizationRequest(t, "https://registry.test/v2/3", "Bearer 3")
@@ -118,7 +154,7 @@ func TestAuthorizationStoreBoundsPendingAndFencesCompletion(t *testing.T) {
 }
 
 func TestAuthorizationDenialAfterEvictionInvalidatesReplacement(t *testing.T) {
-	c := newAuthorizationCache(time.Minute, 1)
+	c := newAuthorizationCache(time.Minute, time.Minute, 1)
 	req := authorizationRequest(t, "https://registry.test/v2/a", "Bearer a")
 	old, _ := c.start(req)
 	c.start(authorizationRequest(t, "https://registry.test/v2/b", "Bearer b"))
@@ -137,7 +173,7 @@ func TestAuthorizationDenialAfterEvictionInvalidatesReplacement(t *testing.T) {
 }
 
 func TestAuthorizationStoreConcurrentSafety(t *testing.T) {
-	c := newAuthorizationCache(time.Minute, 8)
+	c := newAuthorizationCache(time.Minute, time.Minute, 8)
 	var wg sync.WaitGroup
 	for worker := 0; worker < 24; worker++ {
 		wg.Add(1)
