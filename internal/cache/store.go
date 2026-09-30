@@ -61,12 +61,12 @@ var completedNotification = func() <-chan struct{} {
 
 // OpenWithLimits opens or creates the private cache directory dir, takes its
 // exclusive lock, and inventories existing entries, discarding abandoned fills.
-// Errors match ErrInvalidLimits, ErrLockConflict, ErrUnsafeState, or
+// Errors match ErrInvalidConfig, ErrLockConflict, ErrUnsafeState, or
 // ErrFilesystem; filesystem errors also wrap their cause.
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	// Reject an empty directory or out-of-range limits before touching the filesystem.
 	if dir == "" || !limits.valid() {
-		return nil, ErrInvalidLimits
+		return nil, ErrInvalidConfig
 	}
 
 	dir = filepath.Clean(dir)

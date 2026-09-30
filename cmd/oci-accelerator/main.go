@@ -55,9 +55,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 	if err != nil {
 		return err
 	}
-	if closeStore != nil {
-		defer func() { runErr = errors.Join(runErr, closeStore()) }()
-	}
+	defer func() { runErr = errors.Join(runErr, closeStore()) }()
 
 	listener, err := listen("tcp", cfg.Listen)
 	if err != nil {
@@ -116,12 +114,9 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	return cfg, false, nil
 }
 
-// openCacheStore opens the configured cache, returning a nil store and cleanup
-// when none is set and otherwise a cleanup the caller must defer.
+// openCacheStore opens the configured cache and returns a cleanup the caller
+// must defer.
 func openCacheStore(cfg config.Config, logger *slog.Logger) (*cache.Store, func() error, error) {
-	if cfg.Cache.Dir == "" {
-		return nil, nil, nil
-	}
 	store, err := cache.OpenWithLimits(cfg.Cache.Dir, cache.Limits{
 		MaxBytes:    cfg.Cache.MaxBytes,
 		MaxFills:    cfg.Cache.MaxFills,
@@ -218,8 +213,8 @@ func cacheDiagnostic(prefix string, err error) error {
 		category = "cache is locked by another process"
 	case errors.Is(err, cache.ErrUnsafeState):
 		category = "unsafe cache state"
-	case errors.Is(err, cache.ErrInvalidLimits):
-		category = "invalid cache limits"
+	case errors.Is(err, cache.ErrInvalidConfig):
+		category = "invalid cache configuration"
 	case errors.Is(err, cache.ErrActiveReaders):
 		category = "active cache readers"
 	}

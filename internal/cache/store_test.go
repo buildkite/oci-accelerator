@@ -5,11 +5,67 @@ import (
 	"errors"
 	"io"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
+
+func TestOpenRejectsInvalidConfig(t *testing.T) {
+	valid := Limits{MaxBytes: 1 << 20, MaxFills: 1, MaxEntries: 1, FillTimeout: time.Minute}
+
+	// Prove the baseline opens, so each rejection below isolates one field.
+	s, err := OpenWithLimits(filepath.Join(t.TempDir(), "cache"), valid)
+	if err != nil {
+		t.Fatalf("valid limits error = %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("empty dir", func(t *testing.T) {
+		// A private working directory would be adoptable if "" became ".".
+		wd := t.TempDir()
+		if err := os.Chmod(wd, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(wd)
+		if _, err := OpenWithLimits("", valid); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("error = %v, want invalid config", err)
+		}
+		if _, err := os.Lstat(".lock"); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("empty dir touched working directory: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Limits)
+	}{
+		{"zero max bytes", func(l *Limits) { l.MaxBytes = 0 }},
+		{"negative max bytes", func(l *Limits) { l.MaxBytes = -1 }},
+		{"zero max fills", func(l *Limits) { l.MaxFills = 0 }},
+		{"negative max fills", func(l *Limits) { l.MaxFills = -1 }},
+		{"zero max entries", func(l *Limits) { l.MaxEntries = 0 }},
+		{"negative max entries", func(l *Limits) { l.MaxEntries = -1 }},
+		{"zero fill timeout", func(l *Limits) { l.FillTimeout = 0 }},
+		{"negative fill timeout", func(l *Limits) { l.FillTimeout = -time.Second }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limits := valid
+			tc.mutate(&limits)
+			dir := filepath.Join(t.TempDir(), "cache")
+			if _, err := OpenWithLimits(dir, limits); !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("error = %v, want invalid config", err)
+			}
+			if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("invalid limits touched filesystem: %v", err)
+			}
+		})
+	}
+}
 
 func TestCompletionTracksMatchingFillTerminalState(t *testing.T) {
 	s := openTest(t, 1<<20)

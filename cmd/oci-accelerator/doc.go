@@ -2,7 +2,7 @@
 // its root CA.
 //
 // The default command loads and validates the YAML configuration, then wires the
-// certificate authority, optional cache, proxy, and optional metrics and probe
+// certificate authority, cache, proxy, and optional metrics and probe
 // server together and serves until SIGINT or SIGTERM. The init-ca subcommand
 // creates or validates the root CA directory without starting anything else.
 //
