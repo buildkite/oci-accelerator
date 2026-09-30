@@ -1,108 +1,131 @@
-# Operating OCI Accelerator with Docker Engine
+# Operating OCI Accelerator
 
-OCI Accelerator is an HTTP CONNECT proxy that intercepts configured HTTPS registries and
-caches verified SHA-256 blobs and digest manifests. By default it may reuse an exact-request
-upstream authorization grant for 30 seconds. Set `cache.authorization_ttl: 0s` to require an
-upstream authorization GET for every delivery. There is no offline or failed-request fallback.
+OCI Accelerator is an HTTP CONNECT proxy. It intercepts configured HTTPS registries and caches
+verified SHA-256 blobs and digest manifests; all other destinations are tunneled unmodified.
+See [how it works](how-it-works.md) for the request flow and design.
 
-Linux Docker Engine is the validated client. Docker Desktop, Windows, containerd, and
-BuildKit-specific integration are not validated.
+| Client or platform                                                        | Status        |
+| ------------------------------------------------------------------------- | ------------- |
+| Linux Docker Engine                                                       | Validated     |
+| Docker Desktop, Windows, containerd, BuildKit-specific integration        | Not validated |
 
-## Build and start
+## Security model
 
-Install Go 1.27.1, then run from the repository root:
+- **No client authentication.** Anyone who can reach the listener can open opaque CONNECT
+  tunnels to arbitrary hosts and ports, which cannot be inspected or restricted to image
+  pulls. Keep the default loopback bind, or bind a private interface behind network access
+  controls and a firewall. Never expose the proxy through an Amp portal.
+- **The CA can sign any server identity.** Protect `ca.key`, never distribute it or bake it
+  into an image, and scope client trust to each intercepted registry rather than system-wide.
+- **The CA download is unauthenticated.** Verify its fingerprint through a trusted channel
+  before installing it ([details](#trust-the-ca)).
+- **Upstream TLS is always verified**, using the proxy process's system trust store. There is
+  no insecure mode.
+- **Credentials stay with Docker.** Never put credentials in proxy YAML. Cross-origin redirects
+  never forward credentials or cookies.
+- **The registry authorizes deliveries.** Each cached delivery is approved by an upstream GET,
+  or by an exact-request grant up to `cache.authorization_ttl` (30 seconds by default), so
+  revocation can lag by up to that long. Set `0s` to require upstream approval for every
+  delivery. There is no offline or failed-request fallback.
+- **Logs contain repository names, tags, and digests.** Restrict access to them.
+- **Metrics and probes are unauthenticated.** They bind loopback only unless explicitly opted in.
+- **Redirect checks do not constrain tunnels.** Destination checks protect only fetches the
+  proxy makes itself; deployment network controls remain essential.
+
+## Deploy
+
+### Prerequisites
+
+| Deployment | Requires                                                              |
+| ---------- | --------------------------------------------------------------------- |
+| Native     | Go 1.27.1 to build; a service manager to supervise the process        |
+| Container  | Linux Docker daemon with Buildx; Compose for the supplied service     |
+
+Neither CA initialization nor proxy startup creates ancestor directories. Provision the
+immediate parent of `ca_dir` and `cache.dir` as the proxy's user before first start (see
+[state directories](#state-directories)).
+
+### Run the binary
+
+From the repository root:
 
 ```sh
 go build -o bin/oci-accelerator ./cmd/oci-accelerator
 cp config.example.yaml config.local.yaml
+# Edit registries, then validate:
 bin/oci-accelerator --config config.local.yaml --check
 ```
 
-Edit `registries` before starting. Each `registries` and `redirect_allowlist` entry is a `host`
-or `host:port` with no scheme or path; an omitted port means 443, and matching includes the
-port. Bracket IPv6 with a port, for example `[2001:db8::1]:5000`. Entries differing only in
-case, a trailing dot, or `:443` are duplicates and are rejected. Explicitly configured private
-registries are supported. Relative directories are resolved from the configuration file.
-Unknown or duplicate keys, extra YAML documents, invalid zero values, and malformed durations
-are rejected. `cache.fill_wait_timeout: 0s` and `cache.authorization_ttl: 0s` are the permitted
-zero durations. Null values
-retain scalar defaults, but null list elements are invalid. String fields reject non-string
-scalars. Numeric limits require decimal YAML integers without leading zeros: floats, quoted
-numbers, octal/hex forms, and underscores are rejected. `ca_dir` and `cache.dir` must both be
-nonblank and must resolve to distinct, lexically normalized absolute paths; there is no
-forwarding-only configuration mode. The CA directory must not be inside the cache directory,
-because the cache owns, and may remove, entries in its directory; the reverse nesting is
-permitted. This validation does not resolve symlinks or inspect state; the filesystem
-ownership and layout checks still apply at startup.
+`--check` validates only the configuration. It does not inspect CA or cache state, bind
+listeners, or create directories.
 
-`--check` validates only the configuration. It does not inspect CA/cache state, bind listeners,
-or create directories. Before starting, provision the immediate parent of each state directory
-as the proxy's user. For the example, create `data` only if absent, and check its ownership and
-permissions if it exists:
+Create the state parent (`data` in the example) only if absent; if it exists, check its
+ownership and permissions. Optionally provision the CA ahead of time, then start:
 
 ```sh
 mkdir -m 0700 data
-bin/oci-accelerator init-ca --dir data/ca
+bin/oci-accelerator init-ca --dir data/ca   # optional; startup creates it otherwise
 bin/oci-accelerator --config config.local.yaml
 ```
 
-`init-ca` provisions only the root CA; it does not load YAML or start the proxy, cache, or any
-network activity. `--dir` is required, and relative paths such as `data/ca` are resolved from
-the working directory. The parent must already exist. On success it prints the public
-certificate path and lowercase SHA-256 fingerprint as `ca_certificate="..."` and
-`ca_sha256=...`; it never prints the private key. Keep the containing path trusted and on
-durable storage. Neither CA initialization nor proxy startup creates ancestors.
+Then [configure Docker hosts](#configure-docker-hosts).
 
-Run the process under the host's service manager. In an Amp orb, for example:
+### Run under a service manager
 
-```sh
-amp orb service start registry-proxy \
-  --command './bin/oci-accelerator --config config.local.yaml'
-amp orb service logs registry-proxy
-```
+Run the process under the host's service manager. It stops gracefully on SIGINT or SIGTERM
+(see [shutdown](#shutdown)). For Amp orbs, see the [appendix](#appendix-amp-orbs).
 
-Do not expose the proxy through an Amp portal. The default `127.0.0.1:3128` listener is for
-Docker on the same host. Serving remote hosts requires an explicit private-interface bind,
-network access controls, and a firewall. The proxy has no client authentication: any user who
-can reach it can open an opaque CONNECT tunnel to arbitrary hosts and ports. Such tunnels
-cannot be inspected or restricted to image pulls.
+### Run in a container
 
-## Container deployment
+#### Image
 
-The root `Dockerfile` builds a static Go binary in an Alpine-based image named
-`oci-accelerator:local`. It runs as numeric user and group `10001:10001`, with
-`/usr/local/bin/oci-accelerator` as its entrypoint and
-`--config /etc/oci-accelerator/config.yaml` as its default arguments.
+The root `Dockerfile` builds a static Go binary into an Alpine-based image.
 
-The supplied Compose service builds from the repository root and uses that local image. It
-publishes only `127.0.0.1:3128`, keeps the root filesystem read-only, drops all capabilities,
-sets `no-new-privileges`, and mounts:
+| Property          | Value                                           |
+| ----------------- | ----------------------------------------------- |
+| Local tag         | `oci-accelerator:local`                         |
+| User and group    | `10001:10001`                                   |
+| Entrypoint        | `/usr/local/bin/oci-accelerator`                |
+| Default arguments | `--config /etc/oci-accelerator/config.yaml`     |
+| Health check      | `wget` of `http://127.0.0.1:9090/readyz`        |
+| State directories | `/var/lib/oci-accelerator` and its `cache/`, UID/GID 10001, mode 0700; `ca/` left absent |
 
-- `./config.container.yaml` read-only at `/etc/oci-accelerator/config.yaml`;
-- the named `oci-accelerator-ca` volume writable at `/var/lib/oci-accelerator`; and
-- the separate named `oci-accelerator-cache` volume writable at `/var/lib/oci-accelerator/cache`.
+The health check needs the metrics listener enabled at `127.0.0.1:9090`; keep it there or
+override the health check when changing the YAML. An unhealthy result is diagnostic and does not
+itself trigger a restart. Readiness does not check upstream connectivity or disk capacity.
 
-The CA volume mounts the parent so startup can atomically create its `ca/` child.
-The image leaves that child absent and gives the parent and cache directory UID/GID
-10001 and mode 0700. Docker copies these permissions into fresh volumes, so no host
-directory provisioning or root entrypoint is needed. The CA volume remains writable
-at runtime. Existing valid CA files are reused, not replaced. Never bake `ca.key`
-into an image. The volume names match the `docker run` example below; run
-only one proxy against them at a time. Compose warns when reusing volumes created by
-`docker run` because it does not own those volumes. These examples do not migrate
-existing host bind-mounted data; starting with new volumes creates a new CA that clients must trust.
+`config.container.yaml` uses `/var/lib/oci-accelerator/ca` for `ca_dir`,
+`/var/lib/oci-accelerator/cache` for `cache.dir`, the same registries as `config.example.yaml`,
+and a loopback-only metrics listener at `127.0.0.1:9090` that is not published to the host.
 
-The container configuration uses `/var/lib/oci-accelerator/ca` for `ca_dir`,
-`/var/lib/oci-accelerator/cache` for `cache.dir`, the same registry list as
-`config.example.yaml`, and a loopback-only metrics listener at `127.0.0.1:9090`. Metrics are
-not published to the host. The image health check calls `http://127.0.0.1:9090/readyz` with
-`wget`; an unhealthy result is diagnostic and does not itself trigger a restart. Keep this
-listener enabled at that address, or override the healthcheck when changing the YAML.
-Readiness does not check upstream connectivity or disk capacity. Compose uses
-`restart: unless-stopped` and a 40-second stop grace period, allowing for the application's
-15-second shutdown timeout and metrics cleanup. Increase it if you raise `shutdown_timeout`.
+#### Compose
 
-Build the image, validate configuration, then start the service:
+The supplied `compose.yaml` service builds the local image from the repository root and:
+
+- publishes only `127.0.0.1:3128`;
+- keeps the root filesystem read-only, drops all capabilities, and sets `no-new-privileges`;
+- uses `restart: unless-stopped` and a 40-second stop grace period, allowing for the 15-second
+  `shutdown_timeout` and metrics cleanup (increase it if you raise `shutdown_timeout`).
+
+| Source                             | Mount point                       | Access     |
+| ---------------------------------- | --------------------------------- | ---------- |
+| `./config.container.yaml`          | `/etc/oci-accelerator/config.yaml` | Read-only |
+| `oci-accelerator-ca` volume        | `/var/lib/oci-accelerator`        | Writable   |
+| `oci-accelerator-cache` volume     | `/var/lib/oci-accelerator/cache`  | Writable   |
+
+Volume notes:
+
+- The CA volume mounts the parent so startup can atomically create its `ca/` child. Docker
+  copies the image's ownership and permissions into fresh volumes, so no host directory
+  provisioning or root entrypoint is needed. The CA volume remains writable at runtime.
+- Existing valid CA files are reused, not replaced.
+- Run only one proxy against these volumes at a time. The names match the
+  [`docker run`](#docker-run) example; Compose warns when reusing volumes created by
+  `docker run` because it does not own them.
+- These examples do not migrate existing host bind-mounted data. Starting with new volumes
+  creates a new CA that clients must trust.
+
+Build, validate, and start:
 
 ```sh
 docker compose build
@@ -110,6 +133,20 @@ docker compose run --rm --no-deps oci-accelerator \
   --config /etc/oci-accelerator/config.yaml --check
 docker compose up -d
 ```
+
+`--check` does not inspect the mounted CA or cache state. First startup generates the CA; then
+[configure Docker hosts](#configure-docker-hosts), installing only the public certificate.
+
+| Command                                   | Effect on volumes                                      |
+| ----------------------------------------- | ------------------------------------------------------ |
+| `docker compose down`                     | Preserves both                                         |
+| `docker volume rm oci-accelerator-cache`  | Deletes only the cache ([reset the cache](#reset-the-cache)) |
+| **`docker compose down -v`**              | **Deletes both, including the signing CA**             |
+
+Preserve the CA volume independently of the replaceable cache. Deleting it makes the next
+startup generate a new identity and requires redistributing client trust.
+
+#### docker run
 
 The equivalent without Compose, from the repository root:
 
@@ -126,114 +163,297 @@ docker logs oci-accelerator
 docker inspect --format '{{.State.Health.Status}}' oci-accelerator
 ```
 
-Stop it with `docker stop oci-accelerator`; removing the container preserves both named
-volumes.
+Stop it with `docker stop oci-accelerator`. Removing the container preserves both named volumes.
 
-`--check` validates configuration only; it does not inspect the mounted CA or cache state.
-First startup generates the CA. Follow [Configure CA trust and Docker](#configure-ca-trust-and-docker)
-to verify its fingerprint and install only the public certificate for Docker clients.
-Do not modify the live cache. To reset the disposable cache, stop the service and remove
-only its volume:
+#### Multi-architecture images
 
-```sh
-docker compose down
-docker volume rm oci-accelerator-cache
-docker compose up -d
-```
-
-This permanently deletes cached content and creates a fresh cache volume, preserving
-`oci-accelerator-ca`. Plain `docker compose down` preserves both volumes.
-**`docker compose down -v` deletes both Compose-managed volumes, including the signing CA.** Preserve the CA
-volume independently of the replaceable cache; deleting it causes the next startup to
-generate a new identity and requires redistributing client trust.
-
-For local architecture-specific images, Buildx can load one platform at a time:
+Buildx can load one platform at a time:
 
 ```sh
 docker buildx build --platform linux/amd64 --load -t oci-accelerator:amd64 .
 docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
 ```
 
-Building or running the arm64 image requires a native arm64 host or configured emulation:
-Go compilation runs on the builder's architecture, but Alpine's runtime setup executes on
-the target architecture. If a
-multi-platform OCI archive is required, use a Buildx builder with the `docker-container`
-driver and an OCI output instead of `--load`. Buildkite validates both architectures
-and publishes successful current `main` builds to `buildkite/oci-accelerator:latest`;
-see the [publishing workflow and prerequisites](../.buildkite/README.md#docker-hub-releases).
-Container builds require a Linux Docker daemon with Buildx; the deployment example uses Compose.
+- Building or running the arm64 image requires a native arm64 host or configured emulation: Go
+  compilation runs on the builder's architecture, but Alpine's runtime setup executes on the
+  target architecture.
+- For a multi-platform OCI archive, use a Buildx builder with the `docker-container` driver and
+  an OCI output instead of `--load`.
+- Buildkite validates both architectures and publishes successful current `main` builds to
+  `buildkite/oci-accelerator:latest`; see the
+  [publishing workflow and prerequisites](../.buildkite/README.md#docker-hub-releases).
 
-## Configure CA trust and Docker
+### Serve remote Docker hosts
 
-The native example uses `data/ca/ca.crt` and `data/ca/ca.key` on the host. The
-[container workflow](#container-deployment) keeps them under `ca/` in the
-`oci-accelerator-ca` named volume. Both generate the CA on first startup. Use the
-ownership required by the chosen deployment: the native process user or container
-UID 10001. Existing files owned by another user fail validation.
-Leave the CA directory absent initially; do not pre-create an empty directory. Its parent must
-be owned by the proxy user and must not be group- or world-writable. A valid existing pair is
-validated and reused unchanged; empty, invalid, expired, incomplete, symlinked, or insecurely
-permissioned state fails. Initialization uses the existing P-256, ten-year root CA profile and
-preserves ownership and permissions of reused state. The command's `ca_sha256` output and
-startup logs provide the same fingerprint for trusted distribution.
+The default `127.0.0.1:3128` listener serves Docker on the same host. To serve remote hosts:
 
-Provisioning the CA does not install client trust and does not enable automatic rotation.
+1. Set `listen` to an explicit private-interface address.
+2. Restrict access with network access controls and a firewall (see [security model](#security-model)).
+3. Use the proxy's private address in each host's [Docker proxy configuration](#point-docker-at-the-proxy).
 
-On the Docker host, download the public root CA directly from the proxy's HTTP listener.
-Set `PROXY_URL` to its HTTP URL (the same address used for Docker's proxy configuration):
+## Configuration
+
+See [`config.example.yaml`](../config.example.yaml) for a complete configuration. Configuration
+is static; changes take effect after restart.
+
+### File rules
+
+- Exactly one YAML document; unknown or duplicate keys are rejected.
+- Null values retain scalar defaults; null list elements are invalid.
+- String fields reject non-string scalars.
+- Numeric limits require decimal YAML integers without leading zeros. Floats, quoted numbers,
+  octal or hex forms, and underscores are rejected.
+- Malformed durations and invalid zero values are rejected. The only permitted zero durations
+  are `cache.fill_wait_timeout: 0s` and `cache.authorization_ttl: 0s`.
+- Relative directories are resolved from the configuration file's directory.
+
+### Registry authorities
+
+Each `registries` and `redirect_allowlist` entry is an authority: `host` or `host:port`, with
+no scheme or path. An omitted port means 443, and matching includes the port.
+
+| Entry                   | Matches                  |
+| ----------------------- | ------------------------ |
+| `ghcr.io`               | `ghcr.io:443`            |
+| `registry.example:5000` | `registry.example:5000`  |
+| `[2001:db8::1]:5000`    | IPv6 with a port (bracketed) |
+
+Entries differing only in case, a trailing dot, or `:443` are duplicates and are rejected.
+Explicitly configured private registries are supported.
+
+### State directories
+
+- `ca_dir` and `cache.dir` must both be nonblank and resolve to distinct, lexically normalized
+  absolute paths. There is no forwarding-only mode.
+- The CA directory must not be inside the cache directory, because the cache owns, and may
+  remove, entries in its directory. The reverse nesting is permitted.
+- Before first start, create the immediate parent of each directory as the proxy's user,
+  without group or other write access (for example `mkdir -m 0700 data`). The directories
+  themselves are created at startup; no ancestors are.
+- Configuration validation does not resolve symlinks or inspect state. Filesystem ownership and
+  layout checks apply at startup ([CA](#ca-directory-requirements), [cache](#capacity-and-eviction)).
+
+### Settings
+
+**Listeners**
+
+| Setting                | Default          | Notes                                                                                    |
+| ---------------------- | ---------------- | ---------------------------------------------------------------------------------------- |
+| `listen`               | `127.0.0.1:3128` | host:port with a nonzero numeric port; empty or wildcard hosts bind all interfaces      |
+| `metrics_listen`       | Disabled         | host:port with a nonzero numeric port; literal loopback IP required unless `metrics_allow_remote` |
+| `metrics_allow_remote` | `false`          | Explicit boolean opt-in to non-loopback metrics and probe binding                       |
+
+**Registries and state**
+
+| Setting              | Default  | Notes                                                                     |
+| -------------------- | -------- | ------------------------------------------------------------------------- |
+| `registries`         | Required | Nonempty list of distinct [authorities](#registry-authorities) to intercept |
+| `redirect_allowlist` | Empty    | Private HTTPS storage [authorities](#registry-authorities); does not enable interception |
+| `ca_dir`             | Required | Private persistent CA directory                                           |
+| `cache.dir`          | Required | Private persistent cache directory                                        |
+
+**Cache and authorization**
+
+| Setting                           | Default | Notes                                                                                   |
+| --------------------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `cache.max_bytes`                 | 32 GiB  | Includes body, metadata, and fill reservations                                          |
+| `cache.max_fills`                 | 16      | Concurrent storage writers; excess misses stream uncached                               |
+| `cache.max_entries`               | 100000  | Entry slots, including fills and pending cleanup                                        |
+| `cache.fill_timeout`              | `10m`   | Bounds ranged fetches from request start; ends ordinary full-GET cache admission        |
+| `cache.fill_wait_timeout`         | `1s`    | `0s` disables waiting for an existing fill                                              |
+| `cache.authorization_ttl`         | `30s`   | Maximum fixed lifetime of a process-local approval; `0s` requires an upstream GET for every delivery |
+| `cache.max_authorization_entries` | 10000   | Positive bound on in-memory authorization grants                                        |
+
+**Timeouts and connections**
+
+| Setting                   | Default | Notes                                                        |
+| ------------------------- | ------- | ------------------------------------------------------------ |
+| `dial_timeout`            | `10s`   |                                                              |
+| `tls_handshake_timeout`   | `10s`   |                                                              |
+| `response_header_timeout` | `30s`   | Also bounds incoming request headers                         |
+| `idle_timeout`            | `2m`    | Idle tunnels and I/O                                         |
+| `shutdown_timeout`        | `15s`   | Drain deadline                                               |
+| `max_connections`         | 256     | Accepted client connections, including incomplete CONNECTs   |
+| `max_leaf_certificates`   | 256     | Cached interception certificates                             |
+
+Timeout behavior:
+
+- For eligible blob range requests, `cache.fill_timeout` bounds the upstream fetch, starting
+  before the first upstream GET, including when cache-fill admission is refused. Admitted
+  background fills remain subject to the same deadline.
+- Delivery from an already-open cached reader is not limited by `cache.fill_timeout`; idle-I/O
+  deadlines and shutdown handling still apply.
+- Other active transfers have idle-I/O deadlines, not total download deadlines. Uploads have no
+  total size limit ([push and delete](#push-and-delete)).
+- Kernel filesystem calls cannot be preempted, so fill expiry and shutdown are not hard
+  deadlines when storage stalls.
+
+Memory: `cache.max_entries` and `cache.max_authorization_entries` bound their indexes, not total
+process RSS; tune both to available memory. Bodies stream rather than accumulate in memory.
+
+### Built-in limits
+
+| Limit                                        | Value                              |
+| -------------------------------------------- | ---------------------------------- |
+| CONNECT request and upstream response headers | 64 KiB                            |
+| Upstream connections per destination         | 16                                 |
+| Idle upstream connections                    | 32 globally, 8 per destination     |
+| Redirects followed                           | 5                                  |
+| Cache metadata charge                        | 4 KiB per entry                    |
+| Eviction removal attempts per admission      | 8                                  |
+| CA PEM file size                             | 64 KiB each                        |
+| Root CA validity                             | 10 years                           |
+| Leaf certificate validity                    | At most 24 hours                   |
+| Intercepted protocols                        | TLS 1.2 or newer, HTTP/1.1         |
+
+## CA management
+
+The CA is `ca.crt` and `ca.key` in `ca_dir`: `data/ca/` on the host in the native example, or
+`ca/` in the `oci-accelerator-ca` volume for containers. See
+[trusting the accelerator's certificate](how-it-works.md#trusting-the-accelerators-certificate)
+and [per-registry certificates](how-it-works.md#per-registry-certificates) for how the CA and
+leaf certificates are used.
+
+### Create the CA
+
+The CA is created on first startup, or ahead of time with `init-ca`. Both only create it when
+the CA directory is absent; leave it absent initially and do not pre-create an empty directory.
 
 ```sh
-curl --noproxy '*' --fail --show-error --output ca.crt "$PROXY_URL/ca.crt"
-openssl x509 -in ca.crt -noout -fingerprint -sha256
+bin/oci-accelerator init-ca --dir data/ca
 ```
 
-Before installing, compare this fingerprint with `ca_sha256` from startup logs obtained
-through a trusted channel, such as SSH or your deployment system. Do not install the
-certificate if they differ or you cannot obtain a trusted expected fingerprint.
-The HTTP download is unauthenticated: an attacker could replace the certificate, and
-a fingerprint fetched over the same connection would not establish authenticity.
-Alternatively, transfer only the public `ca.crt` through an already trusted channel.
+- `init-ca` provisions only the root CA. It does not load YAML or start the proxy, cache, or any
+  network activity.
+- `--dir` is required; relative paths are resolved from the working directory. The parent must
+  already exist.
+- On success it prints `ca_certificate="..."` (the public certificate path) and `ca_sha256=...`
+  (the lowercase SHA-256 fingerprint). It never prints the private key. Startup logs the same
+  `ca_sha256` for trusted distribution.
+- A valid existing pair is validated and reused unchanged, preserving its ownership and
+  permissions.
+- New CAs use a P-256, ten-year root CA profile.
+- Provisioning does not install client trust or enable automatic rotation.
+- Keep the containing path trusted and on durable storage.
 
-OpenSSL displays uppercase colon-separated hex, while startup logs lowercase hex without
-colons. The CA can sign arbitrary server identities, so protect `ca.key` and narrowly scope
-trust.
+Initialization stages the certificate and key in a private `.ca-init-*` directory under the CA
+parent, then atomically renames it into place. Concurrent initializers adopt the published
+winner; there is no persistent lock.
 
-After verifying the fingerprint, on rootful Linux Docker Engine install the public
-certificate for each intercepted registry, rather than adding system-wide trust:
+### CA directory requirements
 
-```sh
-sudo install -D -m 0644 ca.crt /etc/docker/certs.d/registry-1.docker.io/ca.crt
-sudo install -D -m 0644 ca.crt /etc/docker/certs.d/ghcr.io/ca.crt
-sudo install -D -m 0644 ca.crt /etc/docker/certs.d/public.ecr.aws/ca.crt
-```
+Proxy startup and `init-ca` apply the same checks. Provision the parent and ensure its
+durability first, so permissions do not depend on the umask and a crash cannot lose newly
+created ancestors.
 
-`GET /ca.crt` and `HEAD /ca.crt` are always available to anyone who can reach the
-proxy listener; they need no registry credentials or additional listener configuration.
-The endpoint serves the root CA loaded by the running process, never the private key.
-It does not install trust or rotate certificates. Only the exact `/ca.crt` path matches;
-other methods return `405`, and every response closes its connection.
+| Path              | Type                    | Owner               | Mode                            |
+| ----------------- | ----------------------- | ------------------- | ------------------------------- |
+| Immediate parent  | Non-symlink directory   | Process's effective user | No group or other write access |
+| CA directory      | Non-symlink directory   | Process's effective user | Exactly 0700                |
+| `ca.crt`          | Regular file, ≤ 64 KiB PEM | Process's effective user | At most 0644 (new: 0644)  |
+| `ca.key`          | Regular file, ≤ 64 KiB PEM | Process's effective user | At most 0600 (new: 0600)  |
 
-For `registry.example:5000`, use that exact host and port as the directory name. Omit `:443`
-when image names omit it. Never distribute `ca.key` or install it as a Docker client key. See
-Docker's [certificate instructions](https://docs.docker.com/engine/security/certificates/)
-for other installation modes and platforms.
+- The owner is the native process user, or UID 10001 in the container. Another user's
+  installation is rejected, even when running as root.
+- Ancestors above the parent are not checked; keep the containing path trusted.
+- Stricter file modes are accepted.
+- The certificate must match the generated profile: a self-signed X.509 v3 CA with an ECDSA
+  P-256 key, ECDSA-SHA256 signature, and only key usage, basic constraints, and subject key
+  identifier extensions. Matching the profile establishes compatibility, not provenance.
+- Every startup re-checks the files, profile, key pairing, and validity period.
+- Empty, incomplete, expired, mismatched, oversized, symlinked, foreign-owned, or incorrectly
+  permissioned state fails startup without replacing or modifying any file. Errors name the
+  failing check but never include certificate or private-key contents.
 
-Merge this into the existing `/etc/docker/daemon.json` without replacing unrelated settings:
+### Back up and replace the CA
+
+Preserve `ca_dir` across restarts, back up both CA files securely, and use one proxy process
+per CA directory. Rotation is not automatic. **Never delete an established CA to repair
+startup.**
+
+To replace a CA:
+
+1. Stop the proxy.
+2. Archive the old CA securely.
+3. Configure a new, absent CA directory.
+4. Start the proxy.
+5. Verify the new fingerprint.
+6. Redistribute `ca.crt` ([trust the CA](#trust-the-ca)).
+7. Remove the old client trust.
+
+### Clean up staging directories
+
+A crash or SIGKILL during initialization can leave a `.ca-init-*` directory in the CA parent.
+It does not prevent later startup, and it is never adopted or removed automatically, because it
+may belong to another active initializer. Staging directories may contain private keys: keep
+their restrictive permissions and do not print or copy their contents.
+
+To clean up:
+
+1. Stop every process that can initialize a CA in that parent, and keep them stopped.
+2. Inspect only that trusted parent.
+3. Remove each orphaned `.ca-init-*` directory by its exact path. Never use a wildcard deletion
+   or remove the configured CA directory.
+
+## Configure Docker hosts
+
+These steps are for rootful Linux Docker Engine. Image names, `docker login`, and
+Docker-owned credentials do not change.
+
+### Trust the CA
+
+1. Download the public certificate from the proxy's HTTP listener. `PROXY_URL` is the same
+   `http://` address used in Docker's proxy configuration:
+
+   ```sh
+   curl --noproxy '*' --fail --show-error --output ca.crt "$PROXY_URL/ca.crt"
+   openssl x509 -in ca.crt -noout -fingerprint -sha256
+   ```
+
+2. Compare the fingerprint with `ca_sha256` from `init-ca` or startup logs, obtained through a
+   trusted channel such as SSH or your deployment system. OpenSSL prints uppercase
+   colon-separated hex; the proxy logs lowercase hex without colons.
+   **Do not install the certificate if they differ, or if you cannot obtain a trusted expected
+   fingerprint.** The download is unauthenticated: an attacker could replace the certificate,
+   and a fingerprint fetched over the same connection would not establish authenticity.
+   Alternatively, transfer only the public `ca.crt` through an already trusted channel.
+
+3. Install the certificate for each intercepted registry, rather than adding system-wide trust:
+
+   ```sh
+   for registry in registry-1.docker.io ghcr.io public.ecr.aws; do
+     sudo install -D -m 0644 ca.crt "/etc/docker/certs.d/$registry/ca.crt"
+   done
+   ```
+
+   The directory name is the exact authority from image names: use `registry.example:5000` for
+   a registry on port 5000, and omit `:443` when image names omit it. Never distribute `ca.key`
+   or install it as a Docker client key. See Docker's
+   [certificate instructions](https://docs.docker.com/engine/security/certificates/) for other
+   installation modes and platforms.
+
+### The `/ca.crt` endpoint
+
+- `GET /ca.crt` and `HEAD /ca.crt` are always available on the proxy listener to anyone who can
+  reach it, with no registry credentials or additional configuration.
+- It serves the root CA loaded by the running process, never the private key. It does not
+  install trust or rotate certificates.
+- Only the exact `/ca.crt` path matches. Other methods return `405`, and every response closes
+  its connection.
+
+### Point Docker at the proxy
+
+Merge this into `/etc/docker/daemon.json` without replacing unrelated settings:
 
 ```json
 {
   "proxies": {
-    "https-proxy": "http://127.0.0.1:3128",
-    "no-proxy": ""
+    "https-proxy": "http://127.0.0.1:3128"
   }
 }
 ```
 
-The proxy URL is `http://`: Docker sends CONNECT and then negotiates registry TLS inside the
-tunnel. Use the proxy's private address instead of loopback for a remote deployment. Do not
-route HTTP registries through this listener, and do not put intercepted registries in
-`no-proxy`. Shell proxy variables do not configure an already-running daemon. After arranging
-for workload disruption, apply the change:
+After arranging for workload disruption, restart Docker and pull as usual:
 
 ```sh
 sudo systemctl restart docker
@@ -241,137 +461,239 @@ docker login ghcr.io
 docker pull ghcr.io/your-organization/your-image:tag
 ```
 
-Image names and Docker-owned credentials do not change. Never put credentials in proxy YAML.
-Docker also documents [daemon proxy configuration](https://docs.docker.com/engine/daemon/proxy/)
-for service-environment setups.
+- The proxy URL is `http://`: Docker sends CONNECT, then negotiates registry TLS inside the
+  tunnel.
+- For a remote deployment, use the proxy's private address instead of loopback.
+- Do not route HTTP registries through this listener.
+- Do not list intercepted registries in `no-proxy`, or in a `NO_PROXY` inherited from the
+  daemon's service environment; an empty `no-proxy` value in `daemon.json` does not clear it.
+- Shell proxy variables do not configure an already-running daemon. Docker also documents
+  [daemon proxy configuration](https://docs.docker.com/engine/daemon/proxy/) for
+  service-environment setups.
+- For a private registry, the proxy process must also trust the registry's real CA in its
+  system trust store, as well as Docker. Do not disable TLS verification or configure an
+  insecure registry as a workaround.
 
-The proxy independently verifies upstream certificates with its process's system trust store.
-A private registry's real CA must therefore be trusted by the proxy process as well as Docker.
-Do not disable TLS verification or configure an insecure registry as a workaround.
-
-## Configuration and limits
-
-See [`config.example.yaml`](../config.example.yaml) for a complete configuration. Configuration
-is static and changes take effect after restart.
-
-| Setting | Default or requirement |
-| --- | --- |
-| `listen` | `127.0.0.1:3128`; host:port with a nonzero numeric port; empty/wildcard hosts bind all interfaces |
-| `metrics_listen` | Disabled; optional host:port with a nonzero numeric port; literal loopback IP required unless `metrics_allow_remote` is `true` |
-| `metrics_allow_remote` | `false`; explicit boolean opt-in to non-loopback metrics/probe binding |
-| `registries` | Required, nonempty list of distinct authorities; see [syntax](#build-and-start) |
-| `redirect_allowlist` | Optional private HTTPS storage authorities, same [syntax](#build-and-start); does not enable interception |
-| `ca_dir` | Required private persistent state directory |
-| `cache.dir` | Required private persistent cache directory |
-| `cache.max_bytes` | 32 GiB, including body, metadata, and fill reservations |
-| `cache.max_fills` | 16 concurrent storage writers; excess misses stream uncached |
-| `cache.max_entries` | 100000 entry slots, including fills and pending cleanup |
-| `cache.fill_timeout` | `10m`; bounds ranged fetches from request start and ends ordinary full-GET cache admission |
-| `cache.fill_wait_timeout` | `1s`; `0s` disables waiting for an existing fill |
-| `cache.authorization_ttl` | `30s`; maximum fixed lifetime of a process-local approval; `0s` requires an upstream GET for every delivery |
-| `cache.max_authorization_entries` | 10000; positive bound on in-memory authorization grants |
-| `dial_timeout`, `tls_handshake_timeout` | `10s` each |
-| `response_header_timeout` | `30s`; also bounds incoming request headers |
-| `idle_timeout` | `2m` for idle tunnels and I/O |
-| `shutdown_timeout` | `15s` drain deadline |
-| `max_connections` | 256 accepted client connections, including incomplete CONNECTs |
-| `max_leaf_certificates` | 256 cached interception certificates |
-
-CONNECT and upstream response headers are limited to 64 KiB. Upstream connections are capped
-at 16 per destination, with 32 idle globally and 8 idle per destination. Bodies stream rather than
-accumulate in memory. For eligible blob range requests, `cache.fill_timeout` bounds the upstream
-fetch, starting before the first upstream GET, including when cache-fill admission is refused.
-Admitted background fills remain subject to that same deadline. Delivery from an already-open
-cached reader is not limited by `cache.fill_timeout`; idle-I/O deadlines and shutdown handling
-still apply. Other active transfers have idle-I/O deadlines, not total download deadlines.
-Kernel filesystem calls cannot be preempted, so fill expiry and shutdown are not hard deadlines
-when storage stalls. The body-entry and authorization-entry limits bound their respective
-indexes, not total process RSS; tune both to available memory. Restart clears all grants.
-
-Intercepted traffic uses TLS 1.2 or newer and HTTP/1.1. GET, HEAD, and OPTIONS remain bodyless;
-POST, PUT, PATCH, and DELETE stream upstream without caching or path filtering. Upgrades,
-other methods, authority conflicts, and non-origin-form requests are denied. Tag,
-`/v2/`, HEAD, conditional requests, and ineligible ranges always pass through. Eligible
-unconditional SHA-256 blob Range GETs still go upstream on every request, as full GETs; a
-validated cache hit is then served with standard single, suffix, or multipart range semantics.
-There is no authorization-grant lookup or update for these requests. Until the full body is
-already cached, a single range is selected from the full upstream stream and returned as `206`;
-comma-separated ranges fall back to the full `200`. An admitted fill continues reading and
-verifying the same GET after the selected range ends or the client disconnects. Ranged manifests,
-`If-Range` and other conditional requests, no-store requests, and a Range header named by
-Connection remain passthrough.
+### Push and delete
 
 Docker push uses the same proxy and CA configuration as pull; no write setting is needed.
-The registry enforces write permissions using Docker's credentials. Uploads do not warm the
-cache, and the proxy does not manage upload sessions or follow write redirects. Active uploads
-are limited by `idle_timeout` for stalled I/O, not `cache.fill_timeout` or a total upload size.
-Successful deletion does not invalidate existing pull authorization grants. Previously approved
-exact GETs may still serve cached content until the original grant expiry; set
-`cache.authorization_ttl: 0s` when every cache delivery must check current upstream access.
 
-The proxy follows up to five redirects only for eligible query-free SHA-256 blob and digest
-manifest GETs. Redirects must use verified HTTPS and pass destination checks; userinfo,
-fragments, loops, and implicit private, link-local, or loopback destinations are rejected.
-Private storage destinations belong in `redirect_allowlist`. Cross-origin redirects preserve
-only Accept, Accept-Encoding, and User-Agent, never credentials or cookies. See
-[current limitations](#current-limitations) for how this relates to tunnel egress.
+- The registry enforces write permissions using Docker's credentials.
+- Uploads do not warm the cache. The proxy does not manage upload sessions or follow write
+  redirects.
+- Active uploads are limited by `idle_timeout` for stalled I/O, not by `cache.fill_timeout` or
+  a total upload size.
+- Successful deletion does not invalidate existing pull [authorization grants](#authorization-grants).
+  Previously approved exact GETs may still serve cached content until the original grant
+  expiry; set `cache.authorization_ttl: 0s` when every cache delivery must check current
+  upstream access.
 
-## Logs and metrics
+## Request handling
 
-JSON logs go to stderr. Request completion records contain bounded status and outcome fields,
-cache/fill/wait/fallback/admission outcomes, duration, downstream body bytes, and bytes consumed
-from the upstream body. An admitted detached range fill logs `fill=background`; its request's
-`upstream_body_bytes` excludes the fill pump's bytes. The upstream counter excludes
-transport read-ahead and is not a wire traffic measurement. Streaming failures can occur after
-the response status has been sent.
+[How it works](how-it-works.md) describes what is cached, range requests, redirects, and
+authorization approval. This section lists the additional rules operators may need.
 
-Request completion records and upstream-failure warnings include a `url` field containing
-the intercepted registry's HTTPS authority and the original escaped request path, including
-for cache hits and rejected requests with origin-form targets. Non-origin-form targets and
-targets containing a literal `#` log only the registry authority, without a path. For example,
-a normal request logs:
-`"url":"https://registry.example/v2/team/image/manifests/latest"`.
-These paths expose repository names, tags, and digests; restrict access to logs accordingly.
-Query strings, userinfo, fragments, redirect URLs, authorization headers, token bodies, and
-raw upstream errors remain omitted. No request-start or per-redirect records are emitted.
-Opaque CONNECT tunnels do not expose HTTP request URLs to the proxy.
+### Methods and protocols
 
-Set `metrics_listen: 127.0.0.1:9090` to serve Prometheus text at `GET /metrics` on a separate
-listener. Non-loopback binds are rejected unless `metrics_allow_remote: true` is explicitly
-set. Remote scraping has no authentication: restrict access with private network controls;
-never expose this endpoint publicly or through a portal. A bind failure prevents startup.
-There is no metrics route on the CONNECT listener, admin API, or pprof endpoint.
+| Request                                                        | Handling                                            |
+| -------------------------------------------------------------- | --------------------------------------------------- |
+| GET, HEAD, OPTIONS                                             | Forwarded; requests with a body are denied           |
+| POST, PUT, PATCH, DELETE                                       | Streamed upstream without caching or path filtering |
+| Tag, `/v2/`, HEAD, conditional requests, ineligible ranges     | Always passed through                               |
+| Upgrades, other methods, authority conflicts, non-origin-form targets | Denied                                       |
 
-The same listener serves `GET /livez` (process responsiveness) and `GET /readyz`
-(initialized and serving, not shutting down). They never contact upstream registries or
-depend on cache capacity. They are independent of the proxy connection limit. Kubernetes
-can use local exec probes with a loopback bind when remote scraping is disabled.
+### Range requests
+
+Eligible range requests are unconditional SHA-256 blob Range GETs.
+
+- They go upstream on every request as full GETs, and never look up, create, invalidate, or
+  otherwise update authorization grants.
+- A validated cache hit is served with standard single, suffix, or multipart range semantics
+  from its pinned reader.
+- Until the full body is cached, a single range is selected from the full upstream stream and
+  returned as `206`; comma-separated ranges fall back to the full `200`.
+- An admitted fill continues reading and verifying the same GET after the selected range ends or
+  the client disconnects, bounded by `cache.fill_timeout` from request start.
+- Ranged manifests, `If-Range` and other conditional requests, no-store requests, and a Range
+  header named by `Connection` remain passthrough.
+
+### Redirects
+
+The proxy follows up to five redirects, only for eligible query-free SHA-256 blob and digest
+manifest GETs.
+
+- Every hop must use verified HTTPS and pass destination checks.
+- Userinfo, fragments, loops, and implicit private, link-local, or loopback destinations are
+  rejected. Add private storage destinations to `redirect_allowlist`.
+- Cross-origin redirects preserve only `Accept`, `Accept-Encoding`, and `User-Agent`, never
+  credentials or cookies.
+- These restrictions do not apply to tunnel egress (see [limitations](#current-limitations)).
+
+### Authorization grants
+
+See [authorization grants](how-it-works.md#authorization-grants) for grant matching, lifetime,
+and the request and response headers that prevent a grant. Additionally:
+
+- Only full immutable digest blob and manifest GETs can reuse authorization.
+- Grants are keyed by a process-local HMAC of the original canonical URL and every forwarded
+  end-to-end header. Transport-managed fields use their forwarded form; other exact values and
+  value order are preserved. Anonymous requests are distinct.
+- A grant starts from an eligible terminal `200`. It is never renewed on hits, persisted, or
+  refreshed or coalesced in the background.
+- Tokens are opaque, so revocation or expiry can take effect as late as the grant's original
+  expiry.
+- Every redirect hop must be reusable. Only explicit `max-age` and `s-maxage` ceilings shorten a
+  grant below `authorization_ttl`; `Age`, `Date`, and `Expires` are ignored. A grant never
+  outlives the TTL, but may be trusted for the full residual TTL regardless of upstream age.
+- A grant hit requires a present verified body; otherwise the request goes upstream. The
+  response reconstructs only content type, length, digest, a current `Date`, and
+  `Cache-Control: private, no-store`. Downstream caches must not extend the grant's lifetime.
+
+Upstream outcomes affect an existing grant as follows. The failed request is always returned to
+the client: there is no failed-request fallback.
+
+| Upstream outcome                                                          | Grant                              |
+| ------------------------------------------------------------------------- | ---------------------------------- |
+| `401`, `403`, `404`, `410`, or an authoritative nonreusable response      | Invalidated                        |
+| Any response with `Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or `WWW-Authenticate` | Invalidated |
+| Timeout, DNS or TLS failure, `408`, `429`, `5xx`                          | Kept until its original expiry     |
+
+## Cache storage
+
+See [cache storage and eviction](how-it-works.md#cache-storage-and-eviction) for entry layout,
+filling, and eviction.
+
+### What is cached
+
+- Admitted: query-free SHA-256 blob GETs (including image configuration blobs) and digest
+  manifests in supported OCI and Docker schema-2 media types. Eligible blob ranges can populate
+  the same full-body entry.
+- Cache keys preserve registry, repository, digest, object kind, exact `Accept` values, and
+  observed `Content-Type`. Bodies are hashed as received.
+- Bypassed: tags, HEAD, ranged manifests, conditional and non-identity-encoded responses,
+  unknown-length bodies, no-store traffic, and unsupported `Vary` dimensions.
+
+### Capacity and eviction
+
+- Use one process per cache directory. Its parent must be owner-controlled; unsafe or unusable
+  configured storage fails startup.
+- `cache.max_bytes` charges body size plus 4 KiB metadata per entry, including active fills.
+  Reserve filesystem block, directory, and inode headroom beyond it.
+- Oversized or capacity-rejected objects continue streaming without being cached.
+- Failed cleanup retains its capacity charge until removal succeeds.
+- Best-effort LRU eviction skips active readers and makes at most eight removal attempts per
+  admission, separately from pending-cleanup retries. Objects needing more victims can keep
+  bypassing, and competing traffic may consume reclaimed space, so admission is not guaranteed.
+
+### Concurrent fills
+
+- Concurrent clients authorize independently. One writer fills a key; matching followers may
+  wait for it (`cache.fill_wait_timeout`) and then open the verified entry.
+- Wait timeout, leader failure, or eviction causes one fresh authorized GET.
+- Follower cancellation does not control the leader.
+- Ordinary full-GET fills are request-owned: leader cancellation aborts storage.
+- An admitted ranged fill may finish after range delivery or client cancellation, bounded by
+  `cache.fill_timeout` from request start.
+- Entries are published only after complete length and digest verification.
+
+### Startup recovery
+
+- Startup removes recognized abandoned fills and discardable incomplete entries, and refuses to
+  start on unknown files rather than deleting them.
+- Persisted bodies are rehashed on first reuse, not at startup. Later access checks size and
+  relies on private directory ownership for integrity.
+- Approximate LRU order is rebuilt from commit times.
+- Do not edit or delete live cache files; use [metrics](#metrics) to inspect resource use.
+
+### Reset the cache
+
+Resetting permanently deletes cached content; the CA is unaffected. For a native deployment,
+stop the proxy and remove the whole `cache.dir`. For Compose, remove only the cache volume:
+
+```sh
+docker compose down
+docker volume rm oci-accelerator-cache
+docker compose up -d
+```
+
+## Monitoring
+
+### Logs
+
+JSON logs go to stderr. Request completion records contain:
+
+| Field or group                        | Notes                                                                        |
+| ------------------------------------- | ---------------------------------------------------------------------------- |
+| Status and outcome                    | Bounded values                                                               |
+| Cache, fill, wait, fallback, admission | Outcomes; an admitted detached range fill logs `fill=background`            |
+| Duration                              |                                                                              |
+| Downstream body bytes                 | Streaming failures can occur after the response status was sent             |
+| `upstream_body_bytes`                 | Bytes consumed from the upstream body; excludes transport read-ahead and a detached fill pump's bytes; not a wire measurement |
+| `url`                                 | See below                                                                    |
+
+The `url` field appears on completion records and upstream-failure warnings, including cache
+hits and rejected requests. It contains the intercepted registry's HTTPS authority and the
+original escaped request path:
+
+```
+"url":"https://registry.example/v2/team/image/manifests/latest"
+```
+
+- Non-origin-form targets and targets containing a literal `#` log only the authority.
+- Paths expose repository names, tags, and digests; restrict access to logs accordingly.
+- Never logged: query strings, userinfo, fragments, redirect URLs, authorization headers, token
+  bodies, and raw upstream errors.
+- No request-start or per-redirect records are emitted. Opaque CONNECT tunnels do not expose
+  HTTP request URLs to the proxy.
+
+### Metrics
+
+Set `metrics_listen: 127.0.0.1:9090` to enable a separate listener. There is no metrics route
+on the CONNECT listener, admin API, or pprof endpoint.
+
+| Endpoint       | Purpose                                                  |
+| -------------- | -------------------------------------------------------- |
+| `GET /metrics` | Prometheus text                                          |
+| `GET /livez`   | Process responsiveness                                   |
+| `GET /readyz`  | Initialized and serving, not shutting down               |
+
+- Non-loopback binds are rejected unless `metrics_allow_remote: true`. Remote scraping has no
+  authentication: restrict it with private network controls and never expose it publicly or
+  through a portal.
+- A bind failure prevents startup.
+- Probes never contact upstream registries or depend on cache capacity, and are independent of
+  `max_connections`. Kubernetes can use local exec probes with a loopback bind when remote
+  scraping is disabled.
 
 Metrics use the `oci_accelerator_` prefix and include:
 
-- request counts, bounded status classes, duration histograms, and active requests/connections;
-- cache, fill, wait, fallback, and upstream GET/body counters;
+- request counts, bounded status classes, duration histograms, and active requests and
+  connections;
+- cache, fill, wait, fallback, and upstream GET and body counters;
 - cache admission and rejection reasons, entries, readers, fills, bytes, reservations, and
   evictions (the fills gauge includes reservations whose staging is still in progress);
 - Go heap allocation and goroutine gauges.
 
-Labels are fixed enums and never contain clients, repositories, paths, digests, tokens, or URLs.
-Counters reset on restart. Request-owned body counters are recorded when requests complete. For
-a detached range fill, `oci_accelerator_upstream_body_bytes_total` and
-`oci_accelerator_fills_total` update when its pump completes; store fill statistics remain
-available independently. Logical cache bytes exclude filesystem overhead, and Go heap allocation
-is not RSS.
+Interpreting them:
 
-`oci_accelerator_upstream_get_attempts_total` counts connection-acquisition attempts, including
-transport retries and DNS/dial/TLS failures before a GET is sent. It is not an exact count of
-requests received by the registry. `oci_accelerator_cache_rejections_total` reports `vary` and
-`digest_mismatch` header rejections on eligible responses; another policy check may also prevent
-caching, so these counts do not identify the sole cause of every bypass.
+- Labels are fixed enums and never contain clients, repositories, paths, digests, tokens, or URLs.
+- Counters reset on restart. Request-owned body counters are recorded when requests complete.
+- For a detached range fill, `oci_accelerator_upstream_body_bytes_total` and
+  `oci_accelerator_fills_total` update when its pump completes; store fill statistics remain
+  available independently.
+- Logical cache bytes exclude filesystem overhead. Go heap allocation is not RSS.
+- `oci_accelerator_upstream_get_attempts_total` counts connection-acquisition attempts,
+  including transport retries and DNS, dial, or TLS failures before a GET is sent. It is not an
+  exact count of requests received by the registry.
+- `oci_accelerator_cache_rejections_total` reports `vary` and `digest_mismatch` header
+  rejections on eligible responses. Other policy checks may also prevent caching, so it does
+  not identify the sole cause of every bypass.
 
-The immutable source delivery counters,
+### Cache delivery ratios
+
 `oci_accelerator_served_bytes_total{source="cache|origin"}` and
-`oci_accelerator_served_entries_total{source="cache|origin"}`, measure how much
-digest-addressed content clients received from the cache versus the registry:
+`oci_accelerator_served_entries_total{source="cache|origin"}` measure how much digest-addressed
+content clients received from the cache versus the registry.
 
 - **Scope.** Only `200` responses to query-free `GET`s for a full, unescaped SHA-256 blob or
   manifest digest, without `Range` or `If-*` headers. Errors, `HEAD`, tags, ranges, conditional
@@ -379,15 +701,16 @@ digest-addressed content clients received from the cache versus the registry:
 - **Bytes** count what the client actually accepted, including partial delivery when a transfer
   aborts. **Entries** increment only when delivery completes; they count deliveries, not unique
   digests, successful cache fills, or integrity checks.
-- **Source** describes where the response body came from. `cache` covers ordinary hits,
+- **Source** is where the response body came from. `cache` covers ordinary hits,
   authorization-grant hits, and responses served after waiting for another request's fill.
-  `origin` covers cold fills and responses that bypassed storage because of `no-store`, capacity,
-  or unsupported metadata. Upstream authorization GETs do not affect attribution.
+  `origin` covers cold fills and responses that bypassed storage because of `no-store`,
+  capacity, or unsupported metadata. Upstream authorization GETs do not affect attribution.
 - Both sources are exported as zero before traffic, update when each request ends, and reset on
   restart. They measure application deliveries, not wire bandwidth or bandwidth savings.
 
-For a five-minute cache byte percentage across all instances, apply `rate` before aggregation and
-drop a zero-traffic denominator so dashboards can display N/A:
+Five-minute cache byte percentage across all instances. Apply `rate` before aggregation, and
+drop a zero-traffic denominator so dashboards display N/A rather than coercing no traffic to
+zero:
 
 ```promql
 (
@@ -397,7 +720,7 @@ drop a zero-traffic denominator so dashboards can display N/A:
 and on () (sum(rate(oci_accelerator_served_bytes_total[5m])) > 0)
 ```
 
-The equivalent delivery percentage is:
+Delivery percentage:
 
 ```promql
 (
@@ -408,131 +731,70 @@ and on () (sum(rate(oci_accelerator_served_entries_total[5m])) > 0)
 ```
 
 For origin percentage, replace `source="cache"` with `source="origin"`, or subtract the cache
-percentage from 100 when traffic is present. Do not coerce no traffic to zero. These are delivery
-ratios, not estimates of wire-bandwidth savings; upstream authorization GETs are independent.
+percentage from 100 when traffic is present.
 
-## Cache storage and recovery
+## Lifecycle
 
-The cache admits query-free SHA-256 blob GETs (including image configuration blobs) and
-digest manifests in supported OCI and Docker schema-2 media types. Cache keys preserve registry,
-repository, digest, object kind, exact Accept values, and observed Content-Type; bodies are
-hashed as received. Eligible unconditional blob ranges are fetched as full upstream GETs and can
-populate the same full-body cache; a warm validated entry serves standard byte ranges from its
-pinned reader. A cold single range streams a `206` selection; cold comma-separated ranges return
-the full `200`. Tags, HEAD, ranged manifests,
-conditional and non-identity encoded responses,
-unknown-length bodies, no-store traffic, and unsupported Vary dimensions bypass storage.
+### Shutdown
 
-Only full immutable digest blob and manifest GETs can reuse authorization. Grants are keyed by a
-process-local HMAC of the original canonical URL and every forwarded end-to-end header.
-Transport-managed fields use their forwarded form; other exact values and value order are
-preserved. Anonymous requests are distinct. Grants are fixed-lived from an
-eligible terminal `200`, never renewed on hits, never persisted, and never refreshed or coalesced
-in the background. Tokens are opaque, so revocation or expiry can take effect as late as the
-grant's original expiry. Set `cache.authorization_ttl: 0s` for the old every-delivery upstream
-authorization guarantee.
+On SIGINT or SIGTERM the proxy:
 
-Every redirect hop must be reusable: `no-cache`, `no-store`, `private`, `min-fresh`, `Pragma`,
-`Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or `WWW-Authenticate` prevent a grant. Only the explicit
-`max-age` and `s-maxage` ceilings shorten a grant's lifetime below the configured
-`authorization_ttl`; `Age`, `Date`, and `Expires` are ignored, so a grant never outlives that TTL
-but may be trusted for up to the full residual TTL regardless of upstream age. A fast hit additionally
-requires a present verified body and reconstructs only content type, length, digest, a current
-Date, and `Cache-Control: private, no-store`. Downstream caches must not extend the grant's
-lifetime. If the body is absent, the request goes upstream.
+1. stops admitting connections and disables intercepted keepalive;
+2. drains until `shutdown_timeout`, then closes remaining connections, including opaque tunnels;
+3. cancels and joins ranged transfers, and waits for handlers and relay pumps to release their
+   resources before the cache is closed, even beyond the drain deadline.
 
-Eligible blob Range GETs do not consult, create, invalidate, or otherwise update these grants;
-each performs its own full upstream GET before a cached body can serve the range.
+A stuck handler can therefore delay exit. A second signal uses the operating system's default
+termination behavior. For containers, keep the stop grace period longer than
+`shutdown_timeout` (see [Compose](#compose)).
 
-`401`, `403`, `404`, `410`, and authoritative nonreusable responses invalidate the exact grant.
-Timeouts, DNS/TLS failures, `408`, `429`, and `5xx` preserve it until its original expiry, unless
-the response carries `Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or
-`WWW-Authenticate`. These headers invalidate the grant regardless of status. The failed request
-is still returned: there is no failed-request fallback. TLS verification remains enabled.
+### What survives a restart
 
-Use one process per cache directory. Its parent must be owner-controlled; unsafe or unusable
-configured storage fails startup. The limit charges body size plus 4 KiB metadata per entry,
-including active fills, so reserve filesystem block, directory, and inode headroom. Oversized or
-capacity-rejected objects continue streaming without being cached. Failed cleanup retains its
-capacity charge until removal succeeds. Best-effort LRU eviction skips active readers and makes
-at most eight eviction removal attempts per admission, separately from pending-cleanup retries.
-Objects requiring more victims can continue bypassing, and competing traffic may consume
-reclaimed space, so admission is not guaranteed.
+| State                    | After restart                                                       |
+| ------------------------ | ------------------------------------------------------------------- |
+| Configuration            | Re-read; changes take effect only now                               |
+| Root CA                  | Re-checked and reused from `ca_dir`                                 |
+| Leaf certificates        | Memory only; re-signed on demand                                    |
+| Authorization grants     | Cleared; the next delivery needs fresh upstream approval            |
+| Cache entries            | Kept; each body is rehashed on first reuse                          |
+| Abandoned fills          | Removed at startup                                                  |
+| Metrics counters         | Reset                                                               |
 
-Concurrent clients authorize independently. One writer fills a key; matching followers may
-wait for it and then open a verified cache entry. Timeout, leader failure, or eviction causes one
-fresh authorized GET. Ordinary full-GET leader cancellation aborts storage; follower cancellation
-does not control the leader. An admitted ranged fill may finish after range delivery or client
-cancellation, bounded by `cache.fill_timeout` from request start. Ordinary full-GET fills remain
-request-owned. Entries are published only after complete length and digest verification.
+## Troubleshooting
 
-Startup removes recognized abandoned fills and discardable incomplete entries, and refuses
-unknown files rather than deleting them. Persisted bodies are rehashed on first reuse, not at
-startup; subsequent access checks size and relies on private directory ownership for integrity.
-Restart reconstructs approximate LRU order from commit times. Do not edit or delete live cache
-files; use metrics to inspect resource use.
+| Symptom                                                   | Likely cause                                                                                   | Fix                                                                                   |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `--check` passes but startup fails                        | `--check` does not inspect CA or cache state or bind listeners                                 | Read the startup error; see the rows below                                            |
+| Startup fails naming a CA check                           | CA directory or files are empty, incomplete, expired, mismatched, oversized, symlinked, foreign-owned, or wrongly permissioned | Correct the state per [CA directory requirements](#ca-directory-requirements); never delete an established CA ([replace it](#back-up-and-replace-the-ca) instead) |
+| Startup fails on a missing directory                      | Neither `init-ca` nor startup creates ancestors                                                | Create the parent as the proxy user ([state directories](#state-directories))         |
+| Startup refuses unknown cache files                       | Unrecognized files in `cache.dir`; startup never deletes them                                  | Investigate their origin, or [reset the cache](#reset-the-cache)                      |
+| Second proxy fails to start on the same cache             | One process per cache directory                                                                | Give each process its own `cache.dir` and `ca_dir`                                    |
+| `--check` rejects `metrics_listen`                        | Non-loopback address without `metrics_allow_remote: true`                                      | Use a loopback address, or opt in ([metrics](#metrics))                               |
+| Startup fails binding metrics                             | The metrics listener cannot bind; a bind failure prevents startup                              | Fix `metrics_listen` or free the address                                              |
+| Container health is `unhealthy`                           | Metrics listener not at `127.0.0.1:9090`, or the proxy is not ready or is shutting down        | Restore the listener or override the health check ([image](#image)); it does not restart the container |
+| Docker reports an unknown certificate authority           | CA not installed under the exact `certs.d/<host[:port]>` directory                             | [Trust the CA](#trust-the-ca) for that authority                                      |
+| Private registry fails through the proxy with a TLS error | The proxy process does not trust the registry's real CA                                        | Add it to the proxy's system trust store; never disable verification                  |
+| Pulls work but no request records show the registry       | Registry not in `registries` (port must match), listed in `no-proxy`/`NO_PROXY`, or daemon not restarted | Fix `registries` or [Docker's proxy configuration](#point-docker-at-the-proxy)   |
+| Revoked access or a deleted image still pulls briefly     | An existing [authorization grant](#authorization-grants)                                       | Wait for `cache.authorization_ttl`, or set it to `0s`                                  |
+| `.ca-init-*` directories in the CA parent                 | A crash or SIGKILL during initialization                                                       | [Clean up staging directories](#clean-up-staging-directories)                         |
+| Compose warns about existing volumes                      | Volumes were created by `docker run`                                                           | Expected; run only one proxy against them                                             |
 
-## CA directory requirements
+## Current limitations
 
-Proxy startup and `init-ca` apply the same checks to `ca_dir`. They create the CA directory,
-`ca.crt`, and `ca.key` only when the directory is absent, and never create its parent:
-provision the parent and ensure its durability first, so that permissions do not depend on the
-umask and a crash cannot lose newly created ancestors.
+- Redirect restrictions protect proxy-originated fetches only. They do not constrain the broader
+  egress available through opaque CONNECT tunnels; deployment network controls remain essential.
+- No shared or distributed storage, multi-instance coordination, or background prefetch.
+- No Kubernetes manifests, and no automated container runtime acceptance in CI.
+- Fault tests exercise process termination and private tmpfs exhaustion, not power loss or
+  faulty-device certification. See the [testing guide](testing.md).
 
-- The immediate parent must be a non-symlink directory with no group or other write access.
-- The parent, the CA directory, and both files must be owned by the process's effective user.
-  Another user's installation is rejected even when running as root. Ancestors above the
-  parent are not checked; keep the containing path trusted.
-- The CA directory must be a non-symlink directory with mode 0700. `ca.crt` and `ca.key` must be
-  regular files granting no more than 0644 and 0600 respectively; stricter modes are accepted.
-  New installations use exactly those modes.
-- Each PEM file is limited to 64 KiB.
-- The certificate must match the generated profile: a self-signed X.509 v3 CA with an ECDSA P-256
-  key, ECDSA-SHA256 signature, and only key usage, basic constraints, and subject key identifier
-  extensions. Matching the profile establishes compatibility, not provenance.
+## Appendix: Amp orbs
 
-Every startup re-checks the files, profile, key pairing, and validity period. Empty, incomplete,
-expired, mismatched, oversized, symlinked, foreign-owned, or incorrectly permissioned state fails
-startup without replacing or modifying any file. Errors name the failing check but never include
-certificate or private-key contents.
+### Prepare an orb
 
-## Shutdown, recovery, and CA replacement
-
-SIGINT or SIGTERM stops admission, disables intercepted keepalive, and drains until
-`shutdown_timeout`; remaining connections, including opaque tunnels, are then closed. Shutdown
-waits for handlers and relay pumps to release their resources before closing the cache, even
-beyond the drain deadline. It also cancels and joins ranged transfers before the caller closes
-the store. A stuck handler can therefore delay exit. A second signal uses the operating system's
-default termination behavior. In an orb:
-
-```sh
-amp orb service stop registry-proxy
-```
-
-Preserve `ca_dir` across restarts. The CA is valid for ten years; generated leaf certificates
-last at most 24 hours and renew under the same CA within an hour of expiry. State that fails the
-[CA directory requirements](#ca-directory-requirements) stops startup without replacement. Back
-up both CA files securely and use one proxy process per CA directory.
-
-CA initialization stages the certificate and key in a private `.ca-init-*` directory under the
-CA parent, then atomically renames it into place. Concurrent initializers adopt the published
-winner; there is no persistent lock. A crash or SIGKILL can leave a staging directory behind. It
-does not prevent later startup and is never adopted or removed automatically, because it may
-belong to another active initializer. To clean up, stop every process that can initialize a CA
-in that parent and keep them stopped. Inspect only that trusted parent and remove orphaned
-`.ca-init-*` directories by their exact paths; never use a wildcard deletion or remove the
-configured CA directory. Staging directories may contain private keys: keep their restrictive
-permissions and do not print or copy their contents.
-
-Never delete an established CA to repair startup. To replace a CA, stop the proxy, archive the
-old CA securely, configure a new absent directory, start the proxy, verify the new fingerprint,
-redistribute `ca.crt`, and remove old client trust. Rotation is not automatic.
-
-## Docker in Amp orbs
-
-Amp runs `.agents/setup` when preparing a fresh orb. It installs checksum-verified
-Go 1.27.1, C build tools for race-enabled tests, and Docker Engine, Buildx, and Compose if
-missing, and downloads Go module dependencies. Re-running it is safe:
+Amp runs `.agents/setup` when preparing a fresh orb. It installs checksum-verified Go 1.27.1, C
+build tools for race-enabled tests, and Docker Engine, Buildx, and Compose if missing, and
+downloads Go module dependencies. Re-running it is safe:
 
 ```sh
 .agents/setup
@@ -546,167 +808,22 @@ amp orb services ensure
 sudo docker info
 ```
 
-The daemon uses only a local Unix socket; do not expose it through a portal.
-Use `sudo docker` for daemon operations. If it is not ready, inspect
-`amp orb service logs docker-daemon`. Amp supervises the daemon across CLI
-updates and orb pause/resume; no custom resume hook is needed.
+- Use `sudo docker` for daemon operations. If the daemon is not ready, inspect
+  `amp orb service logs docker-daemon`.
+- The daemon uses only a local Unix socket; do not expose it through a portal.
+- Amp supervises the daemon across CLI updates and orb pause/resume; no custom resume hook is
+  needed.
+- Registry credentials belong to the Docker client, never the setup script or a shared orb
+  snapshot. Setup does not install a proxy CA into Docker's trust store.
 
-Registry credentials belong to the Docker client, never the setup script or a
-shared orb snapshot. Setup does not install a proxy CA into Docker's trust store.
-
-## Repeatable checks
-
-Run the standard deterministic checks first:
+### Run the proxy as an orb service
 
 ```sh
-go test ./...
-go test -race ./...
-go vet ./...
+amp orb service start registry-proxy \
+  --command './bin/oci-accelerator --config config.local.yaml'
+amp orb service logs registry-proxy
+amp orb service stop registry-proxy
 ```
 
-Plain process-lifecycle tests run on Unix without requiring procfs. Linux namespace
-tests are isolated from non-Linux builds; Docker, ENOSPC, and load acceptance tests
-skip on non-Linux hosts even when opted in.
-
-The container packaging integration check is opt-in and requires a local rootful Linux
-Docker daemon at `/var/run/docker.sock`. Run it as root to inspect private UID 10001 state.
-Use a disposable test host or orb: fixture daemons share the host network namespace and
-can remove Docker's default `docker0` bridge, disrupting unrelated containers. A dedicated
-test network keeps the proxy reachable but does not isolate this host-side effect.
-Building images additionally requires Buildx; the deployment example uses Compose. Set the
-optional platform variable when the selected image must run with a specific Docker platform:
-
-```sh
-sudo env PATH="$PATH" OCI_ACCELERATOR_CONTAINER_IMAGE=oci-accelerator:local \
-  go test -count=1 -timeout=5m -v ./integration -run '^TestContainer'
-
-# Optional, for example:
-sudo env PATH="$PATH" OCI_ACCELERATOR_CONTAINER_IMAGE=oci-accelerator:arm64 \
-OCI_ACCELERATOR_CONTAINER_PLATFORM=linux/arm64 \
-  go test -count=1 -timeout=5m -v ./integration -run '^TestContainer'
-```
-
-Runtime arm64 verification requires native arm64 or Docker emulation. The sudo, mount, and
-fresh-daemon prerequisites described below still apply to acceptance checks that use them.
-
-The following integration checks are opt-in because they need additional host capabilities.
-The Docker checks build the current binary and use isolated Docker state, processes, and CA
-trust; local checks use private registry fixtures. They never execute pulled images. Test
-cleanup terminates and reaps owned processes before removing their private directories,
-without installing host CA trust. Run Docker acceptance only on a disposable host or orb;
-its private data roots do not isolate host networking. Privileged fixtures run inside private
-PID and mount namespaces, not network namespaces; termination also removes daemonized descendants.
-Diagnostics use private log files capped at the first 64 KiB, discarding later output. Amp is
-not a prerequisite. Acceptance tests remain manual-only, with no CI jobs or merge gates.
-A skipped opt-in check is not a pass.
-
-Real Docker cold, warm, restart, authentication, and trust behavior requires Linux, Go,
-Docker Engine, passwordless sudo, `mount`, a non-loopback IPv4 interface, and
-permission to create private PID/mount namespaces and mount procfs:
-
-The single-platform fixture uses the default authorization TTL and fresh Docker
-stores to verify zero additional blob GETs on a warm pull. After proxy restart,
-the same stored bodies require fresh upstream approval.
-
-The multiplatform fixture uses `cache.authorization_ttl: 0s`, withholds selected
-configuration and layer bodies during warm and restarted-proxy phases, and still
-authorizes every GET with valid metadata. Each phase uses fresh Docker state, so
-successful verified pulls prove proxy-cache delivery rather than Docker's local cache.
-Manifest bodies remain live: Docker reorders `Accept` values across requests,
-which intentionally produces distinct representation keys. Manifest delivery is
-therefore a compatibility check, not cache-hit proof. Tag mutation and access to
-the old digest remain covered.
-
-```sh
-OCI_ACCELERATOR_E2E=1 go test -v ./integration \
-  -run '^(TestDockerPullThroughCompiledProxy|TestDockerMultiPlatformThroughCompiledProxy)$' \
-  -count=1 -timeout=10m
-```
-
-Push acceptance loads a deterministic image locally, verifies that read-only credentials
-cannot publish, and pushes with write credentials through the compiled proxy. It checks the
-registry's uploaded config and layer bytes and confirms the proxy cache remains empty. Fresh
-Docker daemons then verify a cold pull and a warm pull with no additional blob GETs. This uses
-the same prerequisites and default authorization TTL as the single-platform pull test:
-
-```sh
-OCI_ACCELERATOR_E2E=1 go test -v ./integration \
-  -run '^TestDockerPushThroughCompiledProxy$' -count=1 -timeout=10m
-```
-
-Anonymous Docker Hub/GHCR compatibility uses the same Docker prerequisites and fresh,
-credential-free client state. It requires network access and is subject to upstream tag,
-availability, and rate-limit changes. Successful public pulls do not prove cache substitution
-or private-access enforcement; deterministic local tests assert those properties:
-
-```sh
-OCI_ACCELERATOR_PUBLIC_E2E=1 go test -v ./integration \
-  -run TestDockerPublicRegistriesThroughCompiledProxy -count=1 -timeout=10m
-```
-
-Linux crash recovery needs Go and a non-loopback IPv4 interface. Isolated tmpfs ENOSPC
-verification additionally needs passwordless sudo, `nsenter`, `mount`, `dd`,
-`findmnt`, and private PID/mount namespace, procfs, and tmpfs support. The fixture fills
-only its disposable filesystem, not the host root disk. The lifecycle check also verifies
-privileged descendant teardown. ENOSPC checks cover both full and ranged delivery:
-
-```sh
-OCI_ACCELERATOR_FAULT_E2E=1 go test -v ./integration \
-  -run '^(TestCache(ENOSPC|Crash)Acceptance|TestRangeCacheENOSPCAcceptance|TestPrivilegedProcessLifecycle)$' -count=1 -timeout=10m
-```
-
-In an Amp orb, run the entire test runner as a supervised service so its child
-processes survive CLI updates. The wrapper stays alive after the one-shot test
-to prevent the service supervisor from automatically rerunning it:
-
-```sh
-runner=$(mktemp)
-cat > "$runner" <<'SH'
-OCI_ACCELERATOR_E2E=1 OCI_ACCELERATOR_FAULT_E2E=1 go test -v ./integration \
-  -run '^(TestDockerPullThroughCompiledProxy|TestDockerMultiPlatformThroughCompiledProxy|TestCache(ENOSPC|Crash)Acceptance|TestRangeCacheENOSPCAcceptance|TestPrivilegedProcessLifecycle)$' -count=1 -timeout=10m
-printf 'Acceptance exit status: %s\n' "$?"
-exec sleep infinity
-SH
-amp orb service start acceptance --command "sh $runner"
-amp orb service logs acceptance
-# After the exit status is printed, stop the wrapper and remove it:
-amp orb service stop acceptance
-rm "$runner"
-```
-
-Allow normal test cleanup to finish. If the runner is forcibly killed, confirm its
-owned processes have exited before removing only the exact temporary directories
-reported by that run; never delete unrelated Docker state or host trust files.
-
-Bounded HTTP and Docker concurrency matrices require several GiB of disposable disk, Linux
-`/proc`, and enough resources for four simultaneous Docker daemons, plus the Docker prerequisites
-above. HTTP covers 1/8/32 clients, 8/64 MiB same/distinct-key objects, cold/warm/restart phases,
-wait-hit and fallback profiles, and tiny-object churn. Docker covers 1/4 fresh daemons across
-cold/warm/restart phases. Reports are optional and are atomically replaced only after a complete
-passing matrix:
-
-```sh
-reports=$(mktemp -d)
-OCI_ACCELERATOR_LOAD_E2E=1 \
-OCI_ACCELERATOR_LOAD_REPORT="$reports/http.json" \
-OCI_ACCELERATOR_DOCKER_LOAD_REPORT="$reports/docker.json" \
-  go test -v ./integration \
-  -run '^(TestBoundedHTTPLoadAcceptance|TestDockerLoadAcceptance)$' \
-  -count=1 -timeout=20m
-```
-
-Use a fresh report directory and rely on the test exit status; a failed run leaves any existing
-report untouched. These checks validate bounded behavior and correctness, not deployment sizing,
-throughput, or latency guarantees. Resource peaks are periodic samples, not guaranteed maxima.
-See [cache benchmarks](../internal/cache/benchmarks.md) for isolated admission contention checks.
-
-## Current limitations
-
-Redirect restrictions protect proxy-originated fetches. They do not constrain the broader
-egress available through opaque CONNECT tunnels: deployment network controls remain essential.
-
-There is no shared/distributed storage, multi-instance coordination, or background prefetch.
-Kubernetes manifests and automated container runtime acceptance in CI are not provided.
-
-Fault tests exercise process termination and private tmpfs exhaustion, not power-loss or
-faulty-device certification.
+Do not expose the proxy through an Amp portal. To run acceptance tests in an orb, see the
+[testing guide](testing.md).

@@ -131,7 +131,7 @@ so run them only on a disposable host. For example, to test pulls and pushes:
 OCI_ACCELERATOR_E2E=1 go test -v ./integration -count=1 -timeout=10m
 ```
 
-See [repeatable checks](docs/operations.md#repeatable-checks) for their
+See the [testing guide](docs/testing.md) for their
 prerequisites and the other opt-in suites, and [working rules](AGENTS.md) for
 contribution and review requirements.
 

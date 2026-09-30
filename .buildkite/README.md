@@ -83,7 +83,7 @@ their test-owned process harness runs on Linux with the documented Docker and
 namespace privileges, without Amp. CI runs the default local-fixture suite,
 **not** those acceptance matrices. Acceptance jobs and merge gates are deliberately
 absent; manual execution remains necessary for that coverage.
-See the [operating guide](../docs/operations.md#repeatable-checks)
+See the [testing guide](../docs/testing.md)
 for that additional coverage.
 
 To reproduce CI locally with Go 1.27.1 and a C compiler, run from the repo root:
