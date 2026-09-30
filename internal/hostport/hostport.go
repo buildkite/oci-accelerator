@@ -1,4 +1,3 @@
-// Package hostport parses and canonicalizes host:port network authorities.
 package hostport
 
 import (
@@ -8,16 +7,20 @@ import (
 	"strings"
 )
 
+// ErrInvalid is returned for any text that is not a valid authority.
 var ErrInvalid = errors.New("invalid authority")
 
-// HostPort is a canonical host and port pair.
+// HostPort is a canonical host and port pair. Construction always
+// canonicalizes, so values are safe to compare with == and to use as map keys.
 type HostPort struct {
 	host string
 	port string
 }
 
-// Parse parses text as a host or host:port. If the port is omitted, defaultPort
-// is used; an empty defaultPort therefore requires an explicit port.
+// Parse parses text as a host or host:port, using defaultPort when the port is
+// omitted (an empty defaultPort requires one). IPv6 hosts need brackets with a
+// port. Ports must be 1–65535; hosts follow [Canonicalize]. Failures return
+// [ErrInvalid]; see the package documentation for rejected input.
 func Parse(text, defaultPort string) (HostPort, error) {
 	if text == "" || text != strings.TrimSpace(text) || strings.ContainsAny(text, "@/?#%*") {
 		return HostPort{}, ErrInvalid
@@ -86,6 +89,10 @@ func split(text string) (string, string, error) {
 	return text, "", nil
 }
 
+// looksLikeIPv4 reports whether host has the dotted-decimal shape of an IPv4
+// address. Canonicalize calls it only after net.ParseIP has failed, so a match
+// is a non-canonical form such as "010.0.0.1", which some resolvers would read
+// as octal; it is rejected rather than reinterpreted.
 func looksLikeIPv4(host string) bool {
 	if strings.Count(host, ".") != 3 {
 		return false
@@ -103,6 +110,9 @@ func validPort(port string) bool {
 	return err == nil && n > 0
 }
 
+// validHostname applies DNS label rules to a lowercased host: at most 253
+// characters, with labels of 1–63 characters from a–z, 0–9, and '-' that do
+// not start or end with '-'.
 func validHostname(host string) bool {
 	if len(host) > 253 {
 		return false
@@ -120,9 +130,14 @@ func validHostname(host string) bool {
 	return true
 }
 
+// Host returns the canonical host, without brackets for IPv6.
 func (h HostPort) Host() string { return h.host }
+
+// Port returns the decimal port without leading zeros.
 func (h HostPort) Port() string { return h.port }
 
+// String returns the authority, omitting the port when it is 443 and
+// bracketing IPv6 hosts.
 func (h HostPort) String() string {
 	if h.port == "443" {
 		if strings.Contains(h.host, ":") {

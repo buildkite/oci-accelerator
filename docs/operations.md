@@ -18,8 +18,10 @@ cp config.example.yaml config.local.yaml
 bin/oci-accelerator --config config.local.yaml --check
 ```
 
-Edit `registries` before starting. Registry names have no scheme or path; omitted ports mean
-443. Matching includes the port. IPv4, bracketed IPv6, and explicitly configured private
+Edit `registries` before starting. Each `registries` and `redirect_allowlist` entry is a `host`
+or `host:port` with no scheme or path; an omitted port means 443, and matching includes the
+port. Bracket IPv6 with a port, for example `[2001:db8::1]:5000`. Entries differing only in
+case, a trailing dot, or `:443` are duplicates and are rejected. Explicitly configured private
 registries are supported. Relative directories are resolved from the configuration file.
 Unknown or duplicate keys, extra YAML documents, invalid zero values, and malformed durations
 are rejected. `cache.fill_wait_timeout: 0s` and `cache.authorization_ttl: 0s` are the permitted
@@ -239,8 +241,8 @@ is static and changes take effect after restart.
 | `listen` | `127.0.0.1:3128`; host:port with a nonzero numeric port; empty/wildcard hosts bind all interfaces |
 | `metrics_listen` | Disabled; optional host:port with a nonzero numeric port; literal loopback IP required unless `metrics_allow_remote` is `true` |
 | `metrics_allow_remote` | `false`; explicit boolean opt-in to non-loopback metrics/probe binding |
-| `registries` | Required, nonempty list of distinct canonical authorities |
-| `redirect_allowlist` | Optional private HTTPS storage authorities; does not enable interception |
+| `registries` | Required, nonempty list of distinct authorities; see [syntax](#build-and-start) |
+| `redirect_allowlist` | Optional private HTTPS storage authorities, same [syntax](#build-and-start); does not enable interception |
 | `ca_dir` | Required private persistent state directory |
 | `cache.dir` | Required private persistent cache directory |
 | `cache.max_bytes` | 32 GiB, including body, metadata, and fill reservations |
