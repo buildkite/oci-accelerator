@@ -86,6 +86,9 @@ func validate(raw rawConfig, base string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("%w: cache.dir: cannot resolve directory path", ErrInvalid)
 	}
+	// The distinctness and nesting checks are lexical: they neither resolve
+	// symlinks nor inspect the filesystem. Startup ownership and layout checks
+	// apply separately.
 	if filepath.Clean(caDirAbsolute) == filepath.Clean(cacheDirAbsolute) {
 		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: must be distinct directory paths", ErrInvalid)
 	}

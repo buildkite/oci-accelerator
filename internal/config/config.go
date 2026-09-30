@@ -1,4 +1,3 @@
-// Package config loads and validates oci-accelerator configuration.
 package config
 
 import (
@@ -13,18 +12,27 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// ErrInvalid is wrapped by every error that reports invalid configuration,
+// including malformed YAML, so callers can match it with [errors.Is]. Messages
+// name the offending field or line where one applies, but never include
+// configuration values.
 var ErrInvalid = errors.New("invalid configuration")
 
-const DefaultCacheMaxBytes int64 = 32 << 30
+// Defaults applied when the configuration omits a cache setting or sets it
+// to null.
 const (
-	DefaultCacheMaxFills                = 16
-	DefaultCacheMaxEntries              = 100000
-	DefaultCacheFillTimeout             = 10 * time.Minute
-	DefaultCacheFillWaitTimeout         = time.Second
-	DefaultCacheAuthorizationTTL        = 30 * time.Second
-	DefaultCacheMaxAuthorizationEntries = 10000
+	DefaultCacheMaxBytes                int64 = 32 << 30
+	DefaultCacheMaxFills                      = 16
+	DefaultCacheMaxEntries                    = 100000
+	DefaultCacheFillTimeout                   = 10 * time.Minute
+	DefaultCacheFillWaitTimeout               = time.Second
+	DefaultCacheAuthorizationTTL              = 30 * time.Second
+	DefaultCacheMaxAuthorizationEntries       = 10000
 )
 
+// Config is the validated result of [Load]. Relative directory paths are
+// joined to the configuration file's directory, and bind addresses are
+// validated and normalized.
 type Config struct {
 	Listen                string
 	MetricsListen         string
@@ -41,6 +49,7 @@ type Config struct {
 	MaxLeafCertificates   int
 }
 
+// Cache holds the cache section of a [Config].
 type Cache struct {
 	Dir                     string
 	MaxBytes                int64
@@ -80,8 +89,8 @@ type rawCache struct {
 	MaxAuthorizationEntries strictInt    `yaml:"max_authorization_entries"`
 }
 
-// Load reads one strict YAML document from path and resolves relative directories
-// against the configuration file's directory.
+// Load reads and validates the single-document YAML file at path. Read
+// failures wrap the underlying I/O error; all other failures wrap [ErrInvalid].
 func Load(path string) (Config, error) {
 	f, err := os.Open(path)
 	if err != nil {

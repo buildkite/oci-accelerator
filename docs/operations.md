@@ -28,10 +28,10 @@ retain scalar defaults, but null list elements are invalid. String fields reject
 scalars. Numeric limits require decimal YAML integers without leading zeros: floats, quoted
 numbers, octal/hex forms, and underscores are rejected. `ca_dir` and `cache.dir` must both be
 nonblank and must resolve to distinct, lexically normalized absolute paths; there is no
-forwarding-only configuration mode. The CA directory must not be inside the cache directory;
-the reverse nesting is permitted. See [state-path validation](../internal/config/README.md#loading).
-This validation does not resolve symlinks or inspect state; the filesystem ownership and
-layout checks still apply at startup.
+forwarding-only configuration mode. The CA directory must not be inside the cache directory,
+because the cache owns, and may remove, entries in its directory; the reverse nesting is
+permitted. This validation does not resolve symlinks or inspect state; the filesystem
+ownership and layout checks still apply at startup.
 
 `--check` validates only the configuration. It does not inspect CA/cache state, bind listeners,
 or create directories. Before starting, provision the immediate parent of each state directory

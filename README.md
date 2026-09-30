@@ -19,7 +19,7 @@ remote binding requires explicit opt-in.
 - [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
   recovery, and repeatable acceptance checks.
 - Package guides map the code and internal contracts:
-  [proxy](internal/proxy/README.md), [config](internal/config/README.md), and
+  [proxy](internal/proxy/README.md) and
   [hostport](internal/hostport/README.md),
   with the command documented under [Usage](#usage) and
   [cache benchmarks](internal/cache/benchmarks.md) for performance investigation.
