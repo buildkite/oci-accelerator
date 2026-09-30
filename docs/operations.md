@@ -87,7 +87,7 @@ The image leaves that child absent and gives the parent and cache directory UID/
 10001 and mode 0700. Docker copies these permissions into fresh volumes, so no host
 directory provisioning or root entrypoint is needed. The CA volume remains writable
 at runtime. Existing valid CA files are reused, not replaced. Never bake `ca.key`
-into an image. The volume names match the root README's `docker run` example; run
+into an image. The volume names match the `docker run` example below; run
 only one proxy against them at a time. Compose warns when reusing volumes created by
 `docker run` because it does not own those volumes. These examples do not migrate
 existing host bind-mounted data; starting with new volumes creates a new CA that clients must trust.
@@ -110,6 +110,24 @@ docker compose run --rm --no-deps oci-accelerator \
   --config /etc/oci-accelerator/config.yaml --check
 docker compose up -d
 ```
+
+The equivalent without Compose, from the repository root:
+
+```sh
+docker build -t oci-accelerator:local .
+docker run -d --name oci-accelerator --restart unless-stopped \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --stop-timeout 40 -p 127.0.0.1:3128:3128 \
+  --mount type=bind,src="$PWD/config.container.yaml",dst=/etc/oci-accelerator/config.yaml,readonly \
+  --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
+  --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
+  oci-accelerator:local
+docker logs oci-accelerator
+docker inspect --format '{{.State.Health.Status}}' oci-accelerator
+```
+
+Stop it with `docker stop oci-accelerator`; removing the container preserves both named
+volumes.
 
 `--check` validates configuration only; it does not inspect the mounted CA or cache state.
 First startup generates the CA. Follow [Configure CA trust and Docker](#configure-ca-trust-and-docker)

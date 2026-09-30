@@ -138,6 +138,26 @@ curl --noproxy '*' --fail --output ca.crt http://127.0.0.1:3128/ca.crt
 
 The endpoint serves only the public certificate, never the private key.
 
+### Per-registry certificates
+
+A TLS certificate is only valid for the names it lists, so each intercepted
+host needs its own certificate chaining to the root CA. The accelerator signs
+these on demand, the first time Docker connects to a host. That keeps the root
+CA independent of the `registries` list, and no certificate is created for a
+registry that is never used.
+
+- **One name each.** Each certificate covers a single DNS name or IP address.
+- **Short-lived.** Certificates are valid for 24 hours. A new one is signed when
+  the current one is within an hour of expiry, or isn't currently valid, for
+  example after the system clock moves backwards.
+- **Never outlive the root CA.** A certificate's validity is capped at the root
+  CA's expiry. One that already expires with the root CA is reused even in its
+  final hour, because renewing it can't extend its lifetime. If the root CA
+  isn't currently valid, no certificate is signed or reused.
+- **Memory only.** Certificates and their private keys are never written to
+  disk. The accelerator keeps up to `max_leaf_certificates` (256 by default)
+  and evicts the least recently used; each use or renewal counts as recent.
+
 # Authorizing intercepted requests
 
 The accelerator makes no access decisions of its own. The upstream registry

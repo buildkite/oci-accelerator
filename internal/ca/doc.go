@@ -7,6 +7,6 @@
 // The package is Unix-only: its filesystem checks rely on Unix ownership and
 // permission semantics.
 //
-// See the repository README for how leaves are minted, and docs/operations.md
+// See docs/how-it-works.md for how leaves are minted, and docs/operations.md
 // for the CA directory requirements and staging-directory cleanup.
 package ca

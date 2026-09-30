@@ -1,93 +1,29 @@
 # OCI Accelerator
 
-A standalone Go explicit HTTPS proxy for Docker Engine, with selective registry
-TLS interception, persistent CA identity, and authorized SHA-256 blob and
-digest-manifest [caching](#caching). Docker Engine on Linux is the validated
-client; the proxy uses generic Registry HTTP API V2 behavior rather than
-provider-specific routing.
+OCI Accelerator is an HTTPS proxy that speeds up Docker image pulls by caching
+upstream registry content on local disk. Docker Engine sends its registry
+traffic through the proxy, which serves repeat downloads of image layers and
+digest-addressed manifests from its cache instead of fetching them from the
+upstream registry again.
 
-Docker pushes and other registry writes pass through by default, with upstream
-permissions enforced by the registry. Uploads stream without populating the cache;
-Docker owns authentication, upload sessions, and redirects. Deletion does not
-invalidate existing pull grants, which remain valid until their original expiry.
+- **Works as a proxy, not a mirror.** Image names and `docker login` stay the
+  same, and any upstream registry implementing the Registry HTTP API V2 works.
+- **Caches only content addressed by digest.** Blobs and manifests are cached by
+  SHA-256 digest. Tags and pushes go straight to the upstream registry.
+- **The upstream registry authorizes every cache hit.** Cached content is served
+  only after the upstream registry approves the same request, or within a short
+  grant window.
+- **Keeps credentials at the upstream registry.** Tokens are never read or
+  stored.
+- **Streams large layers.** Layers are never buffered in memory, and concurrent
+  pulls of the same layer share one download.
+- **Uses one trusted CA.** Docker hosts trust the root CA once; certificates for
+  each upstream registry are signed on demand.
+- **Bounded, self-maintaining storage.** Disk use is capped, least-recently-used
+  entries are evicted, and objects that don't fit pass through uncached.
 
-Optional Prometheus metrics expose resource use, fixed request/cache outcomes, and
-cache- versus origin-served bytes. The same separate listener serves `/livez` and
-`/readyz` probes; remote binding requires explicit opt-in.
-
-- [How it works](docs/how-it-works.md): request flow, authorization, and cache
-  storage.
-- [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
-  recovery, repeatable acceptance checks, and current limitations.
-- Package internals are documented in the Go source; the command is documented
-  under [Usage](#usage), and [cache benchmarks](internal/cache/benchmarks.md)
-  support performance investigation.
-- [Working rules](AGENTS.md): contribution, review, and verification requirements.
-
-## How it works
-
-Docker Engine uses the proxy as its HTTPS proxy and opens a `CONNECT` tunnel for
-each registry connection. The proxy decides per destination whether to intercept:
-
-```
-Docker Engine
-    |  CONNECT host:port   (proxy listener, default 127.0.0.1:3128)
-    v
-oci-accelerator: is host:port a configured registry?
-    |
-    +-- no:  opaque TCP tunnel to the destination
-    |        (not decrypted, inspected, cached, or filtered)
-    |
-    +-- yes: terminate TLS with a per-host leaf signed by the proxy's root CA
-             |
-             +-- SHA-256 blob or digest-manifest GET
-             |     1. registry approves the request
-             |        (this request's upstream GET, or a recent exact grant)
-             |     2. serve verified bytes from cache, or stream from
-             |        upstream while filling the cache
-             |
-             +-- anything else (tags, HEAD, pushes, deletes)
-                   forward upstream over verified TLS, uncached
-```
-
-Only authorities listed in `registries` are intercepted, and Docker keeps its image
-names and credentials. The proxy listener also serves the public root CA at
-`GET /ca.crt` without authentication; verify its fingerprint through a trusted channel
-before [installing it](docs/operations.md#configure-ca-trust-and-docker).
-
-## Security guarantees
-
-- **The registry authorizes every cache delivery.** A cached body is served only
-  after the registry approved the same request, with the same credentials and
-  headers, either on this request or within `cache.authorization_ttl`. Upstream
-  failures are returned; they never fall back to cached content.
-- **No proxy-held credentials.** Tokens stay opaque: the proxy never parses,
-  acquires, refreshes, or stores registry credentials.
-- **Upstream TLS is always verified.** There is no option to disable certificate
-  or hostname verification.
-- **Contained redirects.** The proxy follows at most five HTTPS redirects, and only
-  for SHA-256 blob and digest-manifest GETs. Private, loopback, and link-local destinations must be
-  configured; each DNS answer is fully checked and never re-resolved. Cross-origin
-  hops keep only `Accept`, `Accept-Encoding`, and `User-Agent`.
-- **Sanitized telemetry.** Logs and metrics omit credentials, tokens, query strings,
-  and redirect URLs. Request logs do include repository paths, tags, and digests.
-
-There is no proxy-user authentication, and unconfigured destinations are open
-tunnels, so rely on network controls rather than exposing the listener. See
-[how it works](docs/how-it-works.md) and the [operating guide](docs/operations.md)
-for the detailed rules and [current limitations](docs/operations.md#current-limitations).
-
-## Build and configure
-
-```sh
-go build -o bin/oci-accelerator ./cmd/oci-accelerator
-bin/oci-accelerator --config config.example.yaml --check
-```
-
-Follow the [operating guide](docs/operations.md) to configure registry authorities,
-start the proxy, verify/install its public CA, and configure Docker Engine.
-The default listener is loopback-only. Do not expose it publicly: there is no
-proxy-user authentication, and unconfigured CONNECT destinations are opaque tunnels.
+See [how it works](docs/how-it-works.md) for the request flow, authorization,
+and cache storage in detail.
 
 ## Usage
 
@@ -96,150 +32,106 @@ oci-accelerator --config FILE [--check]
 oci-accelerator init-ca --dir DIR
 ```
 
-- `--config FILE` — path to the YAML configuration (required for the proxy command).
-- `--check` — validate the configuration and exit without starting the proxy.
-- `init-ca --dir DIR` — create or validate a root CA directory. `--dir` is
-  required; relative paths are resolved from the working directory.
+| Command                                 | Description                                                                                                                                  |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `oci-accelerator --config FILE`         | Start the proxy with the YAML configuration in `FILE`. It stops gracefully on `SIGINT` or `SIGTERM`.                                         |
+| `oci-accelerator --config FILE --check` | Validate the configuration and exit, without starting the proxy or touching the CA or cache directories.                                     |
+| `oci-accelerator init-ca --dir DIR`     | Create a root CA in `DIR`, or validate an existing one, without starting the proxy. Prints the certificate path and its SHA-256 fingerprint. |
+| `oci-accelerator --help`                | Print usage. `init-ca --help` describes `init-ca`.                                                                                           |
 
-`init-ca` applies the same [CA directory requirements](docs/operations.md#ca-directory-requirements)
-as proxy startup. It does not load YAML or start the proxy, cache, listeners,
-or network activity. If `DIR` is absent, its existing parent must be safe and
-writable; the command creates the directory, `ca.crt`, and `ca.key` using the
-P-256, ten-year root CA profile. If a valid pair
-already exists, it is validated and reused without changing file contents,
-ownership, or permissions. Empty, invalid, expired, incomplete, symlinked, or
-insecurely permissioned state fails closed. The command never creates parent
-directories.
 
-On success, stdout contains only the public certificate path and its lowercase,
-unseparated SHA-256 fingerprint:
+## Quick start
 
-```text
-ca_certificate="path/to/ca.crt"
-ca_sha256=0123456789abcdef...
-```
+This builds the proxy and runs it on a Linux Docker Engine host, caching Docker
+Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
 
-It never prints private-key contents. `oci-accelerator init-ca --help` describes
-the command, and top-level help lists `init-ca`.
+1. From the repository root, build the proxy and create its private state
+   directory:
 
-## Caching
+   ```sh
+   go build -o bin/oci-accelerator ./cmd/oci-accelerator
+   mkdir -m 0700 data
+   ```
 
-The proxy stores immutable, digest-addressed registry objects on local disk so
-repeated pulls avoid downloading the same bytes again. The registry still decides
-who may pull: every cache delivery depends on a recent upstream approval of the
-same request.
+2. Start the proxy with [`config.example.yaml`](config.example.yaml). It listens
+   on `127.0.0.1:3128`, creates its root CA and cache under `data` on first
+   start, and logs the CA's fingerprint as `ca_sha256`:
 
-- **What is cached.** Query-free SHA-256 blob GETs (layers and image configs) and
-  manifests requested by digest in OCI or Docker schema-2 media types. Tags, HEAD,
-  conditional requests, legacy or unknown manifest formats, and responses that are
-  encoded, have unknown length, forbid storage, or vary on unsupported headers pass
-  through uncached. Entries belong to one registry and repository; there is no
-  cross-repository deduplication.
-- **Authorization.** A full GET is served straight from cache only when the
-  registry approved the same request, with the same credentials and headers, within
-  `cache.authorization_ttl` (default `30s`); otherwise it goes upstream first.
-  Setting `0s` requires an upstream GET for every delivery. Approvals live only in
-  memory, are cleared on restart, and are bounded by `cache.max_authorization_entries`.
-  A token revoked after approval can still hit until that approval expires. Upstream
-  errors are returned to the client: there is no offline or failed-request fallback.
-- **Filling.** On a miss, the body streams to the client while being written to
-  disk; layers are never buffered in memory. An entry is published only after its
-  full length and SHA-256 digest are verified, so partial downloads are never
-  served. Other clients requesting the same object still authorize upstream, then
-  wait up to `cache.fill_wait_timeout` (default `1s`) for that fill instead of
-  downloading the body again; if it does not complete, each makes one fresh
-  upstream request.
-- **Range requests.** Blob Range GETs always go upstream as full GETs and never use
-  cached approvals. When the body is cached, the proxy serves standard single or
-  multipart ranges from it. Otherwise it returns a single range as the full body
-  streams past and may keep filling the cache after delivery, bounded by
-  `cache.fill_timeout`; multiple ranges on an uncached object get the full `200`.
-- **Limits and eviction.** `cache.max_bytes` (default 32 GiB, counting each body
-  plus 4 KiB of metadata, including in-progress fills), `cache.max_entries`,
-  `cache.max_fills`, and `cache.fill_timeout` bound storage. Leave filesystem
-  headroom for block and inode overhead. When full, the proxy evicts approximately
-  least-recently-used entries that are not being read. An object that still does
-  not fit streams uncached rather than failing.
-- **Persistence and integrity.** One process owns the private cache directory.
-  Startup removes abandoned partial downloads and refuses to start on unrecognized
-  files rather than deleting them. Each stored body is rehashed on its first use
-  after startup; a missing or corrupt entry becomes a miss. Do not edit or delete
-  live cache files.
+   ```sh
+   bin/oci-accelerator --config config.example.yaml
+   ```
 
-See [cache storage and recovery](docs/operations.md#cache-storage-and-recovery) for
-operating details, including the exact eligibility, authorization, and capacity
-rules.
+3. In another terminal, download the CA certificate and check that its
+   fingerprint matches `ca_sha256`. OpenSSL prints it in uppercase with colons.
 
-## Certificate minting
+   ```sh
+   curl --noproxy '*' --fail --output ca.crt http://127.0.0.1:3128/ca.crt
+   openssl x509 -in ca.crt -noout -fingerprint -sha256
+   ```
 
-Docker trusts the proxy's persistent, self-signed root CA once. When the proxy
-intercepts a CONNECT to a configured registry authority, it terminates TLS with a
-leaf certificate for that host, signed by the root on demand. Other CONNECT
-destinations remain opaque tunnels and never receive CA-issued certificates.
+4. Trust the CA for each upstream registry:
 
-A TLS certificate is only valid for the names in its SAN, so each intercepted
-host needs its own leaf chaining to the trusted root. Issuing leaves on demand
-keeps the root identity independent of the configured registry list and avoids
-generating unused certificates.
+   ```sh
+   for registry in registry-1.docker.io ghcr.io public.ecr.aws; do
+     sudo install -D -m 0644 ca.crt "/etc/docker/certs.d/$registry/ca.crt"
+   done
+   ```
 
-- Each leaf covers a single DNS name or IP address and is valid for 24 hours.
-- A new leaf is signed when none is cached, when the cached leaf is not currently
-  valid (including after a clock rollback), or when it is within one hour of expiry.
-- Leaf validity is capped at the root's expiry. A leaf already expiring with the
-  root is reused even in its final hour, because renewing cannot extend its
-  lifetime. A root that is not currently valid prevents both issuance and reuse.
-- Leaves and their private keys exist only in memory. The cache holds at most
-  `max_leaf_certificates` entries (default 256) and evicts the least recently
-  used; every hit and renewal refreshes an entry's recency.
+5. Add the proxy to `/etc/docker/daemon.json`, keeping any existing settings,
+   then restart Docker:
 
-## Run in a container
+   ```json
+   {
+     "proxies": {
+       "https-proxy": "http://127.0.0.1:3128"
+     }
+   }
+   ```
 
-From the repository root on a Linux Docker host, review `config.container.yaml`,
-then build and start the Alpine image without Compose. Docker creates the named
-volumes with the required ownership; the proxy generates its CA on first startup
-and reuses it on subsequent starts.
+   ```sh
+   sudo systemctl restart docker
+   ```
+
+6. Pull as usual. When you pull the same image again, even after
+   `docker image rm`, its layers come from the proxy's cache:
+
+   ```sh
+   docker pull alpine
+   ```
+
+To cache other upstream registries, add them to `registries` and trust the CA
+for each one. The [operating guide](docs/operations.md) covers running as a
+service or container, remote Docker hosts, and every configuration setting.
+
+
+## Develop and test locally
+
+You need Go 1.27.1 and a C compiler for race tests. The default test suite uses
+local registry, authentication, and CDN fixtures, needs no network access or
+Docker, and runs on Linux and macOS:
 
 ```sh
-docker build -t oci-accelerator:local .
-docker run -d --name oci-accelerator --restart unless-stopped \
-  --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --stop-timeout 40 -p 127.0.0.1:3128:3128 \
-  --mount type=bind,src="$PWD/config.container.yaml",dst=/etc/oci-accelerator/config.yaml,readonly \
-  --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
-  --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
-  oci-accelerator:local
-docker logs oci-accelerator
-docker inspect --format '{{.State.Health.Status}}' oci-accelerator
-```
-
-Before pulling through the proxy, [verify/install the public CA and configure Docker
-Engine](docs/operations.md#configure-ca-trust-and-docker). Never distribute `ca.key`.
-Stop with `docker stop oci-accelerator`; removing the container preserves both named
-volumes. **Do not use `docker compose down -v` unless you intend to delete both the
-CA and cache.** For Compose, architecture-specific builds, and cache recovery,
-see [container deployment](docs/operations.md#container-deployment).
-
-## Testing
-
-Run the baseline checks:
-
-```sh
+gofmt -l cmd internal integration
+go vet ./...
 go test ./...
 go test -race ./...
-go vet ./...
 ```
 
-Real Docker acceptance is opt-in and uses fresh isolated daemon state with local
-fixtures. See the [operating guide](docs/operations.md#repeatable-checks)
-for commands, prerequisites, cleanup, tested versions, and limitations.
-Container packaging has a separate opt-in integration check documented there.
-Amp orb development, including the supervised Docker daemon, is covered in the
-[operating guide](docs/operations.md#docker-in-amp-orbs).
+To run the same checks as CI, including validating `config.example.yaml`:
 
-## Buildkite CI
+```sh
+GOTOOLCHAIN=local CGO_ENABLED=1 bash .buildkite/check.sh
+```
 
-The Buildkite pipeline runs Go formatting, vet, build, deterministic tests, and
-multi-platform container builds on every change. Successful current `main` builds
-publish amd64/arm64 images to `buildkite/oci-accelerator:latest`, replacing that tag.
-See the [CI guide](.buildkite/README.md) for publishing prerequisites,
-credentials, and local verification.
+Tests against a real Docker Engine are opt-in and run only on Linux. They start
+their own Docker daemons with passwordless `sudo` and share the host's network,
+so run them only on a disposable host. For example, to test pulls and pushes:
+
+```sh
+OCI_ACCELERATOR_E2E=1 go test -v ./integration -count=1 -timeout=10m
+```
+
+See [repeatable checks](docs/operations.md#repeatable-checks) for their
+prerequisites and the other opt-in suites, and [working rules](AGENTS.md) for
+contribution and review requirements.
+
