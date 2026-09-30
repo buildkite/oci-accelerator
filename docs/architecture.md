@@ -55,8 +55,10 @@ permissions. The proxy neither owns upload sessions nor replays uploads to follo
 redirects. Upload locations and opaque query parameters pass through to the client.
 Successful writes, including deletions, leave existing pull authorization grants
 unchanged: an exact approved GET may still use its cached body until expiry.
-See the [write forwarding contract](../internal/proxy/README.md#write-passthrough)
-for streaming, inactivity limits, and retry ownership.
+Uploads stream without buffering, and client body reads are bounded per read by
+`idle_timeout`, not by a total upload deadline. Upload locations, statuses, and
+redirects reach the client unchanged, and the proxy adds no write retries beyond
+net/http's own connection retry.
 
 ## Authorization before cache use
 
@@ -75,7 +77,8 @@ unchanged.
 The process computes an HMAC fingerprint over the original canonical URL and all
 forwarded end-to-end request headers. Header names and transport-managed fields
 are normalized to their forwarded form, so wire-equivalent GETs share grant
-invalidation; see the [proxy caching contract](../internal/proxy/README.md#caching).
+invalidation: `Host`, length, and transfer fields are ignored, and only the first
+`User-Agent` value counts.
 Other exact values and their order are retained. Anonymous requests are explicitly distinct
 from authenticated requests. The HMAC key is process-local and never persisted;
 restart therefore clears every grant without retaining credentials, raw header
@@ -274,8 +277,9 @@ Operators provision the trusted parent directory. Clients can download the publi
 certificate from the proxy's HTTP listener, but must verify it against the startup
 fingerprint obtained through a separate trusted channel before installing trust.
 Alternatively, operators distribute the certificate through a trusted channel.
-The endpoint serves only the running process's public CA, never private key material;
-see the [download contract](../internal/proxy/README.md#public-ca-download).
+The endpoint serves only the running process's public CA, never private key material,
+and closes every download connection so a later CONNECT cannot bypass the
+first-request wire validation.
 
 Per-host leaves last at most 24 hours, are capped by CA expiry, and renew within
 one hour of expiry. The bounded leaf cache uses LRU. See the

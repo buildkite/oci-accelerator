@@ -9,6 +9,10 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
+// dialUpstream is the upstream transport's dialer and its SSRF boundary.
+// Destinations outside the configured registries and redirect allowlist may
+// resolve only to public addresses, and zoned addresses are always refused. It
+// dials the vetted IPs directly, leaving the hostname for TLS verification.
 func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.DialTimeout)
 	defer cancel()

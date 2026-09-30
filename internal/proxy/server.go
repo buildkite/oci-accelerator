@@ -1,4 +1,3 @@
-// Package proxy implements the explicit forward proxy.
 package proxy
 
 import (
@@ -28,10 +27,10 @@ type Proxy struct {
 	configured    map[string]struct{}                                     // registries eligible for TLS interception and caching
 	signer        *ca.Authority                                           // certificate authority for signing intercepted TLS hosts
 	logger        *slog.Logger                                            // structured logger for proxy events
-	transport     *http.Transport                                         // HTTP transport used for upstream requests
-	cache         *cache.Store                                            // layer cache store; nil disables caching
+	transport     *http.Transport                                         // upstream transport; Shutdown closes its idle connections
+	cache         *cache.Store                                            // object store owned by New's caller; nil disables caching
 	authorization *authorizationCache                                     // bounded, process-local approvals shared across connections
-	destinations  map[string]struct{}                                     // hosts allowed as CONNECT targets (registries plus redirects)
+	destinations  map[string]struct{}                                     // registries plus redirect allowlist, exempt from the public-IP dial check
 	lookupIP      func(context.Context, string) ([]net.IPAddr, error)     // DNS resolver hook, overridable in tests
 	dialIP        func(context.Context, string, string) (net.Conn, error) // upstream dialer hook, overridable in tests
 	metrics       *metrics                                                // request and cache counters
@@ -40,12 +39,13 @@ type Proxy struct {
 
 	mu       sync.Mutex                // guards the mutable fields below
 	listener net.Listener              // active listener; nil before Serve or after shutdown
-	conns    map[*trackedConn]struct{} // live client connections accepted by the outer server
-	tunnels  map[net.Conn]struct{}     // live upstream connections for passthrough CONNECT tunnels
-	inners   map[*http.Server]struct{} // per-connection inner servers handling intercepted TLS
+	conns    map[*trackedConn]struct{} // live client connections; force-closed at the drain deadline
+	tunnels  map[net.Conn]struct{}     // live upstream connections for opaque tunnels; force-closed at the drain deadline
+	inners   map[*http.Server]struct{} // per-connection inner servers; Shutdown disables their keep-alives
 	closing  bool                      // set once shutdown starts to reject new inflight work
 
-	// inflight covers CONNECT handlers and client-independent range transfers.
+	// inflight covers CONNECT handlers and client-independent range transfers,
+	// so the caller can close the store once Shutdown returns.
 	// Add happens under mu while closing is false, before Shutdown can Wait.
 	// Handlers finish only after relay pumps exit and cache bodies are closed.
 	inflight sync.WaitGroup
@@ -123,7 +123,8 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 	return p
 }
 
-// Serve accepts proxy connections from listener until Shutdown is called.
+// Serve accepts CONNECT requests and public CA downloads from listener until
+// Shutdown is called, admitting at most cfg.MaxConnections client connections.
 func (p *Proxy) Serve(listener net.Listener) error {
 	max := p.cfg.MaxConnections
 	if max <= 0 {
@@ -157,9 +158,9 @@ func (p *Proxy) Serve(listener net.Listener) error {
 	return err
 }
 
-// Shutdown stops accepting, drains until ctx expires, then closes remaining
-// sockets. It returns only once CONNECT handlers and relay pumps finish (cache
-// bodies released), so a stuck handler can delay return past the deadline.
+// Shutdown stops accepting and drains until ctx expires, then closes remaining
+// sockets. It waits for all in-flight work, so a stuck handler can delay
+// return past the deadline.
 func (p *Proxy) Shutdown(ctx context.Context) error {
 	p.mu.Lock()
 	p.closing = true

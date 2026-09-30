@@ -18,6 +18,8 @@ import (
 
 // intercept coordinates the session with Proxy shutdown. The supplied handler
 // owns decrypted HTTP requests; this layer only owns CONNECT and TLS serving.
+// The inner server is registered before serveIntercepted acknowledges CONNECT
+// or starts TLS, so Shutdown cannot miss a session that is being established.
 func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostport.HostPort, handler http.Handler) {
 
 	// Check whether we can take over the underlying TCP connection from net/http.

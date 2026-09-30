@@ -11,18 +11,70 @@ permissions enforced by the registry. Uploads stream without populating the cach
 Docker owns authentication, upload sessions, and redirects. Deletion does not
 invalidate existing pull grants, which remain valid until their original expiry.
 
-Optional Prometheus metrics expose resource use and fixed request/cache outcomes;
-remote binding requires explicit opt-in.
+Optional Prometheus metrics expose resource use, fixed request/cache outcomes, and
+cache- versus origin-served bytes. The same separate listener serves `/livez` and
+`/readyz` probes; remote binding requires explicit opt-in.
 
 - [Architecture](docs/architecture.md): request flow, security boundaries, cache
   ownership, and design rationale.
 - [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
   recovery, and repeatable acceptance checks.
-- Package guides map the code and internal contracts:
-  [proxy](internal/proxy/README.md),
-  with the command documented under [Usage](#usage) and
-  [cache benchmarks](internal/cache/benchmarks.md) for performance investigation.
+- Package internals are documented in the Go source; the command is documented
+  under [Usage](#usage), and [cache benchmarks](internal/cache/benchmarks.md)
+  support performance investigation.
 - [Working rules](AGENTS.md): contribution, review, and verification requirements.
+
+## How it works
+
+Docker Engine uses the proxy as its HTTPS proxy and opens a `CONNECT` tunnel for
+each registry connection. The proxy decides per destination whether to intercept:
+
+```
+Docker Engine
+    |  CONNECT host:port   (proxy listener, default 127.0.0.1:3128)
+    v
+oci-accelerator: is host:port a configured registry?
+    |
+    +-- no:  opaque TCP tunnel to the destination
+    |        (not decrypted, inspected, cached, or filtered)
+    |
+    +-- yes: terminate TLS with a per-host leaf signed by the proxy's root CA
+             |
+             +-- SHA-256 blob or digest-manifest GET
+             |     1. registry approves the request
+             |        (this request's upstream GET, or a recent exact grant)
+             |     2. serve verified bytes from cache, or stream from
+             |        upstream while filling the cache
+             |
+             +-- anything else (tags, HEAD, pushes, deletes)
+                   forward upstream over verified TLS, uncached
+```
+
+Only authorities listed in `registries` are intercepted, and Docker keeps its image
+names and credentials. The proxy listener also serves the public root CA at
+`GET /ca.crt` without authentication; verify its fingerprint through a trusted channel
+before [installing it](docs/operations.md#configure-ca-trust-and-docker).
+
+## Security guarantees
+
+- **The registry authorizes every cache delivery.** A cached body is served only
+  after the registry approved the same request, with the same credentials and
+  headers, either on this request or within `cache.authorization_ttl`. Upstream
+  failures are returned; they never fall back to cached content.
+- **No proxy-held credentials.** Tokens stay opaque: the proxy never parses,
+  acquires, refreshes, or stores registry credentials.
+- **Upstream TLS is always verified.** There is no option to disable certificate
+  or hostname verification.
+- **Contained redirects.** The proxy follows at most five HTTPS redirects, and only
+  for SHA-256 blob and digest-manifest GETs. Private, loopback, and link-local destinations must be
+  configured; each DNS answer is fully checked and never re-resolved. Cross-origin
+  hops keep only `Accept`, `Accept-Encoding`, and `User-Agent`.
+- **Sanitized telemetry.** Logs and metrics omit credentials, tokens, query strings,
+  and redirect URLs. Request logs do include repository paths, tags, and digests.
+
+There is no proxy-user authentication, and unconfigured destinations are open
+tunnels, so rely on network controls rather than exposing the listener. See the
+[architecture guide](docs/architecture.md) for the complete rules.
 
 ## Build and configure
 

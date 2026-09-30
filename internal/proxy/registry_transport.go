@@ -13,17 +13,17 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
-// registryTransport is the outer http.RoundTripper the reverse proxy calls. It
-// adds the upstream-attempt metric, one retry, redirect following, and the
-// caching hand-off, then delegates each individual network round trip to the
-// shared upstream transport, which does the actual DNS/dial/TLS/HTTP.
+// registryTransport is the reverse proxy's RoundTripper. It adds redirect
+// following, grants, and caching to cache-shaped GETs; writes and other
+// bypassed requests make one upstream round trip returned to the client
+// unchanged. Dependencies are explicit, never a Proxy reference.
 type registryTransport struct {
-	upstream        *http.Transport
-	cache           *cache.Store
-	metrics         *metrics
-	fillWaitTimeout time.Duration
-	authorization   *authorizationCache
-	startRangeFetch func(context.Context) (*rangeFetch, error)
+	upstream        *http.Transport                            // shared DNS/dial/TLS/HTTP transport; Proxy owns its shutdown
+	cache           *cache.Store                               // object store owned by New's caller; nil disables caching
+	metrics         *metrics                                   // request counters, including upstream connection attempts
+	fillWaitTimeout time.Duration                              // wait for another request's fill before one retry; zero disables
+	authorization   *authorizationCache                        // exact-request grants; nil disables grant reuse
+	startRangeFetch func(context.Context) (*rangeFetch, error) // registers a range fetch bounded by fill timeout and shutdown
 }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -203,6 +203,8 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 var crossOriginSafeHeaders = []string{"Accept", "Accept-Encoding", "User-Agent"}
 
 // buildRedirectRequest builds the follow-up request for a redirect to next.
+// Stripping applies to current, so credentials are not restored if a later
+// hop returns to the original origin.
 func buildRedirectRequest(ctx context.Context, current *http.Request, next *url.URL) *http.Request {
 	out := current.Clone(ctx)
 	out.URL, out.Host = next, next.Host

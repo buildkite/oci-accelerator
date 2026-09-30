@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// serveCA publishes only the root certificate held by the active signer.
+// serveCA publishes only the root certificate held by the active signer. It
+// does not establish trust: clients must verify the fingerprint out of band.
 func (p *Proxy) serveCA(w http.ResponseWriter, r *http.Request) {
 	// The wire CONNECT validator inspects only the first request on a socket.
 	// Never let a certificate request precede CONNECT on the same connection.

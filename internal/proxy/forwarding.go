@@ -120,7 +120,9 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		// Forward to the reverse proxy only if the request passes the intercept contract.
 		if !rejectInvalidRequest(mw, r, target) {
 			if writeMethod(r.Method) {
-				// Relay an early upstream rejection without first draining the upload.
+				// Stream the upload upstream without buffering or caching it. Full
+				// duplex relays an early upstream rejection without first draining
+				// the upload; client cancellation and forced shutdown end it.
 				controller := http.NewResponseController(mw)
 				_ = controller.EnableFullDuplex()
 				if r.Body != nil && r.Body != http.NoBody && p.cfg.IdleTimeout > 0 {
@@ -203,12 +205,14 @@ func headerHasToken(h http.Header, name, token string) bool {
 	return false
 }
 
+// meteredWriter records the response status and bytes, refreshing an idle
+// write deadline on every write so a stalled client cannot block indefinitely.
 type meteredWriter struct {
-	http.ResponseWriter
-	status      int
-	bytes       int64
-	wroteFinal  bool
-	idleTimeout time.Duration
+	http.ResponseWriter               // downstream writer being metered
+	status              int           // final (non-1xx) status, defaulting to 200
+	bytes               int64         // body bytes accepted downstream
+	wroteFinal          bool          // set once a final status has been recorded
+	idleTimeout         time.Duration // per-write deadline; zero disables it
 }
 
 func (w *meteredWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

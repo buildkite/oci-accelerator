@@ -106,6 +106,8 @@ func (c *authorizationCache) valid(e *authorizationEntry, g *authorizationGrant)
 	return c.entries[e.key] == e && e.grant == g && time.Now().Before(g.expires)
 }
 
+// fingerprint hashes the request line and forwarded headers as the HTTP/1.1
+// transport sends them, so wire-equivalent GETs share one grant.
 func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	// Normalize the host to a canonical host:port authority.
 	authority, _ := hostport.Parse(req.URL.Host, "443")

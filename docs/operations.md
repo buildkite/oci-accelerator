@@ -192,8 +192,8 @@ sudo install -D -m 0644 ca.crt /etc/docker/certs.d/public.ecr.aws/ca.crt
 `GET /ca.crt` and `HEAD /ca.crt` are always available to anyone who can reach the
 proxy listener; they need no registry credentials or additional listener configuration.
 The endpoint serves the root CA loaded by the running process, never the private key.
-It does not install trust or rotate certificates. See the
-[download contract](../internal/proxy/README.md#public-ca-download) for protocol details.
+It does not install trust or rotate certificates. Only the exact `/ca.crt` path matches;
+other methods return `405`, and every response closes its connection.
 
 For `registry.example:5000`, use that exact host and port as the directory name. Omit `:443`
 when image names omit it. Never distribute `ca.key` or install it as a Docker client key. See
@@ -290,7 +290,6 @@ are limited by `idle_timeout` for stalled I/O, not `cache.fill_timeout` or a tot
 Successful deletion does not invalidate existing pull authorization grants. Previously approved
 exact GETs may still serve cached content until the original grant expiry; set
 `cache.authorization_ttl: 0s` when every cache delivery must check current upstream access.
-See the [write forwarding contract](../internal/proxy/README.md#write-passthrough).
 
 The proxy follows up to five redirects only for eligible query-free SHA-256 blob and digest
 manifest GETs. Redirects must use verified HTTPS and pass destination checks; userinfo,
@@ -351,9 +350,24 @@ requests received by the registry. `oci_accelerator_cache_rejections_total` repo
 `digest_mismatch` header rejections on eligible responses; another policy check may also prevent
 caching, so these counts do not identify the sole cause of every bypass.
 
-The immutable source delivery counters separate cache- and origin-served `200` responses. Their
-scope, completion semantics, and source attribution are defined in the proxy package's
-[immutable source delivery metrics contract](../internal/proxy/README.md#immutable-source-delivery-metrics).
+The immutable source delivery counters,
+`oci_accelerator_served_bytes_total{source="cache|origin"}` and
+`oci_accelerator_served_entries_total{source="cache|origin"}`, measure how much
+digest-addressed content clients received from the cache versus the registry:
+
+- **Scope.** Only `200` responses to query-free `GET`s for a full, unescaped SHA-256 blob or
+  manifest digest, without `Range` or `If-*` headers. Errors, `HEAD`, tags, ranges, conditional
+  requests, queries, and opaque tunnels are excluded.
+- **Bytes** count what the client actually accepted, including partial delivery when a transfer
+  aborts. **Entries** increment only when delivery completes; they count deliveries, not unique
+  digests, successful cache fills, or integrity checks.
+- **Source** describes where the response body came from. `cache` covers ordinary hits,
+  authorization-grant hits, and responses served after waiting for another request's fill.
+  `origin` covers cold fills and responses that bypassed storage because of `no-store`, capacity,
+  or unsupported metadata. Upstream authorization GETs do not affect attribution.
+- Both sources are exported as zero before traffic, update when each request ends, and reset on
+  restart. They measure application deliveries, not wire bandwidth or bandwidth savings.
+
 For a five-minute cache byte percentage across all instances, apply `rate` before aggregation and
 drop a zero-traffic denominator so dashboards can display N/A:
 
