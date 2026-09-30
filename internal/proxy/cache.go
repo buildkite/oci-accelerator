@@ -105,7 +105,8 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 // waitForFill closes the upstream body and waits for an in-flight fill of the
 // same object. On a hit it returns resp with a cache body; otherwise it returns
 // retry=true for a fresh GET, or an error on cancellation. Call only for an
-// active fill with a positive timeout.
+// active fill with a positive timeout. The retry's new denials are relayed; a
+// full-GET fill is never handed to a waiter.
 func (t registryTransport) waitForFill(ctx context.Context, resp *http.Response, meta cache.Metadata, completed <-chan struct{}, stats *requestStats) (*http.Response, bool, error) {
 	// Drop the upstream stream; we're serving from the coalesced fill instead.
 	resp.Body.Close()

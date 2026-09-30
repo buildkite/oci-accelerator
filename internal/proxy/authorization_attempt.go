@@ -98,7 +98,8 @@ func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted
 // settle commits a grant for an eligible terminal response, or invalidates the
 // entry otherwise. It relies on narrow having run for the same hop, so the
 // deadline and authentication-state restrictions have already been applied.
-// Transient failures cannot establish a grant.
+// Transient failures cannot establish a grant. Only this GET can approve reuse:
+// registries need not authorize HEAD and GET alike.
 func (a *grantAttempt) settle(req *http.Request, resp *http.Response, received time.Time, permitted bool) {
 	if a == nil || isTransient(resp.StatusCode) {
 		return

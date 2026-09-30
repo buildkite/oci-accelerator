@@ -81,7 +81,8 @@
 - Never disable upstream TLS verification, log credentials, or forward
   credentials across origins.
 - Changes to these security boundaries require explicit design approval.
-  See [the architecture guide](docs/architecture.md) for detailed
+  See [how it works](docs/how-it-works.md), the
+  [operating guide](docs/operations.md), and source comments for detailed
   protocol rules.
 
 ## Bounded resources and safe failure

@@ -296,7 +296,7 @@ manifest GETs. Redirects must use verified HTTPS and pass destination checks; us
 fragments, loops, and implicit private, link-local, or loopback destinations are rejected.
 Private storage destinations belong in `redirect_allowlist`. Cross-origin redirects preserve
 only Accept, Accept-Encoding, and User-Agent, never credentials or cookies. See
-[`architecture.md`](architecture.md) for the protocol and security rationale.
+[current limitations](#current-limitations) for how this relates to tunnel egress.
 
 ## Logs and metrics
 
@@ -438,8 +438,8 @@ including active fills, so reserve filesystem block, directory, and inode headro
 capacity-rejected objects continue streaming without being cached. Failed cleanup retains its
 capacity charge until removal succeeds. Best-effort LRU eviction skips active readers and makes
 at most eight eviction removal attempts per admission, separately from pending-cleanup retries.
-Objects requiring more victims can continue bypassing; see the
-[capacity contract](architecture.md#storage-capacity-and-recovery).
+Objects requiring more victims can continue bypassing, and competing traffic may consume
+reclaimed space, so admission is not guaranteed.
 
 Concurrent clients authorize independently. One writer fills a key; matching followers may
 wait for it and then open a verified cache entry. Timeout, leader failure, or eviction causes one
@@ -681,3 +681,14 @@ Use a fresh report directory and rely on the test exit status; a failed run leav
 report untouched. These checks validate bounded behavior and correctness, not deployment sizing,
 throughput, or latency guarantees. Resource peaks are periodic samples, not guaranteed maxima.
 See [cache benchmarks](../internal/cache/benchmarks.md) for isolated admission contention checks.
+
+## Current limitations
+
+Redirect restrictions protect proxy-originated fetches. They do not constrain the broader
+egress available through opaque CONNECT tunnels: deployment network controls remain essential.
+
+There is no shared/distributed storage, multi-instance coordination, or background prefetch.
+Kubernetes manifests and automated container runtime acceptance in CI are not provided.
+
+Fault tests exercise process termination and private tmpfs exhaustion, not power-loss or
+faulty-device certification.

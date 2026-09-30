@@ -92,6 +92,8 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			// Cached body is seekable, so serve the exact requested range(s).
 			resp = serveRangeResponse(clientRequest, resp, body)
 		} else if _, eligible := objectMetadata(req, resp); eligible {
+			// Select locally only from an admissible response. Anything else is
+			// forwarded unchanged, usually as a full 200, without a second GET.
 			// A streaming source cannot seek backwards for multipart delivery.
 			// Like nginx, ignore multiple ranges on a cold response.
 			selection := clientRequest
@@ -180,7 +182,8 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 		// the whole chain.
 		permitted = permitted && cacheHeaders(resp.Header, object.digest)
 
-		// Limit redirect depth to 5 hops
+		// Limit redirect depth to 5 hops. Eligible requests follow redirects even
+		// when permission has eroded and the response cannot be stored.
 		if hops == 5 {
 			attempt.abandon()
 			return nil, false, errRedirect
@@ -199,7 +202,8 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 }
 
 // crossOriginSafeHeaders are the only request headers carried across a
-// cross-origin redirect.
+// cross-origin redirect. An allowlist, not a denylist, keeps custom credential
+// headers from leaking along with the standard Authorization and Cookie.
 var crossOriginSafeHeaders = []string{"Accept", "Accept-Encoding", "User-Agent"}
 
 // buildRedirectRequest builds the follow-up request for a redirect to next.

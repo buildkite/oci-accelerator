@@ -33,6 +33,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		},
 
 		// Retarget onto the upstream and strip proxy-revealing / hop-by-hop headers.
+		// Client-supplied forwarding headers are spoofable and never reach upstream.
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			rawQuery := pr.In.URL.RawQuery
 			pr.SetURL(upstream)
@@ -122,7 +123,9 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			if writeMethod(r.Method) {
 				// Stream the upload upstream without buffering or caching it. Full
 				// duplex relays an early upstream rejection without first draining
-				// the upload; client cancellation and forced shutdown end it.
+				// the upload; client cancellation and forced shutdown end it. Upload
+				// locations and their opaque query parameters reach the client
+				// unchanged, and there are no retries beyond net/http's own.
 				controller := http.NewResponseController(mw)
 				_ = controller.EnableFullDuplex()
 				if r.Body != nil && r.Body != http.NoBody && p.cfg.IdleTimeout > 0 {

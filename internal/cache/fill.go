@@ -102,6 +102,7 @@ func (f *Fill) Commit() error {
 	}
 
 	// Publish by renaming the staging directory into place, then flush the parent.
+	// Staging lives in the store directory, so the rename stays on one filesystem.
 	// Rename cannot replace a non-empty directory, so retire any prior owner first
 	// so old readers and cleanup retries cannot remove the published path.
 	dest := filepath.Join(f.store.dir, f.meta.Key)

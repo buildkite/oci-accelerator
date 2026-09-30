@@ -19,7 +19,9 @@ import (
 
 // authorizationCache is process-local. Pending checks share the same bounded
 // namespace as grants, so neither credentials nor unbounded tombstones survive
-// a request. Removing an entry also fences out its outstanding checks.
+// a request. Removing an entry also fences out its outstanding checks. The HMAC
+// key is never persisted, so restart clears every grant, and no credentials,
+// raw header values, signed redirect URLs, or reversible keys are retained.
 type authorizationCache struct {
 	mu      sync.Mutex                       // guards all fields below against concurrent requests
 	secret  [32]byte                         // per-process HMAC key for fingerprinting requests

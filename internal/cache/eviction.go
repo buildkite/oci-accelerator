@@ -11,7 +11,9 @@ import (
 // the incrementally maintained eviction order. before prevents an older candidate
 // from evicting newer entries. ErrBypass means insufficient eligible capacity in
 // this batch. If removal failures prevent admission, return the first filesystem
-// error.
+// error. Only successful removals count as evictions. Repeated requests can
+// reclaim more space, but competing traffic may consume it, so admission is not
+// guaranteed; the shared cursor also makes eviction only approximately LRU.
 func (s *Store) evictForAdmissionLocked(need int64, needSlots int, before int64, maxAttempts int) error {
 	gather := func() []*entry { return s.evictionCandidatesLocked(before) }
 	return s.evictLocked(need, needSlots, before, gather, maxAttempts)

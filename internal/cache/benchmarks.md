@@ -48,8 +48,9 @@ time or the syscalls within a removal. Startup bulk-sorts inventory while the
 live eviction order is maintained incrementally, avoiding admission-time sorting,
 and removal runs outside the bookkeeping mutex under serialized admission/path
 ownership. The
-[architecture guide](../../docs/architecture.md#storage-capacity-and-recovery)
-describes capacity preflight, best-effort LRU, and cleanup ownership.
+[operating guide](../../docs/operations.md#cache-storage-and-recovery) and
+comments in `eviction.go` describe best-effort LRU, admission limits, and
+cleanup ownership.
 
 Tiny-body microbenchmarks do not measure large-layer transfer, Internet bandwidth,
 or production latency. Use the [integration load checks](../../docs/operations.md#repeatable-checks)

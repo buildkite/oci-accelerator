@@ -15,10 +15,10 @@ Optional Prometheus metrics expose resource use, fixed request/cache outcomes, a
 cache- versus origin-served bytes. The same separate listener serves `/livez` and
 `/readyz` probes; remote binding requires explicit opt-in.
 
-- [Architecture](docs/architecture.md): request flow, security boundaries, cache
-  ownership, and design rationale.
+- [How it works](docs/how-it-works.md): request flow, authorization, and cache
+  storage.
 - [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
-  recovery, and repeatable acceptance checks.
+  recovery, repeatable acceptance checks, and current limitations.
 - Package internals are documented in the Go source; the command is documented
   under [Usage](#usage), and [cache benchmarks](internal/cache/benchmarks.md)
   support performance investigation.
@@ -73,8 +73,9 @@ before [installing it](docs/operations.md#configure-ca-trust-and-docker).
   and redirect URLs. Request logs do include repository paths, tags, and digests.
 
 There is no proxy-user authentication, and unconfigured destinations are open
-tunnels, so rely on network controls rather than exposing the listener. See the
-[architecture guide](docs/architecture.md) for the complete rules.
+tunnels, so rely on network controls rather than exposing the listener. See
+[how it works](docs/how-it-works.md) and the [operating guide](docs/operations.md)
+for the detailed rules and [current limitations](docs/operations.md#current-limitations).
 
 ## Build and configure
 
@@ -166,8 +167,8 @@ same request.
   live cache files.
 
 See [cache storage and recovery](docs/operations.md#cache-storage-and-recovery) for
-operating details and the [architecture guide](docs/architecture.md) for the exact
-eligibility, authorization, and capacity rules.
+operating details, including the exact eligibility, authorization, and capacity
+rules.
 
 ## Certificate minting
 

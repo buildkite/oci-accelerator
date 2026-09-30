@@ -96,7 +96,8 @@ func serveIntercepted(ctx context.Context, client net.Conn, rw *bufio.ReadWriter
 		MaxVersion: tls.VersionTLS13,
 		NextProtos: []string{"http/1.1"},
 
-		// Mint a forged cert for the target host on demand.
+		// Mint a forged cert for the target host on demand. SNI, when present,
+		// must name the CONNECT host so the client cannot select another identity.
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if hello.ServerName != "" {
 				sni, e := hostport.Parse(hello.ServerName, "443")
