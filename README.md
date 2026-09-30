@@ -2,34 +2,25 @@
 
 A standalone Go explicit HTTPS proxy for Docker Engine, with selective registry
 TLS interception, persistent CA identity, and authorized SHA-256 blob and
-digest-manifest caching. By default, recently approved requests can reuse a verified
-body without another upstream GET for up to 30 seconds; setting
-`cache.authorization_ttl: 0s` restores authorization on every delivery. Tags remain
-uncached, and there is no offline or failed-request fallback.
-Eligible blob Range GETs always perform a full upstream GET without using authorization
-grants. Warm entries serve standard single and multipart ranges; a cold single range is
-selected while the full body streams and may continue filling the cache after delivery,
-while a cold multipart request falls back to the full `200` response.
-Docker Engine on Linux is the validated client; the proxy uses generic Registry
-HTTP API V2 behavior rather than provider-specific routing.
+digest-manifest [caching](#caching). Docker Engine on Linux is the validated
+client; the proxy uses generic Registry HTTP API V2 behavior rather than
+provider-specific routing.
 
 Docker pushes and other registry writes pass through by default, with upstream
 permissions enforced by the registry. Uploads stream without populating the cache;
 Docker owns authentication, upload sessions, and redirects. Deletion does not
 invalidate existing pull grants, which remain valid until their original expiry.
 
-Concurrent fills have byte, entry, writer and lifetime bounds. Authorization grants
-are process-local, fixed-lived, conservatively constrained by HTTP freshness, and
-bounded by `cache.max_authorization_entries`. Optional Prometheus metrics expose
-resource use and fixed request/cache outcomes; remote binding requires explicit opt-in.
+Optional Prometheus metrics expose resource use and fixed request/cache outcomes;
+remote binding requires explicit opt-in.
 
 - [Architecture](docs/architecture.md): request flow, security boundaries, cache
   ownership, and design rationale.
 - [Operating guide](docs/operations.md): configuration, Docker trust, metrics,
   recovery, and repeatable acceptance checks.
 - Package guides map the code and internal contracts:
-  [proxy](internal/proxy/README.md), [cache](internal/cache/README.md),
-  [config](internal/config/README.md), and [hostport](internal/hostport/README.md),
+  [proxy](internal/proxy/README.md), [config](internal/config/README.md), and
+  [hostport](internal/hostport/README.md),
   with the command documented under [Usage](#usage) and
   [cache benchmarks](internal/cache/benchmarks.md) for performance investigation.
 - [Working rules](AGENTS.md): contribution, review, and verification requirements.
@@ -78,6 +69,54 @@ ca_sha256=0123456789abcdef...
 
 It never prints private-key contents. `oci-accelerator init-ca --help` describes
 the command, and top-level help lists `init-ca`.
+
+## Caching
+
+The proxy stores immutable, digest-addressed registry objects on local disk so
+repeated pulls avoid downloading the same bytes again. The registry still decides
+who may pull: every cache delivery depends on a recent upstream approval of the
+same request.
+
+- **What is cached.** Query-free SHA-256 blob GETs (layers and image configs) and
+  manifests requested by digest in OCI or Docker schema-2 media types. Tags, HEAD,
+  conditional requests, legacy or unknown manifest formats, and responses that are
+  encoded, have unknown length, forbid storage, or vary on unsupported headers pass
+  through uncached. Entries belong to one registry and repository; there is no
+  cross-repository deduplication.
+- **Authorization.** A full GET is served straight from cache only when the
+  registry approved the same request, with the same credentials and headers, within
+  `cache.authorization_ttl` (default `30s`); otherwise it goes upstream first.
+  Setting `0s` requires an upstream GET for every delivery. Approvals live only in
+  memory, are cleared on restart, and are bounded by `cache.max_authorization_entries`.
+  A token revoked after approval can still hit until that approval expires. Upstream
+  errors are returned to the client: there is no offline or failed-request fallback.
+- **Filling.** On a miss, the body streams to the client while being written to
+  disk; layers are never buffered in memory. An entry is published only after its
+  full length and SHA-256 digest are verified, so partial downloads are never
+  served. Other clients requesting the same object still authorize upstream, then
+  wait up to `cache.fill_wait_timeout` (default `1s`) for that fill instead of
+  downloading the body again; if it does not complete, each makes one fresh
+  upstream request.
+- **Range requests.** Blob Range GETs always go upstream as full GETs and never use
+  cached approvals. When the body is cached, the proxy serves standard single or
+  multipart ranges from it. Otherwise it returns a single range as the full body
+  streams past and may keep filling the cache after delivery, bounded by
+  `cache.fill_timeout`; multiple ranges on an uncached object get the full `200`.
+- **Limits and eviction.** `cache.max_bytes` (default 32 GiB, counting each body
+  plus 4 KiB of metadata, including in-progress fills), `cache.max_entries`,
+  `cache.max_fills`, and `cache.fill_timeout` bound storage. Leave filesystem
+  headroom for block and inode overhead. When full, the proxy evicts approximately
+  least-recently-used entries that are not being read. An object that still does
+  not fit streams uncached rather than failing.
+- **Persistence and integrity.** One process owns the private cache directory.
+  Startup removes abandoned partial downloads and refuses to start on unrecognized
+  files rather than deleting them. Each stored body is rehashed on its first use
+  after startup; a missing or corrupt entry becomes a miss. Do not edit or delete
+  live cache files.
+
+See [cache storage and recovery](docs/operations.md#cache-storage-and-recovery) for
+operating details and the [architecture guide](docs/architecture.md) for the exact
+eligibility, authorization, and capacity rules.
 
 ## Certificate minting
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 )
 
+// Error categories returned by the package. Filesystem failures wrap their
+// cause alongside ErrFilesystem.
 var (
 	ErrMiss          = errors.New("cache miss")
 	ErrBypass        = errors.New("cache bypass")

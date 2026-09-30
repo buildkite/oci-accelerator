@@ -11,8 +11,10 @@ import (
 	"time"
 )
 
+// Reader streams one pinned, verified body. The pin keeps the entry's body and
+// charge alive, even if the entry is evicted or replaced, until Close.
 type Reader struct {
-	mu        sync.Mutex
+	mu        sync.Mutex // guards the file position and closed flag.
 	store     *Store
 	entry     *entry
 	file      *os.File
@@ -20,6 +22,8 @@ type Reader struct {
 	closed    bool
 }
 
+// Read streams the body. Reaching EOF before the declared Size returns
+// io.ErrUnexpectedEOF, and any read error invalidates the entry.
 func (r *Reader) Read(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -66,6 +70,7 @@ func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 	return position, err
 }
 
+// Close releases the pin exactly once; later calls return nil.
 func (r *Reader) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

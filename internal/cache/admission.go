@@ -12,6 +12,7 @@ import (
 
 const evictionAttemptLimit = 8 // Maximum victim-directory removals per Begin.
 
+// AdmissionReason is the bounded set of Begin outcomes, suitable for logging.
 type AdmissionReason uint8
 
 const (
@@ -26,6 +27,8 @@ const (
 	AdmissionReasonCount
 )
 
+// AdmissionError reports why Begin refused an object, with an optional
+// underlying Cause. It matches ErrBypass under errors.Is.
 type AdmissionError struct {
 	Reason AdmissionReason
 	Cause  error

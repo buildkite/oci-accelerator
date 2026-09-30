@@ -1,4 +1,3 @@
-// Package cache provides a private, bounded filesystem cache.
 package cache
 
 import (
@@ -11,9 +10,22 @@ import (
 	"time"
 )
 
+// Store is an open cache directory. The caller that opens a Store owns it and
+// must Close it.
+//
+// Capacity is tracked in bytes and entry slots. An object's charge is its Size
+// plus metadataReservation. In-progress fills hold their charge in reserved
+// until they end; Commit converts it into committed bytes. Directories awaiting
+// deferred cleanup stay charged in bytes until removal succeeds. Every committed
+// entry, active fill, and pending cleanup consumes one slot against maxEntries.
+//
+// Lock order: Fill.mu may briefly take mu to publish or release accounting;
+// mu is never held while taking Fill.mu. Filesystem removal and staging run
+// with mu released, so unrelated hits and Stats continue; claimed generations
+// stay charged and cannot be pinned or reused meanwhile.
 type Store struct {
-	mu                                              sync.Mutex                           // guards all mutable store state below.
-	admissionMu                                     sync.Mutex                           // serializes admission and publication so key ownership decisions don't race.
+	mu                                              sync.Mutex                           // guards all mutable store state below, including entry bookkeeping; ...Locked helpers require it.
+	admissionMu                                     sync.Mutex                           // serializes admission and path ownership so key ownership decisions don't race.
 	dir                                             string                               // root directory holding the cache on disk.
 	max                                             int64                                // maximum total bytes (data plus metadata reservation) the cache may hold.
 	maxFills, maxEntries                            int                                  // caps on concurrent in-flight fills and total live entries.
@@ -47,6 +59,10 @@ var completedNotification = func() <-chan struct{} {
 	return c
 }()
 
+// OpenWithLimits opens or creates the private cache directory dir, takes its
+// exclusive lock, and inventories existing entries, discarding abandoned fills.
+// Errors match ErrInvalidLimits, ErrLockConflict, ErrUnsafeState, or
+// ErrFilesystem; filesystem errors also wrap their cause.
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	// Reject an empty directory or out-of-range limits before touching the filesystem.
 	if dir == "" || !limits.valid() {
@@ -92,6 +108,9 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	return s, nil
 }
 
+// Begin admits meta's key, reserves capacity (evicting if needed), and stages a
+// fill. It returns an *AdmissionError, matching ErrBypass, when the object
+// cannot be admitted; the caller should then serve the object uncached.
 func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	return s.begin(meta)
 }
@@ -113,10 +132,14 @@ func (s *Store) Completion(meta Metadata) (<-chan struct{}, bool) {
 	return nil, false
 }
 
+// Get pins the committed entry matching meta, verifies its body once if it is
+// not yet verified, and returns a Reader that owns the pin. It returns ErrMiss when no
+// valid matching entry exists; a body that fails verification becomes a miss.
 func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 	return s.get(ctx, meta, nil, nil)
 }
 
+// Stats returns a point-in-time snapshot of the store's accounting counters.
 func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()

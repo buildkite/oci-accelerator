@@ -12,8 +12,11 @@ import (
 
 var errFillExpired = errors.New("cache fill expired")
 
+// Fill stages one admitted object until Commit publishes it or it ends
+// otherwise. A fill that is aborted, misses its deadline, fails verification,
+// or cannot be written is discarded; a partial object is never published.
 type Fill struct {
-	mu              sync.Mutex
+	mu              sync.Mutex // guards this fill's state; see Store for lock order.
 	store           *Store
 	meta            Metadata
 	dir             string
@@ -28,6 +31,8 @@ type Fill struct {
 	completed       chan struct{}
 }
 
+// Write appends p to the staged body, hashing it and ending the fill if it
+// would exceed the declared Size.
 func (f *Fill) Write(p []byte) (int, error) {
 	f.mu.Lock()
 	defer f.unlockAndStopIfDone()
@@ -124,6 +129,8 @@ func (f *Fill) Commit() error {
 	return nil
 }
 
+// Abort discards the fill without publishing it. It is a no-op once the fill
+// has ended.
 func (f *Fill) Abort() error {
 	f.mu.Lock()
 	defer f.unlockAndStopIfDone()
