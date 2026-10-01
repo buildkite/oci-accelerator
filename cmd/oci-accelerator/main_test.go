@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -51,6 +52,40 @@ func TestRunVersionWithoutStartup(t *testing.T) {
 	entries, err := os.ReadDir(root)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("--version changed the working directory: %v, %v", entries, err)
+	}
+}
+
+func TestRunLogsVersionOnStartup(t *testing.T) {
+	contents, err := os.ReadFile("../../VERSION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantVersion := strings.TrimSpace(string(contents))
+	listener := newTestListener(t)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("listen: "+listener.Addr().String()+"\nregistries: [example.com]\nca_dir: ca\ncache: {dir: cache}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Complete startup, then shut down immediately without serving requests.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out, errOut bytes.Buffer
+	if err := run(ctx, []string{"--config", path}, &out, &errOut, listenForTest(listener)); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("startup wrote stdout: %q", out.String())
+	}
+	var record struct {
+		Message string `json:"msg"`
+		Level   string `json:"level"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(errOut.Bytes(), &record); err != nil {
+		t.Fatalf("startup log is not a single JSON record: %v\n%s", err, errOut.String())
+	}
+	if record.Message != "proxy ready" || record.Level != "INFO" || record.Version != wantVersion {
+		t.Fatalf("startup log = %+v, want INFO proxy ready with version %q", record, wantVersion)
 	}
 }
 
