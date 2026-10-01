@@ -53,7 +53,7 @@ func TestBeginReadmitsPinnedInvalidEntry(t *testing.T) {
 	read(t, s, fresh, "replacement")
 }
 
-// Fresh readers see the replacement immediately; closing an old reader must
+// Fresh readers see the replacement immediately, but closing an old reader must
 // neither remove the new directory nor subtract the new entry's charge.
 func TestReadmitIndexIntegrityAcrossOverwrite(t *testing.T) {
 	s := openTest(t, 1<<20)
@@ -272,7 +272,7 @@ func TestBeginReclaimsUnpinnedTombstone(t *testing.T) {
 		t.Fatalf("baseline %d != tombstone charge %d", baseline, tombstoneCharge)
 	}
 
-	// Restore write permission; Begin must now reclaim the invalid entry.
+	// Restore write permission. Begin must now reclaim the invalid entry.
 	if err := os.Chmod(s.dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestBeginReclaimsUnpinnedTombstone(t *testing.T) {
 	}
 	wantBytes := fresh.Size + metadataReservation
 	if st := s.Stats(); st.Bytes != wantBytes {
-		t.Fatalf("Stats.Bytes = %d, want %d (baseline was %d; tombstone must not leak)", st.Bytes, wantBytes, baseline)
+		t.Fatalf("Stats.Bytes = %d, want %d (baseline was %d, tombstone must not leak)", st.Bytes, wantBytes, baseline)
 	}
 	read(t, s, fresh, "renewed")
 }

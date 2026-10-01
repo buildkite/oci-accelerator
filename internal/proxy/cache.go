@@ -22,11 +22,11 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 		return resp, false, nil
 	}
 
-	// Derive the cache key; a response the store can't key is also a bypass.
+	// Derive the cache key. A response the store can't key is also a bypass.
 	meta, ok := objectMetadata(req, resp)
 	if !ok {
 		// Diagnostics only: record when the response's Vary or Docker-Content-Digest
-		// header is what would reject caching, so operators can gauge cache-effectiveness
+		// header is what would reject caching, so users can gauge cache-effectiveness
 		// loss from CDN header conventions. Upper bound — other reasons (e.g.
 		// Content-Encoding) may also apply — and it never changes the bypass decision.
 		// Re-derives the digest from the request since meta is empty here.
@@ -38,7 +38,7 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 		return resp, false, nil
 	}
 
-	// Serve from cache on a hit; otherwise record the miss and fall through to fill.
+	// Serve from cache on a hit. Otherwise record the miss and fall through to fill.
 	if body, err := t.cache.Get(req.Context(), meta); err == nil {
 		stats.cache = "hit"
 		resp.Body.Close()
@@ -62,7 +62,7 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 		return resp, false, nil
 	}
 
-	// Begin a new fill; if admission is refused, bypass and record why.
+	// Begin a new fill. If admission is refused, bypass and record why.
 	fill, err := t.cache.Begin(meta)
 	if err != nil {
 		stats.fill = "bypass"
@@ -74,7 +74,7 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 	}
 
 	if fetch, _ := req.Context().Value(rangeFetchKey{}).(*rangeFetch); fetch != nil {
-		// Detach the fetch from client cancellation; abort the fill if the client or fetch already went away.
+		// Detach the fetch from client cancellation, but abort the fill if the client or fetch already went away.
 		if !fetch.stopClient() || fetch.client.Err() != nil || fetch.ctx.Err() != nil {
 			fill.Abort()
 			resp.Body.Close()
@@ -103,11 +103,12 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 }
 
 // waitForFill closes the upstream body and waits for an in-flight fill of the
-// same object. On a hit it returns resp with a cache body; otherwise it returns
+// same object. On a hit it returns resp with a cache body. Otherwise it returns
 // retry=true for a fresh GET, or an error on cancellation. Call only for an
-// active fill with a positive timeout.
+// active fill with a positive timeout. The retry's new denials are relayed, and a
+// full-GET fill is never handed to a waiter.
 func (t registryTransport) waitForFill(ctx context.Context, resp *http.Response, meta cache.Metadata, completed <-chan struct{}, stats *requestStats) (*http.Response, bool, error) {
-	// Drop the upstream stream; we're serving from the coalesced fill instead.
+	// Drop the upstream stream because we're serving from the coalesced fill instead.
 	resp.Body.Close()
 
 	// Track the in-flight wait so metrics reflect concurrent coalescers.
@@ -137,7 +138,7 @@ func (t registryTransport) waitForFill(ctx context.Context, resp *http.Response,
 		stats.wait = "canceled"
 		return nil, false, ctx.Err()
 
-	// Waited long enough; give up and fall back to a fresh upstream GET.
+	// Waited long enough, so give up and fall back to a fresh upstream GET.
 	case <-timer.C:
 		stats.wait = "timeout"
 	}
@@ -148,7 +149,7 @@ func (t registryTransport) waitForFill(ctx context.Context, resp *http.Response,
 		return nil, false, err
 	}
 
-	// No cached body materialized; signal the caller to retry with a fresh GET.
+	// No cached body materialized, so signal the caller to retry with a fresh GET.
 	stats.fallback = "retry"
 	return nil, true, nil
 }

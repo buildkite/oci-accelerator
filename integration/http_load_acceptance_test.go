@@ -229,7 +229,7 @@ func runLoadCase(t *testing.T, bin, originCA, authority string, counters *loadCo
 	transport := client.Transport.(*http.Transport)
 	var warmupGETs, warmupBody int64
 
-	// Warm/restart population is explicit and reported separately; the measured
+	// Warm/restart population is explicit and reported separately, so the measured
 	// phase never hides these extra authenticated origin GETs.
 	if phase != "cold" {
 		b, bb := counters.gets.Load(), counters.body.Load()

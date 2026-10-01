@@ -229,7 +229,7 @@ func TestDialUpstreamRefusalReasonsAreDistinctAndLoggedWhileRefusingClosed(t *te
 			address := tc.address
 			if tc.name == "connection refused" {
 				// A closed listener guarantees a connection failure at a real
-				// loopback authority; allowlisting it lets the dial reach the
+				// loopback authority. Allowlisting it lets the dial reach the
 				// connect branch instead of being refused as a private address.
 				l := listen(t)
 				_, port, _ := net.SplitHostPort(l.Addr().String())

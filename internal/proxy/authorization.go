@@ -19,7 +19,9 @@ import (
 
 // authorizationCache is process-local. Pending checks share the same bounded
 // namespace as grants, so neither credentials nor unbounded tombstones survive
-// a request. Removing an entry also fences out its outstanding checks.
+// a request. Removing an entry also fences out its outstanding checks. The HMAC
+// key is never persisted, so restart clears every grant, and no credentials,
+// raw header values, signed redirect URLs, or reversible keys are retained.
 type authorizationCache struct {
 	mu      sync.Mutex                       // guards all fields below against concurrent requests
 	secret  [32]byte                         // per-process HMAC key for fingerprinting requests
@@ -106,6 +108,8 @@ func (c *authorizationCache) valid(e *authorizationEntry, g *authorizationGrant)
 	return c.entries[e.key] == e && e.grant == g && time.Now().Before(g.expires)
 }
 
+// fingerprint hashes the request line and forwarded headers as the HTTP/1.1
+// transport sends them, so wire-equivalent GETs share one grant.
 func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	// Normalize the host to a canonical host:port authority.
 	authority, _ := hostport.Parse(req.URL.Host, "443")
@@ -133,7 +137,7 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	}
 	// net/http sends only the first User-Agent value, omitting an explicit
 	// empty value. ReverseProxy supplies that empty value when the client has
-	// no User-Agent; direct transport callers get the HTTP/1.1 default instead.
+	// no User-Agent, while direct transport callers get the HTTP/1.1 default instead.
 	if values, present := headers["user-agent"]; !present {
 		headers["user-agent"] = []string{"Go-http-client/1.1"}
 	} else if len(values) == 0 || values[0] == "" {
@@ -192,7 +196,7 @@ func (t registryTransport) authorizedResponse(req *http.Request, e *authorizatio
 	}
 
 	// Verification can block. Recheck expiry and invalidation after acquiring
-	// the reader; no store lock is held during disk I/O.
+	// the reader. No store lock is held during disk I/O.
 	if req.Context().Err() != nil || !t.authorization.valid(e, g) {
 		body.Close()
 		return nil

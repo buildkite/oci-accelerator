@@ -1,6 +1,6 @@
 # OCI Accelerator configuration. Relative directories are resolved from this file.
 listen: 127.0.0.1:3128
-# Optional separate literal-loopback Prometheus endpoint; disabled by default.
+# Optional separate literal-loopback Prometheus endpoint, disabled by default.
 # metrics_listen: 127.0.0.1:9090
 # Remote scraping requires explicit opt-in and private network access controls.
 # metrics_allow_remote: false
@@ -8,7 +8,7 @@ registries:
   - registry-1.docker.io
   - ghcr.io
   - public.ecr.aws
-# Optional private HTTPS storage destinations; does not enable interception.
+# Optional private HTTPS storage destinations. These do not enable interception.
 redirect_allowlist: []
 ca_dir: ./data/ca
 # Required private cache directory. Limit includes in-progress reservations.

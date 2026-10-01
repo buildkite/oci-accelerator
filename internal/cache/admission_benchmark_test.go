@@ -19,7 +19,7 @@ const admissionBenchmarkBody = "body"
 func BenchmarkCacheHitUnderAdmission(b *testing.B) {
 	for _, entries := range []int{1_000, 10_000, 100_000} {
 		b.Run(fmt.Sprintf("entries=%d", entries), func(b *testing.B) {
-			// This fixture owns the store and seeds it once; child benchmarks share
+			// This fixture owns the store and seeds it once. Child benchmarks share
 			// the full store so their expensive setup is not calibration-dependent.
 			dir := filepath.Join(b.TempDir(), "cache")
 			charge := metadataReservation + int64(len(admissionBenchmarkBody))
@@ -82,11 +82,11 @@ func BenchmarkCacheHitUnderAdmission(b *testing.B) {
 			})
 			b.Run("removal-failure", func(b *testing.B) {
 				if !benchmarkPermissionDenied(b) {
-					b.Skip("chmod does not deny deletion; run benchmark without root or DAC override capabilities")
+					b.Skip("chmod does not deny deletion: run the benchmark without root or DAC override capabilities")
 				}
 
 				// Make every indexed victim non-removable. Reading files remains
-				// permitted; restore modes before store and TempDir cleanup run.
+				// permitted. Restore modes before store and TempDir cleanup run.
 				var protected []string
 				s.mu.Lock()
 				for _, e := range s.entries {

@@ -455,7 +455,7 @@ func TestInitializeSurfacesRenameFailureForNonCADir(t *testing.T) {
 
 func TestInitializeSurfacesForShapeValidButInvalidCA(t *testing.T) {
 	// A directory whose files have CA-like names and permissions but garbage
-	// contents is shape-valid, so publishedCA adopts it; Open must still fail
+	// contents is shape-valid, so publishedCA adopts it, but Open must still fail
 	// closed because load re-validates contents. This documents that adoption
 	// defers content validation to load and never yields a bad Authority.
 	dir := filepath.Join(t.TempDir(), "ca")

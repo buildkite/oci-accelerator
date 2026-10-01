@@ -7,11 +7,13 @@ import (
 
 // evictForAdmissionLocked reclaims space for an admission request. It removes at
 // most maxAttempts victims per call and advances the store's shared resume cursor
-// so later calls continue past this batch; maxAttempts must be positive. It reads
+// so later calls continue past this batch. maxAttempts must be positive. It reads
 // the incrementally maintained eviction order. before prevents an older candidate
 // from evicting newer entries. ErrBypass means insufficient eligible capacity in
 // this batch. If removal failures prevent admission, return the first filesystem
-// error.
+// error. Only successful removals count as evictions. Repeated requests can
+// reclaim more space, but competing traffic may consume it, so admission is not
+// guaranteed. The shared cursor also makes eviction only approximately LRU.
 func (s *Store) evictForAdmissionLocked(need int64, needSlots int, before int64, maxAttempts int) error {
 	gather := func() []*entry { return s.evictionCandidatesLocked(before) }
 	return s.evictLocked(need, needSlots, before, gather, maxAttempts)
@@ -29,7 +31,7 @@ func (s *Store) evictAtStartupLocked(need int64, needSlots int, before int64) er
 
 // evictLocked is the shared eviction core. gather supplies the ordered victim
 // pool and is invoked only after the fast-path capacity check fails. maxAttempts
-// > 0 caps victims per call and drives the resume cursor; maxAttempts == 0 leaves
+// > 0 caps victims per call and drives the resume cursor, while maxAttempts == 0 leaves
 // eviction uncapped and cursor-free.
 func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func() []*entry, maxAttempts int) error {
 	fits := func() bool {
@@ -70,8 +72,8 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func
 		positions[i] = candidates[(start+i)%len(candidates)].eviction
 	}
 
-	// Remove victims until the request fits. A failed removal is retried later;
-	// its charge stays booked, so keep the first error only if nothing frees up.
+	// Remove victims until the request fits. A failed removal is retried later.
+	// Its charge stays booked, so keep the first error only if nothing frees up.
 	var removeErr error
 	for i := range count {
 		if fits() {
@@ -191,7 +193,7 @@ func (s *Store) batchSuffices(batch []*entry, need int64, needSlots int) bool {
 }
 
 // resumeStart returns the index in candidates at which to resume, honoring the
-// recorded (last, key) eviction cursor; zero when there is no cursor.
+// recorded (last, key) eviction cursor. It returns zero when there is no cursor.
 func (s *Store) resumeStart(candidates []*entry) int {
 	if s.evictionAfter == "" {
 		return 0

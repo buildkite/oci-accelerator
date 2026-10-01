@@ -7,7 +7,7 @@ import (
 
 // grantAttempt tracks one in-flight authorization attempt across a request's
 // redirect hops via narrow/settle/abandon. A nil *grantAttempt means grant
-// caching does not apply; every method is a safe no-op on a nil receiver.
+// caching does not apply, and every method is a safe no-op on a nil receiver.
 type grantAttempt struct {
 	cache           *authorizationCache
 	entry           *authorizationEntry
@@ -19,7 +19,7 @@ type grantAttempt struct {
 // beginGrantAttempt registers this request's authorization attempt and, when a
 // live grant permits it, returns a response served entirely from cache with no
 // upstream I/O. A non-nil response is a cache hit the caller must return
-// immediately; the returned attempt is then nil.
+// immediately, and the returned attempt is then nil.
 //
 // A nil response means the caller must proceed to the upstream path. The
 // returned attempt carries the registered in-flight entry that the caller must
@@ -98,7 +98,8 @@ func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted
 // settle commits a grant for an eligible terminal response, or invalidates the
 // entry otherwise. It relies on narrow having run for the same hop, so the
 // deadline and authentication-state restrictions have already been applied.
-// Transient failures cannot establish a grant.
+// Transient failures cannot establish a grant. Only this GET can approve reuse:
+// registries need not authorize HEAD and GET alike.
 func (a *grantAttempt) settle(req *http.Request, resp *http.Response, received time.Time, permitted bool) {
 	if a == nil || isTransient(resp.StatusCode) {
 		return

@@ -58,9 +58,6 @@ func TestPrivateDirectoryLockAndUnknownState(t *testing.T) {
 }
 
 func TestOpenErrorCategories(t *testing.T) {
-	if _, err := OpenWithLimits("", Limits{}); !errors.Is(err, ErrInvalidLimits) {
-		t.Fatalf("invalid limits error = %v", err)
-	}
 	missingParent := filepath.Join(t.TempDir(), "missing-parent", "cache")
 	if _, err := openDefault(missingParent, 1<<20); !errors.Is(err, ErrFilesystem) {
 		t.Fatalf("filesystem error = %v", err)

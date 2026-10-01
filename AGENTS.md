@@ -7,7 +7,7 @@
 - Only the coordinating agent delegates unless nested delegation is explicitly
   requested. Workers and reviewers must not recursively spawn more subagents.
 - Keep responsibility for integration and verification with the coordinating
-  agent; delegation does not replace checking the results.
+  agent. Delegation does not replace checking the results.
 
 ## Incremental implementation
 
@@ -15,7 +15,7 @@
   self-contained subslices. Each subslice should have a clear outcome and
   its own validation.
 - Complete and validate one subslice before moving to the next. Each subslice
-  must be an independent commit; do not bundle multiple subslices into one commit.
+  must be an independent commit. Do not bundle multiple subslices into one commit.
 
 ## Independent review
 
@@ -50,10 +50,14 @@
   requirements.
 - Prefer many small, focused Go files over a few large files. Organize files
   by coherent responsibility, keeping closely related code together.
+- Name test files `<owner>[_<topic>]_test.go` after the source file or
+  responsibility they verify, not the fixture or entry point they call. Keep
+  shared fixtures in `test_helpers_test.go`, and keep helpers used by a single
+  suite in that suite's file.
 - Order declarations within a file in newspaper style: the most important,
   highest-level declarations first, with supporting detail beneath. Types and
-  entry points lead; callers precede callees; private helpers sink below the
-  code that uses them.
+  entry points lead, callers precede callees, and private helpers sink below
+  the code that uses them.
 
 ## Executable verification
 
@@ -77,7 +81,8 @@
 - Never disable upstream TLS verification, log credentials, or forward
   credentials across origins.
 - Changes to these security boundaries require explicit design approval.
-  See [the architecture guide](docs/architecture.md) for detailed
+  See [how it works](docs/how-it-works.md), the
+  [deployment guide](docs/deployment.md), and source comments for detailed
   protocol rules.
 
 ## Bounded resources and safe failure
@@ -91,24 +96,25 @@
 ## Documentation alignment
 
 - Keep documentation about the current code, not its delivery history. Update
-  architecture, design rationale, configuration examples, and operating instructions when
+  architecture, design rationale, configuration examples, and deployment instructions when
   behavior changes.
 - Keep reproducible verification commands and current limitations. Do not maintain
   implementation/decision logs, completed-slice narratives, or superseded alternatives.
-- Ask before materially changing agreed scope or security guarantees; do not
+- Ask before materially changing agreed scope or security guarantees. Do not
   quietly substitute a different design.
-- Give every package-root README (`internal/*/README.md` and
-  `cmd/oci-accelerator/README.md`) the same shape: a `` `import/path` `` title, an
-  intro that links to the relevant `docs/` guide, a `## Files` table, a
-  `## Public interface` section (or `## Usage` for the `main` command), concise
-  conceptual sections, and a closing dependency statement.
-- Keep the authoritative package detail in the README; `docs/` stays narrative and
-  links into it. When trimming a README, preserve anything `docs/` links into and
-  re-check those anchors still resolve rather than moving detail out.
+
+## Writing style
+
+- Do not use semicolons in documentation, code comments, user-facing
+  messages, or other prose. Split the sentence, or join the clauses with a
+  conjunction or colon. Semicolons required by code syntax are fine.
+- In user-facing documentation, address the reader as "you". Refer to the
+  person deploying the proxy as "the user" in code comments, not "the
+  operator". Prefer "use" or "deploy" over "operate".
 
 ## Commit messages
 
-- Push each commit to `origin` immediately after creating it; do not accumulate
+- Push each commit to `origin` immediately after creating it. Do not accumulate
   completed commits only in the local checkout.
 - Give every commit a readable summary of the changes it implements in the
   commit body, and summarize those changes when reporting the commit to the user.

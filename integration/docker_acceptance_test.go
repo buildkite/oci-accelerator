@@ -70,7 +70,7 @@ func TestDockerPullThroughCompiledProxy(t *testing.T) {
 	if afterRequests-beforeRequests != 0 {
 		t.Fatalf("untrusted phase reached origin: before=%d after=%d", beforeRequests, afterRequests)
 	}
-	t.Logf("no-trust pull failed with TLS verification; total origin hits=0")
+	t.Logf("no-trust pull failed with TLS verification (total origin hits=0)")
 
 	clientDir := filepath.Join(root, "docker-client")
 	if err := os.MkdirAll(clientDir, 0o700); err != nil {

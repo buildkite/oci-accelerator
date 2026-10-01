@@ -1,7 +1,5 @@
 //go:build unix
 
-// Package ca manages the proxy's persistent certificate authority and leaf
-// certificates on Unix systems.
 package ca
 
 import (
@@ -26,6 +24,7 @@ const (
 	certName   = "ca.crt"
 	keyName    = "ca.key"
 	caKeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature
+	// Oversized PEM files fail Open without modifying the installation.
 	maxPEMSize = 64 << 10
 )
 
@@ -40,8 +39,11 @@ type Authority struct {
 }
 
 // Open loads the CA in dir, creating it only when dir does not exist.
-// Its parent directory must already exist; the operator is responsible for
-// provisioning that parent and ensuring its durability before calling Open.
+// Its parent must already exist: the user deploying the proxy provisions it and ensures its
+// durability, so permissions never depend on the umask.
+//
+// Every call fully re-validates the installation and never modifies a CA that
+// fails. Errors never include certificate or key contents.
 func Open(dir string, maxLeaves int) (*Authority, error) {
 	if dir == "" || maxLeaves <= 0 {
 		return nil, errors.New("CA directory and a positive leaf limit are required")
@@ -74,7 +76,8 @@ func Open(dir string, maxLeaves int) (*Authority, error) {
 // CertificatePath returns the public CA certificate path.
 func (a *Authority) CertificatePath() string { return filepath.Join(a.dir, certName) }
 
-// CertificatePEM returns a fresh PEM encoding of the loaded public root CA.
+// CertificatePEM returns a fresh PEM encoding of the loaded public root CA,
+// without reading disk.
 func (a *Authority) CertificatePEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: a.cert.Raw})
 }
@@ -115,19 +118,13 @@ func initialize(dir string) error {
 	if err := syncDir(stage); err != nil {
 		return err
 	}
-	// Publish atomically. Concurrent initializers each stage their own CA and
-	// race this rename. A published CA makes the destination non-empty, so a
-	// competing rename fails rather than replacing it. Publication never exposes
-	// a partial CA and needs no persistent lock. A crash or SIGKILL can bypass
-	// deferred cleanup and leave a private staging directory behind; see README.md
-	// for manual cleanup while all initializers are stopped.
+	// Publish atomically: renaming onto a non-empty dir fails, so concurrent
+	// initializers never replace a published CA and no lock is needed. A crash
+	// can orphan the staging directory. It may belong to an active initializer,
+	// so it is never removed automatically.
 	if err := os.Rename(stage, dir); err != nil {
-		// A losing initializer adopts the winner's CA. Rename can also fail for
-		// reasons unrelated to a competitor (permission, I/O, cross-device), so
-		// only treat the error as a lost race when dir is now a complete,
-		// correctly permissioned installation; otherwise surface the failure.
-		// Content validity is deliberately deferred to the caller's load, which
-		// re-parses the certificate and key and fails closed on bad material.
+		// Adopt the winner only if dir now looks like a complete installation.
+		// Otherwise the rename failed for another reason. load validates contents.
 		if publishedCA(dir) {
 			return syncDir(parent)
 		}
@@ -139,7 +136,7 @@ func initialize(dir string) error {
 // publishedCA reports whether dir already holds both CA files with the on-disk
 // types, permissions, and ownership Open requires, so a losing initializer can
 // adopt an already-published CA instead of masking an unrelated rename failure.
-// It checks filesystem metadata only; the caller's load validates contents.
+// It checks filesystem metadata only. The caller's load validates contents.
 func publishedCA(dir string) bool {
 	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {
@@ -163,6 +160,8 @@ func checkCADir(info os.FileInfo) error {
 	return nil
 }
 
+// checkParent requires ownership, not just safe permission bits, so another
+// user's installation is rejected even as root. Higher ancestors are unchecked.
 func checkParent(parent string) error {
 	info, err := os.Lstat(parent)
 	if err != nil {

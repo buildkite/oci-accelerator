@@ -52,7 +52,10 @@ type requestStats struct {
 	admission      string
 	reject         string
 	upstreamBytes  int64
-	immutable      bool // Original request is a full immutable-object GET, before header stripping.
+	// immutable marks the original request as a full immutable-object GET,
+	// decided before hop-by-hop stripping so a bypassed Range or conditional
+	// request that becomes a plain GET upstream stays out of served-source metrics.
+	immutable bool
 }
 type statsKey struct{}
 
@@ -62,6 +65,8 @@ var requestDurationBounds = [...]time.Duration{
 	250 * time.Millisecond, 500 * time.Millisecond, time.Second, 5 * time.Second,
 }
 
+// MetricsHandler returns the Prometheus text-format handler. The command
+// serves it on a separate metrics listener, never on the proxy listener.
 func (p *Proxy) MetricsHandler() http.Handler { return http.HandlerFunc(p.writeMetrics) }
 
 func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
@@ -229,8 +234,8 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 	}
 	m.upstreamBytes += uint64(s.upstreamBytes)
 	m.downstreamBytes += uint64(downstream)
-	// Scope by request shape and response status, not storage admission. Origin
-	// responses still count when policy or capacity prevents caching them.
+	// Scope by request shape and status, not storage admission, so uncached
+	// origin responses still count. Grant hits record "hit".
 	if s.immutable && status == http.StatusOK {
 		source := "origin"
 		if s.cache == "hit" || s.cache == "wait_hit" {

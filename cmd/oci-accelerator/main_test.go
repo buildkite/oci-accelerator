@@ -229,6 +229,7 @@ func TestCacheCleanupDiagnosticRedactsCauses(t *testing.T) {
 	}{
 		{errors.Join(cache.ErrFilesystem, &os.PathError{Op: "remove", Path: "/secret/cache", Err: os.ErrPermission}), "filesystem failure"},
 		{errors.Join(cache.ErrActiveReaders, errors.New("sensitive nested cause")), "active cache readers"},
+		{cache.ErrInvalidConfig, "invalid cache configuration"},
 	} {
 		got := cacheDiagnostic("cache cleanup failed", tc.cause)
 		if got.Error() != "cache cleanup failed: "+tc.want {

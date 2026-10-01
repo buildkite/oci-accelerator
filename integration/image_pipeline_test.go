@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Git uses real local history; only Docker and the secret service are replaced.
+// Git uses real local history. Only Docker and the secret service are replaced.
 // These tests must never contact Docker Hub or retrieve a real credential.
 func TestImagePipeline(t *testing.T) {
 	requireCommands(t, "bash", "git")

@@ -24,11 +24,16 @@ func main() {
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, net.Listen); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		// Every failure, usage or runtime, exits 2. Only zero versus non-zero is meaningful.
 		os.Exit(2)
 	}
 }
 
-// run takes ownership of each listener returned by listen.
+// run dispatches init-ca or starts the proxy and serves until ctx is cancelled.
+// It takes ownership of each listener returned by listen, which tests replace to
+// avoid binding real sockets. Deferred cleanup runs in reverse startup order
+// (metrics server, proxy listener, then cache), and its errors are joined with
+// any serving or shutdown error.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen func(string, string) (net.Listener, error)) (runErr error) {
 	if len(args) > 0 && args[0] == "init-ca" {
 		return runInitCA(args[1:], stdout)
@@ -50,9 +55,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 	if err != nil {
 		return err
 	}
-	if closeStore != nil {
-		defer func() { runErr = errors.Join(runErr, closeStore()) }()
-	}
+	defer func() { runErr = errors.Join(runErr, closeStore()) }()
 
 	listener, err := listen("tcp", cfg.Listen)
 	if err != nil {
@@ -94,7 +97,7 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	}
 
 	if *configPath == "" || flags.NArg() != 0 {
-		return config.Config{}, false, errors.New("--config is required; positional arguments are not supported")
+		return config.Config{}, false, errors.New("--config is required, and positional arguments are not supported")
 	}
 
 	cfg, err = config.Load(*configPath)
@@ -111,12 +114,9 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	return cfg, false, nil
 }
 
-// openCacheStore opens the configured cache, returning a nil store and cleanup
-// when none is set and otherwise a cleanup the caller must defer.
+// openCacheStore opens the configured cache and returns a cleanup the caller
+// must defer.
 func openCacheStore(cfg config.Config, logger *slog.Logger) (*cache.Store, func() error, error) {
-	if cfg.Cache.Dir == "" {
-		return nil, nil, nil
-	}
 	store, err := cache.OpenWithLimits(cfg.Cache.Dir, cache.Limits{
 		MaxBytes:    cfg.Cache.MaxBytes,
 		MaxFills:    cfg.Cache.MaxFills,
@@ -162,7 +162,7 @@ func startMetrics(cfg config.Config, p *proxy.Proxy, listen func(string, string)
 	var metricsErr error
 	go func() {
 		if err := metricsServer.Serve(metricsListener); !errors.Is(err, http.ErrServerClosed) {
-			// Listener errors may contain addresses; keep the diagnostic generic.
+			// Listener errors may contain addresses, so keep the diagnostic generic.
 			metricsErr = errors.New("metrics listener stopped unexpectedly")
 		}
 		close(metricsDone)
@@ -204,6 +204,8 @@ func serveUntilSignal(ctx context.Context, p *proxy.Proxy, listener net.Listener
 	return errors.Join(serveErr, shutdownErr)
 }
 
+// cacheDiagnostic reduces err to a fixed category, because cache errors can
+// include filesystem paths that must not reach logs or stderr.
 func cacheDiagnostic(prefix string, err error) error {
 	category := "filesystem failure"
 	switch {
@@ -211,8 +213,8 @@ func cacheDiagnostic(prefix string, err error) error {
 		category = "cache is locked by another process"
 	case errors.Is(err, cache.ErrUnsafeState):
 		category = "unsafe cache state"
-	case errors.Is(err, cache.ErrInvalidLimits):
-		category = "invalid cache limits"
+	case errors.Is(err, cache.ErrInvalidConfig):
+		category = "invalid cache configuration"
 	case errors.Is(err, cache.ErrActiveReaders):
 		category = "active cache readers"
 	}

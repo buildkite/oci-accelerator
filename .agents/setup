@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run from the repository root; Amp invokes this script there.
+# Run from the repository root. Amp invokes this script there.
 started=$SECONDS
 packages=()
 for package in ca-certificates curl build-essential; do
@@ -15,7 +15,7 @@ if ((${#packages[@]})); then
   sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
 fi
 
-# Pinned to an official stable release; update the version and both checksums together.
+# Pinned to an official stable release. Update the version and both checksums together.
 go_version=1.27.1
 go_root="/usr/local/lib/go-$go_version"
 case "$(uname -m)" in
@@ -74,6 +74,6 @@ if [[ -f go.mod ]]; then
   echo "Downloading Go module dependencies"
   go mod download
 else
-  echo "No go.mod yet; skipping module dependencies"
+  echo "No go.mod yet, skipping module dependencies"
 fi
 echo "Orb setup completed in $((SECONDS - started))s"

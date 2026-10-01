@@ -9,7 +9,7 @@ import (
 )
 
 // acquireLock prepares the private cache directory and returns its exclusive
-// process lock. The caller owns the file on success; failures close it here.
+// process lock. The caller owns the file on success, and failures close it here.
 func acquireLock(dir string) (*os.File, error) {
 	// Ensure the cache directory is a private, this-user-owned 0700 directory.
 	if err := ensurePrivateDir(dir); err != nil {
@@ -32,7 +32,7 @@ func acquireLock(dir string) (*os.File, error) {
 		return nil, filesystemError(err)
 	}
 
-	// Take an exclusive, non-blocking flock; a contended lock means another process owns this cache.
+	// Take an exclusive, non-blocking flock. A contended lock means another process owns this cache.
 	if err = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lf.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {

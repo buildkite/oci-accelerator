@@ -38,7 +38,7 @@ func TestReaderFailureRetiresOnlyItsGeneration(t *testing.T) {
 			}
 			got, err := io.ReadAll(r)
 			if !errors.Is(err, wantErr) || string(got) != wantBytes {
-				t.Fatalf("failed read = %q, %v; want %q, %v", got, err, wantBytes, wantErr)
+				t.Fatalf("failed read = %q, %v (want %q, %v)", got, err, wantBytes, wantErr)
 			}
 			if next, err := s.Get(context.Background(), meta); err != ErrMiss {
 				if next != nil {

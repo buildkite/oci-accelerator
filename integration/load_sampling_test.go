@@ -51,7 +51,7 @@ func readProcessLoad(t *testing.T, pidFile string) processLoad {
 // sampleLoad owns peaks until it closes done. The caller supplies fresh ready
 // and done channels and an errs channel with room for one error. Only this
 // goroutine closes ready (after the first successful sample) and done (on exit).
-// A startup failure sends an error without closing ready; later failures also
+// A startup failure sends an error without closing ready. Later failures also
 // send one error and stop. errs is never closed, so readiness must be awaited
 // alongside errs rather than by receiving from ready alone.
 //

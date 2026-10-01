@@ -44,7 +44,7 @@ func TestCacheCrashAcceptance(t *testing.T) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.Header().Set("Docker-Content-Digest", faultDigest(body))
-		if n == 3 { // Authorization still reaches the origin; the warm body does not.
+		if n == 3 { // Authorization still reaches the origin, but the warm body does not.
 			return
 		}
 		if n == 1 {

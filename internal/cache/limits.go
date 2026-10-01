@@ -2,11 +2,12 @@ package cache
 
 import "time"
 
+// Limits bounds a Store. Every field must be positive.
 type Limits struct {
-	MaxBytes    int64
-	MaxFills    int
-	MaxEntries  int
-	FillTimeout time.Duration
+	MaxBytes    int64         // total charge of committed entries, active fills, and pending cleanup.
+	MaxFills    int           // concurrent active fills.
+	MaxEntries  int           // entry slots for committed entries, active fills, and pending cleanup.
+	FillTimeout time.Duration // lifetime of a fill from Begin.
 }
 
 func (l Limits) valid() bool {

@@ -120,7 +120,7 @@ func TestExpirationRacesNeverPublishOverdueFill(t *testing.T) {
 				} else {
 					if first != "timer" {
 						// Model a delayed timer callback without changing the fill's
-						// deadline; force each operation to win in its own subtest.
+						// deadline. Force each operation to win in its own subtest.
 						f.timer.Reset(2 * timeout)
 					}
 					time.Sleep(timeout)

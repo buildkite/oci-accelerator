@@ -57,7 +57,7 @@ func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
 			}
 		}
 		if !added {
-			t.Fatalf("%s cold pull populated no cache entries; proxy path is unproven", image)
+			t.Fatalf("%s cold pull populated no cache entries, so the proxy path is unproven", image)
 		}
 		pinned := image[:strings.LastIndexByte(image, ':')] + "@" + cold.RootDigest
 		warm := publicPullIdentity(t, prefix+fmt.Sprintf("-%d-warm", i), proxyPort, trust, env, pinned)

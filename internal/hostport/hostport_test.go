@@ -15,7 +15,7 @@ func TestParseCanonicalizes(t *testing.T) {
 	for input, want := range tests {
 		a, err := Parse(input, "443")
 		if err != nil || a.String() != want {
-			t.Errorf("Parse(%q) = %q, %v; want %q", input, a.String(), err, want)
+			t.Errorf("Parse(%q) = %q, %v (want %q)", input, a.String(), err, want)
 		}
 	}
 }

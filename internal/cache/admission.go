@@ -12,6 +12,7 @@ import (
 
 const evictionAttemptLimit = 8 // Maximum victim-directory removals per Begin.
 
+// AdmissionReason is the bounded set of Begin outcomes, suitable for logging.
 type AdmissionReason uint8
 
 const (
@@ -26,6 +27,8 @@ const (
 	AdmissionReasonCount
 )
 
+// AdmissionError reports why Begin refused an object, with an optional
+// underlying Cause. It matches ErrBypass under errors.Is.
 type AdmissionError struct {
 	Reason AdmissionReason
 	Cause  error
@@ -60,13 +63,13 @@ func (s *Store) begin(meta Metadata) (*Fill, error) {
 		return nil, &AdmissionError{Reason: AdmissionClosed}
 	}
 
-	// Reject duplicates of a live entry; otherwise try to reclaim an invalid one.
+	// Reject duplicates of a live entry. Otherwise try to reclaim an invalid one.
 	if e, ok := s.entries[meta.Key]; ok && !e.invalid {
 		s.admissions[AdmissionExisting]++
 		return nil, &AdmissionError{Reason: AdmissionExisting}
 	} else if ok && e.pins == 0 && !e.claimed {
 		// No reader remains to retry cleanup. Reclaim the invalid entry's slot
-		// and bytes on successful removal; otherwise keep them charged.
+		// and bytes on successful removal. Otherwise keep them charged.
 		e.claimed = true
 		s.startOpLocked()
 		s.mu.Unlock()
@@ -154,7 +157,7 @@ func (s *Store) begin(meta Metadata) (*Fill, error) {
 	// reservation and report the appropriate refusal.
 	s.mu.Lock()
 	if err != nil || s.closed {
-		if err == nil { // Close raced with successful staging; reject and clean it.
+		if err == nil { // Close raced with successful staging, so reject and clean it.
 			s.mu.Unlock()
 			cleanupErr = f.Close()
 			removeErr = s.removeAll(d)

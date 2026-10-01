@@ -20,10 +20,10 @@ import (
 // The levels distinguish redirect following from permission to use the cache:
 //
 //   - policyBypass: an unsupported request shape (method/path, Range, or
-//     conditional headers); redirects remain client-handled and caching is off.
+//     conditional headers). Redirects remain client-handled and caching is off.
 //
 //   - policyEligible: an immutable-object GET whose headers forbid cache use
-//     (for example, no-store); follow redirects, but never read or fill the cache.
+//     (for example, no-store). Follow redirects, but never read or fill the cache.
 //
 //   - policyCacheable: follow redirects and allow cache reads or fills, subject
 //     to every redirect's cache restrictions and the terminal response checks.
@@ -72,7 +72,9 @@ func cacheHeaderRejection(h http.Header, digest string) string {
 		}
 	}
 
-	// Reject when the upstream digest disagrees with the digest we requested.
+	// Reject when any upstream digest disagrees with the digest we requested. The
+	// header is optional: the digest-addressed request and accepted redirect
+	// chain identify the object, and stored bytes are hashed independently.
 	for _, value := range h.Values("Docker-Content-Digest") {
 		if value != digest {
 			return "digest_mismatch"
@@ -86,6 +88,10 @@ func cacheHeaders(h http.Header, digest string) bool {
 	return cacheHeaderRejection(h, digest) == ""
 }
 
+// objectMetadata returns the cache metadata for a response that may be stored or
+// substituted: a terminal 200 with known length, no Content-Range or trailers,
+// identity encoding without transport decompression, a single parseable
+// Content-Type of at most 1024 bytes, and cache-permitting headers.
 func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, bool) {
 
 	// Only cache immutable digest-addressed objects returning a complete, known-length, unencoded body.
@@ -149,7 +155,9 @@ func identityEncoded(h http.Header) bool {
 
 // manifestMediaTypes is the canonical set of OCI and Docker manifest media
 // types the cache will store. Tests independently pin the supported formats
-// while sharing this list for reusable protocol fixtures.
+// while sharing this list for reusable protocol fixtures. Other formats are
+// forwarded uncached. The proxy never rewrites or converts manifests, prefetches
+// children, or selects platforms.
 var manifestMediaTypes = []string{
 	"application/vnd.oci.image.manifest.v1+json",
 	"application/vnd.oci.image.index.v1+json",
