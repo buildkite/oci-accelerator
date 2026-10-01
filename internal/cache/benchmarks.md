@@ -48,7 +48,7 @@ time or the syscalls within a removal. Startup bulk-sorts inventory while the
 live eviction order is maintained incrementally, avoiding admission-time sorting,
 and removal runs outside the bookkeeping mutex under serialized admission/path
 ownership. The
-[operating guide](../../docs/operations.md#capacity-and-eviction) and
+[deployment guide](../../docs/deployment.md#capacity-and-eviction) and
 comments in `eviction.go` describe best-effort LRU, admission limits, and
 cleanup ownership.
 

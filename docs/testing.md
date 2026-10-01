@@ -187,7 +187,7 @@ OCI_ACCELERATOR_DOCKER_LOAD_REPORT="$reports/docker.json" \
 
 ## Running acceptance in an Amp orb
 
-For orb Docker setup, see [Amp orbs](operations.md#appendix-amp-orbs).
+For orb Docker setup, see [Amp orbs](deployment.md#appendix-amp-orbs).
 
 In an Amp orb, run the entire test runner as a supervised service so its child processes survive
 CLI updates. The wrapper stays alive after the one-shot test to prevent the service supervisor

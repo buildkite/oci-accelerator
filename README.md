@@ -100,7 +100,7 @@ Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
    ```
 
 To cache other upstream registries, add them to `registries` and trust the CA
-for each one. The [operating guide](docs/operations.md) covers running as a
+for each one. The [deployment guide](docs/deployment.md) covers running as a
 service or container, remote Docker hosts, and every configuration setting.
 
 

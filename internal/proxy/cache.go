@@ -26,7 +26,7 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 	meta, ok := objectMetadata(req, resp)
 	if !ok {
 		// Diagnostics only: record when the response's Vary or Docker-Content-Digest
-		// header is what would reject caching, so operators can gauge cache-effectiveness
+		// header is what would reject caching, so users can gauge cache-effectiveness
 		// loss from CDN header conventions. Upper bound — other reasons (e.g.
 		// Content-Encoding) may also apply — and it never changes the bypass decision.
 		// Re-derives the digest from the request since meta is empty here.

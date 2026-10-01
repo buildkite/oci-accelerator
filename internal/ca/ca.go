@@ -39,7 +39,7 @@ type Authority struct {
 }
 
 // Open loads the CA in dir, creating it only when dir does not exist.
-// Its parent must already exist: the operator provisions it and ensures its
+// Its parent must already exist: the user deploying the proxy provisions it and ensures its
 // durability, so permissions never depend on the umask.
 //
 // Every call fully re-validates the installation and never modifies a CA that

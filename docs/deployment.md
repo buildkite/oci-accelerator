@@ -1,4 +1,4 @@
-# Operating OCI Accelerator
+# Deploying and using OCI Accelerator
 
 OCI Accelerator is an HTTP CONNECT proxy. It intercepts configured HTTPS registries and caches
 verified SHA-256 blobs and digest manifests. All other destinations are tunneled unmodified.
@@ -41,8 +41,8 @@ See [how it works](how-it-works.md) for the request flow and design.
 | Native     | Go 1.27.1 to build, and a service manager to supervise the process    |
 | Container  | Linux Docker daemon with Buildx, and Compose for the supplied service |
 
-Neither CA initialization nor proxy startup creates ancestor directories. Provision the
-immediate parent of `ca_dir` and `cache.dir` as the proxy's user before first start (see
+Neither CA initialization nor proxy startup creates ancestor directories. Before first start, you must
+provision the immediate parent of `ca_dir` and `cache.dir` as the proxy's user (see
 [state directories](#state-directories)).
 
 ### Run the binary
@@ -116,14 +116,14 @@ The supplied `compose.yaml` service builds the local image from the repository r
 Volume notes:
 
 - The CA volume mounts the parent so startup can atomically create its `ca/` child. Docker
-  copies the image's ownership and permissions into fresh volumes, so no host directory
-  provisioning or root entrypoint is needed. The CA volume remains writable at runtime.
+  copies the image's ownership and permissions into fresh volumes, so you don't need to
+  provision host directories or use a root entrypoint. The CA volume remains writable at runtime.
 - Existing valid CA files are reused, not replaced.
 - Run only one proxy against these volumes at a time. The names match the
   [`docker run`](#docker-run) example. Compose warns when reusing volumes created by
   `docker run` because it does not own them.
-- These examples do not migrate existing host bind-mounted data. Starting with new volumes
-  creates a new CA that clients must trust.
+- These examples do not migrate existing host bind-mounted data. If you start with new volumes,
+  the proxy creates a new CA, and you must redistribute client trust.
 
 Build, validate, and start:
 
@@ -219,14 +219,14 @@ no scheme or path. An omitted port means 443, and matching includes the port.
 | `[2001:db8::1]:5000`    | IPv6 with a port (bracketed) |
 
 Entries differing only in case, a trailing dot, or `:443` are duplicates and are rejected.
-Explicitly configured private registries are supported.
+You can configure private registries explicitly.
 
 ### State directories
 
 - `ca_dir` and `cache.dir` must both be nonblank and resolve to distinct, lexically normalized
   absolute paths. There is no forwarding-only mode.
 - The CA directory must not be inside the cache directory, because the cache owns, and may
-  remove, entries in its directory. The reverse nesting is permitted.
+  remove, entries in its directory. You can place the cache directory inside the CA directory.
 - Before first start, create the immediate parent of each directory as the proxy's user,
   without group or other write access (for example `mkdir -m 0700 data`). The directories
   themselves are created at startup, but no ancestors are.
@@ -325,8 +325,8 @@ bin/oci-accelerator init-ca --dir data/ca
 
 - `init-ca` provisions only the root CA. It does not load YAML or start the proxy, cache, or any
   network activity.
-- `--dir` is required. Relative paths are resolved from the working directory. The parent must
-  already exist.
+- You must pass `--dir`. Relative paths are resolved from the working directory, and the parent
+  must already exist.
 - On success it prints `ca_certificate="..."` (the public certificate path) and `ca_sha256=...`
   (the lowercase SHA-256 fingerprint). It never prints the private key. Startup logs the same
   `ca_sha256` for trusted distribution.
@@ -491,7 +491,7 @@ Docker push uses the same proxy and CA configuration as pull.
 ## Request handling
 
 [How it works](how-it-works.md) describes what is cached, range requests, redirects, and
-authorization approval. This section lists the additional rules operators may need.
+authorization approval. This section lists additional rules that may affect your deployment.
 
 ### Methods and protocols
 
@@ -575,8 +575,8 @@ filling, and eviction.
 
 ### Capacity and eviction
 
-- Use one process per cache directory. Its parent must be owner-controlled. Unsafe or unusable
-  configured storage fails startup.
+- Use one process per cache directory, and make sure its parent is owner-controlled. Unsafe or
+  unusable configured storage fails startup.
 - `cache.max_bytes` charges body size plus 4 KiB metadata per entry, including active fills.
   Reserve filesystem block, directory, and inode headroom beyond it.
 - Oversized or capacity-rejected objects continue streaming without being cached.
@@ -657,13 +657,13 @@ on the CONNECT listener, admin API, or pprof endpoint.
 | `GET /livez`   | Process responsiveness                                   |
 | `GET /readyz`  | Initialized and serving, not shutting down               |
 
-- Non-loopback binds are rejected unless `metrics_allow_remote: true`. Remote scraping has no
+- To bind a non-loopback address, you must set `metrics_allow_remote: true`. Remote scraping has no
   authentication: restrict it with private network controls and never expose it publicly or
   through a portal.
 - A bind failure prevents startup.
 - Probes never contact upstream registries or depend on cache capacity, and are independent of
-  `max_connections`. Kubernetes can use local exec probes with a loopback bind when remote
-  scraping is disabled.
+  `max_connections`. In Kubernetes, you can use local exec probes with a loopback bind when
+  remote scraping is disabled.
 
 Metrics use the `oci_accelerator_` prefix and include:
 
@@ -794,7 +794,7 @@ termination behavior. For containers, keep the stop grace period longer than
 
 Amp runs `.agents/setup` when preparing a fresh orb. It installs checksum-verified Go 1.27.1, C
 build tools for race-enabled tests, and Docker Engine, Buildx, and Compose if missing, and
-downloads Go module dependencies. Re-running it is safe:
+downloads Go module dependencies. You can safely re-run it:
 
 ```sh
 .agents/setup
@@ -811,8 +811,8 @@ sudo docker info
 - Use `sudo docker` for daemon operations. If the daemon is not ready, inspect
   `amp orb service logs docker-daemon`.
 - The daemon uses only a local Unix socket. Do not expose it through a portal.
-- Amp supervises the daemon across CLI updates and orb pause/resume, so no custom resume hook is
-  needed.
+- Amp supervises the daemon across CLI updates and orb pause/resume, so you don't need a custom
+  resume hook.
 - Registry credentials belong to the Docker client, never the setup script or a shared orb
   snapshot. Setup does not install a proxy CA into Docker's trust store.
 

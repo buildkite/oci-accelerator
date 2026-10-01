@@ -82,7 +82,7 @@
   credentials across origins.
 - Changes to these security boundaries require explicit design approval.
   See [how it works](docs/how-it-works.md), the
-  [operating guide](docs/operations.md), and source comments for detailed
+  [deployment guide](docs/deployment.md), and source comments for detailed
   protocol rules.
 
 ## Bounded resources and safe failure
@@ -96,7 +96,7 @@
 ## Documentation alignment
 
 - Keep documentation about the current code, not its delivery history. Update
-  architecture, design rationale, configuration examples, and operating instructions when
+  architecture, design rationale, configuration examples, and deployment instructions when
   behavior changes.
 - Keep reproducible verification commands and current limitations. Do not maintain
   implementation/decision logs, completed-slice narratives, or superseded alternatives.
@@ -108,6 +108,9 @@
 - Do not use semicolons in documentation, code comments, user-facing
   messages, or other prose. Split the sentence, or join the clauses with a
   conjunction or colon. Semicolons required by code syntax are fine.
+- In user-facing documentation, address the reader as "you". Refer to the
+  person deploying the proxy as "the user" in code comments, not "the
+  operator". Prefer "use" or "deploy" over "operate".
 
 ## Commit messages
 

@@ -57,7 +57,7 @@ func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.
 	return nil, p.refuseDial(a.String(), errDialConnect)
 }
 
-// refuseDial records the specific reason a dial was refused for operators and
+// refuseDial records the specific reason a dial was refused for users and
 // returns it. Every reason wraps errRedirect, so callers and the client-facing
 // response are unaffected. Only the upstream authority (never resolved IPs,
 // credentials, or client data) is logged, matching the existing request log.

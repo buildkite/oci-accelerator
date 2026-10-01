@@ -9,5 +9,5 @@
 // also serves the public root CA at /ca.crt.
 //
 // See the repository README for the request flow and security guarantees,
-// docs/operations.md for configuration, logs, metrics, and current limitations.
+// docs/deployment.md for configuration, logs, metrics, and current limitations.
 package proxy

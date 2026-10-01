@@ -30,7 +30,7 @@ func invalidNode(node *yaml.Node, reason string) error {
 }
 
 // YAML errors can contain values, keys, tags, or anchor names supplied by the
-// operator. Preserve only a numeric line and a fixed category, not their text.
+// user. Preserve only a numeric line and a fixed category, not their text.
 func safeDecodeError(err error) error {
 	if errors.Is(err, ErrInvalid) {
 		return err // Our custom scalar decoders already produce sanitized errors.

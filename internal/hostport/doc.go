@@ -13,5 +13,5 @@
 // hostname labels outside the DNS rules, and IPv4 written in a non-canonical
 // form such as "010.0.0.1", which is rejected rather than reinterpreted.
 //
-// See docs/operations.md for the authority syntax accepted in configuration.
+// See docs/deployment.md for the authority syntax accepted in configuration.
 package hostport

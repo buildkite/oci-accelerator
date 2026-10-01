@@ -14,7 +14,7 @@ var errRedirect = errors.New("upstream redirect refused")
 
 // Internal dial-refusal reasons. Each wraps errRedirect so existing
 // errors.Is(err, errRedirect) checks and the client-facing 502 are unchanged.
-// The distinct reason exists only to make operator logs actionable. None of
+// The distinct reason exists only to make logs actionable for users. None of
 // these is ever surfaced to the client.
 var (
 	errDialAddress   = fmt.Errorf("%w: unparseable upstream address", errRedirect)

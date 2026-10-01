@@ -6,5 +6,5 @@
 // server together and serves until SIGINT or SIGTERM. The init-ca subcommand
 // creates or validates the root CA directory without starting anything else.
 //
-// See the repository README for usage and docs/operations.md for operation.
+// See the repository README for usage and docs/deployment.md for deployment.
 package main

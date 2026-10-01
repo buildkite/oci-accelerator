@@ -8,7 +8,7 @@
 // first read after startup.
 // One process owns a cache directory, enforced by a file lock.
 //
-// See the repository README for caching behavior, docs/operations.md for
+// See the repository README for caching behavior, docs/deployment.md for
 // storage, capacity, and recovery, and benchmarks.md in this directory for
 // performance investigation.
 package cache

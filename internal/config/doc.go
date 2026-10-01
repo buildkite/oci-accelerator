@@ -7,8 +7,8 @@
 // directory, and bind addresses are validated and normalized. Read failures
 // are reported separately from invalid configuration, and every
 // invalid-configuration error wraps [ErrInvalid] and never echoes
-// operator-supplied values.
+// user-supplied values.
 //
-// See docs/operations.md for the meaning of each setting and its validation
+// See docs/deployment.md for the meaning of each setting and its validation
 // requirements.
 package config
