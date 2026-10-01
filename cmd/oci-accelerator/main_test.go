@@ -16,11 +16,12 @@ import (
 )
 
 func TestRunHelpUsesOCIAcceleratorName(t *testing.T) {
+	t.Setenv("OCI_ACCELERATOR_SHUTDOWN_TIMEOUT", "invalid-secret-value")
 	var out, errOut bytes.Buffer
 	if err := run(context.Background(), []string{"--help"}, &out, &errOut, net.Listen); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "Usage: oci-accelerator --config FILE [--check]\n       oci-accelerator --version\n       oci-accelerator init-ca --dir DIR\n"; got != want {
+	if got, want := out.String(), "Usage: oci-accelerator [--config FILE] [--check]\n       oci-accelerator --version\n       oci-accelerator init-ca [--dir DIR]\n"; got != want {
 		t.Fatalf("help = %q, want %q", got, want)
 	}
 	if errOut.Len() != 0 {
@@ -95,7 +96,7 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 		args   []string
 		secret string
 	}{
-		{name: "missing_config"},
+		{name: "missing_environment_config"},
 		{name: "unexpected_argument", args: []string{"extra"}},
 		{name: "unexpected_argument_after_config", args: []string{"--config", "x", "extra"}},
 		{name: "unexpected_argument_after_version", args: []string{"--version", "extra"}},
@@ -123,6 +124,71 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResolveConfigUsesEnvironmentWithoutConfigFile(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("OCI_ACCELERATOR_REGISTRIES", "example.com")
+	t.Setenv("OCI_ACCELERATOR_CA_DIR", "env-ca")
+	t.Setenv("OCI_ACCELERATOR_CACHE_DIR", "env-cache")
+	t.Setenv("OCI_ACCELERATOR_LISTEN", "127.0.0.1:4321")
+
+	cfg, handled, err := resolveConfig(nil, &bytes.Buffer{})
+	if err != nil || handled {
+		t.Fatalf("resolveConfig() = handled %t, error %v", handled, err)
+	}
+	if cfg.Listen != "127.0.0.1:4321" || cfg.CADir != filepath.Join(root, "env-ca") || cfg.Cache.Dir != filepath.Join(root, "env-cache") {
+		t.Fatalf("environment configuration not used at runtime: %+v", cfg)
+	}
+}
+
+func TestRunCheckUsesEnvironmentWithoutCreatingState(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("OCI_ACCELERATOR_REGISTRIES", "example.com")
+	t.Setenv("OCI_ACCELERATOR_CA_DIR", "env-ca")
+	t.Setenv("OCI_ACCELERATOR_CACHE_DIR", "env-cache")
+
+	var out bytes.Buffer
+	if err := run(context.Background(), []string{"--config=", "--check"}, &out, &bytes.Buffer{}, net.Listen); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "configuration validated\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("--check created state: %v, %v", entries, err)
+	}
+}
+
+func TestResolveConfigEnvironmentOverridesFile(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte("listen: 127.0.0.1:1111\nregistries: [file.example]\nca_dir: file-ca\ncache: {dir: file-cache}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OCI_ACCELERATOR_LISTEN", "127.0.0.1:2222")
+	t.Setenv("OCI_ACCELERATOR_CA_DIR", "env-ca")
+
+	cfg, handled, err := resolveConfig([]string{"--config", path}, &bytes.Buffer{})
+	if err != nil || handled {
+		t.Fatalf("resolveConfig() = handled %t, error %v", handled, err)
+	}
+	if cfg.Listen != "127.0.0.1:2222" || cfg.CADir != filepath.Join(root, "env-ca") || cfg.Cache.Dir != filepath.Join(root, "file-cache") {
+		t.Fatalf("mixed configuration precedence or path bases are wrong: %+v", cfg)
+	}
+}
+
+func TestRunRedactsInvalidEnvironmentValue(t *testing.T) {
+	secret := "environment-secret-value"
+	t.Setenv("OCI_ACCELERATOR_SHUTDOWN_TIMEOUT", secret)
+	err := run(context.Background(), []string{"--check"}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
+	if err == nil || !strings.Contains(err.Error(), "OCI_ACCELERATOR_SHUTDOWN_TIMEOUT") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("unsafe environment error: %v", err)
 	}
 }
 

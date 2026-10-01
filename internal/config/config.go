@@ -31,8 +31,8 @@ const (
 	DefaultCacheMaxAuthorizationEntries         = 10000
 )
 
-// Config is the validated result of [Load]. Relative directory paths are
-// joined to the configuration file's directory, and bind addresses are
+// Config is the validated result of [Load]. YAML directory paths are relative
+// to the file, environment paths to the working directory. Bind addresses are
 // validated and normalized.
 type Config struct {
 	Listen                string
@@ -92,37 +92,55 @@ type rawCache struct {
 	MaxAuthorizationEntries   strictInt    `yaml:"max_authorization_entries"`
 }
 
-// Load reads and validates the single-document YAML file at path. Read
-// failures wrap the underlying I/O error, and all other failures wrap [ErrInvalid].
+// Load applies defaults, an optional single-document YAML file, then
+// OCI_ACCELERATOR_* environment overrides and validates the result. An empty
+// path skips the file. Read failures wrap the underlying I/O error, and all
+// other failures wrap [ErrInvalid].
 func Load(path string) (Config, error) {
+	return load(path, os.LookupEnv)
+}
+
+func load(path string, lookup func(string) (string, bool)) (Config, error) {
+	raw := defaults()
+	if path != "" {
+		if err := readYAML(path, &raw); err != nil {
+			return Config{}, err
+		}
+	}
+	if err := applyEnvironment(&raw, lookup); err != nil {
+		return Config{}, err
+	}
+	return validate(raw, filepath.Dir(path))
+}
+
+func readYAML(path string, raw *rawConfig) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("read configuration: %w", err)
+		return fmt.Errorf("read configuration: %w", err)
 	}
 	defer f.Close()
 
-	raw := defaults()
 	reader := &readErrorTracker{Reader: f}
 	dec := yaml.NewDecoder(reader)
 	dec.KnownFields(true)
-	err = dec.Decode(&raw)
+	err = dec.Decode(raw)
 	if reader.err != nil {
-		return Config{}, fmt.Errorf("read configuration: %w", reader.err)
+		return fmt.Errorf("read configuration: %w", reader.err)
 	}
 	if err != nil {
-		return Config{}, safeDecodeError(err)
+		return safeDecodeError(err)
 	}
 	var extra yaml.Node
 	err = dec.Decode(&extra)
 	if reader.err != nil {
-		return Config{}, fmt.Errorf("read configuration: %w", reader.err)
+		return fmt.Errorf("read configuration: %w", reader.err)
 	}
 	if err == nil {
-		return Config{}, fmt.Errorf("%w: expected exactly one YAML document", ErrInvalid)
+		return fmt.Errorf("%w: expected exactly one YAML document", ErrInvalid)
 	} else if err != io.EOF {
-		return Config{}, safeDecodeError(err)
+		return safeDecodeError(err)
 	}
-	return validate(raw, filepath.Dir(path))
+	return nil
 }
 
 func defaults() rawConfig {

@@ -76,6 +76,54 @@ func TestRunInitCACreatesAndReusesRoot(t *testing.T) {
 	}
 }
 
+func TestRunInitCAUsesEnvironmentDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("OCI_ACCELERATOR_CA_DIR", "env-ca")
+
+	out, err := runCACommand(t, []string{"init-ca"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `ca_certificate="env-ca/ca.crt"`) {
+		t.Fatalf("output = %q", out)
+	}
+	if _, err := os.Stat("env-ca/ca.key"); err != nil {
+		t.Fatalf("environment CA directory was not used: %v", err)
+	}
+}
+
+func TestRunInitCAExplicitDirectoryOverridesEnvironment(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("OCI_ACCELERATOR_CA_DIR", "env-ca")
+
+	if _, err := runCACommand(t, []string{"init-ca", "--dir", "flag-ca"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat("flag-ca/ca.key"); err != nil {
+		t.Fatalf("explicit CA directory was not used: %v", err)
+	}
+	if _, err := os.Stat("env-ca"); !os.IsNotExist(err) {
+		t.Fatalf("environment CA directory was used: %v", err)
+	}
+}
+
+func TestRunInitCAExplicitEmptyDirectoryRejectsEnvironmentFallback(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("OCI_ACCELERATOR_CA_DIR", "env-ca")
+
+	out, err := runCACommand(t, []string{"init-ca", "--dir="})
+	if err == nil || out != "" {
+		t.Fatalf("explicit empty directory: output = %q, error = %v", out, err)
+	}
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("explicit empty directory created state: %v, %v", entries, readErr)
+	}
+}
+
 func TestRunInitCAHelpAndInvalidArgumentsDoNotCreateState(t *testing.T) {
 	t.Chdir(t.TempDir())
 	for _, args := range [][]string{
@@ -94,7 +142,7 @@ func TestRunInitCAHelpAndInvalidArgumentsDoNotCreateState(t *testing.T) {
 			out, err := runCACommand(t, append([]string{"init-ca"}, args...))
 			help := len(args) > 0 && args[len(args)-1] == "--help"
 			if help {
-				if err != nil || !strings.Contains(out, "Usage: oci-accelerator init-ca --dir DIR") {
+				if err != nil || !strings.Contains(out, "Usage: oci-accelerator init-ca [--dir DIR]") {
 					t.Fatalf("help: output = %q, error = %v", out, err)
 				}
 			} else if err == nil || out != "" || strings.Contains(err.Error(), "secret") {

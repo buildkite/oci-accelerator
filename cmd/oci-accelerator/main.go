@@ -78,7 +78,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 	return serveUntilSignal(ctx, p, listener, metricsDone, cfg.ShutdownTimeout)
 }
 
-// resolveConfig parses the command line and loads the named configuration,
+// resolveConfig parses the command line and loads the optional configuration,
 // reporting handled when --help, --version, or --check has fully served the request.
 func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled bool, err error) {
 	flags := flag.NewFlagSet("oci-accelerator", flag.ContinueOnError)
@@ -91,9 +91,9 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: oci-accelerator --config FILE [--check]")
+			fmt.Fprintln(stdout, "Usage: oci-accelerator [--config FILE] [--check]")
 			fmt.Fprintln(stdout, "       oci-accelerator --version")
-			fmt.Fprintln(stdout, "       oci-accelerator init-ca --dir DIR")
+			fmt.Fprintln(stdout, "       oci-accelerator init-ca [--dir DIR]")
 			return config.Config{}, true, nil
 		}
 		return config.Config{}, false, errors.New("invalid command line")
@@ -103,8 +103,8 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 		_, err := fmt.Fprintln(stdout, "oci-accelerator "+ociaccelerator.Version())
 		return config.Config{}, true, err
 	}
-	if *configPath == "" || flags.NArg() != 0 {
-		return config.Config{}, false, errors.New("--config is required, and positional arguments are not supported")
+	if flags.NArg() != 0 {
+		return config.Config{}, false, errors.New("positional arguments are not supported")
 	}
 
 	cfg, err = config.Load(*configPath)

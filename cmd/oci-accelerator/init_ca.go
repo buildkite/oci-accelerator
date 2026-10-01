@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
@@ -16,18 +17,18 @@ func runInitCA(args []string, stdout io.Writer) error {
 	// Keep rejected arguments out of diagnostics, as in the proxy command.
 	flags.SetOutput(io.Discard)
 
-	dir := flags.String("dir", "", "CA directory (required, and its parent must already exist)")
+	dir := flags.String("dir", os.Getenv("OCI_ACCELERATOR_CA_DIR"), "CA directory (defaults to OCI_ACCELERATOR_CA_DIR, and its parent must already exist)")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			_, err := fmt.Fprintln(stdout, "Usage: oci-accelerator init-ca --dir DIR\n\nCreate or validate ca.crt and ca.key without starting the proxy.\nDIR is relative to the working directory, and its parent must already exist.\nExisting valid CA files are reused, never replaced.")
+			_, err := fmt.Fprintln(stdout, "Usage: oci-accelerator init-ca [--dir DIR]\n\nCreate or validate ca.crt and ca.key without starting the proxy.\nDIR defaults to OCI_ACCELERATOR_CA_DIR, is relative to the working directory, and must have an existing parent.\nExisting valid CA files are reused, never replaced.")
 			return err
 		}
 		return errors.New("invalid init-ca command line")
 	}
 
 	if strings.TrimSpace(*dir) == "" || flags.NArg() != 0 {
-		return errors.New("init-ca requires --dir DIR, and positional arguments are not supported")
+		return errors.New("init-ca requires --dir DIR or OCI_ACCELERATOR_CA_DIR, and positional arguments are not supported")
 	}
 
 	// Open requires a positive leaf limit, but this command never issues leaves.
