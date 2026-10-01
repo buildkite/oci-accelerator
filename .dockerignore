@@ -2,6 +2,8 @@
 **
 !go.mod
 !go.sum
+!VERSION
+!version.go
 !cmd/
 !cmd/**
 !internal/

@@ -181,7 +181,45 @@ docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
 - For a multi-platform OCI archive, use a Buildx builder with the `docker-container` driver and
   an OCI output instead of `--load`.
 - Buildkite validates both architectures and publishes successful current `main` builds to
-  `buildkite/oci-accelerator:latest`.
+  `buildkite/oci-accelerator:latest` and `buildkite/oci-accelerator:build-N`, where `N` is
+  the Buildkite build number. Version bumps also publish a version tag.
+
+#### Releasing images
+
+To cut a release, open a PR that increases the root [`VERSION`](../VERSION) file, for
+example from `0.1.0` to `0.1.1`. Use one stable `MAJOR.MINOR.PATCH` version, without a
+`v` prefix, leading zeros, prerelease suffix, or build metadata. CI validates its format
+and checks increases against the PR's merge base with `main`.
+
+After you merge the PR, the non-PR `main` build compares `VERSION` with its first parent.
+If the value changed, it publishes `buildkite/oci-accelerator:0.1.1` for both `linux/amd64`
+and `linux/arm64`, after formatting, vet, build, tests, race tests, and the image check pass.
+Adding `VERSION` for the first time also triggers a release. Git tag builds do not publish.
+
+The version tag identifies the merged commit, not whichever commit is newest when CI
+finishes. A release still publishes if `main` has advanced, but that older build does not
+update `latest` or `build-N`. Ordinary builds with unchanged versions publish only those
+two moving tags when their checkout is the current `main` tip at the publishing check.
+
+If publication fails, retry the publishing job for the original release build. An existing
+version tag with matching source-revision and version metadata is left untouched. A tag
+with different or missing metadata fails the job, as do authentication and registry errors.
+You can retry a partially published build without replacing its version tag. A retry at
+the current `main` tip can still rebuild and publish `latest` and `build-N`.
+
+Publishing jobs share one Buildkite concurrency group. Keep all writers to this image
+repository in that group. The check before pushing is not an atomic registry lock and does
+not protect against an unrelated writer. Keep branch builds enabled and disable queued-build
+skipping, running-build cancellation, and filters that exclude version-only commits. If you
+cancel a release build or skip it with a commit-message directive, a later ordinary build
+does not recover that release automatically. Run the original release commit again.
+
+The binary embeds `VERSION`, including in local `go build` and Docker builds. Run
+`oci-accelerator --version` or `docker run --rm buildkite/oci-accelerator:0.1.1 --version`
+without a configuration file to print `oci-accelerator 0.1.1`. Between bumps, multiple
+`main` builds report the same version. Images built by the pipeline also carry
+`org.opencontainers.image.version` and `org.opencontainers.image.revision` as image labels
+and multi-platform index annotations so you can identify the exact source commit.
 
 ### Serve remote Docker hosts
 
