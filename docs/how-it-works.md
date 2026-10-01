@@ -34,7 +34,7 @@ send.
 | `PUT`, `PATCH`, `POST`, `DELETE` | Pushes and deletions                 |
 
 A blob request with a `Range` header, such as a resumed layer download, is sent
-upstream as a request for the whole blob, so the registry still approves every
+upstream as a request for the whole blob, so the upstream registry still approves every
 request. The accelerator then returns only the requested bytes, reading them
 from disk if the blob is cached or from the upstream stream while filling the
 cache. A ranged fill continues after Docker disconnects, until
@@ -48,7 +48,7 @@ a cacheable `200 OK`, it returns that to Docker and caches it under the original
 request. Any other final response goes back to Docker unchanged. When a redirect
 leads to a different origin (scheme, host, and port), the accelerator sends only
 the `Accept`, `Accept-Encoding`, and `User-Agent` headers, so credentials never
-leave the registry's origin.
+leave the upstream registry's origin.
 
 The accelerator checks the address of every upstream connection it makes for an
 intercepted registry, including redirects. Public hosts need no configuration,
@@ -118,7 +118,7 @@ sequenceDiagram
 # Trusting the accelerator's certificate
 
 To intercept a registry connection, the accelerator presents its own certificate
-for the registry's host, signed by its self-signed root CA. Docker rejects that
+for the upstream registry's host, signed by its self-signed root CA. Docker rejects that
 certificate unless it trusts the root CA, so each Docker host must install the
 CA certificate before pulling through the accelerator.
 
@@ -179,7 +179,7 @@ not the download, and may count toward registry rate limits.
 ### Authorization grants
 
 After an approval, an identical request is served from disk without contacting
-the registry for `cache.authorization_ttl` (30 seconds by default, and `0s` disables
+the upstream registry for `cache.authorization_ttl` (30 seconds by default, and `0s` disables
 grants).
 
 - **Identical requests only.** Grants match on the URL and every forwarded
@@ -189,7 +189,7 @@ grants).
   `max-age` or `s-maxage` on the request or any response shortens it.
 - **Memory only.** Grants are cleared on restart and bounded by
   `cache.max_authorization_entries` (10000 by default).
-- **Bytes are shared, approvals are not.** Any client the registry approves can
+- **Bytes are shared, approvals are not.** Any client the upstream registry approves can
   receive the cached copy, whoever filled it.
 
 No grant is created if the request or any response in the redirect chain has

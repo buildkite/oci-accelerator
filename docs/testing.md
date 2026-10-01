@@ -115,7 +115,7 @@ single-platform pull test.
 1. Loads a deterministic image locally.
 2. Verifies that read-only credentials cannot publish.
 3. Pushes with write credentials through the compiled proxy.
-4. Checks the registry's uploaded config and layer bytes and confirms the proxy cache remains
+4. Checks the upstream registry's uploaded config and layer bytes and confirms the proxy cache remains
    empty.
 5. Fresh Docker daemons then verify a cold pull and a warm pull with no additional blob GETs.
 

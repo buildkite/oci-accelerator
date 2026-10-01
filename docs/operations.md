@@ -23,7 +23,7 @@ See [how it works](how-it-works.md) for the request flow and design.
   no insecure mode.
 - **Credentials stay with Docker.** Never put credentials in proxy YAML. Cross-origin redirects
   never forward credentials or cookies.
-- **The registry authorizes deliveries.** Each cached delivery is approved by an upstream GET,
+- **The upstream registry authorizes deliveries.** Each cached delivery is approved by an upstream GET,
   or by an exact-request grant up to `cache.authorization_ttl` (30 seconds by default), so
   revocation can lag by up to that long. Set `0s` to require upstream approval for every
   delivery. There is no offline or failed-request fallback.
@@ -470,7 +470,7 @@ docker pull ghcr.io/your-organization/your-image:tag
 - Shell proxy variables do not configure an already-running daemon. Docker also documents
   [daemon proxy configuration](https://docs.docker.com/engine/daemon/proxy/) for
   service-environment setups.
-- For a private registry, the proxy process must also trust the registry's real CA in its
+- For a private registry, the proxy process must also trust the upstream registry's real CA in its
   system trust store, as well as Docker. Do not disable TLS verification or configure an
   insecure registry as a workaround.
 
@@ -478,7 +478,7 @@ docker pull ghcr.io/your-organization/your-image:tag
 
 Docker push uses the same proxy and CA configuration as pull. 
 
-- The registry enforces write permissions using Docker's credentials.
+- The upstream registry enforces write permissions using Docker's credentials.
 - Uploads do not warm the cache. The proxy does not manage upload sessions or follow write
   redirects.
 - Active uploads are limited by `idle_timeout` for stalled I/O, not by `cache.fill_timeout` or
@@ -684,7 +684,7 @@ Interpreting them:
 - Logical cache bytes exclude filesystem overhead. Go heap allocation is not RSS.
 - `oci_accelerator_upstream_get_attempts_total` counts connection-acquisition attempts,
   including transport retries and DNS, dial, or TLS failures before a GET is sent. It is not an
-  exact count of requests received by the registry.
+  exact count of requests received by the upstream registry.
 - `oci_accelerator_cache_rejections_total` reports `vary` and `digest_mismatch` header
   rejections on eligible responses. Other policy checks may also prevent caching, so it does
   not identify the sole cause of every bypass.
@@ -693,7 +693,7 @@ Interpreting them:
 
 `oci_accelerator_served_bytes_total{source="cache|origin"}` and
 `oci_accelerator_served_entries_total{source="cache|origin"}` measure how much digest-addressed
-content clients received from the cache versus the registry.
+content clients received from the cache versus the upstream registry.
 
 - **Scope.** Only `200` responses to query-free `GET`s for a full, unescaped SHA-256 blob or
   manifest digest, without `Range` or `If-*` headers. Errors, `HEAD`, tags, ranges, conditional
@@ -762,22 +762,22 @@ termination behavior. For containers, keep the stop grace period longer than
 
 ## Troubleshooting
 
-| Symptom                                                   | Likely cause                                                                                   | Fix                                                                                   |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `--check` passes but startup fails                        | `--check` does not inspect CA or cache state or bind listeners                                 | Read the startup error. See the rows below                                            |
-| Startup fails naming a CA check                           | CA directory or files are empty, incomplete, expired, mismatched, oversized, symlinked, foreign-owned, or wrongly permissioned | Correct the state per [CA directory requirements](#ca-directory-requirements). Never delete an established CA ([replace it](#back-up-and-replace-the-ca) instead) |
-| Startup fails on a missing directory                      | Neither `init-ca` nor startup creates ancestors                                                | Create the parent as the proxy user ([state directories](#state-directories))         |
-| Startup refuses unknown cache files                       | Unrecognized files in `cache.dir`. Startup never deletes them                                  | Investigate their origin, or [reset the cache](#reset-the-cache)                      |
-| Second proxy fails to start on the same cache             | One process per cache directory                                                                | Give each process its own `cache.dir` and `ca_dir`                                    |
-| `--check` rejects `metrics_listen`                        | Non-loopback address without `metrics_allow_remote: true`                                      | Use a loopback address, or opt in ([metrics](#metrics))                               |
-| Startup fails binding metrics                             | The metrics listener cannot bind. A bind failure prevents startup                              | Fix `metrics_listen` or free the address                                              |
-| Container health is `unhealthy`                           | Metrics listener not at `127.0.0.1:9090`, or the proxy is not ready or is shutting down        | Restore the listener or override the health check ([image](#image)). It does not restart the container |
-| Docker reports an unknown certificate authority           | CA not installed under the exact `certs.d/<host[:port]>` directory                             | [Trust the CA](#trust-the-ca) for that authority                                      |
-| Private registry fails through the proxy with a TLS error | The proxy process does not trust the registry's real CA                                        | Add it to the proxy's system trust store. Never disable verification                  |
-| Pulls work but no request records show the registry       | Registry not in `registries` (port must match), listed in `no-proxy`/`NO_PROXY`, or daemon not restarted | Fix `registries` or [Docker's proxy configuration](#point-docker-at-the-proxy)   |
-| Revoked access or a deleted image still pulls briefly     | An existing [authorization grant](#authorization-grants)                                       | Wait for `cache.authorization_ttl`, or set it to `0s`                                  |
-| `.ca-init-*` directories in the CA parent                 | A crash or SIGKILL during initialization                                                       | [Clean up staging directories](#clean-up-staging-directories)                         |
-| Compose warns about existing volumes                      | Volumes were created by `docker run`                                                           | Expected. Run only one proxy against them                                             |
+| Symptom                                                      | Likely cause                                                                                   | Fix                                                                                   |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `--check` passes but startup fails                           | `--check` does not inspect CA or cache state or bind listeners                                 | Read the startup error. See the rows below                                            |
+| Startup fails naming a CA check                              | CA directory or files are empty, incomplete, expired, mismatched, oversized, symlinked, foreign-owned, or wrongly permissioned | Correct the state per [CA directory requirements](#ca-directory-requirements). Never delete an established CA ([replace it](#back-up-and-replace-the-ca) instead) |
+| Startup fails on a missing directory                         | Neither `init-ca` nor startup creates ancestors                                                | Create the parent as the proxy user ([state directories](#state-directories))         |
+| Startup refuses unknown cache files                          | Unrecognized files in `cache.dir`. Startup never deletes them                                  | Investigate their origin, or [reset the cache](#reset-the-cache)                      |
+| Second proxy fails to start on the same cache                | One process per cache directory                                                                | Give each process its own `cache.dir` and `ca_dir`                                    |
+| `--check` rejects `metrics_listen`                           | Non-loopback address without `metrics_allow_remote: true`                                      | Use a loopback address, or opt in ([metrics](#metrics))                               |
+| Startup fails binding metrics                                | The metrics listener cannot bind. A bind failure prevents startup                              | Fix `metrics_listen` or free the address                                              |
+| Container health is `unhealthy`                              | Metrics listener not at `127.0.0.1:9090`, or the proxy is not ready or is shutting down        | Restore the listener or override the health check ([image](#image)). It does not restart the container |
+| Docker reports an unknown certificate authority              | CA not installed under the exact `certs.d/<host[:port]>` directory                             | [Trust the CA](#trust-the-ca) for that authority                                      |
+| Private registry fails through the proxy with a TLS error    | The proxy process does not trust the upstream registry's real CA                               | Add it to the proxy's system trust store. Never disable verification                  |
+| Pulls work but no request records show the upstream registry | Registry not in `registries` (port must match), listed in `no-proxy`/`NO_PROXY`, or daemon not restarted | Fix `registries` or [Docker's proxy configuration](#point-docker-at-the-proxy)   |
+| Revoked access or a deleted image still pulls briefly        | An existing [authorization grant](#authorization-grants)                                       | Wait for `cache.authorization_ttl`, or set it to `0s`                                  |
+| `.ca-init-*` directories in the CA parent                    | A crash or SIGKILL during initialization                                                       | [Clean up staging directories](#clean-up-staging-directories)                         |
+| Compose warns about existing volumes                         | Volumes were created by `docker run`                                                           | Expected. Run only one proxy against them                                             |
 
 ## Current limitations
 
