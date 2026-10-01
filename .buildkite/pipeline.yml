@@ -40,11 +40,25 @@ steps:
     command: "bash .buildkite/image.sh check"
     timeout_in_minutes: 20
 
-  - label: ":docker: Publish build and latest tags to Docker Hub"
+  - label: ":bash: Image publishing tests"
+    key: publishing-tests
+    command: "bash .buildkite/image_test.sh"
+    timeout_in_minutes: 5
+
+  - label: ":docker: Publish build and edge tags to Docker Hub"
     key: publish
     if: 'build.branch == "main" && build.tag == null && build.pull_request.id == null'
-    depends_on: [checks, tests, race, image]
+    depends_on: [checks, tests, race, image, publishing-tests]
     command: "bash .buildkite/image.sh publish"
+    timeout_in_minutes: 20
+    concurrency: 1
+    concurrency_group: "docker-hub/buildkite/oci-accelerator"
+
+  - label: ":docker: Publish version and latest tags to Docker Hub"
+    key: release
+    if: 'build.tag =~ /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$$/ && build.pull_request.id == null'
+    depends_on: [checks, tests, race, image, publishing-tests]
+    command: "bash .buildkite/image.sh release"
     timeout_in_minutes: 20
     concurrency: 1
     concurrency_group: "docker-hub/buildkite/oci-accelerator"

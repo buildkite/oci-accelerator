@@ -41,7 +41,7 @@ func TestImagePipeline(t *testing.T) {
 		wantError, wantSecret, wantBuild, wantPush     bool
 	}{
 		{name: "check without credentials", mode: "check", wantBuild: true},
-		{name: "publish build number and latest from shallow main", wantSecret: true, wantBuild: true, wantPush: true},
+		{name: "publish build number and edge from shallow main", wantSecret: true, wantBuild: true, wantPush: true},
 		{name: "feature branch", branch: "feature", wantError: true},
 		{name: "tag build", tag: "v1.2.3", wantError: true},
 		{name: "pull request", pr: "16", wantError: true},
@@ -148,8 +148,8 @@ printf fixture-token
 			if tc.wantBuild && !strings.Contains(string(calls), "--platform linux/amd64,linux/arm64") {
 				t.Fatalf("missing platform pair: %s", calls)
 			}
-			if tc.wantPush && (!strings.Contains(string(calls), "--tag docker.io/buildkite/oci-accelerator:build-108 --tag docker.io/buildkite/oci-accelerator:latest --push") || strings.Count(string(calls), "--tag ") != 2) {
-				t.Fatalf("expected the build number and latest tags: %s", calls)
+			if tc.wantPush && (!strings.Contains(string(calls), "--tag docker.io/buildkite/oci-accelerator:build-108 --tag docker.io/buildkite/oci-accelerator:edge --push") || strings.Count(string(calls), "--tag ") != 2) {
+				t.Fatalf("expected the build number and edge tags: %s", calls)
 			}
 			if config, err := os.ReadFile(filepath.Join(root, "docker-config")); err == nil {
 				if _, err := os.Stat(strings.TrimSpace(string(config))); !os.IsNotExist(err) {
