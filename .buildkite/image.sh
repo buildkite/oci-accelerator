@@ -35,10 +35,11 @@ esac
 # Stable SemVer only, bounded by Docker's tag length. Do not use shell integer
 # arithmetic for version components, which can exceed the integer range.
 version=$(cat VERSION)
+version_number=${version#v}
 version_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-if [[ ! "$version" =~ $version_pattern ]] || ((${#version} > 128)) ||
+if [[ "$version" != v* || ! "$version_number" =~ $version_pattern ]] || ((${#version} > 128)) ||
    { ! cmp -s VERSION <(printf '%s\n' "$version") && ! cmp -s VERSION <(printf '%s' "$version"); }; then
-  echo 'VERSION must contain one stable MAJOR.MINOR.PATCH version without leading zeros or a v prefix' >&2
+  echo 'VERSION must contain one stable vMAJOR.MINOR.PATCH version without leading zeros' >&2
   exit 1
 fi
 
@@ -68,8 +69,10 @@ fi
 release=false
 if [[ "$version" != "$previous" ]]; then
   if [[ -n "$previous" ]]; then
-    if [[ ! "$previous" =~ $version_pattern ]] ||
-       [[ $(printf '%s\n' "$previous" "$version" | LC_ALL=C sort -V | head -n 1) != "$previous" ]]; then
+    # Older commits used unprefixed versions. Adding v alone creates a new tag.
+    previous_number=${previous#v}
+    if [[ ! "$previous_number" =~ $version_pattern ]] ||
+       [[ $(printf '%s\n' "$previous_number" "$version_number" | LC_ALL=C sort -V | head -n 1) != "$previous_number" ]]; then
       echo 'VERSION must increase from the comparison commit' >&2
       exit 1
     fi
@@ -97,6 +100,7 @@ if [[ "$mode" == publish ]]; then
 fi
 
 tags=()
+release_title="Published oci-accelerator $version"
 if [[ "$mode" == publish && "$release" == true ]]; then
   # Only the exact not-found diagnostic permits creating a tag. Authentication,
   # transport, and unexpected CLI errors must not be mistaken for an absent image.
@@ -108,6 +112,7 @@ if [[ "$mode" == publish && "$release" == true ]]; then
       exit 1
     fi
     echo "Version $version is already published from this commit"
+    release_title="Version $version is already published"
   elif [[ $(cat "$temporary/inspect-error") == "ERROR: $image:$version: not found" ]]; then
     tags+=(--tag "$image:$version")
   else
@@ -120,21 +125,39 @@ if [[ "$mode" == publish ]]; then
   if [[ "$head" == "$main" ]]; then
     tags+=(--tag "$image:build-$build_number" --tag "$image:latest")
   fi
-  if ((${#tags[@]} == 0)); then
-    exit 0
-  fi
 fi
 
-# Official BuildKit images bundle QEMU for the Alpine ARM64 runtime stage.
-docker buildx create --name "$builder" --driver docker-container --bootstrap
-build_args=(--builder "$builder" --platform linux/amd64,linux/arm64
-  --label "org.opencontainers.image.version=$version"
-  --label "org.opencontainers.image.revision=$head"
-  --annotation "index:org.opencontainers.image.version=$version"
-  --annotation "index:org.opencontainers.image.revision=$head")
-if [[ "$mode" == publish ]]; then
-  build_args+=("${tags[@]}" --push)
-else
-  build_args+=(--output "type=oci,dest=$temporary/image.tar")
+if [[ "$mode" == check ]] || ((${#tags[@]} > 0)); then
+  # Official BuildKit images bundle QEMU for the Alpine ARM64 runtime stage.
+  docker buildx create --name "$builder" --driver docker-container --bootstrap
+  build_args=(--builder "$builder" --platform linux/amd64,linux/arm64
+    --label "org.opencontainers.image.version=$version"
+    --label "org.opencontainers.image.revision=$head"
+    --annotation "index:org.opencontainers.image.version=$version"
+    --annotation "index:org.opencontainers.image.revision=$head")
+  if [[ "$mode" == publish ]]; then
+    build_args+=("${tags[@]}" --push)
+  else
+    build_args+=(--output "type=oci,dest=$temporary/image.tar")
+  fi
+  docker buildx build "${build_args[@]}" .
 fi
-docker buildx build "${build_args[@]}" .
+
+if [[ "$mode" == publish && "$release" == true ]]; then
+  if ! buildkite-agent annotate --style success --context oci-accelerator-release <<EOF
+**$release_title**
+
+Image: \`$image:$version\`
+
+Platforms: \`linux/amd64\`, \`linux/arm64\`
+
+[Docker Hub](https://hub.docker.com/r/buildkite/oci-accelerator/tags?name=$version) · [Source commit](https://github.com/buildkite/oci-accelerator/commit/$head)
+
+\`\`\`sh
+docker pull $image:$version
+\`\`\`
+EOF
+  then
+    echo 'Warning: the release is published, but its Buildkite annotation could not be written' >&2
+  fi
+fi
