@@ -131,7 +131,7 @@ func TestProcessCrashRecovery(t *testing.T) {
 					_ = cmd.Process.Kill()
 					_ = cmd.Wait()
 					waited = true
-					t.Fatalf("child did not reach publication boundary; output:\n%s", output.String())
+					t.Fatalf("child did not reach publication boundary (output:\n%s)", output.String())
 				}
 				time.Sleep(10 * time.Millisecond)
 			}

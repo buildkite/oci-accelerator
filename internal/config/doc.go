@@ -5,7 +5,7 @@
 // unknown fields, duplicate keys, and scalar type coercion, then validates the
 // result. Relative directories are joined to the configuration file's own
 // directory, and bind addresses are validated and normalized. Read failures
-// are reported separately from invalid configuration; every
+// are reported separately from invalid configuration, and every
 // invalid-configuration error wraps [ErrInvalid] and never echoes
 // operator-supplied values.
 //

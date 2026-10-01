@@ -7,7 +7,7 @@ import (
 
 // grantAttempt tracks one in-flight authorization attempt across a request's
 // redirect hops via narrow/settle/abandon. A nil *grantAttempt means grant
-// caching does not apply; every method is a safe no-op on a nil receiver.
+// caching does not apply, and every method is a safe no-op on a nil receiver.
 type grantAttempt struct {
 	cache           *authorizationCache
 	entry           *authorizationEntry
@@ -19,7 +19,7 @@ type grantAttempt struct {
 // beginGrantAttempt registers this request's authorization attempt and, when a
 // live grant permits it, returns a response served entirely from cache with no
 // upstream I/O. A non-nil response is a cache hit the caller must return
-// immediately; the returned attempt is then nil.
+// immediately, and the returned attempt is then nil.
 //
 // A nil response means the caller must proceed to the upstream path. The
 // returned attempt carries the registered in-flight entry that the caller must

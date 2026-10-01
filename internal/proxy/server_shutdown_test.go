@@ -171,7 +171,7 @@ func TestShutdownWaitsForHandlerAfterForcedClose(t *testing.T) {
 				return lifecycleConnCount(p) == 0
 			}, "forced client closure")
 			// Exceed the former five-second grace period on the forced-close
-			// path; even then Shutdown must wait for actual handler completion.
+			// path. Even then Shutdown must wait for actual handler completion.
 			wait := 5200 * time.Millisecond
 			if alreadyClosed {
 				wait = 50 * time.Millisecond
@@ -220,7 +220,7 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// store is closed explicitly at the end; no t.Cleanup close so we control
+	// store is closed explicitly at the end, with no t.Cleanup close, so we control
 	// the ordering relative to Shutdown.
 
 	u, _ := url.Parse(origin.URL)
@@ -302,7 +302,7 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 	// thus close its cache reader) before returning, so that a store close
 	// immediately afterward - exactly as the CLI does via defer - never observes
 	// an active reader. Shutdown may report DeadlineExceeded (forced closure) or,
-	// if the stalled copy happens to drain first, nil; either way the store must
+	// if the stalled copy happens to drain first, nil. Either way the store must
 	// be closeable, which is the property under test.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	err = p.Shutdown(ctx)
@@ -320,7 +320,7 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatalf("store.Close after hard-timeout Shutdown: %v", err)
 	}
-	// Close the proxy listener so its Serve goroutine exits promptly; the stalled
+	// Close the proxy listener so its Serve goroutine exits promptly. The stalled
 	// client is torn down by the registered cleanup above.
 	_ = l.Close()
 }

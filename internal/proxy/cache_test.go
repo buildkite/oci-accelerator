@@ -288,7 +288,7 @@ func TestRedirectedCacheStoresIdentityBlobVaryingOnAcceptEncoding(t *testing.T) 
 				t.Fatalf("bodies = %q, want [%q %q]", got, body, tc.wantBody)
 			}
 			// Without a grant every GET is authorized at each hop, and a hit replaces only
-			// the storage body; a live grant serves the second GET with no upstream I/O.
+			// the storage body. A live grant serves the second GET with no upstream I/O.
 			if requests.Load() != tc.wantGets || storage.Load() != tc.wantGets {
 				t.Fatalf("registry/storage requests = %d/%d, want %d each", requests.Load(), storage.Load(), tc.wantGets)
 			}
@@ -445,8 +445,8 @@ func TestFillCancellationAndCacheFailurePreserveTransfer(t *testing.T) {
 			if mode == "shutdown" {
 				ctx, done := context.WithTimeout(context.Background(), 10*time.Millisecond)
 				defer done()
-				// Upstream idle expiry may have already aborted the stream;
-				// otherwise this deadline forces it closed.
+				// Upstream idle expiry may have already aborted the stream.
+				// Otherwise this deadline forces it closed.
 				if err := p.Shutdown(ctx); err != nil && err != context.DeadlineExceeded {
 					t.Fatalf("Shutdown = %v, want nil or deadline exceeded", err)
 				}

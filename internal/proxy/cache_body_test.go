@@ -126,8 +126,8 @@ func TestFillingBodyAbortsWhenWriteExceedsDeclaredSize(t *testing.T) {
 	}
 	stats := &requestStats{}
 	// The upstream delivers more bytes than the declared Size, so the fill's own
-	// Write rejects the overflow and the body reports "failed"; the upstream
-	// bytes and its final EOF still flow through unchanged.
+	// Write rejects the overflow and the body reports "failed", but the
+	// upstream bytes and its final EOF still flow through unchanged.
 	oversized := body + " and then some extra bytes"
 	src := &scriptedReader{steps: []readStep{{data: []byte(oversized), err: io.EOF}}}
 	b := &fillingBody{ReadCloser: src, fill: fill, ctx: context.Background(), stats: stats}
@@ -199,7 +199,7 @@ func drain(b *fillingBody) error {
 }
 
 // scriptedReader replays a sequence of (bytes, err) steps. Each step's bytes are
-// delivered fully across as many Reads as the caller's buffer requires; the
+// delivered fully across as many Reads as the caller's buffer requires. The
 // step's error is only returned once all of its bytes have been handed out, so a
 // step's data is never silently truncated by a small buffer.
 type scriptedReader struct {

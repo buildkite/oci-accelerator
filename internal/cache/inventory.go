@@ -101,14 +101,14 @@ func loadInventoryEntry(path, key string) (*entry, error) {
 		return nil, readErr
 	}
 
-	// A committed entry contains only "body" and "meta"; anything else is unsafe.
+	// A committed entry contains only "body" and "meta". Anything else is unsafe.
 	for _, child := range children {
 		if child.Name() != "body" && child.Name() != "meta" {
 			return nil, ErrUnsafeState
 		}
 	}
 
-	// An insecure "meta" file is a hard error; a missing or oversized one is
+	// An insecure "meta" file is a hard error, but a missing or oversized one is
 	// merely discardable state (nil, nil), letting the caller reclaim the directory.
 	metaPath := filepath.Join(path, "meta")
 	metaInfo, err := os.Lstat(metaPath)
@@ -119,7 +119,7 @@ func loadInventoryEntry(path, key string) (*entry, error) {
 		return nil, nil
 	}
 
-	// Read the "meta" file under a hard cap; an unreadable or over-cap read is discardable.
+	// Read the "meta" file under a hard cap. An unreadable or over-cap read is discardable.
 	metaFile, err := os.Open(metaPath)
 	if err != nil {
 		return nil, nil
@@ -142,7 +142,7 @@ func loadInventoryEntry(path, key string) (*entry, error) {
 		return nil, nil
 	}
 
-	// Charge is the body size plus the fixed metadata reservation; reject overflow.
+	// Charge is the body size plus the fixed metadata reservation. Reject overflow.
 	charge, ok := add(disk.Size, metadataReservation)
 	if !ok {
 		return nil, errors.New("cache entry size overflow")

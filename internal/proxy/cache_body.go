@@ -18,8 +18,8 @@ func (b *countedBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// The reverse proxy owns this body. Closing it aborts any unfinished fill;
-// cache failures must never replace the upstream stream's bytes or errors.
+// The reverse proxy owns this body. Closing it aborts any unfinished fill.
+// Cache failures must never replace the upstream stream's bytes or errors.
 type fillingBody struct {
 	io.ReadCloser
 	fill  *cache.Fill
@@ -45,7 +45,7 @@ func (b *fillingBody) Read(p []byte) (int, error) {
 			b.abort("failed")
 		}
 	}
-	// Commit only on a clean EOF with the request still live; re-check b.fill
+	// Commit only on a clean EOF with the request still live. Re-check b.fill
 	// (the write may have aborted) and the context (it may have just canceled).
 	if b.fill != nil && err != nil {
 		if err == io.EOF && b.ctx.Err() == nil {

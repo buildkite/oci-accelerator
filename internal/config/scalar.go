@@ -28,7 +28,7 @@ func (b *strictBool) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // strictString prevents YAML from coercing other scalar types into strings.
-// Null scalar fields retain their defaults; pointer list elements remain nil.
+// Null scalar fields retain their defaults, and pointer list elements remain nil.
 type strictString string
 
 func (s *strictString) UnmarshalYAML(node *yaml.Node) error {
@@ -46,7 +46,7 @@ func (s *strictString) UnmarshalYAML(node *yaml.Node) error {
 // mirroring duration's tag guard so that a float, quoted string, or boolean cannot
 // silently truncate into a numeric limit. A null scalar preserves the default. On
 // the 64-bit build target, int spans the full int64 range parseStrictInt validates,
-// so no in-range value is narrowed when converting strictInt; 32-bit builds, where
+// so no in-range value is narrowed when converting strictInt. 32-bit builds, where
 // a value above MaxInt could wrap, are out of scope.
 type strictInt64 int64
 type strictInt int

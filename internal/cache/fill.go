@@ -14,9 +14,9 @@ var errFillExpired = errors.New("cache fill expired")
 
 // Fill stages one admitted object until Commit publishes it or it ends
 // otherwise. A fill that is aborted, misses its deadline, fails verification,
-// or cannot be written is discarded; a partial object is never published.
+// or cannot be written is discarded. A partial object is never published.
 type Fill struct {
-	mu              sync.Mutex // guards this fill's state; see Store for lock order.
+	mu              sync.Mutex // guards this fill's state. See Store for lock order.
 	store           *Store
 	meta            Metadata
 	dir             string
@@ -241,7 +241,7 @@ func (f *Fill) publishLocked(dest string) error {
 		dir:      dest,
 		charge:   f.charge,
 		last:     time.Now().UnixNano(),
-		verified: true, // Just hash-verified during Commit; Readers can skip re-verification.
+		verified: true, // Just hash-verified during Commit, so Readers can skip re-verification.
 	}
 	f.store.addEntryLocked(e)
 

@@ -120,11 +120,11 @@ func initialize(dir string) error {
 	}
 	// Publish atomically: renaming onto a non-empty dir fails, so concurrent
 	// initializers never replace a published CA and no lock is needed. A crash
-	// can orphan the staging directory; it may belong to an active initializer,
+	// can orphan the staging directory. It may belong to an active initializer,
 	// so it is never removed automatically.
 	if err := os.Rename(stage, dir); err != nil {
-		// Adopt the winner only if dir now looks like a complete installation;
-		// otherwise the rename failed for another reason. load validates contents.
+		// Adopt the winner only if dir now looks like a complete installation.
+		// Otherwise the rename failed for another reason. load validates contents.
 		if publishedCA(dir) {
 			return syncDir(parent)
 		}
@@ -136,7 +136,7 @@ func initialize(dir string) error {
 // publishedCA reports whether dir already holds both CA files with the on-disk
 // types, permissions, and ownership Open requires, so a losing initializer can
 // adopt an already-published CA instead of masking an unrelated rename failure.
-// It checks filesystem metadata only; the caller's load validates contents.
+// It checks filesystem metadata only. The caller's load validates contents.
 func publishedCA(dir string) bool {
 	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {

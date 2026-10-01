@@ -1,4 +1,4 @@
-# Only compilation inputs enter the build context; never send local CA keys or data.
+# Only compilation inputs enter the build context. Never send local CA keys or data.
 **
 !go.mod
 !go.sum

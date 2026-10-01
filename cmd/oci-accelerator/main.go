@@ -24,7 +24,7 @@ func main() {
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, net.Listen); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		// Every failure, usage or runtime, exits 2; only zero versus non-zero is meaningful.
+		// Every failure, usage or runtime, exits 2. Only zero versus non-zero is meaningful.
 		os.Exit(2)
 	}
 }
@@ -97,7 +97,7 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	}
 
 	if *configPath == "" || flags.NArg() != 0 {
-		return config.Config{}, false, errors.New("--config is required; positional arguments are not supported")
+		return config.Config{}, false, errors.New("--config is required, and positional arguments are not supported")
 	}
 
 	cfg, err = config.Load(*configPath)
@@ -162,7 +162,7 @@ func startMetrics(cfg config.Config, p *proxy.Proxy, listen func(string, string)
 	var metricsErr error
 	go func() {
 		if err := metricsServer.Serve(metricsListener); !errors.Is(err, http.ErrServerClosed) {
-			// Listener errors may contain addresses; keep the diagnostic generic.
+			// Listener errors may contain addresses, so keep the diagnostic generic.
 			metricsErr = errors.New("metrics listener stopped unexpectedly")
 		}
 		close(metricsDone)

@@ -20,7 +20,7 @@ const (
 // Metadata describes an immutable object representation. The caller supplies a
 // lowercase, 64-hex-character Key identifying that representation, including its
 // digest and media type. Size must agree with the digest-verified object's size.
-// Get requires all fields to match; Begin refuses an existing valid key even
+// Get requires all fields to match, and Begin refuses an existing valid key even
 // when other fields differ. Inconsistent metadata never replaces a valid entry.
 type Metadata struct {
 	Key, Digest string
@@ -55,7 +55,7 @@ func encodeMeta(m Metadata) ([]byte, error) {
 }
 
 // isLowerHex reports whether s consists solely of lowercase hexadecimal digits.
-// The empty string qualifies; callers bound the length separately.
+// The empty string qualifies. Callers bound the length separately.
 func isLowerHex(s string) bool {
 	if _, err := hex.DecodeString(s); err != nil {
 		return false

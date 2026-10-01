@@ -21,7 +21,7 @@ import (
 // For a single connection those two accesses happen on the same net/http
 // connection goroutine (the head is read, then ServeHTTP is dispatched), so they
 // are ordered by program order and no lock is required. This test does not try
-// to manufacture a cross-goroutine race that cannot occur today; it is a guard
+// to manufacture a cross-goroutine race that cannot occur today. It is a guard
 // that would fail under -race if future changes ever moved the rawOK read or
 // write onto a different goroutine without synchronization. The status
 // assertions also confirm the sniff verdict still drives the correct refusal or

@@ -306,7 +306,7 @@ func TestInterceptRelaysRedirectWithoutFollowing(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusTemporaryRedirect || resp.Header.Get("Location") != cdn.URL+"/signed?token=unchanged" || first.Load() != 1 || second.Load() != 0 {
-		t.Fatalf("redirect = %d %q; calls %d/%d", resp.StatusCode, resp.Header.Get("Location"), first.Load(), second.Load())
+		t.Fatalf("redirect = %d %q, calls %d/%d", resp.StatusCode, resp.Header.Get("Location"), first.Load(), second.Load())
 	}
 }
 

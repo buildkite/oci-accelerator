@@ -3,7 +3,7 @@
 The [Buildkite pipeline](https://buildkite.com/buildkite/oci-accelerator) uploads
 [`pipeline.yml`](pipeline.yml) using a
 `buildkite-agent pipeline upload` bootstrap. Bootstrap settings are managed in
-`buildkite/saas-iac`; this repository owns the uploaded job definitions.
+`buildkite/saas-iac`, while this repository owns the uploaded job definitions.
 
 Four independent checks run on the Open Source cluster's Linux `hosted` queue:
 
@@ -18,7 +18,7 @@ Four independent checks run on the Open Source cluster's Linux `hosted` queue:
 
 The Go jobs use the Docker plugin and `golang:1.27.1-bookworm`, which supplies Go and
 the C compiler required for race tests. `GOTOOLCHAIN=local` prevents an implicit
-toolchain upgrade; update the image tags alongside `go.mod` and `.agents/setup`.
+toolchain upgrade, so update the image tags alongside `go.mod` and `.agents/setup`.
 Agents need Docker, but no Amp installation, registry credentials, privileged
 containers, or mounted Docker socket inside the test container. Job environments
 are not broadly forwarded into containers. Test results are not reused from Go's
@@ -26,7 +26,7 @@ test cache. Jobs have explicit timeouts and failures are not automatically retri
 
 The image check runs [`image.sh check`](image.sh) directly on the agent with Docker
 Buildx. Its disposable `docker-container` builder uses official BuildKit's bundled
-QEMU for the Alpine ARM64 runtime stage; Go itself cross-compiles natively. This
+QEMU for the Alpine ARM64 runtime stage, while Go itself cross-compiles natively. This
 builder needs permission to start BuildKit containers on the hosted agent. It does
 not install host emulators or share the agent's Docker credentials. Temporary
 builders, archives, and Docker configuration are removed when the script exits.
@@ -38,14 +38,14 @@ After all four checks pass, a non-PR `main` branch build automatically runs
 image as both `buildkite/oci-accelerator:latest` and `build-<number>` using the
 Buildkite build number (for example, `buildkite/oci-accelerator:build-108`).
 `latest` is replaced on each publication. PRs, other branches, and Git-tag builds
-never publish; Git-tag builds can remain disabled.
+never publish. Git-tag builds can remain disabled.
 
 Publishing is serialized with a concurrency group. At the start of the publish
 job, the script fetches `origin/main`, verifies the checkout matches
 `BUILDKITE_COMMIT`, and skips publication if it is no longer the main tip. Combined
 with serialization, this prevents an older queued or retried build from overwriting
 an image published by a newer main build. Main can advance while a publish job is
-running; the newer build publishes afterward if its checks pass. A clean checkout,
+running, and the newer build publishes afterward if its checks pass. A clean checkout,
 including no untracked or ignored files, is required.
 
 It logs in as `buildkite` using the organization access token from Buildkite secret
@@ -53,9 +53,9 @@ It logs in as `buildkite` using the organization access token from Buildkite sec
 The secret is retrieved only after the Git checks and is not passed into build
 containers. Authentication and build/push failures fail the job. Keep `latest`
 mutable in Docker Hub. Pin deployments to an image digest when reproducibility
-or rollback is needed; pulling `latest` later may return a different image. A retry
+or rollback is needed, because pulling `latest` later may return a different image. A retry
 of the same build can also replace its `build-<number>` tag. The two tag updates
-are not transactional; inspect both tags if publication fails partway through.
+are not transactional, so inspect both tags if publication fails partway through.
 
 Before publishing, configure these external prerequisites:
 
@@ -82,7 +82,7 @@ Docker, public-registry, fault, and load acceptance are manual opt-in checks:
 their test-owned process harness runs on Linux with the documented Docker and
 namespace privileges, without Amp. CI runs the default local-fixture suite,
 **not** those acceptance matrices. Acceptance jobs and merge gates are deliberately
-absent; manual execution remains necessary for that coverage.
+absent, so manual execution remains necessary for that coverage.
 See the [testing guide](../docs/testing.md)
 for that additional coverage.
 
@@ -95,7 +95,7 @@ GOTOOLCHAIN=local CGO_ENABLED=1 go test -race -count=1 -timeout=10m ./...
 ```
 
 The default Go suite exercises the publishing guards against local Git histories
-and fake Docker/secret commands; it never retrieves credentials or publishes images.
+and fake Docker/secret commands. It never retrieves credentials or publishes images.
 To run the real multi-platform build without publishing (Docker and Buildx required):
 
 ```sh
@@ -103,7 +103,7 @@ bash .buildkite/image.sh check
 ```
 
 With `buildkite-agent` installed, parse the pipeline without uploading any jobs.
-Agent v4 requires a token even for a local dry run; use this dummy value and an
+Agent v4 requires a token even for a local dry run. Use this dummy value and an
 unreachable local endpoint, not a real credential:
 
 ```sh

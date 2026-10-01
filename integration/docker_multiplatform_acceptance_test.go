@@ -120,7 +120,7 @@ func runMultiPlatformCase(t *testing.T, rootMedia string) {
 		if cacheOnly {
 			image := f.images[want]
 			// Docker reorders manifest Accept values across fresh daemons. Those
-			// are distinct cache keys; only blobs have a stable representation.
+			// are distinct cache keys, and only blobs have a stable representation.
 			withheldPaths["/v2/multi/blobs/"+image.configDigest] = true
 			withheldPaths["/v2/multi/blobs/"+image.layerDigest] = true
 		}

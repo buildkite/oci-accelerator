@@ -20,10 +20,10 @@ import (
 // The levels distinguish redirect following from permission to use the cache:
 //
 //   - policyBypass: an unsupported request shape (method/path, Range, or
-//     conditional headers); redirects remain client-handled and caching is off.
+//     conditional headers). Redirects remain client-handled and caching is off.
 //
 //   - policyEligible: an immutable-object GET whose headers forbid cache use
-//     (for example, no-store); follow redirects, but never read or fill the cache.
+//     (for example, no-store). Follow redirects, but never read or fill the cache.
 //
 //   - policyCacheable: follow redirects and allow cache reads or fills, subject
 //     to every redirect's cache restrictions and the terminal response checks.
@@ -156,7 +156,7 @@ func identityEncoded(h http.Header) bool {
 // manifestMediaTypes is the canonical set of OCI and Docker manifest media
 // types the cache will store. Tests independently pin the supported formats
 // while sharing this list for reusable protocol fixtures. Other formats are
-// forwarded uncached; the proxy never rewrites or converts manifests, prefetches
+// forwarded uncached. The proxy never rewrites or converts manifests, prefetches
 // children, or selects platforms.
 var manifestMediaTypes = []string{
 	"application/vnd.oci.image.manifest.v1+json",

@@ -72,7 +72,7 @@ func TestContainerImageLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A missing read-only CA must fail; a writable fresh volume is initialized below.
+	// A missing read-only CA must fail. A writable fresh volume is initialized below.
 	assertContainerFails(t, imageName, platform, "--read-only", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/config.yaml,readonly", "--mount", "type=volume,src="+identity+",dst=/var/lib/oci-accelerator,readonly")
 	if _, err := os.Stat(filepath.Join(identityRoot, "ca")); !os.IsNotExist(err) {
 		t.Fatalf("missing read-only CA was created: %v", err)

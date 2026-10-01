@@ -30,7 +30,7 @@ These integration checks are opt-in because they need additional host capabiliti
 | [Docker pull](#docker-pull) | `OCI_ACCELERATOR_E2E=1` | `^(TestDockerPullThroughCompiledProxy\|TestDockerMultiPlatformThroughCompiledProxy)$` | 10m | [Docker prerequisites](#docker-prerequisites) |
 | [Push](#push) | `OCI_ACCELERATOR_E2E=1` | `^TestDockerPushThroughCompiledProxy$` | 10m | [Docker prerequisites](#docker-prerequisites) |
 | [Public registries](#public-registries) | `OCI_ACCELERATOR_PUBLIC_E2E=1` | `TestDockerPublicRegistriesThroughCompiledProxy` | 10m | [Docker prerequisites](#docker-prerequisites), network access |
-| [Fault](#fault) | `OCI_ACCELERATOR_FAULT_E2E=1` | `^(TestCache(ENOSPC\|Crash)Acceptance\|TestRangeCacheENOSPCAcceptance\|TestPrivilegedProcessLifecycle)$` | 10m | Go, non-loopback IPv4; ENOSPC adds sudo and namespace tools |
+| [Fault](#fault) | `OCI_ACCELERATOR_FAULT_E2E=1` | `^(TestCache(ENOSPC\|Crash)Acceptance\|TestRangeCacheENOSPCAcceptance\|TestPrivilegedProcessLifecycle)$` | 10m | Go, non-loopback IPv4. ENOSPC adds sudo and namespace tools |
 | [Bounded load](#bounded-load) | `OCI_ACCELERATOR_LOAD_E2E=1`, optional `OCI_ACCELERATOR_LOAD_REPORT`, `OCI_ACCELERATOR_DOCKER_LOAD_REPORT` | `^(TestBoundedHTTPLoadAcceptance\|TestDockerLoadAcceptance)$` | 20m | [Docker prerequisites](#docker-prerequisites), several GiB disk, Linux `/proc`, four Docker daemons |
 
 ### Shared properties
@@ -38,12 +38,12 @@ These integration checks are opt-in because they need additional host capabiliti
 These apply to the Docker pull, push, public-registry, fault, and load suites:
 
 - The Docker checks build the current binary and use isolated Docker state, processes, and CA
-  trust; local checks use private registry fixtures.
+  trust. Local checks use private registry fixtures.
 - They never execute pulled images.
 - Test cleanup terminates and reaps owned processes before removing their private directories,
   without installing host CA trust.
-- Privileged fixtures run inside private PID and mount namespaces, not network namespaces;
-  termination also removes daemonized descendants.
+- Privileged fixtures run inside private PID and mount namespaces, not network namespaces.
+  Termination also removes daemonized descendants.
 - Diagnostics use private log files capped at the first 64 KiB, discarding later output.
 - Run Docker acceptance only on a disposable host or orb: its private data roots do not isolate
   host networking.
@@ -68,7 +68,7 @@ inspect private UID 10001 state.
 - Use a disposable test host or orb: fixture daemons share the host network namespace and can
   remove Docker's default `docker0` bridge, disrupting unrelated containers. A dedicated test
   network keeps the proxy reachable but does not isolate this host-side effect.
-- Building images additionally requires Buildx; the deployment example uses Compose.
+- Building images additionally requires Buildx, and the deployment example uses Compose.
 - Set the optional platform variable when the selected image must run with a specific Docker
   platform. Runtime arm64 verification requires native arm64 or Docker emulation.
 - Acceptance checks that use sudo, `mount`, or fresh Docker daemons still need the
@@ -131,8 +131,8 @@ Anonymous Docker Hub/GHCR compatibility uses the same
 
 - Requires network access.
 - Subject to upstream tag, availability, and rate-limit changes.
-- Successful public pulls do not prove cache substitution or private-access enforcement;
-  deterministic local tests assert those properties.
+- Successful public pulls do not prove cache substitution or private-access enforcement.
+  Deterministic local tests assert those properties.
 
 ```sh
 OCI_ACCELERATOR_PUBLIC_E2E=1 go test -v ./integration \
@@ -163,7 +163,7 @@ Bounded HTTP and Docker concurrency matrices require several GiB of disposable d
 
 | Matrix | Coverage |
 | --- | --- |
-| HTTP | 1/8/32 clients; 8/64 MiB same/distinct-key objects; cold/warm/restart phases; wait-hit and fallback profiles; tiny-object churn |
+| HTTP | 1/8/32 clients, 8/64 MiB same/distinct-key objects, cold/warm/restart phases, wait-hit and fallback profiles, and tiny-object churn |
 | Docker | 1/4 fresh daemons across cold/warm/restart phases |
 
 ```sh
@@ -177,7 +177,7 @@ OCI_ACCELERATOR_DOCKER_LOAD_REPORT="$reports/docker.json" \
 ```
 
 - Reports are optional and are atomically replaced only after a complete passing matrix.
-- Use a fresh report directory and rely on the test exit status; a failed run leaves any existing
+- Use a fresh report directory and rely on the test exit status. A failed run leaves any existing
   report untouched.
 - These checks validate bounded behavior and correctness, not deployment sizing, throughput, or
   latency guarantees.

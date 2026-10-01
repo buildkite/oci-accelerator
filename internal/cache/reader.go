@@ -70,7 +70,7 @@ func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 	return position, err
 }
 
-// Close releases the pin exactly once; later calls return nil.
+// Close releases the pin exactly once. Later calls return nil.
 func (r *Reader) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -126,7 +126,7 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 
 			// Hit when the verifier closes the channel, signaling it is done.
 			case <-done:
-				// Recheck the entry: a canceled verifier permits takeover;
+				// Recheck the entry: a canceled verifier permits takeover, but
 				// corruption, replacement, or shutdown may instead mean a miss.
 				continue
 			}
@@ -157,7 +157,7 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 }
 
 // openReader takes ownership of a pin acquired under s.mu. On success the
-// Reader owns that pin; every failure closes the file and releases the pin.
+// Reader owns that pin. Every failure closes the file and releases the pin.
 func (s *Store) openReader(ctx context.Context, e *entry, needsVerification bool, afterVerificationRead func()) (*Reader, error) {
 	meta := e.meta
 
@@ -177,7 +177,7 @@ func (s *Store) openReader(ctx context.Context, e *entry, needsVerification bool
 	if needsVerification {
 		if err = verifyBody(ctx, f, meta.Digest, afterVerificationRead); err != nil {
 			f.Close()
-			// A cancellation leaves the entry intact for a later verifier;
+			// A cancellation leaves the entry intact for a later verifier, while
 			// any other failure retires this corrupt or unreadable generation.
 			if ctx.Err() != nil {
 				s.unpin(e)

@@ -14,15 +14,15 @@ import (
 )
 
 // registryTransport is the reverse proxy's RoundTripper. It adds redirect
-// following, grants, and caching to cache-shaped GETs; writes and other
+// following, grants, and caching to cache-shaped GETs. Writes and other
 // bypassed requests make one upstream round trip returned to the client
 // unchanged. Dependencies are explicit, never a Proxy reference.
 type registryTransport struct {
-	upstream        *http.Transport                            // shared DNS/dial/TLS/HTTP transport; Proxy owns its shutdown
-	cache           *cache.Store                               // object store owned by New's caller; nil disables caching
+	upstream        *http.Transport                            // shared DNS/dial/TLS/HTTP transport. Proxy owns its shutdown
+	cache           *cache.Store                               // object store owned by New's caller (nil disables caching)
 	metrics         *metrics                                   // request counters, including upstream connection attempts
-	fillWaitTimeout time.Duration                              // wait for another request's fill before one retry; zero disables
-	authorization   *authorizationCache                        // exact-request grants; nil disables grant reuse
+	fillWaitTimeout time.Duration                              // wait for another request's fill before one retry. Zero disables
+	authorization   *authorizationCache                        // exact-request grants (nil disables grant reuse)
 	startRangeFetch func(context.Context) (*rangeFetch, error) // registers a range fetch bounded by fill timeout and shutdown
 }
 
@@ -51,7 +51,7 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// Instrument GETs so every upstream connection acquisition bumps the metric.
 	if req.Method == http.MethodGet {
 		// Count every connection-acquisition attempt (transport retries plus
-		// DNS/dial/TLS failures before the GET); requests rejected earlier don't
+		// DNS/dial/TLS failures before the GET). Requests rejected earlier don't
 		// count. Attach once so redirects and fill-wait retries inherit, not
 		// stack, the hook.
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
@@ -155,7 +155,7 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	for hops := 0; ; hops++ {
 
 		// Single network round trip for this hop via the shared stdlib transport
-		// (t.upstream); this registryTransport wraps it with retry, redirects, caching.
+		// (t.upstream). This registryTransport wraps it with retry, redirects, caching.
 		resp, err := t.upstream.RoundTrip(current)
 		if err != nil {
 			return nil, false, err

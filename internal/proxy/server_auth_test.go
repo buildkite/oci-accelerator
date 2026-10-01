@@ -256,8 +256,8 @@ func TestManifestBearerAuthenticationUsesOpaqueTokenTunnel(t *testing.T) {
 			t.Fatalf("%s = %d %q %q", requestScope, resp.StatusCode, got, resp.Header.Get("WWW-Authenticate"))
 		}
 	}
-	// The very same previously successful token expires and is later revoked;
-	// a warm object cannot reuse its earlier authorization decision.
+	// The very same previously successful token expires and is later revoked,
+	// so a warm object cannot reuse its earlier authorization decision.
 	now.Store(201)
 	resp, got = do(http.MethodGet, good)
 	if resp.StatusCode != 401 || got != "registry authorization denied" {

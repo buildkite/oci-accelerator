@@ -17,7 +17,7 @@ import (
 )
 
 // intercept coordinates the session with Proxy shutdown. The supplied handler
-// owns decrypted HTTP requests; this layer only owns CONNECT and TLS serving.
+// owns decrypted HTTP requests, and this layer only owns CONNECT and TLS serving.
 // The inner server is registered before serveIntercepted acknowledges CONNECT
 // or starts TLS, so Shutdown cannot miss a session that is being established.
 func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostport.HostPort, handler http.Handler) {
@@ -67,7 +67,7 @@ func (p *Proxy) intercept(w http.ResponseWriter, r *http.Request, target hostpor
 
 // serveIntercepted acknowledges CONNECT and serves one TLS session. It owns
 // client until serving finishes and closes it on every return path. The caller
-// registers inner for shutdown before calling; no Proxy state is accessed here.
+// registers inner for shutdown before calling. No Proxy state is accessed here.
 func serveIntercepted(ctx context.Context, client net.Conn, rw *bufio.ReadWriter, inner *http.Server, target hostport.HostPort, signer *ca.Authority, handshakeTimeout time.Duration) {
 	// Adapt the single hijacked conn into a one-shot listener the inner server can Accept.
 	listener := &oneConnListener{done: make(chan struct{})}

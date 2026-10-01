@@ -123,7 +123,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			if writeMethod(r.Method) {
 				// Stream the upload upstream without buffering or caching it. Full
 				// duplex relays an early upstream rejection without first draining
-				// the upload; client cancellation and forced shutdown end it. Upload
+				// the upload. Client cancellation and forced shutdown end it. Upload
 				// locations and their opaque query parameters reach the client
 				// unchanged, and there are no retries beyond net/http's own.
 				controller := http.NewResponseController(mw)
@@ -215,7 +215,7 @@ type meteredWriter struct {
 	status              int           // final (non-1xx) status, defaulting to 200
 	bytes               int64         // body bytes accepted downstream
 	wroteFinal          bool          // set once a final status has been recorded
-	idleTimeout         time.Duration // per-write deadline; zero disables it
+	idleTimeout         time.Duration // per-write deadline (zero disables it)
 }
 
 func (w *meteredWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

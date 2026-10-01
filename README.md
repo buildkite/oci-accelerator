@@ -17,7 +17,7 @@ upstream registry again.
   stored.
 - **Streams large layers.** Layers are never buffered in memory, and concurrent
   pulls of the same layer share one download.
-- **Uses one trusted CA.** Docker hosts trust the root CA once; certificates for
+- **Uses one trusted CA.** Docker hosts trust the root CA once, and certificates for
   each upstream registry are signed on demand.
 - **Bounded, self-maintaining storage.** Disk use is capped, least-recently-used
   entries are evicted, and objects that don't fit pass through uncached.

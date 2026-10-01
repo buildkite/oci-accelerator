@@ -6,7 +6,7 @@ import (
 )
 
 // rangeStream lets ServeContent size and select one range before reading a
-// forward-only response. Seeking is logical; Read discards the prefix lazily.
+// forward-only response. Seeking is logical: Read discards the prefix lazily.
 // Multipart requests must be removed before using this reader.
 type rangeStream struct {
 	source         io.Reader

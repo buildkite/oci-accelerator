@@ -90,7 +90,7 @@ type rawCache struct {
 }
 
 // Load reads and validates the single-document YAML file at path. Read
-// failures wrap the underlying I/O error; all other failures wrap [ErrInvalid].
+// failures wrap the underlying I/O error, and all other failures wrap [ErrInvalid].
 func Load(path string) (Config, error) {
 	f, err := os.Open(path)
 	if err != nil {

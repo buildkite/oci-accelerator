@@ -156,7 +156,7 @@ registry that is never used.
   isn't currently valid, no certificate is signed or reused.
 - **Memory only.** Certificates and their private keys are never written to
   disk. The accelerator keeps up to `max_leaf_certificates` (256 by default)
-  and evicts the least recently used; each use or renewal counts as recent.
+  and evicts the least recently used. Each use or renewal counts as recent.
 
 # Authorizing intercepted requests
 
@@ -168,8 +168,8 @@ not read tokens, check their scopes or expiry, or hold credentials of its own.
 ### Approval on each request
 
 For a cacheable `GET`, the accelerator always sends Docker's request upstream
-first, following any redirects. Only a cacheable `200 OK` counts as approval;
-the body then comes from disk if cached, or streams from upstream while filling
+first, following any redirects. Only a cacheable `200 OK` counts as approval.
+The body then comes from disk if cached, or streams from upstream while filling
 the cache. Any other response, such as `401` or `404`, goes back to Docker
 unchanged. `HEAD`, `GET /v2/`, and tag requests approve nothing.
 
@@ -179,13 +179,13 @@ not the download, and may count toward registry rate limits.
 ### Authorization grants
 
 After an approval, an identical request is served from disk without contacting
-the registry for `cache.authorization_ttl` (30 seconds by default; `0s` disables
+the registry for `cache.authorization_ttl` (30 seconds by default, and `0s` disables
 grants).
 
 - **Identical requests only.** Grants match on the URL and every forwarded
   header, including `Authorization`, so one client never uses another's
   approval.
-- **Fixed lifetime.** It starts at approval; hits don't extend it. A shorter
+- **Fixed lifetime.** It starts at approval, and hits don't extend it. A shorter
   `max-age` or `s-maxage` on the request or any response shortens it.
 - **Memory only.** Grants are cleared on restart and bounded by
   `cache.max_authorization_entries` (10000 by default).
@@ -193,15 +193,19 @@ grants).
   receive the cached copy, whoever filled it.
 
 No grant is created if the request or any response in the redirect chain has
-`Cache-Control: no-cache`, `no-store`, `private`, `min-fresh`, or a zero
-`max-age` or `s-maxage`; `Pragma`; or an authentication header (`Set-Cookie`,
-`WWW-Authenticate`, `Authentication-Info`, `Proxy-Authentication-Info`).
+any of the following:
+
+- `Cache-Control: no-cache`, `no-store`, `private`, `min-fresh`, or a zero
+  `max-age` or `s-maxage`
+- `Pragma`
+- an authentication header (`Set-Cookie`, `WWW-Authenticate`,
+  `Authentication-Info`, `Proxy-Authentication-Info`)
 
 # Cache storage and eviction
 
 The cache lives in `cache.dir` on local disk. The directory must be private to
 the accelerator's user, and a lock file ensures only one accelerator process
-uses it at a time; a second process fails to start.
+uses it at a time. A second process fails to start.
 
 ### Entries
 
@@ -239,7 +243,7 @@ fresh upstream request.
 | -------------------- | ------- | ------------------------------------------------------- |
 | `cache.max_bytes`    | 32 GiB  | Total size, counting each body plus 4 KiB of metadata   |
 | `cache.max_entries`  | 100000  | Number of entries                                       |
-| `cache.max_fills`    | 16      | Concurrent fills; further misses stream without caching |
+| `cache.max_fills`    | 16      | Concurrent fills. Further misses stream without caching |
 | `cache.fill_timeout` | 10m     | How long a fill may take                                |
 
 In-progress fills count toward these limits. The limits don't include filesystem
@@ -259,5 +263,5 @@ rebuilt from commit times.
 
 Each body is hashed again, in full, before it is first served after startup, so
 that first hit is slower. A missing or corrupt entry is treated as a miss and
-refilled from the upstream response. Don't edit or delete files in a live cache;
-to reset it, stop the accelerator and remove the whole directory.
+refilled from the upstream response. Don't edit or delete files in a live cache.
+To reset it, stop the accelerator and remove the whole directory.

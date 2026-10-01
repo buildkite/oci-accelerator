@@ -17,7 +17,7 @@ func TestLoadRejectsNonIntegerNumericLimits(t *testing.T) {
 		{"boolean_max_connections", "cache: {dir: cache}\nmax_connections: true"},
 		{"fractional_max_connections", "cache: {dir: cache}\nmax_connections: 1.5"},
 		{"fractional_max_leaf_certificates", "cache: {dir: cache}\nmax_leaf_certificates: 1.5"},
-		// Non-decimal integer forms are !!int but not decimal; rejected for clarity.
+		// Non-decimal integer forms are !!int but not decimal, so they are rejected for clarity.
 		{"hex_max_bytes", "cache: {dir: cache, max_bytes: 0xff}"},
 		{"octal_max_bytes", "cache: {dir: cache, max_bytes: 0o17}"},
 		{"legacy_octal_max_bytes", "cache: {dir: cache, max_bytes: 017}"},

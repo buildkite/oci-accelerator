@@ -19,8 +19,8 @@ type HostPort struct {
 
 // Parse parses text as a host or host:port, using defaultPort when the port is
 // omitted (an empty defaultPort requires one). IPv6 hosts need brackets with a
-// port. Ports must be 1–65535; hosts follow [Canonicalize]. Failures return
-// [ErrInvalid]; see the package documentation for rejected input.
+// port. Ports must be 1–65535, and hosts follow [Canonicalize]. Failures return
+// [ErrInvalid]. See the package documentation for rejected input.
 func Parse(text, defaultPort string) (HostPort, error) {
 	if text == "" || text != strings.TrimSpace(text) || strings.ContainsAny(text, "@/?#%*") {
 		return HostPort{}, ErrInvalid
@@ -92,7 +92,7 @@ func split(text string) (string, string, error) {
 // looksLikeIPv4 reports whether host has the dotted-decimal shape of an IPv4
 // address. Canonicalize calls it only after net.ParseIP has failed, so a match
 // is a non-canonical form such as "010.0.0.1", which some resolvers would read
-// as octal; it is rejected rather than reinterpreted.
+// as octal, so it is rejected rather than reinterpreted.
 func looksLikeIPv4(host string) bool {
 	if strings.Count(host, ".") != 3 {
 		return false

@@ -15,16 +15,16 @@ import (
 //
 // Capacity is tracked in bytes and entry slots. An object's charge is its Size
 // plus metadataReservation. In-progress fills hold their charge in reserved
-// until they end; Commit converts it into committed bytes. Directories awaiting
+// until they end, and Commit converts it into committed bytes. Directories awaiting
 // deferred cleanup stay charged in bytes until removal succeeds. Every committed
 // entry, active fill, and pending cleanup consumes one slot against maxEntries.
 //
-// Lock order: Fill.mu may briefly take mu to publish or release accounting;
-// mu is never held while taking Fill.mu. Filesystem removal and staging run
-// with mu released, so unrelated hits and Stats continue; claimed generations
+// Lock order: Fill.mu may briefly take mu to publish or release accounting,
+// but mu is never held while taking Fill.mu. Filesystem removal and staging run
+// with mu released, so unrelated hits and Stats continue. Claimed generations
 // stay charged and cannot be pinned or reused meanwhile.
 type Store struct {
-	mu                                              sync.Mutex                           // guards all mutable store state below, including entry bookkeeping; ...Locked helpers require it.
+	mu                                              sync.Mutex                           // guards all mutable store state below, including entry bookkeeping. ...Locked helpers require it.
 	admissionMu                                     sync.Mutex                           // serializes admission and path ownership so key ownership decisions don't race.
 	dir                                             string                               // root directory holding the cache on disk.
 	max                                             int64                                // maximum total bytes (data plus metadata reservation) the cache may hold.
@@ -32,7 +32,7 @@ type Store struct {
 	fillTimeout                                     time.Duration                        // deadline after which a stalled in-progress fill is expired.
 	failedCleanups                                  map[string]cleanup                   // temp dirs whose removal failed, keyed by path, awaiting retry.
 	cleanupQueue                                    list.List                            // FIFO retry order of failed-cleanup paths.
-	bytes, reserved                                 int64                                // bytes charged to published entries; bytes reserved for in-flight fills.
+	bytes, reserved                                 int64                                // bytes charged to published entries, and bytes reserved for in-flight fills.
 	evictions                                       int64                                // cumulative count of entries evicted to reclaim space.
 	readers                                         int                                  // count of currently open Readers.
 	fillSuccess, fillFailure, fillAbort, fillExpiry int64                                // terminal fill outcome counters.
@@ -52,7 +52,7 @@ type Store struct {
 }
 
 // completedNotification is a shared, already-closed channel returned for entries
-// whose fill has already published; a receive on it proceeds immediately.
+// whose fill has already published. A receive on it proceeds immediately.
 var completedNotification = func() <-chan struct{} {
 	c := make(chan struct{})
 	close(c)
@@ -62,7 +62,7 @@ var completedNotification = func() <-chan struct{} {
 // OpenWithLimits opens or creates the private cache directory dir, takes its
 // exclusive lock, and inventories existing entries, discarding abandoned fills.
 // Errors match ErrInvalidConfig, ErrLockConflict, ErrUnsafeState, or
-// ErrFilesystem; filesystem errors also wrap their cause.
+// ErrFilesystem. Filesystem errors also wrap their cause.
 func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 	// Reject an empty directory or out-of-range limits before touching the filesystem.
 	if dir == "" || !limits.valid() {
@@ -110,7 +110,7 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 
 // Begin admits meta's key, reserves capacity (evicting if needed), and stages a
 // fill. It returns an *AdmissionError, matching ErrBypass, when the object
-// cannot be admitted; the caller should then serve the object uncached.
+// cannot be admitted. The caller should then serve the object uncached.
 func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	return s.begin(meta)
 }
@@ -134,7 +134,7 @@ func (s *Store) Completion(meta Metadata) (<-chan struct{}, bool) {
 
 // Get pins the committed entry matching meta, verifies its body once if it is
 // not yet verified, and returns a Reader that owns the pin. It returns ErrMiss when no
-// valid matching entry exists; a body that fails verification becomes a miss.
+// valid matching entry exists. A body that fails verification becomes a miss.
 func (s *Store) Get(ctx context.Context, meta Metadata) (*Reader, error) {
 	return s.get(ctx, meta, nil, nil)
 }
@@ -171,7 +171,7 @@ func (s *Store) Stats() Stats {
 // body, which may still return Readers. If any readers were active at the initial
 // check, Close retains the filesystem lock and returns ErrActiveReaders even if
 // they drain before it returns. The caller must finish those Gets, close every
-// Reader, and call Close again; closing Readers alone does not release the lock.
+// Reader, and call Close again. Closing Readers alone does not release the lock.
 func (s *Store) Close() error {
 
 	// Mark the store closed and snapshot the fills and reader count under the lock.
@@ -197,7 +197,7 @@ func (s *Store) Close() error {
 	}
 	s.mu.Unlock()
 
-	// Retain the lock if readers were active at the initial check; caller retries.
+	// Retain the lock if readers were active at the initial check. The caller retries.
 	if readers != 0 {
 		return errors.Join(filesystemError(abortErr), ErrActiveReaders)
 	}

@@ -96,7 +96,7 @@ func FuzzValidateCONNECT(f *testing.F) {
 			return
 		}
 		if err != nil || got != want {
-			t.Fatalf("matching CONNECT authorities: got %v, %v; want %v", got, err, want)
+			t.Fatalf("matching CONNECT authorities: got %v, %v (want %v)", got, err, want)
 		}
 	})
 }

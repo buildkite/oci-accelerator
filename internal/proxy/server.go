@@ -27,8 +27,8 @@ type Proxy struct {
 	configured    map[string]struct{}                                     // registries eligible for TLS interception and caching
 	signer        *ca.Authority                                           // certificate authority for signing intercepted TLS hosts
 	logger        *slog.Logger                                            // structured logger for proxy events
-	transport     *http.Transport                                         // upstream transport; Shutdown closes its idle connections
-	cache         *cache.Store                                            // object store owned by New's caller; nil disables caching
+	transport     *http.Transport                                         // upstream transport. Shutdown closes its idle connections
+	cache         *cache.Store                                            // object store owned by New's caller (nil disables caching)
 	authorization *authorizationCache                                     // bounded, process-local approvals shared across connections
 	destinations  map[string]struct{}                                     // registries plus redirect allowlist, exempt from the public-IP dial check
 	lookupIP      func(context.Context, string) ([]net.IPAddr, error)     // DNS resolver hook, overridable in tests
@@ -38,10 +38,10 @@ type Proxy struct {
 	cancelRanges  context.CancelFunc                                      // cancels rangeContext, invoked by Shutdown
 
 	mu       sync.Mutex                // guards the mutable fields below
-	listener net.Listener              // active listener; nil before Serve or after shutdown
-	conns    map[*trackedConn]struct{} // live client connections; force-closed at the drain deadline
-	tunnels  map[net.Conn]struct{}     // live upstream connections for opaque tunnels; force-closed at the drain deadline
-	inners   map[*http.Server]struct{} // per-connection inner servers; Shutdown disables their keep-alives
+	listener net.Listener              // active listener, nil before Serve or after shutdown
+	conns    map[*trackedConn]struct{} // live client connections, force-closed at the drain deadline
+	tunnels  map[net.Conn]struct{}     // live upstream connections for opaque tunnels, force-closed at the drain deadline
+	inners   map[*http.Server]struct{} // per-connection inner servers. Shutdown disables their keep-alives
 	closing  bool                      // set once shutdown starts to reject new inflight work
 
 	// inflight covers CONNECT handlers and client-independent range transfers,

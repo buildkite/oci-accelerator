@@ -30,7 +30,7 @@ type leafEntry struct {
 
 // leafCache is a bounded least-recently-used cache of per-host leaf
 // certificates. order.Front() is the least recently used entry and
-// order.Back() the most recently used; leaves maps each host to its element.
+// order.Back() the most recently used. leaves maps each host to its element.
 type leafCache struct {
 	mu     sync.Mutex
 	leaves map[string]*list.Element
@@ -54,7 +54,7 @@ func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 	}
 	host = parsed.Host()
 	// Deliberately keep signing under the cache lock: one lock bounds issuance
-	// and avoids duplicate work. Misses block unrelated hits; defer separate
+	// and avoids duplicate work. Misses block unrelated hits. Defer separate
 	// issuance locking until measurements show meaningful contention.
 	a.mu.Lock()
 	defer a.mu.Unlock()

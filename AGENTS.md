@@ -7,7 +7,7 @@
 - Only the coordinating agent delegates unless nested delegation is explicitly
   requested. Workers and reviewers must not recursively spawn more subagents.
 - Keep responsibility for integration and verification with the coordinating
-  agent; delegation does not replace checking the results.
+  agent. Delegation does not replace checking the results.
 
 ## Incremental implementation
 
@@ -15,7 +15,7 @@
   self-contained subslices. Each subslice should have a clear outcome and
   its own validation.
 - Complete and validate one subslice before moving to the next. Each subslice
-  must be an independent commit; do not bundle multiple subslices into one commit.
+  must be an independent commit. Do not bundle multiple subslices into one commit.
 
 ## Independent review
 
@@ -52,12 +52,12 @@
   by coherent responsibility, keeping closely related code together.
 - Name test files `<owner>[_<topic>]_test.go` after the source file or
   responsibility they verify, not the fixture or entry point they call. Keep
-  shared fixtures in `test_helpers_test.go`; keep helpers used by a single
+  shared fixtures in `test_helpers_test.go`, and keep helpers used by a single
   suite in that suite's file.
 - Order declarations within a file in newspaper style: the most important,
   highest-level declarations first, with supporting detail beneath. Types and
-  entry points lead; callers precede callees; private helpers sink below the
-  code that uses them.
+  entry points lead, callers precede callees, and private helpers sink below
+  the code that uses them.
 
 ## Executable verification
 
@@ -100,12 +100,18 @@
   behavior changes.
 - Keep reproducible verification commands and current limitations. Do not maintain
   implementation/decision logs, completed-slice narratives, or superseded alternatives.
-- Ask before materially changing agreed scope or security guarantees; do not
+- Ask before materially changing agreed scope or security guarantees. Do not
   quietly substitute a different design.
+
+## Writing style
+
+- Do not use semicolons in documentation, code comments, user-facing
+  messages, or other prose. Split the sentence, or join the clauses with a
+  conjunction or colon. Semicolons required by code syntax are fine.
 
 ## Commit messages
 
-- Push each commit to `origin` immediately after creating it; do not accumulate
+- Push each commit to `origin` immediately after creating it. Do not accumulate
   completed commits only in the local checkout.
 - Give every commit a readable summary of the changes it implements in the
   commit body, and summarize those changes when reporting the commit to the user.

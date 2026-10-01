@@ -137,7 +137,7 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	}
 	// net/http sends only the first User-Agent value, omitting an explicit
 	// empty value. ReverseProxy supplies that empty value when the client has
-	// no User-Agent; direct transport callers get the HTTP/1.1 default instead.
+	// no User-Agent, while direct transport callers get the HTTP/1.1 default instead.
 	if values, present := headers["user-agent"]; !present {
 		headers["user-agent"] = []string{"Go-http-client/1.1"}
 	} else if len(values) == 0 || values[0] == "" {
@@ -196,7 +196,7 @@ func (t registryTransport) authorizedResponse(req *http.Request, e *authorizatio
 	}
 
 	// Verification can block. Recheck expiry and invalidation after acquiring
-	// the reader; no store lock is held during disk I/O.
+	// the reader. No store lock is held during disk I/O.
 	if req.Context().Err() != nil || !t.authorization.valid(e, g) {
 		body.Close()
 		return nil
