@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/buildkite/oci-accelerator"
 	"github.com/buildkite/oci-accelerator/internal/ca"
 	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/config"
@@ -78,7 +79,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 }
 
 // resolveConfig parses the command line and loads the named configuration,
-// reporting handled when --help or --check has fully served the request.
+// reporting handled when --help, --version, or --check has fully served the request.
 func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled bool, err error) {
 	flags := flag.NewFlagSet("oci-accelerator", flag.ContinueOnError)
 	// The flag package includes rejected arguments in its diagnostics. Suppress
@@ -86,16 +87,22 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	flags.SetOutput(io.Discard)
 	configPath := flags.String("config", "", "path to YAML configuration")
 	check := flags.Bool("check", false, "validate configuration without starting the proxy")
+	version := flags.Bool("version", false, "print the version and exit")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(stdout, "Usage: oci-accelerator --config FILE [--check]")
+			fmt.Fprintln(stdout, "       oci-accelerator --version")
 			fmt.Fprintln(stdout, "       oci-accelerator init-ca --dir DIR")
 			return config.Config{}, true, nil
 		}
 		return config.Config{}, false, errors.New("invalid command line")
 	}
 
+	if *version && flags.NArg() == 0 {
+		_, err := fmt.Fprintln(stdout, "oci-accelerator "+ociaccelerator.Version())
+		return config.Config{}, true, err
+	}
 	if *configPath == "" || flags.NArg() != 0 {
 		return config.Config{}, false, errors.New("--config is required, and positional arguments are not supported")
 	}

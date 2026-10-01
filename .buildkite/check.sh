@@ -5,7 +5,7 @@ set -euo pipefail
 go version
 
 echo '--- Checking Go formatting'
-unformatted=$(gofmt -l cmd internal integration)
+unformatted=$(gofmt -l version.go cmd internal integration)
 if [[ -n "$unformatted" ]]; then
   printf 'Run gofmt on these files:\n%s\n' "$unformatted" >&2
   exit 1

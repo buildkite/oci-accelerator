@@ -19,11 +19,38 @@ func TestRunHelpUsesOCIAcceleratorName(t *testing.T) {
 	if err := run(context.Background(), []string{"--help"}, &out, &errOut, net.Listen); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "Usage: oci-accelerator --config FILE [--check]\n       oci-accelerator init-ca --dir DIR\n"; got != want {
+	if got, want := out.String(), "Usage: oci-accelerator --config FILE [--check]\n       oci-accelerator --version\n       oci-accelerator init-ca --dir DIR\n"; got != want {
 		t.Fatalf("help = %q, want %q", got, want)
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("help wrote stderr: %q", errOut.String())
+	}
+}
+
+func TestRunVersionWithoutStartup(t *testing.T) {
+	contents, err := os.ReadFile("../../VERSION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "oci-accelerator " + strings.TrimSpace(string(contents)) + "\n"
+	root := t.TempDir()
+	t.Chdir(root)
+	for _, args := range [][]string{{"--version"}, {"--version", "--config", "missing.yaml", "--check"}} {
+		var out, errOut bytes.Buffer
+		listen := func(string, string) (net.Listener, error) {
+			t.Fatal("--version attempted to listen")
+			return nil, nil
+		}
+		if err := run(context.Background(), args, &out, &errOut, listen); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != want || errOut.Len() != 0 {
+			t.Fatalf("version output: stdout=%q stderr=%q, want %q", out.String(), errOut.String(), want)
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("--version changed the working directory: %v, %v", entries, err)
 	}
 }
 
@@ -36,6 +63,8 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 		{name: "missing_config"},
 		{name: "unexpected_argument", args: []string{"extra"}},
 		{name: "unexpected_argument_after_config", args: []string{"--config", "x", "extra"}},
+		{name: "unexpected_argument_after_version", args: []string{"--version", "extra"}},
+		{name: "false_version_needs_config", args: []string{"--version=false"}},
 		{name: "unknown_flag", args: []string{"--unknown-secret-sentinel"}, secret: "unknown-secret-sentinel"},
 		{name: "invalid_bool_flag", args: []string{"--check=bool-secret-sentinel"}, secret: "bool-secret-sentinel"},
 	}

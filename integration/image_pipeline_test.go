@@ -29,8 +29,21 @@ func TestImagePipeline(t *testing.T) {
 	}
 	origin := t.TempDir()
 	git(origin, "init", "-b", "main")
-	git(origin, "commit", "--allow-empty", "-m", "older main")
+	git(origin, "commit", "--allow-empty", "-m", "before VERSION")
+	writeFile(t, filepath.Join(origin, "VERSION"), "0.1.0\n", 0o600)
+	git(origin, "add", "VERSION")
+	git(origin, "commit", "-m", "first version")
+	git(origin, "branch", "first-release")
+	writeFile(t, filepath.Join(origin, "VERSION"), "0.1.9\n", 0o600)
+	git(origin, "commit", "-am", "previous version")
+	git(origin, "commit", "--allow-empty", "-m", "ordinary main")
 	git(origin, "branch", "older")
+	git(origin, "checkout", "-b", "release-pr")
+	writeFile(t, filepath.Join(origin, "VERSION"), "0.1.10\n", 0o600)
+	git(origin, "commit", "-am", "bump version")
+	git(origin, "checkout", "main")
+	git(origin, "merge", "--no-ff", "release-pr", "-m", "merge release")
+	git(origin, "branch", "release")
 	git(origin, "commit", "--allow-empty", "-m", "later main")
 	git(origin, "checkout", "-b", "unmerged")
 	git(origin, "commit", "--allow-empty", "-m", "unmerged")
@@ -39,23 +52,49 @@ func TestImagePipeline(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode, branch, tag, checkout, pr, failure string
 		wantError, wantSecret, wantBuild, wantPush     bool
+		version                                        string
+		wantInspect                                    bool
+		wantTags                                       []string
 	}{
 		{name: "check without credentials", mode: "check", wantBuild: true},
-		{name: "publish build number and latest from shallow main", wantSecret: true, wantBuild: true, wantPush: true},
+		{name: "publish build number and latest from shallow main", wantSecret: true, wantBuild: true, wantPush: true, wantTags: []string{"build-108", "latest"}},
+		{name: "initial release after main advances", checkout: "first-release", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"0.1.0"}},
+		{name: "merged release after main advances", checkout: "release", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"0.1.10"}},
+		{name: "release at main tip", failure: "main-tip", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"0.2.0", "build-108", "latest"}},
+		{name: "retry already published release", checkout: "release", failure: "published", wantSecret: true, wantInspect: true},
+		{name: "retry published release at tip", failure: "published-tip", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"build-108", "latest"}},
+		{name: "conflicting version tag", checkout: "release", failure: "conflict", wantSecret: true, wantError: true, wantInspect: true},
+		{name: "tag without metadata", checkout: "release", failure: "no-metadata", wantSecret: true, wantError: true, wantInspect: true},
+		{name: "registry unauthorized", checkout: "release", failure: "unauthorized", wantSecret: true, wantError: true, wantInspect: true},
+		{name: "registry timeout", checkout: "release", failure: "timeout", wantSecret: true, wantError: true, wantInspect: true},
+		{name: "registry unexpected response", checkout: "release", failure: "unknown", wantSecret: true, wantError: true, wantInspect: true},
+		{name: "PR version bump", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "0.2.0\n", wantBuild: true},
+		{name: "PR downgrade", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "0.1.9\n", wantError: true},
+		{name: "PR with earlier bump then unchanged tip", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "0.1.9\n", failure: "extra-commit", wantError: true},
+		{name: "invalid version prefix", mode: "check", version: "v0.2.0\n", wantError: true},
+		{name: "leading zero version", mode: "check", version: "0.02.0\n", wantError: true},
+		{name: "prerelease version", mode: "check", version: "0.2.0-rc.1\n", wantError: true},
+		{name: "multiple version lines", mode: "check", version: "0.2.0\n0.3.0\n", wantError: true},
+		{name: "trailing blank line", mode: "check", version: "0.2.0\n\n", wantError: true},
+		{name: "binary version", mode: "check", version: "0.2.0\x00\n", wantError: true},
+		{name: "version without trailing newline", mode: "check", version: "0.2.0", wantBuild: true},
+		{name: "missing version", mode: "check", failure: "missing-version", wantError: true},
+		{name: "oversize tag", mode: "check", version: strings.Repeat("1", 125) + ".0.0\n", wantError: true},
 		{name: "feature branch", branch: "feature", wantError: true},
 		{name: "tag build", tag: "v1.2.3", wantError: true},
 		{name: "pull request", pr: "16", wantError: true},
 		{name: "missing build number", failure: "number-missing", wantError: true},
 		{name: "invalid build number", failure: "number-invalid", wantError: true},
 		{name: "outdated queued build", checkout: "older"},
-		{name: "unmerged commit claiming main", checkout: "unmerged"},
+		{name: "unmerged commit claiming main", checkout: "unmerged", wantError: true},
+		{name: "merged side commit claiming main", checkout: "release-pr", wantError: true},
 		{name: "mismatched build commit", failure: "commit", wantError: true},
 		{name: "fetch failure", failure: "fetch", wantError: true},
 		{name: "untracked source", failure: "untracked", wantError: true},
 		{name: "ignored source", failure: "ignored", wantError: true},
 		{name: "login failure", failure: "login", wantError: true, wantSecret: true},
 		{name: "secret failure", failure: "secret", wantError: true, wantSecret: true},
-		{name: "build failure", failure: "build", wantError: true, wantSecret: true, wantBuild: true, wantPush: true},
+		{name: "build failure", failure: "build", wantError: true, wantSecret: true, wantBuild: true, wantPush: true, wantTags: []string{"build-108", "latest"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -63,8 +102,26 @@ func TestImagePipeline(t *testing.T) {
 			if checkout == "" {
 				checkout = "main"
 			}
-			git(root, "clone", "--depth", "1", "--branch", checkout, "file://"+origin, "repo")
+			git(root, "clone", "--bare", origin, "origin")
+			git(root, "clone", "--depth", "1", "--branch", checkout, "file://"+filepath.Join(root, "origin"), "repo")
 			repo := filepath.Join(root, "repo")
+			if tc.version != "" {
+				writeFile(t, filepath.Join(repo, "VERSION"), tc.version, 0o600)
+				git(repo, "commit", "-am", "change version")
+			}
+			if tc.failure == "main-tip" || tc.failure == "published-tip" {
+				writeFile(t, filepath.Join(repo, "VERSION"), "0.2.0\n", 0o600)
+				git(repo, "commit", "-am", "release at tip")
+				git(repo, "push", "origin", "main")
+			}
+			if tc.failure == "extra-commit" {
+				git(repo, "commit", "--allow-empty", "-m", "later PR change")
+			}
+			if tc.failure == "missing-version" {
+				git(repo, "rm", "VERSION")
+				git(repo, "commit", "-m", "remove version")
+			}
+			git(repo, "push", "origin", "HEAD:refs/heads/fixture")
 			if tc.failure == "fetch" {
 				git(repo, "remote", "set-url", "origin", filepath.Join(root, "missing"))
 			}
@@ -90,6 +147,18 @@ case "$1 $2" in
     [[ "$*" == 'login --username buildkite --password-stdin docker.io' ]]
     [[ $(cat) == fixture-token ]]
     [[ "$IMAGE_TEST_FAILURE" != login ]]
+    ;;
+  'buildx imagetools')
+    [[ "$3" == inspect ]]
+    case "$IMAGE_TEST_FAILURE" in
+      published|published-tip) printf '%s %s' "$BUILDKITE_COMMIT" "$(cat VERSION)" ;;
+      conflict) printf 'different-commit %s' "$(cat VERSION)" ;;
+      no-metadata) printf ' ' ;;
+      unauthorized) echo 'ERROR: authorization failed' >&2; exit 1 ;;
+      timeout) echo 'ERROR: connection timed out' >&2; exit 1 ;;
+      unknown) echo 'ERROR: unexpected not found response' >&2; exit 1 ;;
+      *) echo "ERROR: $4: not found" >&2; exit 1 ;;
+    esac
     ;;
   'buildx build') [[ "$IMAGE_TEST_FAILURE" != build ]] ;;
   'buildx create'|'buildx rm') ;;
@@ -148,8 +217,33 @@ printf fixture-token
 			if tc.wantBuild && !strings.Contains(string(calls), "--platform linux/amd64,linux/arm64") {
 				t.Fatalf("missing platform pair: %s", calls)
 			}
-			if tc.wantPush && (!strings.Contains(string(calls), "--tag docker.io/buildkite/oci-accelerator:build-108 --tag docker.io/buildkite/oci-accelerator:latest --push") || strings.Count(string(calls), "--tag ") != 2) {
-				t.Fatalf("expected the build number and latest tags: %s", calls)
+			wantInspections := 0
+			if tc.wantInspect {
+				wantInspections = 1
+			}
+			if got := strings.Count(string(calls), "buildx imagetools inspect "); got != wantInspections {
+				t.Fatalf("registry inspections = %d, want %d: %s", got, wantInspections, calls)
+			}
+			if strings.Count(string(calls), "--tag ") != len(tc.wantTags) {
+				t.Fatalf("expected only tags %v: %s", tc.wantTags, calls)
+			}
+			for _, tag := range tc.wantTags {
+				if !strings.Contains(string(calls), "--tag docker.io/buildkite/oci-accelerator:"+tag+" ") {
+					t.Fatalf("missing tag %q: %s", tag, calls)
+				}
+			}
+			if tc.wantBuild {
+				version, err := os.ReadFile(filepath.Join(repo, "VERSION"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, flag := range []string{"--label ", "--annotation index:"} {
+					for _, metadata := range []string{"version=" + strings.TrimSpace(string(version)), "revision=" + commit} {
+						if !strings.Contains(string(calls), flag+"org.opencontainers.image."+metadata+" ") {
+							t.Fatalf("missing image metadata %q: %s", metadata, calls)
+						}
+					}
+				}
 			}
 			if config, err := os.ReadFile(filepath.Join(root, "docker-config")); err == nil {
 				if _, err := os.Stat(strings.TrimSpace(string(config))); !os.IsNotExist(err) {

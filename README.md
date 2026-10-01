@@ -29,6 +29,7 @@ and cache storage in detail.
 
 ```
 oci-accelerator --config FILE [--check]
+oci-accelerator --version
 oci-accelerator init-ca --dir DIR
 ```
 
@@ -36,9 +37,12 @@ oci-accelerator init-ca --dir DIR
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `oci-accelerator --config FILE`         | Start the proxy with the YAML configuration in `FILE`. It stops gracefully on `SIGINT` or `SIGTERM`.                                         |
 | `oci-accelerator --config FILE --check` | Validate the configuration and exit, without starting the proxy or touching the CA or cache directories.                                     |
+| `oci-accelerator --version`            | Print the version compiled from the root `VERSION` file and exit, without configuration or startup.                                          |
 | `oci-accelerator init-ca --dir DIR`     | Create a root CA in `DIR`, or validate an existing one, without starting the proxy. Prints the certificate path and its SHA-256 fingerprint. |
 | `oci-accelerator --help`                | Print usage. `init-ca --help` describes `init-ca`.                                                                                           |
 
+To publish a versioned image, open a PR that increases `VERSION`. See the
+[release process](docs/deployment.md#releasing-images) for tags and retry behavior.
 
 ## Quick start
 
@@ -134,4 +138,3 @@ OCI_ACCELERATOR_E2E=1 go test -v ./integration -count=1 -timeout=10m
 See the [testing guide](docs/testing.md) for their
 prerequisites and the other opt-in suites, and [working rules](AGENTS.md) for
 contribution and review requirements.
-
