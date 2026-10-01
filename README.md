@@ -30,6 +30,7 @@ and cache storage in detail.
 ```
 oci-accelerator --config FILE [--check]
 oci-accelerator init-ca --dir DIR
+oci-accelerator --version
 ```
 
 | Command                                 | Description                                                                                                                                  |
@@ -38,6 +39,7 @@ oci-accelerator init-ca --dir DIR
 | `oci-accelerator --config FILE --check` | Validate the configuration and exit, without starting the proxy or touching the CA or cache directories.                                     |
 | `oci-accelerator init-ca --dir DIR`     | Create a root CA in `DIR`, or validate an existing one, without starting the proxy. Prints the certificate path and its SHA-256 fingerprint. |
 | `oci-accelerator --help`                | Print usage. `init-ca --help` describes `init-ca`.                                                                                           |
+| `oci-accelerator --version`             | Print the version and exit. Release images report `MAJOR.MINOR.PATCH`. Other builds report a development version or `dev`.                   |
 
 
 ## Quick start

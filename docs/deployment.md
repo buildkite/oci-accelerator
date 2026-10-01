@@ -179,8 +179,11 @@ docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
   target architecture.
 - For a multi-platform OCI archive, use a Buildx builder with the `docker-container` driver and
   an OCI output instead of `--load`.
+- Local builds report `dev` from `oci-accelerator --version`. Pass
+  `--build-arg VERSION=<version>` to embed a different version.
 - Buildkite publishes successful current `main` builds as `build-N` tags and updates
-  `edge`. Releases publish a version tag without the leading `v` and may advance `latest`.
+  `edge`. These images report `MAJOR.MINOR.PATCH-dev+<12-character commit>`, using the
+  `VERSION` file. Releases publish a `MAJOR.MINOR.PATCH` tag and may advance `latest`.
   Pin a release version or digest for deployments that require repeatability. Use `edge` only
   when you intentionally want to follow `main`. See [releases](releases.md) for the release and
   upgrade policy.

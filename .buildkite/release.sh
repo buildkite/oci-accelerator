@@ -4,13 +4,27 @@ set -euo pipefail
 
 # Called by image.sh after checkout validation and login. The pipeline serializes
 # all publishers. Keep registry credentials scoped to image.sh's temporary config.
-release() {
+# shellcheck source=SCRIPTDIR/version.sh
+. "$(dirname "$0")/version.sh"
+
+main() {
+  case "${1:-}" in
+    publish) shift; publish "$@" ;;
+    verify) shift; verify "$@" ;;
+    *) echo 'Usage: release.sh publish|verify ...' >&2; return 1 ;;
+  esac
+}
+
+# publish builds the version image unless it already exists, then advances latest
+# when the version is newer than the release latest identifies.
+publish() {
   local image=$1 version=$2 revision=$3 builder=$4
   local manifest digest latest latest_version latest_digest
   manifest=$(inspect "$image:$version")
   if [[ "$manifest" == null ]]; then
     docker buildx create --name "$builder" --driver docker-container --bootstrap
     docker buildx build --builder "$builder" --platform linux/amd64,linux/arm64 \
+      --build-arg "VERSION=$version" \
       --label "org.opencontainers.image.version=$version" \
       --label "org.opencontainers.image.revision=$revision" \
       --annotation "index:org.opencontainers.image.version=$version" \
@@ -24,7 +38,7 @@ release() {
     select(.annotations["org.opencontainers.image.version"] == $version and
            .annotations["org.opencontainers.image.revision"] == $revision) |
     .digest' <<< "$manifest") || {
-    echo 'Release image identity does not match the tag and commit' >&2
+    echo 'Release image identity does not match VERSION and the commit' >&2
     return 1
   }
 
@@ -46,7 +60,7 @@ release() {
         echo 'latest already points to this release'
         return 0
       fi
-      if [[ $(printf '%s\n' "$version" "$latest_version" | LC_ALL=C sort -V | tail -n 1) != "$version" ]]; then
+      if ! version_greater "$version" "$latest_version"; then
         echo "Keeping newer latest release $latest_version"
         return 0
       fi
@@ -54,6 +68,21 @@ release() {
   fi
   # A single index source is copied byte-for-byte, retaining its digest.
   docker buildx imagetools create --tag "$image:latest" "$image@$digest"
+}
+
+# verify warns, without failing, when a build that did not change VERSION finds
+# that the current version was never published, for example because Buildkite
+# skipped the commit that changed it or its build failed.
+verify() {
+  local image=$1 version=$2 bump_commit=$3 manifest message
+  manifest=$(inspect "$image:$version")
+  if [[ "$manifest" != null ]]; then
+    echo "Version $version is already published"
+    return 0
+  fi
+  message="Version $version is not published. Retry the Buildkite build of $bump_commit, the commit that changed VERSION."
+  echo "$message" >&2
+  buildkite-agent annotate --style warning --context missing-release "$message"
 }
 
 inspect() {
@@ -80,4 +109,4 @@ inspect() {
   ' <<< "$manifest"
 }
 
-release "$@"
+main "$@"

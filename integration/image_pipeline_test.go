@@ -29,7 +29,9 @@ func TestImagePipeline(t *testing.T) {
 	}
 	origin := t.TempDir()
 	git(origin, "init", "-b", "main")
-	git(origin, "commit", "--allow-empty", "-m", "older main")
+	writeFile(t, filepath.Join(origin, "VERSION"), "0.1.0\n", 0o600)
+	git(origin, "add", "VERSION")
+	git(origin, "commit", "-m", "older main")
 	git(origin, "branch", "older")
 	git(origin, "commit", "--allow-empty", "-m", "later main")
 	git(origin, "checkout", "-b", "unmerged")
@@ -147,6 +149,9 @@ printf fixture-token
 			}
 			if tc.wantBuild && !strings.Contains(string(calls), "--platform linux/amd64,linux/arm64") {
 				t.Fatalf("missing platform pair: %s", calls)
+			}
+			if tc.wantBuild && !strings.Contains(string(calls), "--build-arg VERSION=0.1.0-dev+"+commit[:12]) {
+				t.Fatalf("missing development version: %s", calls)
 			}
 			if tc.wantPush && (!strings.Contains(string(calls), "--tag docker.io/buildkite/oci-accelerator:build-108 --tag docker.io/buildkite/oci-accelerator:edge --push") || strings.Count(string(calls), "--tag ") != 2) {
 				t.Fatalf("expected the build number and edge tags: %s", calls)

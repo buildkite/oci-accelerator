@@ -19,7 +19,7 @@ func TestRunHelpUsesOCIAcceleratorName(t *testing.T) {
 	if err := run(context.Background(), []string{"--help"}, &out, &errOut, net.Listen); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "Usage: oci-accelerator --config FILE [--check]\n       oci-accelerator init-ca --dir DIR\n"; got != want {
+	if got, want := out.String(), "Usage: oci-accelerator --config FILE [--check]\n       oci-accelerator init-ca --dir DIR\n       oci-accelerator --version\n"; got != want {
 		t.Fatalf("help = %q, want %q", got, want)
 	}
 	if errOut.Len() != 0 {

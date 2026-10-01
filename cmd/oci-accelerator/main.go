@@ -73,7 +73,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		defer func() { runErr = errors.Join(runErr, stopMetrics()) }()
 	}
 
-	logger.Info("proxy ready", "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
+	logger.Info("proxy ready", "version", version, "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
 	return serveUntilSignal(ctx, p, listener, metricsDone, cfg.ShutdownTimeout)
 }
 
@@ -86,14 +86,24 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	flags.SetOutput(io.Discard)
 	configPath := flags.String("config", "", "path to YAML configuration")
 	check := flags.Bool("check", false, "validate configuration without starting the proxy")
+	showVersion := flags.Bool("version", false, "print the version and exit")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(stdout, "Usage: oci-accelerator --config FILE [--check]")
 			fmt.Fprintln(stdout, "       oci-accelerator init-ca --dir DIR")
+			fmt.Fprintln(stdout, "       oci-accelerator --version")
 			return config.Config{}, true, nil
 		}
 		return config.Config{}, false, errors.New("invalid command line")
+	}
+
+	if *showVersion {
+		if len(args) != 1 {
+			return config.Config{}, false, errors.New("--version does not accept other arguments")
+		}
+		fmt.Fprintln(stdout, "oci-accelerator", version)
+		return config.Config{}, true, nil
 	}
 
 	if *configPath == "" || flags.NArg() != 0 {

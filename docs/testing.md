@@ -20,6 +20,20 @@ Platform notes:
 - Linux namespace tests are isolated from non-Linux builds.
 - Docker, ENOSPC, and load acceptance tests skip on non-Linux hosts even when opted in.
 
+## Release pipeline checks
+
+If you change the scripts in `.buildkite`, also run these. They use disposable Git
+origins and simulated Docker and Buildkite commands, and never contact Docker Hub:
+
+```sh
+bash .buildkite/image_test.sh
+bash .buildkite/version_test.sh
+bash .buildkite/version_check_test.sh
+```
+
+`bash .buildkite/image.sh check` builds the real amd64 and arm64 image without publishing or
+reading registry credentials. None of these checks verify Docker Hub write permissions.
+
 ## Opt-in acceptance suites
 
 These integration checks are opt-in because they need additional host capabilities.

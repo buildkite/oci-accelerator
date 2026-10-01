@@ -256,20 +256,20 @@ func waitProcessOutput(t *testing.T, p *testProcess, want string) {
 func TestProcessStopsOwnedDescendants(t *testing.T) {
 	pidfile := filepath.Join(t.TempDir(), "child.pid")
 	p := startProcess(t, fmt.Sprintf("sh -c %s", shell("trap 'wait; exit' TERM; sleep 60 & echo $! >"+shell(pidfile)+"; wait")))
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(pidfile); err == nil {
-			break
+	// The shell creates the file before writing the PID, so wait for a parseable value.
+	var child int
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		b, err := os.ReadFile(pidfile)
+		if err == nil {
+			if child, err = strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child PID not written: %v", err)
 		}
 		time.Sleep(time.Millisecond)
-	}
-	b, err := os.ReadFile(pidfile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil {
-		t.Fatal(err)
 	}
 	p.Stop(t)
 	deadline = time.Now().Add(time.Second)

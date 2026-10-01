@@ -8,8 +8,10 @@ COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -buildvcs=false -o /out/oci-accelerator ./cmd/oci-accelerator
+    go build -trimpath -buildvcs=false -ldflags "-X 'main.version=$VERSION'" \
+    -o /out/oci-accelerator ./cmd/oci-accelerator
 
 FROM alpine:3.24.1
 LABEL org.opencontainers.image.source="https://github.com/buildkite/oci-accelerator"
