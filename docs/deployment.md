@@ -135,6 +135,21 @@ docker compose run --rm --no-deps oci-accelerator \
 docker compose up -d
 ```
 
+Compose does not automatically pass exported host variables into the container. To override
+settings, add an `environment` mapping to the service in a local Compose override file:
+
+```yaml
+services:
+  oci-accelerator:
+    environment:
+      OCI_ACCELERATOR_CACHE_MAX_BYTES: "68719476736"
+      OCI_ACCELERATOR_REGISTRIES: "registry-1.docker.io, ghcr.io"
+```
+
+You can put literal values in this mapping, or use Compose interpolation such as
+`OCI_ACCELERATOR_CACHE_MAX_BYTES: "${OCI_ACCELERATOR_CACHE_MAX_BYTES}"`. The latter requires
+you to set the host variable before running Compose.
+
 `--check` does not inspect the mounted CA or cache state. First startup generates the CA. Then
 [configure Docker hosts](#configure-docker-hosts), installing only the public certificate.
 
@@ -165,6 +180,29 @@ docker inspect --format '{{.State.Health.Status}}' oci-accelerator
 ```
 
 Stop it with `docker stop oci-accelerator`. Removing the container preserves both named volumes.
+
+For an environment-only container, omit the configuration mount and put `--config=` after the
+image name. This replaces the image's default `CMD` while preserving its entrypoint:
+
+```sh
+docker run -d --name oci-accelerator --restart unless-stopped \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --stop-timeout 40 -p 127.0.0.1:3128:3128 \
+  --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
+  --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
+  -e OCI_ACCELERATOR_LISTEN=0.0.0.0:3128 \
+  -e OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090 \
+  -e OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws \
+  -e OCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca \
+  -e OCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache \
+  oci-accelerator:local --config=
+```
+
+The proxy listens on all container interfaces so the published port works, while Docker exposes
+it only on the host's loopback address. Metrics stay on container loopback for the image health
+check and are not published. The UID 10001 state volumes and isolation flags match the YAML-based
+example. The image still requires a mounted YAML file by default when you do not replace its
+`CMD`.
 
 #### Multi-architecture images
 
@@ -241,7 +279,66 @@ The default `127.0.0.1:3128` listener serves Docker on the same host. To serve r
 ## Configuration
 
 See [`config.example.yaml`](../config.example.yaml) for a complete configuration. Configuration
-is static, and changes take effect after restart.
+is static, and changes take effect after restart. The proxy applies built-in defaults, then an
+optional YAML file, then environment overrides. An empty configuration path skips YAML. A named
+file error fails configuration loading, even when the environment supplies every required setting.
+There is no `OCI_ACCELERATOR_CONFIG` variable, `.env` auto-loading, or hot reload.
+
+`--check` validates this same combined configuration without inspecting state, binding listeners,
+or creating directories. Unknown environment variables, including unknown
+`OCI_ACCELERATOR_*` names, are ignored.
+
+### Environment variables
+
+Every setting has an uppercase `OCI_ACCELERATOR_` name. The nested `cache.` prefix becomes
+`CACHE_`:
+
+| YAML | Environment |
+| ---- | ----------- |
+| `listen` | `OCI_ACCELERATOR_LISTEN` |
+| `metrics_listen` | `OCI_ACCELERATOR_METRICS_LISTEN` |
+| `metrics_allow_remote` | `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` |
+| `registries` | `OCI_ACCELERATOR_REGISTRIES` |
+| `redirect_allowlist` | `OCI_ACCELERATOR_REDIRECT_ALLOWLIST` |
+| `ca_dir` | `OCI_ACCELERATOR_CA_DIR` |
+| `cache.dir` | `OCI_ACCELERATOR_CACHE_DIR` |
+| `cache.max_bytes` | `OCI_ACCELERATOR_CACHE_MAX_BYTES` |
+| `cache.max_fills` | `OCI_ACCELERATOR_CACHE_MAX_FILLS` |
+| `cache.max_entries` | `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` |
+| `cache.fill_timeout` | `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` |
+| `cache.fill_wait_timeout` | `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` |
+| `cache.authorization_ttl` | `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL` |
+| `cache.anonymous_authorization_ttl` | `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` |
+| `cache.max_authorization_entries` | `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` |
+| `dial_timeout` | `OCI_ACCELERATOR_DIAL_TIMEOUT` |
+| `tls_handshake_timeout` | `OCI_ACCELERATOR_TLS_HANDSHAKE_TIMEOUT` |
+| `response_header_timeout` | `OCI_ACCELERATOR_RESPONSE_HEADER_TIMEOUT` |
+| `idle_timeout` | `OCI_ACCELERATOR_IDLE_TIMEOUT` |
+| `shutdown_timeout` | `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` |
+| `max_connections` | `OCI_ACCELERATOR_MAX_CONNECTIONS` |
+| `max_leaf_certificates` | `OCI_ACCELERATOR_MAX_LEAF_CERTIFICATES` |
+
+An unset variable retains the YAML value or default. A present empty variable is an explicit
+value. It disables `metrics_listen` and clears `redirect_allowlist`. Other empty values
+fail validation, including required registries and paths. `registries` and
+`redirect_allowlist` are comma-separated authority lists. Entries are whitespace-trimmed, the
+whole list replaces the YAML list, and empty members are rejected.
+
+Use exactly `true` or `false` for booleans, decimal integers without leading zeros for numbers,
+and Go duration strings such as `500ms`, `30s`, or `2m` for durations. Relative YAML paths are
+resolved from the YAML file's directory. Relative environment paths are resolved from the
+process working directory and converted internally to absolute paths.
+
+For example, after building the binary, you can validate and start without YAML:
+
+```sh
+mkdir -m 0700 data
+export OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws
+export OCI_ACCELERATOR_CA_DIR=./data/ca
+export OCI_ACCELERATOR_CACHE_DIR=./data/cache
+bin/oci-accelerator --check
+bin/oci-accelerator
+```
 
 ### File rules
 
@@ -374,8 +471,8 @@ bin/oci-accelerator init-ca --dir data/ca
 
 - `init-ca` provisions only the root CA. It does not load YAML or start the proxy, cache, or any
   network activity.
-- You must pass `--dir`. Relative paths are resolved from the working directory, and the parent
-  must already exist.
+- Pass `--dir`, or set `OCI_ACCELERATOR_CA_DIR`. The flag wins when both are present. Relative
+  paths are resolved from the working directory, and the parent must already exist.
 - On success it prints `ca_certificate="..."` (the public certificate path) and `ca_sha256=...`
   (the lowercase SHA-256 fingerprint). It never prints the private key. Startup logs the same
   `ca_sha256` for trusted distribution.

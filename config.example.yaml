@@ -1,4 +1,6 @@
 # OCI Accelerator configuration. Relative directories are resolved from this file.
+# Every setting can be overridden by an OCI_ACCELERATOR_* environment variable.
+# For example, OCI_ACCELERATOR_CACHE_MAX_BYTES overrides cache.max_bytes.
 listen: 127.0.0.1:3128
 # Optional separate literal-loopback Prometheus endpoint, disabled by default.
 # metrics_listen: 127.0.0.1:9090

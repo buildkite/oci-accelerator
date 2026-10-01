@@ -28,9 +28,9 @@ and cache storage in detail.
 ## Usage
 
 ```
-oci-accelerator --config FILE [--check]
+oci-accelerator [--config FILE] [--check]
 oci-accelerator --version
-oci-accelerator init-ca --dir DIR
+oci-accelerator init-ca [--dir DIR]
 ```
 
 | Command                                 | Description                                                                                                                                  |
@@ -40,6 +40,12 @@ oci-accelerator init-ca --dir DIR
 | `oci-accelerator --version`            | Print the version compiled from the root `VERSION` file and exit, without configuration or startup.                                          |
 | `oci-accelerator init-ca --dir DIR`     | Create a root CA in `DIR`, or validate an existing one, without starting the proxy. Prints the certificate path and its SHA-256 fingerprint. |
 | `oci-accelerator --help`                | Print usage. `init-ca --help` describes `init-ca`.                                                                                           |
+
+You can use YAML, `OCI_ACCELERATOR_*` environment variables, or both. Environment
+variables override YAML and built-in defaults. To run without a file, pass no
+`--config` option, or use `--config=` when replacing the container image's default
+arguments. See the [configuration guide](docs/deployment.md#configuration) for the
+complete variable list and value rules.
 
 To publish a versioned image, open a PR that increases `VERSION`. See the
 [release process](docs/deployment.md#releasing-images) for tags and retry behavior.
