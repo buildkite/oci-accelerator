@@ -673,7 +673,10 @@ docker compose up -d
 
 ### Logs
 
-JSON logs go to stderr. Request completion records contain:
+JSON logs go to stderr. On successful startup, the `proxy ready` record includes the
+compiled `version`, matching `oci-accelerator --version`.
+
+Request completion records contain:
 
 | Field or group                        | Notes                                                                        |
 | ------------------------------------- | ---------------------------------------------------------------------------- |

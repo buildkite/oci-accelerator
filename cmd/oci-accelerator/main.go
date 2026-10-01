@@ -74,7 +74,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		defer func() { runErr = errors.Join(runErr, stopMetrics()) }()
 	}
 
-	logger.Info("proxy ready", "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
+	logger.Info("proxy ready", "version", ociaccelerator.Version(), "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
 	return serveUntilSignal(ctx, p, listener, metricsDone, cfg.ShutdownTimeout)
 }
 
