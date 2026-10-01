@@ -98,7 +98,7 @@ func runMultiPlatformCase(t *testing.T, rootMedia string) {
 	proxyPort := freePort(t, "127.0.0.1")
 	proxyCA := filepath.Join(root, "proxy-ca")
 	config := filepath.Join(root, "proxy.yaml")
-	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 33554432\n  authorization_ttl: 0s\n", proxyPort, authority, proxyCA, filepath.Join(root, "cache")), 0o600)
+	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 33554432\n  authorization_ttl: 0s\n  anonymous_authorization_ttl: 0s\n", proxyPort, authority, proxyCA, filepath.Join(root, "cache")), 0o600)
 	randomSuffix := strings.ToLower(rand.Text())
 	prefix := "acc3c-" + randomSuffix[:8]
 	proxyCmd := namespacedCommand(hosts, fmt.Sprintf("exec sudo -n -u %s env SSL_CERT_FILE=%s %s --config %s", shell(currentUser(t)), shell(registryCA), shell(bin), shell(config)))

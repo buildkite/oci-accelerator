@@ -21,13 +21,14 @@ var ErrInvalid = errors.New("invalid configuration")
 // Defaults applied when the configuration omits a cache setting or sets it
 // to null.
 const (
-	DefaultCacheMaxBytes                int64 = 32 << 30
-	DefaultCacheMaxFills                      = 16
-	DefaultCacheMaxEntries                    = 100000
-	DefaultCacheFillTimeout                   = 10 * time.Minute
-	DefaultCacheFillWaitTimeout               = time.Second
-	DefaultCacheAuthorizationTTL              = 30 * time.Second
-	DefaultCacheMaxAuthorizationEntries       = 10000
+	DefaultCacheMaxBytes                  int64 = 32 << 30
+	DefaultCacheMaxFills                        = 16
+	DefaultCacheMaxEntries                      = 100000
+	DefaultCacheFillTimeout                     = 10 * time.Minute
+	DefaultCacheFillWaitTimeout                 = time.Second
+	DefaultCacheAuthorizationTTL                = 30 * time.Second
+	DefaultCacheAnonymousAuthorizationTTL       = 15 * time.Minute
+	DefaultCacheMaxAuthorizationEntries         = 10000
 )
 
 // Config is the validated result of [Load]. Relative directory paths are
@@ -51,14 +52,15 @@ type Config struct {
 
 // Cache holds the cache section of a [Config].
 type Cache struct {
-	Dir                     string
-	MaxBytes                int64
-	MaxFills                int
-	MaxEntries              int
-	FillTimeout             time.Duration
-	FillWaitTimeout         time.Duration
-	AuthorizationTTL        time.Duration
-	MaxAuthorizationEntries int
+	Dir                       string
+	MaxBytes                  int64
+	MaxFills                  int
+	MaxEntries                int
+	FillTimeout               time.Duration
+	FillWaitTimeout           time.Duration
+	AuthorizationTTL          time.Duration
+	AnonymousAuthorizationTTL time.Duration
+	MaxAuthorizationEntries   int
 }
 
 type rawConfig struct {
@@ -79,14 +81,15 @@ type rawConfig struct {
 }
 
 type rawCache struct {
-	Dir                     strictString `yaml:"dir"`
-	MaxBytes                strictInt64  `yaml:"max_bytes"`
-	MaxFills                strictInt    `yaml:"max_fills"`
-	MaxEntries              strictInt    `yaml:"max_entries"`
-	FillTimeout             duration     `yaml:"fill_timeout"`
-	FillWaitTimeout         duration     `yaml:"fill_wait_timeout"`
-	AuthorizationTTL        duration     `yaml:"authorization_ttl"`
-	MaxAuthorizationEntries strictInt    `yaml:"max_authorization_entries"`
+	Dir                       strictString `yaml:"dir"`
+	MaxBytes                  strictInt64  `yaml:"max_bytes"`
+	MaxFills                  strictInt    `yaml:"max_fills"`
+	MaxEntries                strictInt    `yaml:"max_entries"`
+	FillTimeout               duration     `yaml:"fill_timeout"`
+	FillWaitTimeout           duration     `yaml:"fill_wait_timeout"`
+	AuthorizationTTL          duration     `yaml:"authorization_ttl"`
+	AnonymousAuthorizationTTL duration     `yaml:"anonymous_authorization_ttl"`
+	MaxAuthorizationEntries   strictInt    `yaml:"max_authorization_entries"`
 }
 
 // Load reads and validates the single-document YAML file at path. Read
@@ -126,13 +129,14 @@ func defaults() rawConfig {
 	return rawConfig{
 		Listen: "127.0.0.1:3128",
 		Cache: rawCache{
-			MaxBytes:                strictInt64(DefaultCacheMaxBytes),
-			MaxFills:                strictInt(DefaultCacheMaxFills),
-			MaxEntries:              strictInt(DefaultCacheMaxEntries),
-			FillTimeout:             duration(DefaultCacheFillTimeout),
-			FillWaitTimeout:         duration(DefaultCacheFillWaitTimeout),
-			AuthorizationTTL:        duration(DefaultCacheAuthorizationTTL),
-			MaxAuthorizationEntries: strictInt(DefaultCacheMaxAuthorizationEntries),
+			MaxBytes:                  strictInt64(DefaultCacheMaxBytes),
+			MaxFills:                  strictInt(DefaultCacheMaxFills),
+			MaxEntries:                strictInt(DefaultCacheMaxEntries),
+			FillTimeout:               duration(DefaultCacheFillTimeout),
+			FillWaitTimeout:           duration(DefaultCacheFillWaitTimeout),
+			AuthorizationTTL:          duration(DefaultCacheAuthorizationTTL),
+			AnonymousAuthorizationTTL: duration(DefaultCacheAnonymousAuthorizationTTL),
+			MaxAuthorizationEntries:   strictInt(DefaultCacheMaxAuthorizationEntries),
 		},
 		DialTimeout:           duration(10 * time.Second),
 		TLSHandshakeTimeout:   duration(10 * time.Second),

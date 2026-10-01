@@ -16,6 +16,105 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
+func TestAuthorizationClassesShareBodyWithIndependentReuse(t *testing.T) {
+	const body = "one body, separate approvals"
+	for _, tc := range []struct {
+		name         string
+		authTTL      time.Duration
+		anonymousTTL time.Duration
+	}{
+		{"both enabled", 30 * time.Second, 15 * time.Minute},
+		{"credentialed disabled", 0, 15 * time.Minute},
+		{"anonymous disabled", 30 * time.Second, 0},
+		{"both disabled", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gets atomic.Int32
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gets.Add(1)
+				blobHeaders(w, body)
+				io.WriteString(w, body)
+			}))
+			defer origin.Close()
+			p, client := cacheFixture(t, origin, 1<<20, nil)
+			p.authorization = newAuthorizationCache(tc.authTTL, tc.anonymousTTL, 10)
+			tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics,
+				authorization: p.authorization}
+			url := origin.URL + blobURL(body)
+			anonymous := authorizationRequest(t, url, "")
+			a := authorizationRequest(t, url, "Bearer a")
+			b := authorizationRequest(t, url, "Bearer b")
+			empty := authorizationRequest(t, url, "")
+			empty.Header.Set("Authorization", "")
+			fetch := func(req *http.Request, wantGETs int32) {
+				t.Helper()
+				before := gets.Load()
+				resp, err := tr.RoundTrip(req.Clone(req.Context()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertAuthorizationBody(t, resp, http.StatusOK, body)
+				if got := gets.Load() - before; got != wantGETs {
+					t.Fatalf("upstream GETs = %d, want %d", got, wantGETs)
+				}
+			}
+			for _, identity := range []struct {
+				req *http.Request
+				ttl time.Duration
+			}{{anonymous, tc.anonymousTTL}, {a, tc.authTTL}, {b, tc.authTTL}, {empty, tc.authTTL}} {
+				before := time.Now()
+				fetch(identity.req, 1) // No identity may borrow another one's approval.
+				after := time.Now()
+				if identity.ttl == 0 {
+					fetch(identity.req, 1)
+					continue
+				}
+				_, grant := tr.authorization.start(identity.req)
+				if grant == nil || grant.expires.Before(before.Add(identity.ttl)) || grant.expires.After(after.Add(identity.ttl)) {
+					t.Fatalf("approval did not receive its %s lifetime", identity.ttl)
+				}
+				fetch(identity.req, 0)
+			}
+			if stats := p.cache.Stats(); stats.Entries != 1 || stats.FillSuccess != 1 {
+				t.Fatalf("identities did not share one disk body: %+v", stats)
+			}
+			if tc.authTTL > 0 && tc.anonymousTTL > 0 {
+				// Expiring one approval must not expire the other token or anonymous
+				// approval, nor remove their shared body. Clock-driven expiry and
+				// nonrenewal are independently covered by the store tests.
+				entry, grant := tr.authorization.start(a)
+				expired := *grant
+				expired.expires = time.Now().Add(-time.Second)
+				tr.authorization.commit(entry, &expired)
+				fetch(anonymous, 0)
+				fetch(b, 0)
+				fetch(a, 1)
+			}
+			// Exercise the forwarding handler too: its original-request lifetime
+			// must not disable one class merely because the other TTL is zero.
+			for _, req := range []*http.Request{anonymous, a} {
+				req = req.Clone(req.Context())
+				req.Header.Set("User-Agent", "wire-client") // New grant identity.
+				before := gets.Load()
+				for i := 0; i < 2; i++ {
+					resp, err := client.Do(req.Clone(req.Context()))
+					if err != nil {
+						t.Fatal(err)
+					}
+					assertAuthorizationBody(t, resp, http.StatusOK, body)
+				}
+				want := int32(1)
+				if req.Header.Get("Authorization") == "" && tc.anonymousTTL == 0 || req.Header.Get("Authorization") != "" && tc.authTTL == 0 {
+					want = 2
+				}
+				if got := gets.Load() - before; got != want {
+					t.Fatalf("forwarded upstream GETs = %d, want %d", got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestAuthorizationFastHitsMatchEntireRequest(t *testing.T) {
 	const body = `{"schemaVersion":2}`
 	var gets atomic.Int32
@@ -35,7 +134,7 @@ func TestAuthorizationFastHitsMatchEntireRequest(t *testing.T) {
 	}))
 	defer origin.Close()
 	p, client := cacheFixture(t, origin, 1<<20, nil)
-	p.authorization = newAuthorizationCache(30*time.Second, 100)
+	p.authorization = newAuthorizationCache(30*time.Second, 30*time.Second, 100)
 	base := authorizationRequest(t, origin.URL+blobURL(body), "Bearer allowed")
 	for _, tc := range []struct {
 		name string
@@ -89,6 +188,34 @@ func TestAuthorizationFastHitsMatchEntireRequest(t *testing.T) {
 	if gets.Load() != before+1 {
 		t.Fatal("stripped no-cache skipped upstream check")
 	}
+
+	// A credentialed request remains credentialed for authorization-cache
+	// policy even when ReverseProxy strips Authorization as hop-by-hop. It must
+	// neither borrow the anonymous grant established above nor create one.
+	for i := 0; i < 2; i++ {
+		before = gets.Load()
+		req := base.Clone(base.Context())
+		req.Header.Set("Connection", "Authorization")
+		resp, err = client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertAuthorizationBody(t, resp, 200, body)
+		if gets.Load() != before+1 {
+			t.Fatal("stripped Authorization borrowed or created an anonymous approval")
+		}
+	}
+	before = gets.Load()
+	req = base.Clone(base.Context())
+	req.Header.Del("Authorization")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAuthorizationBody(t, resp, 200, body)
+	if gets.Load() != before+1 {
+		t.Fatal("stripped Authorization left a reusable anonymous approval")
+	}
 }
 
 func TestAuthorizationStrippedBypassInvalidatesGrant(t *testing.T) {
@@ -118,7 +245,7 @@ func TestAuthorizationStrippedBypassInvalidatesGrant(t *testing.T) {
 				}))
 				defer origin.Close()
 				p, client := cacheFixture(t, origin, 1<<20, nil)
-				p.authorization = newAuthorizationCache(time.Minute, 10)
+				p.authorization = newAuthorizationCache(time.Minute, time.Minute, 10)
 				base := authorizationRequest(t, origin.URL+blobURL(body), "Bearer client")
 				// net/http adds gzip only to non-Range requests by default.
 				// Keep the forwarded identities equal after hop-header stripping.
@@ -195,7 +322,7 @@ func TestAuthorizationRedirectRestrictions(t *testing.T) {
 				}))
 				defer origin.Close()
 				p, client := cacheFixture(t, origin, 1<<20, nil)
-				p.authorization = newAuthorizationCache(time.Minute, 10)
+				p.authorization = newAuthorizationCache(time.Minute, time.Minute, 10)
 				a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
 				p.destinations[a.String()] = struct{}{}
 				p.transport.TLSClientConfig.RootCAs.AddCert(cdn.Certificate())
@@ -235,7 +362,7 @@ func TestAuthorizationRechecksPreserveTransientAndInvalidateDenials(t *testing.T
 	}))
 	defer origin.Close()
 	p, _ := cacheFixture(t, origin, 1<<20, nil)
-	tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, 10)}
+	tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, time.Minute, 10)}
 	req := authorizationRequest(t, origin.URL+blobURL(body), "Bearer client")
 	fetch := func(fast bool, wantStatus int, wantBody string) {
 		t.Helper()
@@ -318,7 +445,7 @@ func TestAuthorizationTransientAuthenticationStateInvalidatesGrant(t *testing.T)
 				}))
 				defer origin.Close()
 				p, _ := cacheFixture(t, origin, 1<<20, nil)
-				tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, 10)}
+				tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, time.Minute, 10)}
 				req := authorizationRequest(t, origin.URL+blobURL(body), "Bearer client")
 				for i, fast := range []bool{true, true, false, true} {
 					resp, _, err := tr.roundTrip(req.Clone(req.Context()), fast)
@@ -363,7 +490,7 @@ func TestAuthorizationLateSuccessCannotRestoreDeniedGrant(t *testing.T) {
 	unblock := safeRelease(release)
 	defer unblock()
 	p, _ := cacheFixture(t, origin, 1<<20, nil)
-	tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, 10)}
+	tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, time.Minute, 10)}
 	req := authorizationRequest(t, origin.URL+blobURL(body), "Bearer client")
 	type result struct {
 		resp *http.Response
@@ -409,7 +536,7 @@ func TestAuthorizationGrantCannotServeIncompleteFill(t *testing.T) {
 	}))
 	defer origin.Close()
 	p, _ := cacheFixture(t, origin, 1<<20, nil)
-	tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, 10)}
+	tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, time.Minute, 10)}
 	req := authorizationRequest(t, origin.URL+blobURL(body), "Bearer client")
 	leader, err := tr.RoundTrip(req)
 	if err != nil {
@@ -462,7 +589,7 @@ func TestAuthorizationMissCommitsGrant(t *testing.T) {
 			defer origin.Close()
 
 			p, _ := cacheFixture(t, origin, 1<<20, nil)
-			tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, 10)}
+			tr := registryTransport{upstream: p.transport, cache: p.cache, metrics: p.metrics, authorization: newAuthorizationCache(time.Minute, time.Minute, 10)}
 			if redirect {
 				a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
 				p.destinations[a.String()] = struct{}{}

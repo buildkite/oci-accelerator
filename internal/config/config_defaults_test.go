@@ -28,6 +28,7 @@ dial_timeout: null
 	assertEqual(t, "Cache.FillTimeout", c.Cache.FillTimeout, DefaultCacheFillTimeout)
 	assertEqual(t, "Cache.FillWaitTimeout", c.Cache.FillWaitTimeout, time.Second)
 	assertEqual(t, "Cache.AuthorizationTTL", c.Cache.AuthorizationTTL, 30*time.Second)
+	assertEqual(t, "Cache.AnonymousAuthorizationTTL", c.Cache.AnonymousAuthorizationTTL, 15*time.Minute)
 	assertEqual(t, "Cache.MaxAuthorizationEntries", c.Cache.MaxAuthorizationEntries, 10000)
 	assertEqual(t, "DialTimeout", c.DialTimeout, 10*time.Second)
 	assertEqual(t, "TLSHandshakeTimeout", c.TLSHandshakeTimeout, 10*time.Second)
@@ -55,7 +56,8 @@ cache:
   max_entries: 99
   fill_timeout: 3m
   fill_wait_timeout: 0s
-  authorization_ttl: 0s
+  authorization_ttl: 7s
+  anonymous_authorization_ttl: 17m
   max_authorization_entries: 42
 dial_timeout: 1s
 tls_handshake_timeout: 2s
@@ -77,7 +79,8 @@ max_leaf_certificates: 8
 	assertEqual(t, "Cache.MaxEntries", c.Cache.MaxEntries, 99)
 	assertEqual(t, "Cache.FillTimeout", c.Cache.FillTimeout, 3*time.Minute)
 	assertEqual(t, "Cache.FillWaitTimeout", c.Cache.FillWaitTimeout, time.Duration(0))
-	assertEqual(t, "Cache.AuthorizationTTL", c.Cache.AuthorizationTTL, time.Duration(0))
+	assertEqual(t, "Cache.AuthorizationTTL", c.Cache.AuthorizationTTL, 7*time.Second)
+	assertEqual(t, "Cache.AnonymousAuthorizationTTL", c.Cache.AnonymousAuthorizationTTL, 17*time.Minute)
 	assertEqual(t, "Cache.MaxAuthorizationEntries", c.Cache.MaxAuthorizationEntries, 42)
 	assertEqual(t, "DialTimeout", c.DialTimeout, time.Second)
 	assertEqual(t, "TLSHandshakeTimeout", c.TLSHandshakeTimeout, 2*time.Second)
@@ -86,4 +89,27 @@ max_leaf_certificates: 8
 	assertEqual(t, "ShutdownTimeout", c.ShutdownTimeout, 5*time.Second)
 	assertEqual(t, "MaxConnections", c.MaxConnections, 6)
 	assertEqual(t, "MaxLeafCertificates", c.MaxLeafCertificates, 8)
+}
+
+func TestLoadAuthorizationTTLZerosAreIndependent(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		values   string
+		wantAuth time.Duration
+		wantAnon time.Duration
+	}{
+		{"credentialed disabled", "authorization_ttl: 0s", 0, DefaultCacheAnonymousAuthorizationTTL},
+		{"anonymous disabled", "anonymous_authorization_ttl: 0s", DefaultCacheAuthorizationTTL, 0},
+		{"both disabled", "authorization_ttl: 0s\n  anonymous_authorization_ttl: 0s", 0, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeConfig(t, "registries: [example.com]\nca_dir: ca\ncache:\n  dir: cache\n  "+test.values+"\n")
+			c, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertEqual(t, "Cache.AuthorizationTTL", c.Cache.AuthorizationTTL, test.wantAuth)
+			assertEqual(t, "Cache.AnonymousAuthorizationTTL", c.Cache.AnonymousAuthorizationTTL, test.wantAnon)
+		})
+	}
 }

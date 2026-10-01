@@ -260,7 +260,7 @@ func TestRedirectedCacheStoresIdentityBlobVaryingOnAcceptEncoding(t *testing.T) 
 			var logs bytes.Buffer
 			p, c := cacheFixture(t, origin, 1<<20, &logs)
 			if tc.grants {
-				p.authorization = newAuthorizationCache(time.Minute, 10)
+				p.authorization = newAuthorizationCache(time.Minute, time.Minute, 10)
 			}
 			a, _ := hostport.Parse(strings.TrimPrefix(cdn.URL, "https://"), "443")
 			p.destinations[a.String()] = struct{}{}

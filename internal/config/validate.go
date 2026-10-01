@@ -68,6 +68,9 @@ func validate(raw rawConfig, base string) (Config, error) {
 	if raw.Cache.AuthorizationTTL < 0 {
 		return Config{}, fmt.Errorf("%w: cache.authorization_ttl: must be non-negative", ErrInvalid)
 	}
+	if raw.Cache.AnonymousAuthorizationTTL < 0 {
+		return Config{}, fmt.Errorf("%w: cache.anonymous_authorization_ttl: must be non-negative", ErrInvalid)
+	}
 	registries, err := parseAuthorities(raw.Registries)
 	if err != nil {
 		return Config{}, fmt.Errorf("registries: %w", err)
@@ -105,14 +108,15 @@ func validate(raw rawConfig, base string) (Config, error) {
 		RedirectAllowlist: redirectAllowlist,
 		CADir:             caDir,
 		Cache: Cache{
-			Dir:                     cacheDir,
-			MaxBytes:                int64(raw.Cache.MaxBytes),
-			MaxFills:                int(raw.Cache.MaxFills),
-			MaxEntries:              int(raw.Cache.MaxEntries),
-			FillTimeout:             time.Duration(raw.Cache.FillTimeout),
-			FillWaitTimeout:         time.Duration(raw.Cache.FillWaitTimeout),
-			AuthorizationTTL:        time.Duration(raw.Cache.AuthorizationTTL),
-			MaxAuthorizationEntries: int(raw.Cache.MaxAuthorizationEntries),
+			Dir:                       cacheDir,
+			MaxBytes:                  int64(raw.Cache.MaxBytes),
+			MaxFills:                  int(raw.Cache.MaxFills),
+			MaxEntries:                int(raw.Cache.MaxEntries),
+			FillTimeout:               time.Duration(raw.Cache.FillTimeout),
+			FillWaitTimeout:           time.Duration(raw.Cache.FillWaitTimeout),
+			AuthorizationTTL:          time.Duration(raw.Cache.AuthorizationTTL),
+			AnonymousAuthorizationTTL: time.Duration(raw.Cache.AnonymousAuthorizationTTL),
+			MaxAuthorizationEntries:   int(raw.Cache.MaxAuthorizationEntries),
 		},
 		DialTimeout:           time.Duration(raw.DialTimeout),
 		TLSHandshakeTimeout:   time.Duration(raw.TLSHandshakeTimeout),

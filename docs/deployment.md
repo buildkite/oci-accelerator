@@ -23,10 +23,11 @@ See [how it works](how-it-works.md) for the request flow and design.
   no insecure mode.
 - **Credentials stay with Docker.** Never put credentials in proxy YAML. Cross-origin redirects
   never forward credentials or cookies.
-- **The upstream registry authorizes deliveries.** Each cached delivery is approved by an upstream GET,
-  or by an exact-request grant up to `cache.authorization_ttl` (30 seconds by default), so
-  revocation can lag by up to that long. Set `0s` to require upstream approval for every
-  delivery. There is no offline or failed-request fallback.
+- **The upstream registry authorizes deliveries.** Each cached delivery is approved by an
+  upstream GET or an exact-request grant. The default window is 15 minutes without
+  `Authorization` and 30 seconds with it, including an empty value. Public-to-private
+  revocation can therefore lag by 15 minutes by default. Set both authorization TTLs to
+  `0s` to check every delivery. There is no offline or failed-request fallback.
 - **Logs contain repository names, tags, and digests.** Restrict access to them.
 - **Metrics and probes are unauthenticated.** They bind loopback only unless explicitly opted in.
 - **Redirect checks do not constrain tunnels.** Destination checks protect only fetches the
@@ -203,7 +204,8 @@ is static, and changes take effect after restart.
 - Numeric limits require decimal YAML integers without leading zeros. Floats, quoted numbers,
   octal or hex forms, and underscores are rejected.
 - Malformed durations and invalid zero values are rejected. The only permitted zero durations
-  are `cache.fill_wait_timeout: 0s` and `cache.authorization_ttl: 0s`.
+  are `cache.fill_wait_timeout: 0s`, `cache.authorization_ttl: 0s`, and
+  `cache.anonymous_authorization_ttl: 0s`.
 - Relative directories are resolved from the configuration file's directory.
 
 ### Registry authorities
@@ -260,8 +262,9 @@ You can configure private registries explicitly.
 | `cache.max_entries`               | 100000  | Entry slots, including fills and pending cleanup                                        |
 | `cache.fill_timeout`              | `10m`   | Bounds ranged fetches from request start. Ends ordinary full-GET cache admission        |
 | `cache.fill_wait_timeout`         | `1s`    | `0s` disables waiting for an existing fill                                              |
-| `cache.authorization_ttl`         | `30s`   | Maximum fixed lifetime of a process-local approval. `0s` requires an upstream GET for every delivery |
-| `cache.max_authorization_entries` | 10000   | Positive bound on in-memory authorization grants                                        |
+| `cache.authorization_ttl`         | `30s`   | Fixed approval lifetime for requests with Authorization, including empty. `0s` disables that class |
+| `cache.anonymous_authorization_ttl` | `15m` | Fixed approval lifetime for requests without Authorization. `0s` disables that class |
+| `cache.max_authorization_entries` | 10000   | Positive shared bound on both classes of in-memory authorization grants                  |
 
 **Timeouts and connections**
 
@@ -484,7 +487,7 @@ Docker push uses the same proxy and CA configuration as pull.
   a total upload size.
 - Successful deletion does not invalidate existing pull [authorization grants](#authorization-grants).
   Previously approved exact GETs may still serve cached content until the original grant
-  expiry. Set `cache.authorization_ttl: 0s` when every cache delivery must check current
+  expiry. Set both authorization TTLs to `0s` when every cache delivery must check current
   upstream access.
 
 ## Request handling
@@ -533,16 +536,20 @@ manifest GETs.
 See [authorization grants](how-it-works.md#authorization-grants) for grant matching, lifetime,
 and the request and response headers that prevent a grant. Additionally:
 
+- The anonymous and credentialed TTLs are independent. A request with any `Authorization`
+  header, including an empty one, uses the credentialed TTL. If `Connection` strips that
+  header before forwarding, the request cannot reuse or create an anonymous approval.
 - Only full immutable digest blob and manifest GETs can reuse authorization.
 - Grants are keyed by a process-local HMAC of the original canonical URL and every forwarded
   end-to-end header. Transport-managed fields use their forwarded form, while other exact values and
-  value order are preserved. Anonymous requests are distinct.
+  value order are preserved. Anonymous requests are distinct. Both classes share the
+  `cache.max_authorization_entries` bound and can refer to the same verified disk body.
 - A grant starts from an eligible terminal `200`. It is never renewed on hits, persisted, or
   refreshed or coalesced in the background.
 - Tokens are opaque, so revocation or expiry can take effect as late as the grant's original
   expiry.
 - Every redirect hop must be reusable. Only explicit `max-age` and `s-maxage` ceilings shorten a
-  grant below `authorization_ttl`. `Age`, `Date`, and `Expires` are ignored. A grant never
+  grant below its configured TTL. `Age`, `Date`, and `Expires` are ignored. A grant never
   outlives the TTL, but may be trusted for the full residual TTL regardless of upstream age.
 - A grant hit requires a present verified body. Otherwise the request goes upstream. The
   response reconstructs only content type, length, digest, a current `Date`, and
@@ -774,7 +781,7 @@ termination behavior. For containers, keep the stop grace period longer than
 | Docker reports an unknown certificate authority              | CA not installed under the exact `certs.d/<host[:port]>` directory                             | [Trust the CA](#trust-the-ca) for that authority                                      |
 | Private registry fails through the proxy with a TLS error    | The proxy process does not trust the upstream registry's real CA                               | Add it to the proxy's system trust store. Never disable verification                  |
 | Pulls work but no request records show the upstream registry | Registry not in `registries` (port must match), listed in `no-proxy`/`NO_PROXY`, or daemon not restarted | Fix `registries` or [Docker's proxy configuration](#point-docker-at-the-proxy)   |
-| Revoked access or a deleted image still pulls briefly        | An existing [authorization grant](#authorization-grants)                                       | Wait for `cache.authorization_ttl`, or set it to `0s`                                  |
+| Revoked access or a deleted image still pulls briefly        | An existing [authorization grant](#authorization-grants)                                       | Wait for the applicable authorization TTL, or set both TTLs to `0s`                    |
 | `.ca-init-*` directories in the CA parent                    | A crash or SIGKILL during initialization                                                       | [Clean up staging directories](#clean-up-staging-directories)                         |
 | Compose warns about existing volumes                         | Volumes were created by `docker run`                                                           | Expected. Run only one proxy against them                                             |
 

@@ -306,7 +306,7 @@ func TestImmutableObjectMetricsBlobManifestAndAuthorizationGrantHits(t *testing.
 	}))
 	defer origin.Close()
 	p, client := cacheFixture(t, origin, 1<<20, nil)
-	p.authorization = newAuthorizationCache(time.Minute, 10)
+	p.authorization = newAuthorizationCache(time.Minute, time.Minute, 10)
 	// Unequal sizes and hit counts distinguish byte share from entry share.
 	for _, tc := range []struct {
 		path, body string

@@ -10,9 +10,9 @@ upstream registry again.
   same, and any upstream registry implementing the Registry HTTP API V2 works.
 - **Caches only content addressed by digest.** Blobs and manifests are cached by
   SHA-256 digest. Tags and pushes go straight to the upstream registry.
-- **The upstream registry authorizes every cache hit.** Cached content is served
-  only after the upstream registry approves the same request, or within a short
-  grant window.
+- **Requires upstream approval.** Cached content is served only after the registry
+  approves the same request, or within a fixed approval window. The default is
+  15 minutes without `Authorization` and 30 seconds with it.
 - **Keeps credentials at the upstream registry.** Tokens are never read or
   stored.
 - **Streams large layers.** Layers are never buffered in memory, and concurrent

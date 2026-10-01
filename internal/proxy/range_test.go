@@ -37,7 +37,7 @@ func TestWarmBlobRangesAuthorizeFullGETWithoutGrantReuse(t *testing.T) {
 	}))
 	defer origin.Close()
 	p, client := cacheFixture(t, origin, 1<<20, nil)
-	p.authorization = newAuthorizationCache(time.Minute, 100)
+	p.authorization = newAuthorizationCache(time.Minute, time.Minute, 100)
 	url := origin.URL + blobURL(blob)
 	getBlob(t, client, url, "Bearer alice")
 	for _, tc := range []struct {
@@ -101,7 +101,7 @@ func TestRangeRequestsDoNotCreateFullGETGrants(t *testing.T) {
 	}))
 	defer origin.Close()
 	p, client := cacheFixture(t, origin, 1<<20, nil)
-	p.authorization = newAuthorizationCache(time.Minute, 100)
+	p.authorization = newAuthorizationCache(time.Minute, time.Minute, 100)
 	url := origin.URL + blobURL(blob)
 	// A cold multi-range request may get the complete representation.
 	resp, body := requestRange(t, client, url, "", "bytes=0-1,7-9")

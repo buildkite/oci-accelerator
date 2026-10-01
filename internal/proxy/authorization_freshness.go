@@ -13,8 +13,8 @@ type authorizationLifetimeKey struct{}
 // for a message with header h, capped at limit and 0 when metadata is ambiguous
 // or restrictive. Only explicit Cache-Control ceilings (max-age, s-maxage)
 // narrow limit. Age accounting (Date, Age, Expires) is skipped because cached
-// objects are immutable and digest-verified, and limit is a short TTL that
-// already bounds any over-trust.
+// objects are immutable and digest-verified. The selected request-class TTL
+// bounds reuse, but is not reduced by upstream age.
 func authorizationLifetime(h http.Header, limit time.Duration) time.Duration {
 	// Per-message state we cannot safely reuse across requests forbids caching.
 	if hasAuthenticationState(h) {
