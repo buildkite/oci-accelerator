@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Git uses real local history. Only Docker and the secret service are replaced.
+// Git uses real local history. Only Docker and the Buildkite agent are replaced.
 // These tests must never contact Docker Hub or retrieve a real credential.
 func TestImagePipeline(t *testing.T) {
 	requireCommands(t, "bash", "git")
@@ -30,16 +30,20 @@ func TestImagePipeline(t *testing.T) {
 	origin := t.TempDir()
 	git(origin, "init", "-b", "main")
 	git(origin, "commit", "--allow-empty", "-m", "before VERSION")
+	git(origin, "branch", "before-version")
 	writeFile(t, filepath.Join(origin, "VERSION"), "0.1.0\n", 0o600)
 	git(origin, "add", "VERSION")
 	git(origin, "commit", "-m", "first version")
+	git(origin, "branch", "legacy")
+	writeFile(t, filepath.Join(origin, "VERSION"), "v0.1.0\n", 0o600)
+	git(origin, "commit", "-am", "add version prefix")
 	git(origin, "branch", "first-release")
-	writeFile(t, filepath.Join(origin, "VERSION"), "0.1.9\n", 0o600)
+	writeFile(t, filepath.Join(origin, "VERSION"), "v0.1.9\n", 0o600)
 	git(origin, "commit", "-am", "previous version")
 	git(origin, "commit", "--allow-empty", "-m", "ordinary main")
 	git(origin, "branch", "older")
 	git(origin, "checkout", "-b", "release-pr")
-	writeFile(t, filepath.Join(origin, "VERSION"), "0.1.10\n", 0o600)
+	writeFile(t, filepath.Join(origin, "VERSION"), "v0.1.10\n", 0o600)
 	git(origin, "commit", "-am", "bump version")
 	git(origin, "checkout", "main")
 	git(origin, "merge", "--no-ff", "release-pr", "-m", "merge release")
@@ -55,31 +59,36 @@ func TestImagePipeline(t *testing.T) {
 		version                                        string
 		wantInspect                                    bool
 		wantTags                                       []string
+		annotationVersion, annotationHeading           string
 	}{
 		{name: "check without credentials", mode: "check", wantBuild: true},
 		{name: "publish build number and latest from shallow main", wantSecret: true, wantBuild: true, wantPush: true, wantTags: []string{"build-108", "latest"}},
-		{name: "initial release after main advances", checkout: "first-release", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"0.1.0"}},
-		{name: "merged release after main advances", checkout: "release", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"0.1.10"}},
-		{name: "release at main tip", failure: "main-tip", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"0.2.0", "build-108", "latest"}},
-		{name: "retry already published release", checkout: "release", failure: "published", wantSecret: true, wantInspect: true},
-		{name: "retry published release at tip", failure: "published-tip", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"build-108", "latest"}},
+		{name: "prefix-only migration is a release", checkout: "first-release", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.1.0"}, annotationVersion: "v0.1.0", annotationHeading: "**Published oci-accelerator v0.1.0**"},
+		{name: "merged release after main advances", checkout: "release", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.1.10"}, annotationVersion: "v0.1.10", annotationHeading: "**Published oci-accelerator v0.1.10**"},
+		{name: "release at main tip", failure: "main-tip", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.2.0", "build-108", "latest"}, annotationVersion: "v0.2.0", annotationHeading: "**Published oci-accelerator v0.2.0**"},
+		{name: "retry already published release", checkout: "release", failure: "published", wantSecret: true, wantInspect: true, annotationVersion: "v0.1.10", annotationHeading: "**Version v0.1.10 is already published**"},
+		{name: "retry published release at tip", failure: "published-tip", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"build-108", "latest"}, annotationVersion: "v0.2.0", annotationHeading: "**Version v0.2.0 is already published**"},
 		{name: "conflicting version tag", checkout: "release", failure: "conflict", wantSecret: true, wantError: true, wantInspect: true},
 		{name: "tag without metadata", checkout: "release", failure: "no-metadata", wantSecret: true, wantError: true, wantInspect: true},
 		{name: "registry unauthorized", checkout: "release", failure: "unauthorized", wantSecret: true, wantError: true, wantInspect: true},
 		{name: "registry timeout", checkout: "release", failure: "timeout", wantSecret: true, wantError: true, wantInspect: true},
 		{name: "registry unexpected response", checkout: "release", failure: "unknown", wantSecret: true, wantError: true, wantInspect: true},
-		{name: "PR version bump", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "0.2.0\n", wantBuild: true},
-		{name: "PR downgrade", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "0.1.9\n", wantError: true},
-		{name: "PR with earlier bump then unchanged tip", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "0.1.9\n", failure: "extra-commit", wantError: true},
-		{name: "invalid version prefix", mode: "check", version: "v0.2.0\n", wantError: true},
-		{name: "leading zero version", mode: "check", version: "0.02.0\n", wantError: true},
-		{name: "prerelease version", mode: "check", version: "0.2.0-rc.1\n", wantError: true},
-		{name: "multiple version lines", mode: "check", version: "0.2.0\n0.3.0\n", wantError: true},
-		{name: "trailing blank line", mode: "check", version: "0.2.0\n\n", wantError: true},
-		{name: "binary version", mode: "check", version: "0.2.0\x00\n", wantError: true},
-		{name: "version without trailing newline", mode: "check", version: "0.2.0", wantBuild: true},
+		{name: "PR version bump", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "v0.2.0\n", wantBuild: true},
+		{name: "initial prefixed version", checkout: "before-version", branch: "feature", pr: "16", mode: "check", version: "v0.1.0\n", wantBuild: true},
+		{name: "PR downgrade", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "v0.1.9\n", wantError: true},
+		{name: "legacy to higher prefixed version", checkout: "legacy", branch: "feature", pr: "16", mode: "check", version: "v0.1.1\n", wantBuild: true},
+		{name: "legacy to lower prefixed version", checkout: "legacy", branch: "feature", pr: "16", mode: "check", version: "v0.0.9\n", wantError: true},
+		{name: "PR with earlier bump then unchanged tip", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "v0.1.9\n", failure: "extra-commit", wantError: true},
+		{name: "missing version prefix", mode: "check", version: "0.2.0\n", wantError: true},
+		{name: "leading zero version", mode: "check", version: "v0.02.0\n", wantError: true},
+		{name: "prerelease version", mode: "check", version: "v0.2.0-rc.1\n", wantError: true},
+		{name: "multiple version lines", mode: "check", version: "v0.2.0\nv0.3.0\n", wantError: true},
+		{name: "trailing blank line", mode: "check", version: "v0.2.0\n\n", wantError: true},
+		{name: "binary version", mode: "check", version: "v0.2.0\x00\n", wantError: true},
+		{name: "version without trailing newline", mode: "check", version: "v0.2.0", wantBuild: true},
 		{name: "missing version", mode: "check", failure: "missing-version", wantError: true},
-		{name: "oversize tag", mode: "check", version: strings.Repeat("1", 125) + ".0.0\n", wantError: true},
+		{name: "maximum length tag", mode: "check", version: "v" + strings.Repeat("1", 123) + ".0.0\n", wantBuild: true},
+		{name: "oversize tag", mode: "check", version: "v" + strings.Repeat("1", 124) + ".0.0\n", wantError: true},
 		{name: "feature branch", branch: "feature", wantError: true},
 		{name: "tag build", tag: "v1.2.3", wantError: true},
 		{name: "pull request", pr: "16", wantError: true},
@@ -95,6 +104,8 @@ func TestImagePipeline(t *testing.T) {
 		{name: "login failure", failure: "login", wantError: true, wantSecret: true},
 		{name: "secret failure", failure: "secret", wantError: true, wantSecret: true},
 		{name: "build failure", failure: "build", wantError: true, wantSecret: true, wantBuild: true, wantPush: true, wantTags: []string{"build-108", "latest"}},
+		{name: "release build failure", checkout: "release", failure: "build", wantError: true, wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.1.10"}},
+		{name: "annotation failure is nonfatal", checkout: "release", failure: "annotation", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.1.10"}, annotationVersion: "v0.1.10", annotationHeading: "**Published oci-accelerator v0.1.10**"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -107,10 +118,11 @@ func TestImagePipeline(t *testing.T) {
 			repo := filepath.Join(root, "repo")
 			if tc.version != "" {
 				writeFile(t, filepath.Join(repo, "VERSION"), tc.version, 0o600)
+				git(repo, "add", "VERSION")
 				git(repo, "commit", "-am", "change version")
 			}
 			if tc.failure == "main-tip" || tc.failure == "published-tip" {
-				writeFile(t, filepath.Join(repo, "VERSION"), "0.2.0\n", 0o600)
+				writeFile(t, filepath.Join(repo, "VERSION"), "v0.2.0\n", 0o600)
 				git(repo, "commit", "-am", "release at tip")
 				git(repo, "push", "origin", "main")
 			}
@@ -141,6 +153,7 @@ func TestImagePipeline(t *testing.T) {
 			writeFile(t, filepath.Join(bin, "docker"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$IMAGE_TEST_ROOT/docker-calls"
+printf 'docker %s\n' "$*" >> "$IMAGE_TEST_ROOT/operations"
 printf '%s\n' "$DOCKER_CONFIG" > "$IMAGE_TEST_ROOT/docker-config"
 case "$1 $2" in
   'login --username')
@@ -167,10 +180,22 @@ esac
 `, 0o700)
 			writeFile(t, filepath.Join(bin, "buildkite-agent"), `#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >> "$IMAGE_TEST_ROOT/secret-calls"
-[[ "$*" == 'secret get --format default OCI_ACCELERATOR_DOCKER_HUB_TOKEN' ]]
-[[ "$IMAGE_TEST_FAILURE" != secret ]]
-printf fixture-token
+case "$1" in
+  secret)
+    printf '%s\n' "$*" >> "$IMAGE_TEST_ROOT/secret-calls"
+    printf 'secret %s\n' "$*" >> "$IMAGE_TEST_ROOT/operations"
+    [[ "$*" == 'secret get --format default OCI_ACCELERATOR_DOCKER_HUB_TOKEN' ]]
+    [[ "$IMAGE_TEST_FAILURE" != secret ]]
+    printf fixture-token
+    ;;
+  annotate)
+    printf '%s\n' "$*" >> "$IMAGE_TEST_ROOT/annotate-calls"
+    printf 'annotate %s\n' "$*" >> "$IMAGE_TEST_ROOT/operations"
+    cat > "$IMAGE_TEST_ROOT/annotation-body"
+    [[ "$IMAGE_TEST_FAILURE" != annotation ]]
+    ;;
+  *) exit 99 ;;
+esac
 `, 0o700)
 			mode := tc.mode
 			if mode == "" {
@@ -205,6 +230,9 @@ printf fixture-token
 			}
 			if strings.Contains(string(out), "fixture-token") {
 				t.Fatal("credential appeared in output")
+			}
+			if tc.failure == "annotation" && !strings.Contains(string(out), "Warning:") {
+				t.Fatalf("annotation failure output lacks warning: %s", out)
 			}
 			_, err = os.Stat(filepath.Join(root, "secret-calls"))
 			if (err == nil) != tc.wantSecret {
@@ -243,6 +271,49 @@ printf fixture-token
 							t.Fatalf("missing image metadata %q: %s", metadata, calls)
 						}
 					}
+				}
+			}
+			annotationCalls, _ := os.ReadFile(filepath.Join(root, "annotate-calls"))
+			wantAnnotations := 0
+			if tc.annotationVersion != "" {
+				wantAnnotations = 1
+			}
+			if got := strings.Count(string(annotationCalls), "annotate "); got != wantAnnotations {
+				t.Fatalf("annotation calls = %d, want %d: %s", got, wantAnnotations, annotationCalls)
+			}
+			if tc.annotationVersion != "" {
+				if got := strings.TrimSpace(string(annotationCalls)); got != "annotate --style success --context oci-accelerator-release" {
+					t.Fatalf("annotation args = %q", got)
+				}
+				body, err := os.ReadFile(filepath.Join(root, "annotation-body"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, expected := range []string{
+					tc.annotationHeading,
+					"docker.io/buildkite/oci-accelerator:" + tc.annotationVersion,
+					"linux/amd64",
+					"linux/arm64",
+					"https://hub.docker.com/r/buildkite/oci-accelerator/tags?name=" + tc.annotationVersion,
+					"https://github.com/buildkite/oci-accelerator/commit/" + commit,
+					"```sh\ndocker pull docker.io/buildkite/oci-accelerator:" + tc.annotationVersion + "\n```",
+				} {
+					if !strings.Contains(string(body), expected) {
+						t.Fatalf("annotation body missing %q:\n%s", expected, body)
+					}
+				}
+				operations, err := os.ReadFile(filepath.Join(root, "operations"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				before := "docker buildx build "
+				if strings.HasPrefix(tc.annotationHeading, "**Version ") && !tc.wantBuild {
+					before = "docker buildx imagetools inspect "
+				}
+				beforeIndex := strings.LastIndex(string(operations), before)
+				annotationIndex := strings.Index(string(operations), "annotate annotate ")
+				if beforeIndex < 0 || annotationIndex < 0 || beforeIndex > annotationIndex {
+					t.Fatalf("annotation occurred before successful build or inspection:\n%s", operations)
 				}
 			}
 			if config, err := os.ReadFile(filepath.Join(root, "docker-config")); err == nil {

@@ -187,14 +187,23 @@ docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
 #### Releasing images
 
 To cut a release, open a PR that increases the root [`VERSION`](../VERSION) file, for
-example from `0.1.0` to `0.1.1`. Use one stable `MAJOR.MINOR.PATCH` version, without a
-`v` prefix, leading zeros, prerelease suffix, or build metadata. CI validates its format
-and checks increases against the PR's merge base with `main`.
+example from `v0.1.0` to `v0.1.1`. Use one stable `vMAJOR.MINOR.PATCH` version, with a
+lowercase `v` prefix and without leading zeros, prerelease suffix, or build metadata.
+CI validates its format and checks numeric increases against the PR's merge base with
+`main`. Historical unprefixed versions are accepted for comparison. Adding the prefix
+alone, such as `0.1.0` to `v0.1.0`, publishes the prefixed tag without changing the old tag.
 
 After you merge the PR, the non-PR `main` build compares `VERSION` with its first parent.
-If the value changed, it publishes `buildkite/oci-accelerator:0.1.1` for both `linux/amd64`
+If the value changed, it publishes `buildkite/oci-accelerator:v0.1.1` for both `linux/amd64`
 and `linux/arm64`, after formatting, vet, build, tests, race tests, and the image check pass.
 Adding `VERSION` for the first time also triggers a release. Git tag builds do not publish.
+
+Successful release publication adds a success annotation to the Buildkite build with
+the version, image, platforms, Docker Hub and source links, and a `docker pull` command.
+Retries replace the same annotation and say when the version is already published from
+the same commit. Ordinary `build-N` and `latest` updates do not add release annotations.
+If writing the annotation fails, the job logs a warning but still succeeds because
+the release is published. Retry the original publishing job to restore the notice.
 
 The version tag identifies the merged commit, not whichever commit is newest when CI
 finishes. A release still publishes if `main` has advanced, but that older build does not
@@ -215,8 +224,8 @@ cancel a release build or skip it with a commit-message directive, a later ordin
 does not recover that release automatically. Run the original release commit again.
 
 The binary embeds `VERSION`, including in local `go build` and Docker builds. Run
-`oci-accelerator --version` or `docker run --rm buildkite/oci-accelerator:0.1.1 --version`
-without a configuration file to print `oci-accelerator 0.1.1`. Between bumps, multiple
+`oci-accelerator --version` or `docker run --rm buildkite/oci-accelerator:v0.1.1 --version`
+without a configuration file to print `oci-accelerator v0.1.1`. Between bumps, multiple
 `main` builds report the same version. Images built by the pipeline also carry
 `org.opencontainers.image.version` and `org.opencontainers.image.revision` as image labels
 and multi-platform index annotations so you can identify the exact source commit.
