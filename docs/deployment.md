@@ -180,8 +180,7 @@ docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
 - For a multi-platform OCI archive, use a Buildx builder with the `docker-container` driver and
   an OCI output instead of `--load`.
 - Buildkite validates both architectures and publishes successful current `main` builds to
-  `buildkite/oci-accelerator:latest` (see the
-  [publishing workflow and prerequisites](../.buildkite/README.md#docker-hub-releases)).
+  `buildkite/oci-accelerator:latest`.
 
 ### Serve remote Docker hosts
 
