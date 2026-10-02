@@ -33,16 +33,30 @@ func TestContainerImageLifecycle(t *testing.T) {
 	}
 
 	inspectArgs := append([]string{"image", "inspect"}, platform...)
-	inspectArgs = append(inspectArgs, imageName, "--format", `{{json .Config.Entrypoint}}|{{json .Config.Cmd}}|{{.Config.User}}|{{json .Config.Healthcheck.Test}}`)
+	inspectArgs = append(inspectArgs, imageName, "--format", `{{json .Config.Entrypoint}}|{{json .Config.Cmd}}|{{.Config.User}}|{{json .Config.Healthcheck.Test}}|{{json .Config.Env}}`)
 	inspect := strings.TrimSpace(run(t, "docker", inspectArgs...))
 	wantPrefixNull, wantPrefixEmpty := `["/usr/local/bin/oci-accelerator"]|null|10001:10001|`, `["/usr/local/bin/oci-accelerator"]|[]|10001:10001|`
 	if (!strings.HasPrefix(inspect, wantPrefixNull) && !strings.HasPrefix(inspect, wantPrefixEmpty)) || !strings.Contains(inspect, "wget") || !strings.Contains(inspect, "http://127.0.0.1:9090/readyz") {
 		t.Fatalf("container image execution contract is incomplete: %s", inspect)
 	}
-	envOnlyArgs := append([]string{"run", "--rm"}, platform...)
-	envOnlyArgs = append(envOnlyArgs, "-e", "OCI_ACCELERATOR_REGISTRIES=example.com", "-e", "OCI_ACCELERATOR_CA_DIR=/tmp/ca", "-e", "OCI_ACCELERATOR_CACHE_DIR=/tmp/cache", imageName, "--check")
-	if output := run(t, "docker", envOnlyArgs...); !strings.Contains(output, "configuration validated") {
-		t.Fatalf("container environment-only configuration was not validated: %s", output)
+	for _, setting := range []string{"OCI_ACCELERATOR_LISTEN=0.0.0.0:3128", "OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090", "OCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca", "OCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache"} {
+		if !strings.Contains(inspect, `"`+setting+`"`) {
+			t.Fatalf("image lacks default %s: %s", setting, inspect)
+		}
+	}
+	if strings.Contains(inspect, `"OCI_ACCELERATOR_REGISTRIES=`) {
+		t.Fatalf("image must not choose intercepted registries: %s", inspect)
+	}
+	// The image defaults need only REGISTRIES, and -e overrides a baked default.
+	checkArgs := append([]string{"run", "--rm"}, platform...)
+	checkArgs = append(checkArgs, "-e", "OCI_ACCELERATOR_REGISTRIES=example.com", imageName, "--check")
+	if output := run(t, "docker", checkArgs...); !strings.Contains(output, "configuration validated") {
+		t.Fatalf("image defaults with only REGISTRIES were not validated: %s", output)
+	}
+	overrideArgs := append([]string{"run", "--rm"}, platform...)
+	overrideArgs = append(overrideArgs, "-e", "OCI_ACCELERATOR_REGISTRIES=example.com", "-e", "OCI_ACCELERATOR_LISTEN=invalid", imageName, "--check")
+	if result := dockerCombinedLocal(overrideArgs...); result.err == nil || !strings.Contains(result.output, "OCI_ACCELERATOR_LISTEN") {
+		t.Fatalf("-e did not override the image LISTEN default: %v: %s", result.err, trim(result.output))
 	}
 
 	root := t.TempDir()
@@ -51,8 +65,13 @@ func TestContainerImageLifecycle(t *testing.T) {
 	origin, fixture, counts := startRegistry(t, root, ip, makeImageWithPayload(t, payload))
 	defer origin.Close()
 	authority := origin.Listener.Addr().String()
-	config := filepath.Join(root, "proxy.env")
-	writeFile(t, config, fmt.Sprintf("OCI_ACCELERATOR_LISTEN=0.0.0.0:3128\nOCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090\nOCI_ACCELERATOR_REGISTRIES=%s\nOCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca\nOCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache\nOCI_ACCELERATOR_CACHE_MAX_BYTES=33554432\n", authority), 0o644)
+	example, err := filepath.Abs(filepath.Join("..", ".env.container-example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Start from the documented container file, as Compose does, and override
+	// only what this fixture needs. Docker applies -e after --env-file.
+	env := []string{"--env-file", example, "-e", "OCI_ACCELERATOR_REGISTRIES=" + authority, "-e", "OCI_ACCELERATOR_CACHE_MAX_BYTES=33554432"}
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	identity := "oci-accelerator-ca-" + suffix
@@ -78,7 +97,7 @@ func TestContainerImageLifecycle(t *testing.T) {
 	}
 
 	// A missing read-only CA must fail. A writable fresh volume is initialized below.
-	assertContainerFails(t, imageName, platform, config, "--read-only", "--mount", "type=volume,src="+identity+",dst=/var/lib/oci-accelerator,readonly")
+	assertContainerFails(t, imageName, platform, env, "--read-only", "--mount", "type=volume,src="+identity+",dst=/var/lib/oci-accelerator,readonly")
 	if _, err := os.Stat(filepath.Join(identityRoot, "ca")); !os.IsNotExist(err) {
 		t.Fatalf("missing read-only CA was created: %v", err)
 	}
@@ -89,7 +108,7 @@ func TestContainerImageLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	assertContainerFails(t, imageName, platform, config, "--read-only", "--mount", "type=bind,src="+bad+",dst=/var/lib/oci-accelerator/ca")
+	assertContainerFails(t, imageName, platform, env, "--read-only", "--mount", "type=bind,src="+bad+",dst=/var/lib/oci-accelerator/ca")
 	for _, name := range []string{"ca.crt", "ca.key"} {
 		contents, err := os.ReadFile(filepath.Join(bad, name))
 		if err != nil || string(contents) != "bad" {
@@ -113,13 +132,13 @@ func TestContainerImageLifecycle(t *testing.T) {
 			t.Errorf("remove owned container: %v: %s", r.err, r.output)
 		}
 	})
-	startContainer(t, name, imageName, platform, identity, cache, config, originCAPath(root))
+	startContainer(t, name, imageName, platform, identity, cache, env, originCAPath(root))
 	proxyPort := containerPort(t, name)
 	waitContainerHealthy(t, name)
 	caPath := filepath.Join(identityRoot, "ca", "ca.crt")
 	fingerprint := certFingerprint(t, caPath)
 	state := strings.TrimSpace(run(t, "docker", "inspect", name, "--format", `{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{json .HostConfig.CapDrop}}|{{range .Mounts}}{{.Destination}}={{.RW}}:{{.Type}};{{end}}`))
-	if !strings.HasPrefix(state, "10001:10001|true|[\"ALL\"]|") || !strings.Contains(state, "/etc/oci-accelerator/proxy.env=false:bind;") || !strings.Contains(state, "/var/lib/oci-accelerator=true:volume;") || !strings.Contains(state, "/var/lib/oci-accelerator/cache=true:volume;") {
+	if !strings.HasPrefix(state, "10001:10001|true|[\"ALL\"]|") || !strings.Contains(state, "/var/lib/oci-accelerator=true:volume;") || !strings.Contains(state, "/var/lib/oci-accelerator/cache=true:volume;") {
 		t.Fatalf("unexpected live container isolation: %s", state)
 	}
 	storage := strings.TrimSpace(run(t, "docker", "exec", name, "stat", "-c", "%u:%g:%a", "/var/lib/oci-accelerator", "/var/lib/oci-accelerator/ca", "/var/lib/oci-accelerator/cache"))
@@ -146,7 +165,7 @@ func TestContainerImageLifecycle(t *testing.T) {
 	assertDeniedViaProxy(t, proxyPort, caPath, authority, fixture.layerPath)
 
 	stopContainer(t, name)
-	startContainer(t, name, imageName, platform, identity, cache, config, originCAPath(root))
+	startContainer(t, name, imageName, platform, identity, cache, env, originCAPath(root))
 	waitContainerHealthy(t, name)
 	if got := certFingerprint(t, caPath); got != fingerprint {
 		t.Fatalf("CA changed across recreation: %s != %s", got, fingerprint)
@@ -163,10 +182,11 @@ func TestContainerImageLifecycle(t *testing.T) {
 		a1[fixture.layerPath], b1[fixture.layerPath], a2[fixture.layerPath]-a1[fixture.layerPath], b2[fixture.layerPath]-b1[fixture.layerPath], a3[fixture.layerPath]-a2[fixture.layerPath], b3[fixture.layerPath]-b2[fixture.layerPath])
 }
 
-func startContainer(t *testing.T, name, image string, platform []string, identity, cache, config, originCA string) {
+func startContainer(t *testing.T, name, image string, platform []string, identity, cache string, env []string, originCA string) {
 	t.Helper()
 	args := append([]string{"run"}, platform...)
-	args = append(args, "-d", "--name", name, "--network", name, "--health-interval", "1s", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::3128", "-e", "SSL_CERT_FILE=/run/origin-ca.crt", "--mount", "type=volume,src="+cache+",dst=/var/lib/oci-accelerator/cache", "--mount", "type=volume,src="+identity+",dst=/var/lib/oci-accelerator", "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/proxy.env,readonly", "--mount", "type=bind,src="+originCA+",dst=/run/origin-ca.crt,readonly", image, "--env-file", "/etc/oci-accelerator/proxy.env")
+	args = append(args, env...)
+	args = append(args, "-d", "--name", name, "--network", name, "--health-interval", "1s", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::3128", "-e", "SSL_CERT_FILE=/run/origin-ca.crt", "--mount", "type=volume,src="+cache+",dst=/var/lib/oci-accelerator/cache", "--mount", "type=volume,src="+identity+",dst=/var/lib/oci-accelerator", "--mount", "type=bind,src="+originCA+",dst=/run/origin-ca.crt,readonly", image)
 	run(t, "docker", args...)
 }
 
@@ -205,11 +225,12 @@ func stopContainer(t *testing.T, name string) {
 	run(t, "docker", "rm", name)
 }
 
-func assertContainerFails(t *testing.T, image string, platform []string, config string, args ...string) {
+func assertContainerFails(t *testing.T, image string, platform, env []string, args ...string) {
 	t.Helper()
 	command := append([]string{"run", "--rm", "--network", "none"}, platform...)
+	command = append(command, env...)
 	command = append(command, args...)
-	command = append(command, "--mount", "type=bind,src="+config+",dst=/etc/oci-accelerator/proxy.env,readonly", image, "--env-file", "/etc/oci-accelerator/proxy.env")
+	command = append(command, image)
 	if result := dockerCombinedLocal(command...); result.err == nil || !strings.Contains(result.output, "CA startup failed") {
 		t.Fatalf("expected CA startup rejection: %v: %s", result.err, trim(result.output))
 	}

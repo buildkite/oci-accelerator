@@ -92,15 +92,55 @@ The root `Dockerfile` builds a static Go binary into an Alpine-based image.
 | Health check      | `wget` of `http://127.0.0.1:9090/readyz`        |
 | State directories | `/var/lib/oci-accelerator` and its `cache/`, UID/GID 10001, mode 0700 (`ca/` is left absent) |
 
-The health check needs the metrics listener enabled at `127.0.0.1:9090`. Keep it there or
-override the health check when changing the environment. An unhealthy result is diagnostic and does not
-itself trigger a restart. Readiness does not check upstream connectivity or disk capacity.
+The image sets four environment defaults that match its own layout:
+
+| Variable                         | Image default                    | Why                                              |
+| -------------------------------- | -------------------------------- | ------------------------------------------------ |
+| `OCI_ACCELERATOR_LISTEN`         | `0.0.0.0:3128`                   | A published port must reach the proxy             |
+| `OCI_ACCELERATOR_METRICS_LISTEN` | `127.0.0.1:9090`                 | The health check probes it                        |
+| `OCI_ACCELERATOR_CA_DIR`         | `/var/lib/oci-accelerator/ca`    | The image creates and owns its parent             |
+| `OCI_ACCELERATOR_CACHE_DIR`      | `/var/lib/oci-accelerator/cache` | The image creates and owns this directory         |
+
+You must still set `OCI_ACCELERATOR_REGISTRIES`, so the image never chooses which hosts to
+intercept for you.
+
+**The image listens on all container interfaces.** Publishing the port only on a trusted host
+address, as in the examples below, limits how the host exposes it. Any container on the same
+Docker network can still connect to the proxy directly, so keep untrusted workloads off that
+network. With `--network host`, or with a port published on all host addresses, such as
+`-p 3128:3128`, the proxy accepts connections on every host interface. In those setups, set
+`OCI_ACCELERATOR_LISTEN` to a loopback or private address.
+
+How image defaults interact with other settings:
+
+- Docker `-e`, Docker `--env-file`, and Compose `environment` or `env_file` values override
+  image defaults.
+- Image defaults are process environment variables. They therefore override an application
+  `--env-file` passed after the image name. Configure containers through Docker or Compose
+  instead.
+- You cannot unset an image default, only replace it. An empty value counts as set: an empty
+  `OCI_ACCELERATOR_METRICS_LISTEN` disables metrics, and an empty `OCI_ACCELERATOR_LISTEN`,
+  `OCI_ACCELERATOR_CA_DIR`, or `OCI_ACCELERATOR_CACHE_DIR` fails validation.
+
+The health check needs the metrics listener at `127.0.0.1:9090`. Keep it there or override
+the health check when changing it. An unhealthy result is diagnostic and does not itself
+trigger a restart. Readiness does not check upstream connectivity or disk capacity.
+
+#### Container environment file
+
+`.env.container-example` holds the container settings: `OCI_ACCELERATOR_REGISTRIES` and a
+copy of the four image defaults. Copy it to `.env.container`, which Git ignores, and edit
+the copy. Values in the copy override the image defaults. See `.env.example` for every other
+setting and its default.
+
+Docker and Compose read this file with their own dotenv syntax, not the application's. Keep it
+to unquoted literal `KEY=value` lines and full-line comments.
 
 #### Compose
 
 The supplied `compose.yaml` service builds the local image from the repository root and:
 
-- requires `env_file: .env`
+- requires `env_file: .env.container`
 - publishes only `127.0.0.1:3128`
 - keeps the root filesystem read-only, drops all capabilities, and sets `no-new-privileges`
 - uses `restart: unless-stopped` and a 40-second stop grace period, allowing for the 15-second
@@ -127,22 +167,18 @@ Volume notes:
 Build, validate, and start:
 
 ```sh
-cp .env.example .env
-# Edit .env for the container values shown below.
+cp .env.container-example .env.container
+# Edit .env.container if you need different registries.
 docker compose build
 docker compose run --rm --no-deps oci-accelerator --check
+# Optional: provision the CA before first start. init-ca needs the image's CA path explicitly.
+docker compose run --rm --no-deps oci-accelerator init-ca --dir /var/lib/oci-accelerator/ca
 docker compose up -d
 ```
 
-For Compose, set `OCI_ACCELERATOR_LISTEN=0.0.0.0:3128`,
-`OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090`,
-`OCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca`, and
-`OCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache` in `.env`.
-Compose injects this `env_file` into the application process. The image has no baked-in
-environment defaults and its `CMD` supplies no arguments.
-
 Compose does not automatically pass exported host variables into the container. To override
-settings, add an `environment` mapping to the service in a local Compose override file:
+settings, edit `.env.container`, or add an `environment` mapping to the service in a local
+Compose override file. Compose `environment` values override `env_file` values:
 
 ```yaml
 services:
@@ -174,8 +210,12 @@ The equivalent without Compose, from the repository root:
 
 ```sh
 docker build -t oci-accelerator:local .
-cp .env.example .env.container
-# Edit .env.container for the container paths and listeners shown above.
+cp .env.container-example .env.container
+# Edit .env.container if you need different registries.
+# Optional: provision the CA before first start.
+docker run --rm --read-only \
+  --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
+  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/ca
 docker run -d --name oci-accelerator --restart unless-stopped \
   --env-file .env.container \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
@@ -189,13 +229,10 @@ docker inspect --format '{{.State.Health.Status}}' oci-accelerator
 
 Stop it with `docker stop oci-accelerator`. Removing the container preserves both named volumes.
 
-Here `.env.container` contains the same container values described for Compose. Docker's
-`--env-file` appears before the image name because Docker injects the values into the
-container. The application's `--env-file` appears after the image name and requires its file
-to be mounted inside the container. Docker and Compose dotenv syntax differs from the
-application's syntax, so keep shared examples to portable unquoted literal `KEY=value` lines.
-
-You can instead override individual values explicitly with `-e`:
+Docker's `--env-file` appears before the image name, so Docker injects the values into the
+container. Add `-e` to override individual values. Docker applies `-e` after `--env-file`.
+Because the image supplies the other container defaults, you can instead pass only the
+registries:
 
 ```sh
 docker run -d --name oci-accelerator --restart unless-stopped \
@@ -203,19 +240,14 @@ docker run -d --name oci-accelerator --restart unless-stopped \
   --stop-timeout 40 -p 127.0.0.1:3128:3128 \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
   --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
-  -e OCI_ACCELERATOR_LISTEN=0.0.0.0:3128 \
-  -e OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090 \
   -e OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws \
-  -e OCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca \
-  -e OCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache \
   oci-accelerator:local
 ```
 
-The proxy listens on all container interfaces so the published port works, while Docker exposes
-it only on the host's loopback address. Metrics stay on container loopback for the image health
-check and are not published. The UID 10001 state volumes and isolation flags match the Compose
-example. Exported host variables are not implicit container overrides. Use `-e` or a Compose
-`environment` mapping.
+Docker exposes the proxy only on the host's loopback address. Metrics stay on container
+loopback for the image health check and are not published. The UID 10001 state volumes and
+isolation flags match the Compose example. Exported host variables are not implicit container
+overrides. Use `-e`, `--env-file`, or a Compose `environment` mapping.
 
 #### Multi-architecture images
 
@@ -293,8 +325,9 @@ The default `127.0.0.1:3128` listener serves Docker on the same host. To serve r
 
 See [`.env.example`](../.env.example) for all settings and their actual defaults.
 `OCI_ACCELERATOR_REGISTRIES`, `OCI_ACCELERATOR_CA_DIR`, and
-`OCI_ACCELERATOR_CACHE_DIR` are required. The registries and `./data` paths in that file are
-examples, not built-in defaults. Configuration applies built-in defaults, an optional explicitly
+`OCI_ACCELERATOR_CACHE_DIR` are required. The container image supplies the two directories and
+other container defaults (see [image](#image)). The registries and `./data` paths in that file
+are examples, not built-in defaults. Configuration applies built-in defaults, an optional explicitly
 selected dotenv file, then process environment overrides. There is no file discovery,
 environment mutation, `OCI_ACCELERATOR_CONFIG` variable, or hot reload.
 

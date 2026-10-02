@@ -20,6 +20,14 @@ RUN apk add --no-cache ca-certificates \
     && chown -R 10001:10001 /var/lib/oci-accelerator \
     && chmod 0700 /var/lib/oci-accelerator /var/lib/oci-accelerator/cache
 COPY --from=build /out/oci-accelerator /usr/local/bin/oci-accelerator
+# Defaults that match this image. The proxy binds all container interfaces so a
+# published port works, metrics stay on loopback for the healthcheck, and the
+# state paths are the directories created above. .env.container-example repeats
+# these values. Docker -e, --env-file, and Compose settings override them.
+ENV OCI_ACCELERATOR_LISTEN=0.0.0.0:3128
+ENV OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090
+ENV OCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca
+ENV OCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache
 USER 10001:10001
 EXPOSE 3128
 STOPSIGNAL SIGTERM

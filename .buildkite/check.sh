@@ -21,3 +21,4 @@ trap 'rm -rf "$temporary"' EXIT
 # user can differ from the checkout owner, which Git rejects as unsafe.
 go build -buildvcs=false -o "$temporary/oci-accelerator" ./cmd/oci-accelerator
 "$temporary/oci-accelerator" --env-file .env.example --check
+"$temporary/oci-accelerator" --env-file .env.container-example --check
