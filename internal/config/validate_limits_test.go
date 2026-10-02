@@ -2,20 +2,19 @@ package config
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
 func TestValidateLimitsRequirePositiveValues(t *testing.T) {
 	for _, field := range []string{"CACHE_MAX_BYTES", "CACHE_MAX_FILLS", "CACHE_MAX_ENTRIES", "CACHE_MAX_AUTHORIZATION_ENTRIES", "MAX_CONNECTIONS", "MAX_LEAF_CERTIFICATES"} {
-		for _, value := range []string{"0", "-1"} {
-			t.Run(field+value, func(t *testing.T) {
-				values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", field: value}
-				_, err := load("", environmentLookup(values))
-				if !errors.Is(err, ErrInvalid) {
-					t.Fatalf("error = %v", err)
-				}
-			})
-		}
+		t.Run(field, func(t *testing.T) {
+			values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", field: "0"}
+			_, err := load("", environmentLookup(values))
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "must be positive") {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 

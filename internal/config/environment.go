@@ -76,8 +76,8 @@ func setEnvironmentValue(target any, value string) string {
 		*target = parsed
 	case *int, *int64:
 		parsed, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || !hasNoLeadingZero(value) {
-			return "must be a decimal integer without leading zeros within the int64 range"
+		if err != nil || !isCanonicalDigits(value) {
+			return "must be a decimal integer without a sign or leading zeros within the int64 range"
 		}
 		switch target := target.(type) {
 		case *int:
@@ -103,9 +103,16 @@ func setEnvironmentValue(target any, value string) string {
 	return ""
 }
 
-func hasNoLeadingZero(value string) bool {
-	if len(value) > 0 && (value[0] == '+' || value[0] == '-') {
-		value = value[1:]
+// isCanonicalDigits reports whether value is only ASCII digits, without a sign
+// or a leading zero other than "0" itself.
+func isCanonicalDigits(value string) bool {
+	if value == "" || (len(value) > 1 && value[0] == '0') {
+		return false
 	}
-	return len(value) == 1 || (len(value) > 1 && value[0] != '0')
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

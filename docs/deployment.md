@@ -312,9 +312,10 @@ registries and paths. `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT
 are comma-separated authority lists. Entries are whitespace-trimmed, the
 whole list replaces the file value, and empty members are rejected.
 
-Use exactly `true` or `false` for booleans, decimal integers without leading zeros for numbers,
-and Go duration strings such as `500ms`, `30s`, or `2m` for durations. Relative paths from all
-sources are resolved from the process working directory and converted internally to absolute paths.
+Use exactly `true` or `false` for booleans, decimal integers without a sign or leading zeros
+for numbers, and Go duration strings such as `500ms`, `30s`, or `2m` for durations. Relative
+paths from all sources are resolved from the process working directory and converted
+internally to absolute paths.
 
 For example, process environment values can override a native dotenv file:
 
