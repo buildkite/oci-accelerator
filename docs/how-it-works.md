@@ -72,8 +72,6 @@ using the example configuration, which lists `registry-1.docker.io` in
 | 7   | `GET …/blobs/sha256:<config>`       | Docker fetches the image config <br> _The accelerator follows the redirect to Docker Hub's CDN, dropping `Authorization` and other headers, and caches it as in step 5._ |
 | 8   | `GET …/blobs/sha256:<layer>`        | Docker fetches each layer <br> _Handled as in step 7._                                                                                                                   |
 
-<details>
-<summary>Sequence diagram</summary>
 
 ```mermaid
 sequenceDiagram
@@ -110,8 +108,6 @@ sequenceDiagram
     C-->>A: 200 blob
     A-->>D: Stream, writing to cache
 ```
-
-</details>
 
 <br>
 
