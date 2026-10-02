@@ -63,6 +63,9 @@ func parseEnvLine(line string) (name, value string, skip bool, category string) 
 	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 		return "", "", true, ""
 	}
+	if strings.HasPrefix(trimmed, "export ") || strings.HasPrefix(trimmed, "export\t") {
+		return "", "", false, "export is not supported"
+	}
 	name, rest, found := strings.Cut(trimmed, "=")
 	if !found || name == "" {
 		return "", "", false, "expected KEY=value"

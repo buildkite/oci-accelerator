@@ -33,19 +33,25 @@ func TestReadEnvFileSyntaxAndSafety(t *testing.T) {
 	if values, err := readEnvFile(""); err != nil || len(values) != 0 {
 		t.Fatalf("readEnvFile empty = %v, %v", values, err)
 	}
-	for _, test := range []struct{ name, contents string }{
-		{"unknown", "SECRET_VALUE=x\n"},
-		{"duplicate", "OCI_ACCELERATOR_LISTEN=x\nOCI_ACCELERATOR_LISTEN=y\n"},
-		{"bare", "OCI_ACCELERATOR_LISTEN\n"},
-		{"export", "export OCI_ACCELERATOR_LISTEN=x\n"},
-		{"quote", "OCI_ACCELERATOR_LISTEN='x\n"},
-		{"trailing", "OCI_ACCELERATOR_LISTEN='x' junk\n"},
-		{"nul", "OCI_ACCELERATOR_LISTEN=x\x00y\n"},
+	for _, test := range []struct{ name, contents, reason string }{
+		{"unknown", "SECRET_VALUE=x\n", "unknown environment setting"},
+		{"duplicate", "OCI_ACCELERATOR_LISTEN=x\nOCI_ACCELERATOR_LISTEN=y\n", "duplicate environment setting"},
+		{"bare", "OCI_ACCELERATOR_LISTEN\n", "expected KEY=value"},
+		{"export", "export OCI_ACCELERATOR_LISTEN=SECRET_VALUE\n", "export is not supported"},
+		{"export with tab", "export\tOCI_ACCELERATOR_LISTEN=x\n", "export is not supported"},
+		{"indented export with spaces", "  export   OCI_ACCELERATOR_LISTEN=x\n", "export is not supported"},
+		{"export without value", "export OCI_ACCELERATOR_LISTEN\n", "export is not supported"},
+		{"export as name", "export=x\n", "unknown environment setting"},
+		{"export prefix in name", "exportOCI_ACCELERATOR_LISTEN=x\n", "unknown environment setting"},
+		{"inner space", "OCI_ACCELERATOR LISTEN=x\n", "malformed environment setting name"},
+		{"quote", "OCI_ACCELERATOR_LISTEN='x\n", "malformed quoted value"},
+		{"trailing", "OCI_ACCELERATOR_LISTEN='x' junk\n", "trailing content"},
+		{"nul", "OCI_ACCELERATOR_LISTEN=x\x00y\n", "NUL byte"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := writeConfig(t, test.contents)
 			_, err := readEnvFile(path)
-			if !errors.Is(err, ErrInvalid) || strings.Contains(err.Error(), "SECRET_VALUE") {
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), test.reason) || strings.Contains(err.Error(), "SECRET_VALUE") {
 				t.Fatalf("error = %v", err)
 			}
 		})
