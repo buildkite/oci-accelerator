@@ -30,7 +30,7 @@ and cache storage in detail.
 ```
 oci-accelerator [--env-file FILE] [--check]
 oci-accelerator --version
-oci-accelerator init-ca [--env-file FILE] [--dir DIR]
+oci-accelerator init-ca --dir DIR
 ```
 
 | Command                                 | Description                                                                                                                                  |
@@ -38,7 +38,7 @@ oci-accelerator init-ca [--env-file FILE] [--dir DIR]
 | `oci-accelerator [--env-file FILE]`     | Start using built-in defaults, the optional dotenv file, and process environment overrides.                                                 |
 | `oci-accelerator [--env-file FILE] --check` | Validate the same effective configuration without starting the proxy or touching the CA or cache directories.                          |
 | `oci-accelerator --version`            | Print the version compiled from the root `VERSION` file and exit, without configuration or startup.                                          |
-| `oci-accelerator init-ca [--env-file FILE] [--dir DIR]` | Create or validate a root CA. `--dir` overrides the process environment, which overrides the file.                                 |
+| `oci-accelerator init-ca --dir DIR`     | Create a root CA in `DIR`, or validate an existing one, without starting the proxy. It ignores environment configuration and prints the certificate path and its SHA-256 fingerprint. |
 | `oci-accelerator --help`                | Print usage. `init-ca --help` describes `init-ca`.                                                                                           |
 
 Configuration uses `OCI_ACCELERATOR_*` environment variables only. You can explicitly

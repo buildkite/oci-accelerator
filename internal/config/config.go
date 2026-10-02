@@ -82,50 +82,23 @@ func Load(path string) (Config, error) {
 	return load(path, os.LookupEnv)
 }
 
-// LoadCADir returns the CA directory setting with the same file and
-// environment precedence as [Load]. The file must still be well formed, but no
-// other setting is parsed or validated, so CA provisioning does not depend on
-// the rest of the proxy configuration. The value is returned as written,
-// without resolution or validation, and is empty when unset.
-func LoadCADir(path string) (string, error) {
-	return loadCADir(path, os.LookupEnv)
-}
-
 func load(path string, lookup func(string) (string, bool)) (Config, error) {
-	effective, err := withEnvFile(path, lookup)
+	fileValues, err := readEnvFile(path)
 	if err != nil {
 		return Config{}, err
 	}
 	raw := defaults()
-	if err := applyEnvironment(&raw, effective); err != nil {
-		return Config{}, err
-	}
-	return validate(raw)
-}
-
-func loadCADir(path string, lookup func(string) (string, bool)) (string, error) {
-	effective, err := withEnvFile(path, lookup)
-	if err != nil {
-		return "", err
-	}
-	dir, _ := effective(environmentPrefix + caDirSetting)
-	return dir, nil
-}
-
-// withEnvFile layers lookup over the optional dotenv file at path, so a
-// present process variable wins even when its value is empty.
-func withEnvFile(path string, lookup func(string) (string, bool)) (func(string) (string, bool), error) {
-	fileValues, err := readEnvFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return func(name string) (string, bool) {
+	// A present process variable wins even when its value is empty.
+	if err := applyEnvironment(&raw, func(name string) (string, bool) {
 		if value, ok := lookup(name); ok {
 			return value, true
 		}
 		value, ok := fileValues[name]
 		return value, ok
-	}, nil
+	}); err != nil {
+		return Config{}, err
+	}
+	return validate(raw)
 }
 
 func defaults() rawConfig {

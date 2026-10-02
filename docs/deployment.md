@@ -457,13 +457,11 @@ the CA directory is absent. Leave it absent initially and do not pre-create an e
 bin/oci-accelerator init-ca --dir data/ca
 ```
 
-- `init-ca` provisions only the root CA. It does not load the full proxy configuration or start
-  the proxy, cache, or any network activity.
-- Pass `--dir`, set `OCI_ACCELERATOR_CA_DIR` in the process environment, or select a file with
-  `--env-file`. Only the CA directory is required. Precedence is `--dir`, process environment,
-  then file. Relative paths are resolved from the working directory, and the parent must exist.
-- The selected file must still be syntactically valid, including having no duplicate or unknown
-  keys. Typed values for settings unrelated to CA initialization are not validated.
+- `init-ca` provisions only the root CA. It does not read `OCI_ACCELERATOR_*` variables or an
+  environment file, and it does not start the proxy, cache, or any network activity.
+- You must pass `--dir`. Use the same path as `OCI_ACCELERATOR_CA_DIR`, so that startup reuses
+  the CA you provisioned. Relative paths are resolved from the working directory, and the parent
+  must already exist.
 - On success it prints `ca_certificate="..."` (the public certificate path) and `ca_sha256=...`
   (the lowercase SHA-256 fingerprint). It never prints the private key. Startup logs the same
   `ca_sha256` for trusted distribution.

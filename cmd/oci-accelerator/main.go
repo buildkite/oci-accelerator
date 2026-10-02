@@ -93,7 +93,7 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(stdout, "Usage: oci-accelerator [--env-file FILE] [--check]")
 			fmt.Fprintln(stdout, "       oci-accelerator --version")
-			fmt.Fprintln(stdout, "       oci-accelerator init-ca [--env-file FILE] [--dir DIR]")
+			fmt.Fprintln(stdout, "       oci-accelerator init-ca --dir DIR")
 			return config.Config{}, true, nil
 		}
 		return config.Config{}, false, errors.New("invalid command line")

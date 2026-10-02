@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
-	"github.com/buildkite/oci-accelerator/internal/config"
 )
 
 // runInitCA provisions or validates the root CA without starting the proxy.
@@ -17,37 +16,18 @@ func runInitCA(args []string, stdout io.Writer) error {
 	// Keep rejected arguments out of diagnostics, as in the proxy command.
 	flags.SetOutput(io.Discard)
 
-	dir := flags.String("dir", "", "CA directory (overrides OCI_ACCELERATOR_CA_DIR, and its parent must already exist)")
-	envFile := flags.String("env-file", "", "path to an environment configuration file")
+	dir := flags.String("dir", "", "CA directory (required, and its parent must already exist)")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			_, err := fmt.Fprintln(stdout, "Usage: oci-accelerator init-ca [--env-file FILE] [--dir DIR]\n\nCreate or validate ca.crt and ca.key without starting the proxy.\nDIR defaults to OCI_ACCELERATOR_CA_DIR from the environment or file, is relative to the working directory, and must have an existing parent.\nExisting valid CA files are reused, never replaced.")
+			_, err := fmt.Fprintln(stdout, "Usage: oci-accelerator init-ca --dir DIR\n\nCreate or validate ca.crt and ca.key without starting the proxy.\nDIR is relative to the working directory, and its parent must already exist.\nExisting valid CA files are reused, never replaced.")
 			return err
 		}
 		return errors.New("invalid init-ca command line")
 	}
 
-	configured, err := config.LoadCADir(*envFile)
-	if err != nil {
-		if errors.Is(err, config.ErrInvalid) {
-			return fmt.Errorf("configuration validation failed: %w", err)
-		}
-		return errors.New("configuration validation failed")
-	}
-
-	dirSet := false
-	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "dir" {
-			dirSet = true
-		}
-	})
-	if !dirSet {
-		*dir = configured
-	}
-
 	if strings.TrimSpace(*dir) == "" || flags.NArg() != 0 {
-		return errors.New("init-ca requires --dir DIR or OCI_ACCELERATOR_CA_DIR, and positional arguments are not supported")
+		return errors.New("init-ca requires --dir DIR, and positional arguments are not supported")
 	}
 
 	// Open requires a positive leaf limit, but this command never issues leaves.

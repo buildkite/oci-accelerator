@@ -7,10 +7,7 @@ import (
 	"time"
 )
 
-const (
-	environmentPrefix = "OCI_ACCELERATOR_"
-	caDirSetting      = "CA_DIR"
-)
+const environmentPrefix = "OCI_ACCELERATOR_"
 
 type environmentSetting struct {
 	name   string
@@ -24,7 +21,7 @@ func environmentSettings(raw *rawConfig) []environmentSetting {
 		{"METRICS_ALLOW_REMOTE", &raw.MetricsAllowRemote},
 		{"REGISTRIES", &raw.Registries},
 		{"REDIRECT_ALLOWLIST", &raw.RedirectAllowlist},
-		{caDirSetting, &raw.CADir},
+		{"CA_DIR", &raw.CADir},
 		{"CACHE_DIR", &raw.Cache.Dir},
 		{"CACHE_MAX_BYTES", &raw.Cache.MaxBytes},
 		{"CACHE_MAX_FILLS", &raw.Cache.MaxFills},
