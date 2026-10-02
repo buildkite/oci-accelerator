@@ -38,7 +38,7 @@ upstream as a request for the whole blob, so the upstream registry still approve
 request. The accelerator then returns only the requested bytes, reading them
 from disk if the blob is cached or from the upstream stream while filling the
 cache. A ranged fill continues after Docker disconnects, until
-`cache.fill_timeout` expires. Ranged requests never use authorization grants. A
+`OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` expires. Ranged requests never use authorization grants. A
 manifest request with a `Range` header, or any request with an `If-*` header, is
 forwarded upstream unchanged and not cached.
 
@@ -53,13 +53,13 @@ leave the upstream registry's origin.
 The accelerator checks the address of every upstream connection it makes for an
 intercepted registry, including redirects. Public hosts need no configuration,
 but a private or internal address is refused unless its host and port belong to
-a configured registry or are listed in `redirect_allowlist`.
+a configured registry or are listed in `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`.
 
 ### Play-by-play example
 
 This is `docker pull alpine:latest` on a Docker host with an empty image store,
 using the example configuration, which lists `registry-1.docker.io` in
-`registries`. Paths are relative to `/v2/library/alpine`.
+`OCI_ACCELERATOR_REGISTRIES`. Paths are relative to `/v2/library/alpine`.
 
 | #   | Request                             | What happens                                                                                                                                                             |
 | --- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -122,11 +122,11 @@ for the upstream registry's host, signed by its self-signed root CA. Docker reje
 certificate unless it trusts the root CA, so each Docker host must install the
 CA certificate before pulling through the accelerator.
 
-The accelerator creates the root CA on first startup, when `ca_dir` doesn't
-exist yet, or with `oci-accelerator init-ca --dir <dir>`. It stores the CA in
-`ca_dir` as `ca.crt` and `ca.key`. It reuses the same CA on every later startup,
-so Docker hosts only need to install it once. It never replaces the CA
-automatically. If `ca_dir` exists but either file is missing, the accelerator
+The accelerator creates the root CA on first startup, when the directory specified by
+`OCI_ACCELERATOR_CA_DIR` doesn't exist yet, or with `oci-accelerator init-ca --dir <dir>`.
+It stores the CA there as `ca.crt` and `ca.key`. It reuses the same CA on every later
+startup, so Docker hosts only need to install it once. It never replaces the CA
+automatically. If the directory exists but either file is missing, the accelerator
 fails to start.
 
 Any client that can reach the accelerator's listener can download the public
@@ -143,7 +143,7 @@ The endpoint serves only the public certificate, never the private key.
 A TLS certificate is only valid for the names it lists, so each intercepted
 host needs its own certificate chaining to the root CA. The accelerator signs
 these on demand, the first time Docker connects to a host. That keeps the root
-CA independent of the `registries` list, and no certificate is created for a
+CA independent of the `OCI_ACCELERATOR_REGISTRIES` list, and no certificate is created for a
 registry that is never used.
 
 - **One name each.** Each certificate covers a single DNS name or IP address.
@@ -155,7 +155,7 @@ registry that is never used.
   final hour, because renewing it can't extend its lifetime. If the root CA
   isn't currently valid, no certificate is signed or reused.
 - **Memory only.** Certificates and their private keys are never written to
-  disk. The accelerator keeps up to `max_leaf_certificates` (256 by default)
+  disk. The accelerator keeps up to `OCI_ACCELERATOR_MAX_LEAF_CERTIFICATES` (256 by default)
   and evicts the least recently used. Each use or renewal counts as recent.
 
 # Authorizing intercepted requests
@@ -179,8 +179,8 @@ any redirects, though not the download, and may count toward registry rate limit
 ### Authorization grants
 
 After an approval, an identical request can be served from disk without contacting
-the upstream registry. `cache.anonymous_authorization_ttl` defaults to 15 minutes
-for requests without `Authorization`. `cache.authorization_ttl` independently
+the upstream registry. `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` defaults to 15 minutes
+for requests without `Authorization`. `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL` independently
 defaults to 30 seconds for requests with `Authorization`, including an empty value.
 Set either TTL to `0s` to disable reuse for that class. Setting both to `0s` checks
 the upstream registry on every delivery.
@@ -191,7 +191,7 @@ the upstream registry on every delivery.
 - **Fixed lifetime.** It starts at approval, and hits don't extend it. A shorter
   `max-age` or `s-maxage` on the request or any response shortens it.
 - **Memory only.** Grants are never persisted, are cleared on restart, and both
-  classes share the `cache.max_authorization_entries` bound (10000 by default).
+  classes share the `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound (10000 by default).
 - **Bytes are shared, approvals are not.** Any client the upstream registry approves can
   receive the cached copy, whoever filled it.
 
@@ -209,7 +209,7 @@ any of the following:
 
 # Cache storage and eviction
 
-The cache lives in `cache.dir` on local disk. The directory must be private to
+The cache lives in `OCI_ACCELERATOR_CACHE_DIR` on local disk. The directory must be private to
 the accelerator's user, and a lock file ensures only one accelerator process
 uses it at a time. A second process fails to start.
 
@@ -239,18 +239,18 @@ temporary file is discarded, so a partial entry is never served.
 
 Only one request fills a given entry at a time. Other requests for the same
 object still get their own upstream approval, then wait up to
-`cache.fill_wait_timeout` (1 second by default) for the fill to finish instead
+`OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` (1 second by default) for the fill to finish instead
 of downloading the body again. If it doesn't finish in time, each makes one
 fresh upstream request.
 
 ### Limits and eviction
 
-| Setting              | Default | Limits                                                  |
-| -------------------- | ------- | ------------------------------------------------------- |
-| `cache.max_bytes`    | 32 GiB  | Total size, counting each body plus 4 KiB of metadata   |
-| `cache.max_entries`  | 100000  | Number of entries                                       |
-| `cache.max_fills`    | 16      | Concurrent fills. Further misses stream without caching |
-| `cache.fill_timeout` | 10m     | How long a fill may take                                |
+| Environment variable                 | Default | Limits                                                 |
+| ------------------------------------ | ------- | ------------------------------------------------------ |
+| `OCI_ACCELERATOR_CACHE_MAX_BYTES`     | 32 GiB  | Total size, counting each body plus 4 KiB of metadata    |
+| `OCI_ACCELERATOR_CACHE_MAX_ENTRIES`   | 100000  | Number of entries                                      |
+| `OCI_ACCELERATOR_CACHE_MAX_FILLS`     | 16      | Concurrent fills. Further misses stream without caching |
+| `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`  | 10m     | How long a fill may take                                |
 
 In-progress fills count toward these limits. The limits don't include filesystem
 block and inode overhead, so leave some headroom on the disk.
