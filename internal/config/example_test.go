@@ -7,7 +7,7 @@ import (
 )
 
 func TestEnvironmentExampleContainsEverySetting(t *testing.T) {
-	values, err := ReadEnvFile(filepath.Join("..", "..", ".env.example"))
+	values, err := readEnvFile(filepath.Join("..", "..", ".env.example"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestEnvironmentExampleContainsEverySetting(t *testing.T) {
 }
 
 func TestEnvironmentExampleMatchesRawDefaults(t *testing.T) {
-	values, err := ReadEnvFile(filepath.Join("..", "..", ".env.example"))
+	values, err := readEnvFile(filepath.Join("..", "..", ".env.example"))
 	if err != nil {
 		t.Fatal(err)
 	}

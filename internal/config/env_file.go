@@ -10,9 +10,9 @@ import (
 
 const maxEnvLineBytes = 64 * 1024
 
-// ReadEnvFile reads an explicitly selected dotenv file. An empty path returns
+// readEnvFile reads an explicitly selected dotenv file. An empty path returns
 // an empty map without searching for a file. It never changes the environment.
-func ReadEnvFile(path string) (map[string]string, error) {
+func readEnvFile(path string) (map[string]string, error) {
 	values := make(map[string]string)
 	if path == "" {
 		return values, nil
@@ -25,7 +25,7 @@ func ReadEnvFile(path string) (map[string]string, error) {
 
 	allowed := make(map[string]struct{})
 	for _, setting := range environmentSettings(&rawConfig{}) {
-		allowed["OCI_ACCELERATOR_"+setting.name] = struct{}{}
+		allowed[environmentPrefix+setting.name] = struct{}{}
 	}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 4096), maxEnvLineBytes)

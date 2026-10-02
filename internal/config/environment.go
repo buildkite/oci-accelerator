@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	environmentPrefix = "OCI_ACCELERATOR_"
+	caDirSetting      = "CA_DIR"
+)
+
 type environmentSetting struct {
 	name   string
 	target any
@@ -19,7 +24,7 @@ func environmentSettings(raw *rawConfig) []environmentSetting {
 		{"METRICS_ALLOW_REMOTE", &raw.MetricsAllowRemote},
 		{"REGISTRIES", &raw.Registries},
 		{"REDIRECT_ALLOWLIST", &raw.RedirectAllowlist},
-		{"CA_DIR", &raw.CADir},
+		{caDirSetting, &raw.CADir},
 		{"CACHE_DIR", &raw.Cache.Dir},
 		{"CACHE_MAX_BYTES", &raw.Cache.MaxBytes},
 		{"CACHE_MAX_FILLS", &raw.Cache.MaxFills},
@@ -43,7 +48,7 @@ func environmentSettings(raw *rawConfig) []environmentSetting {
 // including OCI_ACCELERATOR_* integration-test controls, are not configuration.
 func applyEnvironment(raw *rawConfig, lookup func(string) (string, bool)) error {
 	for _, setting := range environmentSettings(raw) {
-		name := "OCI_ACCELERATOR_" + setting.name
+		name := environmentPrefix + setting.name
 		value, present := lookup(name)
 		if !present {
 			continue

@@ -30,8 +30,8 @@ func TestLoadPrecedenceAndRelativePaths(t *testing.T) {
 }
 
 func TestReadEnvFileSyntaxAndSafety(t *testing.T) {
-	if values, err := ReadEnvFile(""); err != nil || len(values) != 0 {
-		t.Fatalf("ReadEnvFile empty = %v, %v", values, err)
+	if values, err := readEnvFile(""); err != nil || len(values) != 0 {
+		t.Fatalf("readEnvFile empty = %v, %v", values, err)
 	}
 	for _, test := range []struct{ name, contents string }{
 		{"unknown", "SECRET_VALUE=x\n"},
@@ -44,7 +44,7 @@ func TestReadEnvFileSyntaxAndSafety(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := writeConfig(t, test.contents)
-			_, err := ReadEnvFile(path)
+			_, err := readEnvFile(path)
 			if !errors.Is(err, ErrInvalid) || strings.Contains(err.Error(), "SECRET_VALUE") {
 				t.Fatalf("error = %v", err)
 			}
@@ -70,7 +70,7 @@ func TestLoadParsesOnlyEffectiveValuesAfterFileSyntax(t *testing.T) {
 
 func TestReadEnvFileTreatsQuotedValuesLiterally(t *testing.T) {
 	path := writeConfig(t, "# comment\n\nOCI_ACCELERATOR_LISTEN=host#port\nOCI_ACCELERATOR_CA_DIR=  \"$HOME # literal\"\nOCI_ACCELERATOR_METRICS_LISTEN= # disabled\nOCI_ACCELERATOR_CACHE_DIR='$(touch never-created)'\n")
-	values, err := ReadEnvFile(path)
+	values, err := readEnvFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestReadEnvFileIOAndLongLine(t *testing.T) {
 		})
 	}
 	path := writeConfig(t, "OCI_ACCELERATOR_LISTEN="+strings.Repeat("x", maxEnvLineBytes)+"\n")
-	_, err := ReadEnvFile(path)
+	_, err := readEnvFile(path)
 	if !errors.Is(err, ErrInvalid) || strings.Contains(err.Error(), strings.Repeat("x", 20)) {
 		t.Fatalf("long line error = %v", err)
 	}

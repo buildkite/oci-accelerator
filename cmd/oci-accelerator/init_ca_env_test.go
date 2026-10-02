@@ -1,9 +1,13 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/buildkite/oci-accelerator/internal/config"
 )
 
 func TestRunInitCAEnvFilePrecedence(t *testing.T) {
@@ -40,5 +44,24 @@ func TestRunInitCAEnvFilePrecedence(t *testing.T) {
 	t.Setenv("OCI_ACCELERATOR_CA_DIR", "")
 	if _, err := runCACommand(t, args); err == nil {
 		t.Fatal("empty environment fell back to file")
+	}
+}
+
+func TestRunInitCAEnvFileErrors(t *testing.T) {
+	t.Chdir(t.TempDir())
+	invalid := filepath.Join(t.TempDir(), "invalid.env")
+	if err := os.WriteFile(invalid, []byte("OCI_ACCELERATOR_UNKNOWN=secret-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runCACommand(t, []string{"init-ca", "--env-file", invalid, "--dir", "ca"})
+	if !errors.Is(err, config.ErrInvalid) || strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("invalid file error = %v", err)
+	}
+	_, err = runCACommand(t, []string{"init-ca", "--env-file", "missing-secret.env", "--dir", "ca"})
+	if err == nil || err.Error() != "configuration validation failed" {
+		t.Fatalf("missing file error = %v", err)
+	}
+	if _, err := os.Stat("ca"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("CA directory created despite configuration error: %v", err)
 	}
 }

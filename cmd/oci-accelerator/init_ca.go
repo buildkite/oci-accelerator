@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
@@ -29,7 +28,7 @@ func runInitCA(args []string, stdout io.Writer) error {
 		return errors.New("invalid init-ca command line")
 	}
 
-	values, err := config.ReadEnvFile(*envFile)
+	configured, err := config.LoadCADir(*envFile)
 	if err != nil {
 		if errors.Is(err, config.ErrInvalid) {
 			return fmt.Errorf("configuration validation failed: %w", err)
@@ -44,11 +43,7 @@ func runInitCA(args []string, stdout io.Writer) error {
 		}
 	})
 	if !dirSet {
-		if value, present := os.LookupEnv("OCI_ACCELERATOR_CA_DIR"); present {
-			*dir = value
-		} else {
-			*dir = values["OCI_ACCELERATOR_CA_DIR"]
-		}
+		*dir = configured
 	}
 
 	if strings.TrimSpace(*dir) == "" || flags.NArg() != 0 {
