@@ -36,6 +36,7 @@ func runInitCA(args []string, stdout io.Writer) error {
 		}
 		return errors.New("configuration validation failed")
 	}
+
 	dirSet := false
 	flags.Visit(func(f *flag.Flag) {
 		if f.Name == "dir" {
@@ -49,6 +50,7 @@ func runInitCA(args []string, stdout io.Writer) error {
 			*dir = values["OCI_ACCELERATOR_CA_DIR"]
 		}
 	}
+
 	if strings.TrimSpace(*dir) == "" || flags.NArg() != 0 {
 		return errors.New("init-ca requires --dir DIR or OCI_ACCELERATOR_CA_DIR, and positional arguments are not supported")
 	}
