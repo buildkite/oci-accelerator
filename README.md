@@ -47,6 +47,13 @@ variables override YAML and built-in defaults. To run without a file, pass no
 arguments. See the [configuration guide](docs/deployment.md#configuration) for the
 complete variable list and value rules.
 
+Alternatively, use `--env-file FILE` instead of `--config` to read `OCI_ACCELERATOR_*`
+assignments from a dotenv file. Process environment values override the file, including
+empty values. Paths are relative to the working directory. The file supports `KEY=value`,
+comments, and literal single- or double-quoted values, without shell expansion or escape
+processing. Duplicate or unknown keys are rejected. `init-ca --env-file FILE` reads the
+same file but only requires its CA directory, with `--dir` taking precedence.
+
 To publish a versioned image, open a PR that increases `VERSION`. See the
 [release process](docs/deployment.md#releasing-images) for tags and retry behavior.
 

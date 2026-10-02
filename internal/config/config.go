@@ -100,6 +100,26 @@ func Load(path string) (Config, error) {
 	return load(path, os.LookupEnv)
 }
 
+// LoadEnv applies defaults, an optional explicitly selected dotenv file, then
+// process environment overrides and validates the effective configuration.
+func LoadEnv(path string) (Config, error) {
+	fileValues, err := ReadEnvFile(path)
+	if err != nil {
+		return Config{}, err
+	}
+	raw := defaults()
+	if err := applyEnvironment(&raw, func(name string) (string, bool) {
+		if value, ok := os.LookupEnv(name); ok {
+			return value, true
+		}
+		value, ok := fileValues[name]
+		return value, ok
+	}); err != nil {
+		return Config{}, err
+	}
+	return validate(raw, "")
+}
+
 func load(path string, lookup func(string) (string, bool)) (Config, error) {
 	raw := defaults()
 	if path != "" {

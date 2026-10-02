@@ -8,13 +8,13 @@ import (
 	"time"
 )
 
-// applyEnvironment reads only known setting names. Other environment variables,
-// including OCI_ACCELERATOR_* integration-test controls, are not configuration.
-func applyEnvironment(raw *rawConfig, lookup func(string) (string, bool)) error {
-	for _, setting := range []struct {
-		name   string
-		target any
-	}{
+type environmentSetting struct {
+	name   string
+	target any
+}
+
+func environmentSettings(raw *rawConfig) []environmentSetting {
+	return []environmentSetting{
 		{"LISTEN", &raw.Listen},
 		{"METRICS_LISTEN", &raw.MetricsListen},
 		{"METRICS_ALLOW_REMOTE", &raw.MetricsAllowRemote},
@@ -37,7 +37,13 @@ func applyEnvironment(raw *rawConfig, lookup func(string) (string, bool)) error 
 		{"SHUTDOWN_TIMEOUT", &raw.ShutdownTimeout},
 		{"MAX_CONNECTIONS", &raw.MaxConnections},
 		{"MAX_LEAF_CERTIFICATES", &raw.MaxLeafCertificates},
-	} {
+	}
+}
+
+// applyEnvironment reads only known setting names. Other environment variables,
+// including OCI_ACCELERATOR_* integration-test controls, are not configuration.
+func applyEnvironment(raw *rawConfig, lookup func(string) (string, bool)) error {
+	for _, setting := range environmentSettings(raw) {
 		name := "OCI_ACCELERATOR_" + setting.name
 		value, present := lookup(name)
 		if !present {

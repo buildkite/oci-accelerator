@@ -142,7 +142,7 @@ func TestRunInitCAHelpAndInvalidArgumentsDoNotCreateState(t *testing.T) {
 			out, err := runCACommand(t, append([]string{"init-ca"}, args...))
 			help := len(args) > 0 && args[len(args)-1] == "--help"
 			if help {
-				if err != nil || !strings.Contains(out, "Usage: oci-accelerator init-ca [--dir DIR]") {
+				if err != nil || !strings.Contains(out, "Usage: oci-accelerator init-ca [--env-file FILE] [--dir DIR]") {
 					t.Fatalf("help: output = %q, error = %v", out, err)
 				}
 			} else if err == nil || out != "" || strings.Contains(err.Error(), "secret") {
