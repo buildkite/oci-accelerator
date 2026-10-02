@@ -89,9 +89,9 @@ func testCacheENOSPC(t *testing.T, ranged bool) {
 	if err := os.Mkdir(mountpoint, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	config := filepath.Join(root, "proxy.yaml")
+	config := filepath.Join(root, "proxy.env")
 	proxyCA := filepath.Join(root, "proxy-ca")
-	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 921600\n  authorization_ttl: 0s\n  anonymous_authorization_ttl: 0s\n", proxyPort, authority, proxyCA, filepath.Join(mountpoint, "cache")), 0o600)
+	writeFile(t, config, fmt.Sprintf("OCI_ACCELERATOR_LISTEN=127.0.0.1:%d\nOCI_ACCELERATOR_REGISTRIES=%s\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_CACHE_MAX_BYTES=921600\nOCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL=0s\nOCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL=0s\n", proxyPort, authority, proxyCA, filepath.Join(mountpoint, "cache")), 0o600)
 
 	uid, gid := os.Getuid(), os.Getgid()
 	command := fmt.Sprintf(
@@ -101,7 +101,7 @@ chown %d:%d %s %s/cache
 chmod 700 %s %s/cache
 dd if=/dev/zero of=%s/ballast bs=1024 count=700 status=none
 chown %d:%d %s/ballast
-exec sudo -n -u \#%d -g \#%d env SSL_CERT_FILE=%s %s --config %s`,
+exec sudo -n -u \#%d -g \#%d env SSL_CERT_FILE=%s %s --env-file %s`,
 		shell(mountpoint), shell(mountpoint), uid, gid, shell(mountpoint), shell(mountpoint), shell(mountpoint), shell(mountpoint), shell(mountpoint), uid, gid, shell(mountpoint), uid, gid, shell(originCA), shell(bin), shell(config))
 	process := startPrivilegedProcess(t, command)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))

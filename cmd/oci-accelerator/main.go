@@ -85,14 +85,13 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	// The flag package includes rejected arguments in its diagnostics. Suppress
 	// those diagnostics so command-line input is never reflected in an error.
 	flags.SetOutput(io.Discard)
-	configPath := flags.String("config", "", "path to YAML configuration")
 	envFile := flags.String("env-file", "", "path to an environment configuration file")
 	check := flags.Bool("check", false, "validate configuration without starting the proxy")
 	version := flags.Bool("version", false, "print the version and exit")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: oci-accelerator [--env-file FILE | --config FILE] [--check]")
+			fmt.Fprintln(stdout, "Usage: oci-accelerator [--env-file FILE] [--check]")
 			fmt.Fprintln(stdout, "       oci-accelerator --version")
 			fmt.Fprintln(stdout, "       oci-accelerator init-ca [--env-file FILE] [--dir DIR]")
 			return config.Config{}, true, nil
@@ -107,15 +106,7 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	if flags.NArg() != 0 {
 		return config.Config{}, false, errors.New("positional arguments are not supported")
 	}
-	if *configPath != "" && *envFile != "" {
-		return config.Config{}, false, errors.New("--config and --env-file cannot be combined")
-	}
-
-	if *configPath != "" {
-		cfg, err = config.Load(*configPath)
-	} else {
-		cfg, err = config.LoadEnv(*envFile)
-	}
+	cfg, err = config.Load(*envFile)
 	if err != nil {
 		if errors.Is(err, config.ErrInvalid) {
 			return config.Config{}, false, fmt.Errorf("configuration validation failed: %w", err)

@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -49,15 +48,6 @@ func applyEnvironment(raw *rawConfig, lookup func(string) (string, bool)) error 
 		if !present {
 			continue
 		}
-		// Make environment paths independent of the optional YAML file's base.
-		// Leave blank paths unchanged so validation rejects them, not the cwd.
-		if (setting.name == "CA_DIR" || setting.name == "CACHE_DIR") && strings.TrimSpace(value) != "" {
-			absolute, err := filepath.Abs(value)
-			if err != nil {
-				return fmt.Errorf("%w: %s: cannot resolve directory path", ErrInvalid, name)
-			}
-			value = absolute
-		}
 		if reason := setEnvironmentValue(setting.target, value); reason != "" {
 			return fmt.Errorf("%w: %s: %s", ErrInvalid, name, reason)
 		}
@@ -69,44 +59,51 @@ func applyEnvironment(raw *rawConfig, lookup func(string) (string, bool)) error 
 // that might contain configuration values. Semantic checks remain in validate.
 func setEnvironmentValue(target any, value string) string {
 	switch target := target.(type) {
-	case *strictString:
-		*target = strictString(value)
-	case *strictBool:
+	case *string:
+		*target = value
+	case *bool:
 		if value != "true" && value != "false" {
 			return "must be true or false"
 		}
 		*target = value == "true"
-	case *duration:
+	case *time.Duration:
 		parsed, err := time.ParseDuration(value)
 		if err != nil {
 			return "must be a duration string"
 		}
-		*target = duration(parsed)
-	case *strictInt, *strictInt64:
+		*target = parsed
+	case *int, *int64:
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || !hasNoLeadingZero(value) {
 			return "must be a decimal integer without leading zeros within the int64 range"
 		}
 		switch target := target.(type) {
-		case *strictInt:
-			*target = strictInt(parsed)
-		case *strictInt64:
-			*target = strictInt64(parsed)
+		case *int:
+			*target = int(parsed)
+		case *int64:
+			*target = parsed
 		}
-	case *[]*strictString:
+	case *[]string:
 		*target = nil
 		if value == "" {
 			return ""
 		}
 		for _, entry := range strings.Split(value, ",") {
-			text := strictString(strings.TrimSpace(entry))
+			text := strings.TrimSpace(entry)
 			if text == "" {
 				return "must not contain empty list entries"
 			}
-			*target = append(*target, &text)
+			*target = append(*target, text)
 		}
 	default:
 		panic("unsupported environment setting type")
 	}
 	return ""
+}
+
+func hasNoLeadingZero(value string) bool {
+	if len(value) > 0 && (value[0] == '+' || value[0] == '-') {
+		value = value[1:]
+	}
+	return len(value) == 1 || (len(value) > 1 && value[0] != '0')
 }

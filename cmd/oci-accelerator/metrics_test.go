@@ -74,9 +74,9 @@ func TestMetricsBindFailureAndSideEffectFreeCheck(t *testing.T) {
 	t.Cleanup(func() { _ = occupiedMetrics.Close() })
 	proxyListener := newTestListener(t)
 	root := t.TempDir()
-	path := filepath.Join(root, "config.yaml")
+	path := filepath.Join(root, "proxy.env")
 	proxyAddress := proxyListener.Addr().String()
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("listen: %s\nmetrics_listen: %s\nregistries: [example.com]\nca_dir: ca\ncache: {dir: cache}\n", proxyAddress, occupiedMetrics.Addr())), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("OCI_ACCELERATOR_LISTEN=%s\nOCI_ACCELERATOR_METRICS_LISTEN=%s\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\n", proxyAddress, occupiedMetrics.Addr(), filepath.Join(root, "ca"), filepath.Join(root, "cache"))), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	testListen := listenForTest(proxyListener)
@@ -86,7 +86,7 @@ func TestMetricsBindFailureAndSideEffectFreeCheck(t *testing.T) {
 		}
 		return net.Listen(network, address)
 	}
-	if err := run(context.Background(), []string{"--config", path, "--check"}, io.Discard, io.Discard, listen); err != nil {
+	if err := run(context.Background(), []string{"--env-file", path, "--check"}, io.Discard, io.Discard, listen); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"ca", "cache"} {
@@ -95,7 +95,7 @@ func TestMetricsBindFailureAndSideEffectFreeCheck(t *testing.T) {
 		}
 	}
 	var logs bytes.Buffer
-	err = run(context.Background(), []string{"--config", path}, io.Discard, &logs, listen)
+	err = run(context.Background(), []string{"--env-file", path}, io.Discard, &logs, listen)
 	if err == nil || err.Error() != "cannot listen on configured metrics address" {
 		t.Fatalf("wrong bind error: %v", err)
 	}
@@ -124,21 +124,15 @@ func TestMetricsListenerRoutingAndLifetime(t *testing.T) {
 				metricsAddress = metricsListener.Addr().String()
 				listeners = append(listeners, metricsListener)
 			}
-			path := filepath.Join(root, "config.yaml")
-			if err := os.WriteFile(path, []byte(fmt.Sprintf(`listen: %s
-metrics_listen: %q
-registries: [example.com]
-ca_dir: ca
-cache: {dir: cache}
-shutdown_timeout: 100ms
-`, proxyAddress, metricsAddress)), 0o600); err != nil {
+			path := filepath.Join(root, "proxy.env")
+			if err := os.WriteFile(path, []byte(fmt.Sprintf("OCI_ACCELERATOR_LISTEN=%s\nOCI_ACCELERATOR_METRICS_LISTEN=%s\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_SHUTDOWN_TIMEOUT=100ms\n", proxyAddress, metricsAddress, filepath.Join(root, "ca"), filepath.Join(root, "cache"))), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			completed := make(chan struct{})
 			var runErr error
 			go func() {
-				runErr = run(ctx, []string{"--config", path}, io.Discard, io.Discard, listenForTest(listeners...))
+				runErr = run(ctx, []string{"--env-file", path}, io.Discard, io.Discard, listenForTest(listeners...))
 				close(completed)
 			}()
 			t.Cleanup(func() {

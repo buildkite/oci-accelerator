@@ -21,7 +21,7 @@ func TestRunHelpUsesOCIAcceleratorName(t *testing.T) {
 	if err := run(context.Background(), []string{"--help"}, &out, &errOut, net.Listen); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "Usage: oci-accelerator [--env-file FILE | --config FILE] [--check]\n       oci-accelerator --version\n       oci-accelerator init-ca [--env-file FILE] [--dir DIR]\n"; got != want {
+	if got, want := out.String(), "Usage: oci-accelerator [--env-file FILE] [--check]\n       oci-accelerator --version\n       oci-accelerator init-ca [--env-file FILE] [--dir DIR]\n"; got != want {
 		t.Fatalf("help = %q, want %q", got, want)
 	}
 	if errOut.Len() != 0 {
@@ -37,7 +37,7 @@ func TestRunVersionWithoutStartup(t *testing.T) {
 	want := "oci-accelerator " + strings.TrimSpace(string(contents)) + "\n"
 	root := t.TempDir()
 	t.Chdir(root)
-	for _, args := range [][]string{{"--version"}, {"--version", "--config", "missing.yaml", "--check"}} {
+	for _, args := range [][]string{{"--version"}, {"--version", "--env-file", "missing.env", "--check"}} {
 		var out, errOut bytes.Buffer
 		listen := func(string, string) (net.Listener, error) {
 			t.Fatal("--version attempted to listen")
@@ -63,15 +63,16 @@ func TestRunLogsVersionOnStartup(t *testing.T) {
 	}
 	wantVersion := strings.TrimSpace(string(contents))
 	listener := newTestListener(t)
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("listen: "+listener.Addr().String()+"\nregistries: [example.com]\nca_dir: ca\ncache: {dir: cache}\n"), 0o600); err != nil {
+	root := t.TempDir()
+	path := filepath.Join(root, "proxy.env")
+	if err := os.WriteFile(path, []byte("OCI_ACCELERATOR_LISTEN="+listener.Addr().String()+"\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR="+filepath.Join(root, "ca")+"\nOCI_ACCELERATOR_CACHE_DIR="+filepath.Join(root, "cache")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// Complete startup, then shut down immediately without serving requests.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var out, errOut bytes.Buffer
-	if err := run(ctx, []string{"--config", path}, &out, &errOut, listenForTest(listener)); err != nil {
+	if err := run(ctx, []string{"--env-file", path}, &out, &errOut, listenForTest(listener)); err != nil {
 		t.Fatal(err)
 	}
 	if out.Len() != 0 {
@@ -98,7 +99,8 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	}{
 		{name: "missing_environment_config"},
 		{name: "unexpected_argument", args: []string{"extra"}},
-		{name: "unexpected_argument_after_config", args: []string{"--config", "x", "extra"}},
+		{name: "removed_config_flag", args: []string{"--config", "secret-config"}, secret: "secret-config"},
+		{name: "unexpected_argument_after_env_file", args: []string{"--env-file", "x", "extra"}},
 		{name: "unexpected_argument_after_version", args: []string{"--version", "extra"}},
 		{name: "false_version_needs_config", args: []string{"--version=false"}},
 		{name: "unknown_flag", args: []string{"--unknown-secret-sentinel"}, secret: "unknown-secret-sentinel"},
@@ -152,7 +154,7 @@ func TestRunCheckUsesEnvironmentWithoutCreatingState(t *testing.T) {
 	t.Setenv("OCI_ACCELERATOR_CACHE_DIR", "env-cache")
 
 	var out bytes.Buffer
-	if err := run(context.Background(), []string{"--config=", "--check"}, &out, &bytes.Buffer{}, net.Listen); err != nil {
+	if err := run(context.Background(), []string{"--check"}, &out, &bytes.Buffer{}, net.Listen); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "configuration validated\n" {
@@ -167,18 +169,19 @@ func TestRunCheckUsesEnvironmentWithoutCreatingState(t *testing.T) {
 func TestResolveConfigEnvironmentOverridesFile(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
-	path := filepath.Join(root, "config.yaml")
-	if err := os.WriteFile(path, []byte("listen: 127.0.0.1:1111\nregistries: [file.example]\nca_dir: file-ca\ncache: {dir: file-cache}\n"), 0o600); err != nil {
+	path := filepath.Join(root, "proxy.env")
+	fileCA, fileCache := filepath.Join(root, "file-ca"), filepath.Join(root, "file-cache")
+	if err := os.WriteFile(path, []byte("OCI_ACCELERATOR_LISTEN=127.0.0.1:1111\nOCI_ACCELERATOR_REGISTRIES=file.example\nOCI_ACCELERATOR_CA_DIR="+fileCA+"\nOCI_ACCELERATOR_CACHE_DIR="+fileCache+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("OCI_ACCELERATOR_LISTEN", "127.0.0.1:2222")
 	t.Setenv("OCI_ACCELERATOR_CA_DIR", "env-ca")
 
-	cfg, handled, err := resolveConfig([]string{"--config", path}, &bytes.Buffer{})
+	cfg, handled, err := resolveConfig([]string{"--env-file", path}, &bytes.Buffer{})
 	if err != nil || handled {
 		t.Fatalf("resolveConfig() = handled %t, error %v", handled, err)
 	}
-	if cfg.Listen != "127.0.0.1:2222" || cfg.CADir != filepath.Join(root, "env-ca") || cfg.Cache.Dir != filepath.Join(root, "file-cache") {
+	if cfg.Listen != "127.0.0.1:2222" || cfg.CADir != filepath.Join(root, "env-ca") || cfg.Cache.Dir != fileCache {
 		t.Fatalf("mixed configuration precedence or path bases are wrong: %+v", cfg)
 	}
 }
@@ -193,16 +196,16 @@ func TestRunRedactsInvalidEnvironmentValue(t *testing.T) {
 }
 
 func TestRunValidatesConfigWithoutLeakingIt(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(t.TempDir(), "proxy.env")
 	secret := "password-do-not-print"
-	if err := os.WriteFile(path, []byte(`registries: [user:`+secret+`@example.com]
-ca_dir: ca
-cache: {dir: cache}
+	if err := os.WriteFile(path, []byte(`OCI_ACCELERATOR_REGISTRIES=user:`+secret+`@example.com
+OCI_ACCELERATOR_CA_DIR=ca
+OCI_ACCELERATOR_CACHE_DIR=cache
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
-	err := run(context.Background(), []string{"--config", path}, &out, &errOut, net.Listen)
+	err := run(context.Background(), []string{"--env-file", path}, &out, &errOut, net.Listen)
 	if err == nil || strings.Contains(err.Error(), secret) || strings.Contains(out.String(), secret) || strings.Contains(errOut.String(), secret) {
 		t.Fatalf("unsafe result: err=%v stdout=%q stderr=%q", err, out.String(), errOut.String())
 	}
@@ -212,16 +215,16 @@ func TestRunReportsSanitizedConfigurationDiagnostics(t *testing.T) {
 	tests := []struct {
 		name, contents, want string
 	}{
-		{"malformed YAML", "registries: [example.com\nsecret-value", "line 2: malformed YAML"},
-		{"invalid timeout", "registries: [example.com]\nca_dir: ca\nshutdown_timeout: secret-value\n", "line 3: must be a duration"},
+		{"malformed dotenv", "OCI_ACCELERATOR_REGISTRIES=example.com\nsecret-value", "line 2: expected KEY=value"},
+		{"invalid timeout", "OCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=ca\nOCI_ACCELERATOR_SHUTDOWN_TIMEOUT=secret-value\n", "OCI_ACCELERATOR_SHUTDOWN_TIMEOUT: must be a duration"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config-secret-path.yaml")
+			path := filepath.Join(t.TempDir(), "config-secret-path.env")
 			if err := os.WriteFile(path, []byte(test.contents), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err := run(context.Background(), []string{"--config", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
+			err := run(context.Background(), []string{"--env-file", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want sanitized diagnostic containing %q", err, test.want)
 			}
@@ -237,8 +240,8 @@ func TestRunReportsSanitizedConfigurationDiagnostics(t *testing.T) {
 func TestRunRedactsConfigurationIOError(t *testing.T) {
 	root := t.TempDir()
 	// A directory opens successfully but fails on read, even when tests run as root.
-	for _, path := range []string{filepath.Join(root, "missing-secret-config.yaml"), root} {
-		err := run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
+	for _, path := range []string{filepath.Join(root, "missing-secret-config.env"), root} {
+		err := run(context.Background(), []string{"--env-file", path}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 		if err == nil || err.Error() != "configuration validation failed" {
 			t.Fatalf("error = %v", err)
 		}
@@ -247,15 +250,12 @@ func TestRunRedactsConfigurationIOError(t *testing.T) {
 
 func TestRunCheckValidatesWithoutSideEffects(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "config.yaml")
-	if err := os.WriteFile(path, []byte(`registries: [example.com]
-ca_dir: ca
-cache: {dir: cache}
-`), 0o600); err != nil {
+	path := filepath.Join(root, "proxy.env")
+	if err := os.WriteFile(path, []byte("OCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR="+filepath.Join(root, "ca")+"\nOCI_ACCELERATOR_CACHE_DIR="+filepath.Join(root, "cache")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := run(context.Background(), []string{"--config", path, "--check"}, &out, &bytes.Buffer{}, net.Listen); err != nil {
+	if err := run(context.Background(), []string{"--env-file", path, "--check"}, &out, &bytes.Buffer{}, net.Listen); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "configuration validated") {
@@ -272,12 +272,12 @@ func TestRunCheckRejectsConflictingStateDirectoriesWithoutSideEffects(t *testing
 	for _, child := range []string{"", "/ca", "/.fill-ca"} {
 		t.Run("state"+child, func(t *testing.T) {
 			root := t.TempDir()
-			path := filepath.Join(root, "config.yaml")
+			path := filepath.Join(root, "proxy.env")
 			secret := "secret-state"
-			if err := os.WriteFile(path, []byte("registries: [example.com]\nca_dir: "+secret+child+"\ncache: {dir: ./"+secret+"}\n"), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte("OCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR="+filepath.Join(root, secret+child)+"\nOCI_ACCELERATOR_CACHE_DIR="+filepath.Join(root, secret)+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err := run(context.Background(), []string{"--config", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
+			err := run(context.Background(), []string{"--env-file", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 			if err == nil || !strings.Contains(err.Error(), "ca_dir and cache.dir") {
 				t.Fatalf("error = %v, want state directory diagnostic", err)
 			}
@@ -297,18 +297,18 @@ func TestRunRejectsUnusableCacheBeforeListen(t *testing.T) {
 	if err := os.Mkdir(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, "config.yaml")
+	path := filepath.Join(root, "proxy.env")
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer occupied.Close()
-	config := "listen: " + occupied.Addr().String() + "\nregistries: [example.com]\nca_dir: ca\ncache:\n  dir: unsafe-cache\n"
+	config := "OCI_ACCELERATOR_LISTEN=" + occupied.Addr().String() + "\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=" + filepath.Join(root, "ca") + "\nOCI_ACCELERATOR_CACHE_DIR=" + cacheDir + "\n"
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var errOut bytes.Buffer
-	err = run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &errOut, net.Listen)
+	err = run(context.Background(), []string{"--env-file", path}, &bytes.Buffer{}, &errOut, net.Listen)
 	if err == nil || err.Error() != "cache startup failed: unsafe cache state" {
 		t.Fatalf("error = %v, want safe cache category", err)
 	}
@@ -327,12 +327,12 @@ func TestRunReportsLockedCacheWithoutLeakingPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	path := filepath.Join(root, "config.yaml")
-	config := "registries: [example.com]\nca_dir: ca\ncache:\n  dir: locked-secret-cache\n"
+	path := filepath.Join(root, "proxy.env")
+	config := "OCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=" + filepath.Join(root, "ca") + "\nOCI_ACCELERATOR_CACHE_DIR=" + cacheDir + "\n"
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err = run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
+	err = run(context.Background(), []string{"--env-file", path}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 	if err == nil || err.Error() != "cache startup failed: cache is locked by another process" {
 		t.Fatalf("error = %v", err)
 	}
@@ -342,11 +342,12 @@ func TestRunReportsLockedCacheWithoutLeakingPath(t *testing.T) {
 }
 
 func TestRunReportsCacheFilesystemFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("registries: [example.com]\nca_dir: ca\ncache: {dir: missing-secret-parent/cache}\n"), 0o600); err != nil {
+	root := t.TempDir()
+	path := filepath.Join(root, "proxy.env")
+	if err := os.WriteFile(path, []byte("OCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR="+filepath.Join(root, "ca")+"\nOCI_ACCELERATOR_CACHE_DIR="+filepath.Join(root, "missing-secret-parent/cache")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := run(context.Background(), []string{"--config", path}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
+	err := run(context.Background(), []string{"--env-file", path}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
 	if err == nil || err.Error() != "cache startup failed: filesystem failure" {
 		t.Fatalf("error = %v", err)
 	}

@@ -21,7 +21,7 @@ See [how it works](how-it-works.md) for the request flow and design.
   before installing it ([details](#trust-the-ca)).
 - **Upstream TLS is always verified**, using the proxy process's system trust store. There is
   no insecure mode.
-- **Credentials stay with Docker.** Never put credentials in proxy YAML. Cross-origin redirects
+- **Credentials stay with Docker.** Never put credentials in proxy configuration. Cross-origin redirects
   never forward credentials or cookies.
 - **The upstream registry authorizes deliveries.** Each cached delivery is approved by an
   upstream GET or an exact-request grant. The default window is 15 minutes without
@@ -43,7 +43,8 @@ See [how it works](how-it-works.md) for the request flow and design.
 | Container  | Linux Docker daemon with Buildx, and Compose for the supplied service |
 
 Neither CA initialization nor proxy startup creates ancestor directories. Before first start, you must
-provision the immediate parent of `ca_dir` and `cache.dir` as the proxy's user (see
+provision the immediate parent of `OCI_ACCELERATOR_CA_DIR` and
+`OCI_ACCELERATOR_CACHE_DIR` as the proxy's user (see
 [state directories](#state-directories)).
 
 ### Run the binary
@@ -52,9 +53,9 @@ From the repository root:
 
 ```sh
 go build -o bin/oci-accelerator ./cmd/oci-accelerator
-cp config.example.yaml config.local.yaml
-# Edit registries, then validate:
-bin/oci-accelerator --config config.local.yaml --check
+cp .env.example .env
+# Edit registries if needed, then validate:
+bin/oci-accelerator --env-file .env --check
 ```
 
 `--check` validates only the configuration. It does not inspect CA or cache state, bind
@@ -66,7 +67,7 @@ ownership and permissions. Optionally provision the CA ahead of time, then start
 ```sh
 mkdir -m 0700 data
 bin/oci-accelerator init-ca --dir data/ca   # optional (startup creates it otherwise)
-bin/oci-accelerator --config config.local.yaml
+bin/oci-accelerator --env-file .env
 ```
 
 Then [configure Docker hosts](#configure-docker-hosts).
@@ -87,32 +88,29 @@ The root `Dockerfile` builds a static Go binary into an Alpine-based image.
 | Local tag         | `oci-accelerator:local`                         |
 | User and group    | `10001:10001`                                   |
 | Entrypoint        | `/usr/local/bin/oci-accelerator`                |
-| Default arguments | `--config /etc/oci-accelerator/config.yaml`     |
+| Default arguments | None                                            |
 | Health check      | `wget` of `http://127.0.0.1:9090/readyz`        |
 | State directories | `/var/lib/oci-accelerator` and its `cache/`, UID/GID 10001, mode 0700 (`ca/` is left absent) |
 
 The health check needs the metrics listener enabled at `127.0.0.1:9090`. Keep it there or
-override the health check when changing the YAML. An unhealthy result is diagnostic and does not
+override the health check when changing the environment. An unhealthy result is diagnostic and does not
 itself trigger a restart. Readiness does not check upstream connectivity or disk capacity.
-
-`config.container.yaml` uses `/var/lib/oci-accelerator/ca` for `ca_dir`,
-`/var/lib/oci-accelerator/cache` for `cache.dir`, the same registries as `config.example.yaml`,
-and a loopback-only metrics listener at `127.0.0.1:9090` that is not published to the host.
 
 #### Compose
 
 The supplied `compose.yaml` service builds the local image from the repository root and:
 
+- requires `env_file: .env`
 - publishes only `127.0.0.1:3128`
 - keeps the root filesystem read-only, drops all capabilities, and sets `no-new-privileges`
 - uses `restart: unless-stopped` and a 40-second stop grace period, allowing for the 15-second
-  `shutdown_timeout` and metrics cleanup (increase it if you raise `shutdown_timeout`)
+  `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` and metrics cleanup (increase it if you raise
+  `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT`)
 
-| Source                             | Mount point                       | Access     |
-| ---------------------------------- | --------------------------------- | ---------- |
-| `./config.container.yaml`          | `/etc/oci-accelerator/config.yaml` | Read-only |
-| `oci-accelerator-ca` volume        | `/var/lib/oci-accelerator`        | Writable   |
-| `oci-accelerator-cache` volume     | `/var/lib/oci-accelerator/cache`  | Writable   |
+| Source                             | Mount point                      | Access   |
+| ---------------------------------- | -------------------------------- | -------- |
+| `oci-accelerator-ca` volume        | `/var/lib/oci-accelerator`       | Writable |
+| `oci-accelerator-cache` volume     | `/var/lib/oci-accelerator/cache` | Writable |
 
 Volume notes:
 
@@ -129,11 +127,19 @@ Volume notes:
 Build, validate, and start:
 
 ```sh
+cp .env.example .env
+# Edit .env for the container values shown below.
 docker compose build
-docker compose run --rm --no-deps oci-accelerator \
-  --config /etc/oci-accelerator/config.yaml --check
+docker compose run --rm --no-deps oci-accelerator --check
 docker compose up -d
 ```
+
+For Compose, set `OCI_ACCELERATOR_LISTEN=0.0.0.0:3128`,
+`OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090`,
+`OCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca`, and
+`OCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache` in `.env`.
+Compose injects this `env_file` into the application process. The image has no baked-in
+environment defaults and its `CMD` supplies no arguments.
 
 Compose does not automatically pass exported host variables into the container. To override
 settings, add an `environment` mapping to the service in a local Compose override file:
@@ -168,10 +174,12 @@ The equivalent without Compose, from the repository root:
 
 ```sh
 docker build -t oci-accelerator:local .
+cp .env.example .env.container
+# Edit .env.container for the container paths and listeners shown above.
 docker run -d --name oci-accelerator --restart unless-stopped \
+  --env-file .env.container \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --stop-timeout 40 -p 127.0.0.1:3128:3128 \
-  --mount type=bind,src="$PWD/config.container.yaml",dst=/etc/oci-accelerator/config.yaml,readonly \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
   --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
   oci-accelerator:local
@@ -181,8 +189,13 @@ docker inspect --format '{{.State.Health.Status}}' oci-accelerator
 
 Stop it with `docker stop oci-accelerator`. Removing the container preserves both named volumes.
 
-For an environment-only container, omit the configuration mount and put `--config=` after the
-image name. This replaces the image's default `CMD` while preserving its entrypoint:
+Here `.env.container` contains the same container values described for Compose. Docker's
+`--env-file` appears before the image name because Docker injects the values into the
+container. The application's `--env-file` appears after the image name and requires its file
+to be mounted inside the container. Docker and Compose dotenv syntax differs from the
+application's syntax, so keep shared examples to portable unquoted literal `KEY=value` lines.
+
+You can instead override individual values explicitly with `-e`:
 
 ```sh
 docker run -d --name oci-accelerator --restart unless-stopped \
@@ -195,14 +208,14 @@ docker run -d --name oci-accelerator --restart unless-stopped \
   -e OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws \
   -e OCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca \
   -e OCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache \
-  oci-accelerator:local --config=
+  oci-accelerator:local
 ```
 
 The proxy listens on all container interfaces so the published port works, while Docker exposes
 it only on the host's loopback address. Metrics stay on container loopback for the image health
-check and are not published. The UID 10001 state volumes and isolation flags match the YAML-based
-example. The image still requires a mounted YAML file by default when you do not replace its
-`CMD`.
+check and are not published. The UID 10001 state volumes and isolation flags match the Compose
+example. Exported host variables are not implicit container overrides. Use `-e` or a Compose
+`environment` mapping.
 
 #### Multi-architecture images
 
@@ -272,89 +285,61 @@ and multi-platform index annotations so you can identify the exact source commit
 
 The default `127.0.0.1:3128` listener serves Docker on the same host. To serve remote hosts:
 
-1. Set `listen` to an explicit private-interface address.
+1. Set `OCI_ACCELERATOR_LISTEN` to an explicit private-interface address.
 2. Restrict access with network access controls and a firewall (see [security model](#security-model)).
 3. Use the proxy's private address in each host's [Docker proxy configuration](#point-docker-at-the-proxy).
 
 ## Configuration
 
-See [`config.example.yaml`](../config.example.yaml) for a complete configuration. Configuration
-is static, and changes take effect after restart. The proxy applies built-in defaults, then an
-optional YAML file, then environment overrides. An empty configuration path skips YAML. A named
-file error fails configuration loading, even when the environment supplies every required setting.
-There is no `OCI_ACCELERATOR_CONFIG` variable, `.env` auto-loading, or hot reload.
+See [`.env.example`](../.env.example) for all settings and their actual defaults.
+`OCI_ACCELERATOR_REGISTRIES`, `OCI_ACCELERATOR_CA_DIR`, and
+`OCI_ACCELERATOR_CACHE_DIR` are required. The registries and `./data` paths in that file are
+examples, not built-in defaults. Configuration applies built-in defaults, an optional explicitly
+selected dotenv file, then process environment overrides. There is no file discovery,
+environment mutation, `OCI_ACCELERATOR_CONFIG` variable, or hot reload.
+
+YAML configuration and `--config` are not supported. When migrating an older deployment,
+replace YAML setting names with the `OCI_ACCELERATOR_*` variables below.
 
 `--check` validates this same combined configuration without inspecting state, binding listeners,
-or creating directories. Unknown environment variables, including unknown
-`OCI_ACCELERATOR_*` names, are ignored.
+or creating directories. Unknown process environment variables are ignored. Unknown names in a
+dotenv file are rejected.
 
-### Environment variables
-
-Every setting has an uppercase `OCI_ACCELERATOR_` name. The nested `cache.` prefix becomes
-`CACHE_`:
-
-| YAML | Environment |
-| ---- | ----------- |
-| `listen` | `OCI_ACCELERATOR_LISTEN` |
-| `metrics_listen` | `OCI_ACCELERATOR_METRICS_LISTEN` |
-| `metrics_allow_remote` | `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` |
-| `registries` | `OCI_ACCELERATOR_REGISTRIES` |
-| `redirect_allowlist` | `OCI_ACCELERATOR_REDIRECT_ALLOWLIST` |
-| `ca_dir` | `OCI_ACCELERATOR_CA_DIR` |
-| `cache.dir` | `OCI_ACCELERATOR_CACHE_DIR` |
-| `cache.max_bytes` | `OCI_ACCELERATOR_CACHE_MAX_BYTES` |
-| `cache.max_fills` | `OCI_ACCELERATOR_CACHE_MAX_FILLS` |
-| `cache.max_entries` | `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` |
-| `cache.fill_timeout` | `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` |
-| `cache.fill_wait_timeout` | `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` |
-| `cache.authorization_ttl` | `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL` |
-| `cache.anonymous_authorization_ttl` | `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` |
-| `cache.max_authorization_entries` | `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` |
-| `dial_timeout` | `OCI_ACCELERATOR_DIAL_TIMEOUT` |
-| `tls_handshake_timeout` | `OCI_ACCELERATOR_TLS_HANDSHAKE_TIMEOUT` |
-| `response_header_timeout` | `OCI_ACCELERATOR_RESPONSE_HEADER_TIMEOUT` |
-| `idle_timeout` | `OCI_ACCELERATOR_IDLE_TIMEOUT` |
-| `shutdown_timeout` | `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` |
-| `max_connections` | `OCI_ACCELERATOR_MAX_CONNECTIONS` |
-| `max_leaf_certificates` | `OCI_ACCELERATOR_MAX_LEAF_CERTIFICATES` |
-
-An unset variable retains the YAML value or default. A present empty variable is an explicit
-value. It disables `metrics_listen` and clears `redirect_allowlist`. Other empty values
-fail validation, including required registries and paths. `registries` and
-`redirect_allowlist` are comma-separated authority lists. Entries are whitespace-trimmed, the
-whole list replaces the YAML list, and empty members are rejected.
+An unset variable retains the file value or default. A present empty variable is an explicit
+value. It disables `OCI_ACCELERATOR_METRICS_LISTEN` and clears
+`OCI_ACCELERATOR_REDIRECT_ALLOWLIST`. Other empty values fail validation, including required
+registries and paths. `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`
+are comma-separated authority lists. Entries are whitespace-trimmed, the
+whole list replaces the file value, and empty members are rejected.
 
 Use exactly `true` or `false` for booleans, decimal integers without leading zeros for numbers,
-and Go duration strings such as `500ms`, `30s`, or `2m` for durations. Relative YAML paths are
-resolved from the YAML file's directory. Relative environment paths are resolved from the
-process working directory and converted internally to absolute paths.
+and Go duration strings such as `500ms`, `30s`, or `2m` for durations. Relative paths from all
+sources are resolved from the process working directory and converted internally to absolute paths.
 
-For example, after building the binary, you can validate and start without YAML:
+For example, process environment values can override a native dotenv file:
 
 ```sh
-mkdir -m 0700 data
-export OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws
-export OCI_ACCELERATOR_CA_DIR=./data/ca
-export OCI_ACCELERATOR_CACHE_DIR=./data/cache
-bin/oci-accelerator --check
-bin/oci-accelerator
+OCI_ACCELERATOR_CACHE_MAX_BYTES=68719476736 bin/oci-accelerator --env-file .env --check
+OCI_ACCELERATOR_CACHE_MAX_BYTES=68719476736 bin/oci-accelerator --env-file .env
 ```
 
-### File rules
+### Dotenv file rules
 
-- Exactly one YAML document. Unknown or duplicate keys are rejected.
-- Null values retain scalar defaults, but null list elements are invalid.
-- String fields reject non-string scalars.
-- Numeric limits require decimal YAML integers without leading zeros. Floats, quoted numbers,
-  octal or hex forms, and underscores are rejected.
-- Malformed durations and invalid zero values are rejected. The only permitted zero durations
-  are `cache.fill_wait_timeout: 0s`, `cache.authorization_ttl: 0s`, and
-  `cache.anonymous_authorization_ttl: 0s`.
-- Relative directories are resolved from the configuration file's directory.
+- A file is read only with `--env-file FILE`. A missing named file is an error.
+- Use `KEY=value`, with no surrounding whitespace in the key. Outer whitespace in values is
+  trimmed. Blank lines and full-line comments are accepted.
+- In an unquoted value, `#` starts an inline comment at the beginning of the value or after a
+  space or tab. Otherwise it is literal.
+- Optional matching single or double quotes group the value. The contents are literal, with no
+  escapes or interpolation. `export` and multiline values are not supported.
+- Each line must be shorter than 64 KiB. Duplicate and unknown keys are rejected.
+- The complete file syntax is checked before effective typed values are validated. A valid
+  process value can override an invalid typed file value, but cannot hide a syntax error.
 
 ### Registry authorities
 
-Each `registries` and `redirect_allowlist` entry is an authority: `host` or `host:port`, with
+Each `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST` entry is an
+authority: `host` or `host:port`, with
 no scheme or path. An omitted port means 443, and matching includes the port.
 
 | Entry                   | Matches                  |
@@ -368,7 +353,8 @@ You can configure private registries explicitly.
 
 ### State directories
 
-- `ca_dir` and `cache.dir` must both be nonblank and resolve to distinct, lexically normalized
+- `OCI_ACCELERATOR_CA_DIR` and `OCI_ACCELERATOR_CACHE_DIR` must both be nonblank and resolve
+  to distinct, lexically normalized
   absolute paths. There is no forwarding-only mode.
 - The CA directory must not be inside the cache directory, because the cache owns, and may
   remove, entries in its directory. You can place the cache directory inside the CA directory.
@@ -382,59 +368,61 @@ You can configure private registries explicitly.
 
 **Listeners**
 
-| Setting                | Default          | Notes                                                                                    |
+| Environment variable   | Default          | Notes                                                                                    |
 | ---------------------- | ---------------- | ---------------------------------------------------------------------------------------- |
-| `listen`               | `127.0.0.1:3128` | host:port with a nonzero numeric port. Empty or wildcard hosts bind all interfaces      |
-| `metrics_listen`       | Disabled         | host:port with a nonzero numeric port. Literal loopback IP required unless `metrics_allow_remote` |
-| `metrics_allow_remote` | `false`          | Explicit boolean opt-in to non-loopback metrics and probe binding                       |
+| `OCI_ACCELERATOR_LISTEN` | `127.0.0.1:3128` | host:port with a nonzero numeric port. Empty or wildcard hosts bind all interfaces      |
+| `OCI_ACCELERATOR_METRICS_LISTEN` | Disabled | host:port with a nonzero numeric port. Literal loopback IP required unless `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` |
+| `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` | `false` | Explicit boolean opt-in to non-loopback metrics and probe binding                       |
 
 **Registries and state**
 
-| Setting              | Default  | Notes                                                                     |
+| Environment variable | Default  | Notes                                                                     |
 | -------------------- | -------- | ------------------------------------------------------------------------- |
-| `registries`         | Required | Nonempty list of distinct [authorities](#registry-authorities) to intercept |
-| `redirect_allowlist` | Empty    | Private HTTPS storage [authorities](#registry-authorities). Does not enable interception |
-| `ca_dir`             | Required | Private persistent CA directory                                           |
-| `cache.dir`          | Required | Private persistent cache directory                                        |
+| `OCI_ACCELERATOR_REGISTRIES` | Required | Nonempty list of distinct [authorities](#registry-authorities) to intercept |
+| `OCI_ACCELERATOR_REDIRECT_ALLOWLIST` | Empty | Private HTTPS storage [authorities](#registry-authorities). Does not enable interception |
+| `OCI_ACCELERATOR_CA_DIR` | Required | Private persistent CA directory                                           |
+| `OCI_ACCELERATOR_CACHE_DIR` | Required | Private persistent cache directory                                        |
 
 **Cache and authorization**
 
-| Setting                           | Default | Notes                                                                                   |
+| Environment variable              | Default | Notes                                                                                   |
 | --------------------------------- | ------- | --------------------------------------------------------------------------------------- |
-| `cache.max_bytes`                 | 32 GiB  | Includes body, metadata, and fill reservations                                          |
-| `cache.max_fills`                 | 16      | Concurrent storage writers. Excess misses stream uncached                               |
-| `cache.max_entries`               | 100000  | Entry slots, including fills and pending cleanup                                        |
-| `cache.fill_timeout`              | `10m`   | Bounds ranged fetches from request start. Ends ordinary full-GET cache admission        |
-| `cache.fill_wait_timeout`         | `1s`    | `0s` disables waiting for an existing fill                                              |
-| `cache.authorization_ttl`         | `30s`   | Fixed approval lifetime for requests with Authorization, including empty. `0s` disables that class |
-| `cache.anonymous_authorization_ttl` | `15m` | Fixed approval lifetime for requests without Authorization. `0s` disables that class |
-| `cache.max_authorization_entries` | 10000   | Positive shared bound on both classes of in-memory authorization grants                  |
+| `OCI_ACCELERATOR_CACHE_MAX_BYTES` | 32 GiB  | Includes body, metadata, and fill reservations                                          |
+| `OCI_ACCELERATOR_CACHE_MAX_FILLS` | 16      | Concurrent storage writers. Excess misses stream uncached                               |
+| `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` | 100000 | Entry slots, including fills and pending cleanup                                        |
+| `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` | `10m` | Bounds ranged fetches from request start. Ends ordinary full-GET cache admission        |
+| `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` | `1s` | `0s` disables waiting for an existing fill                                           |
+| `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL` | `30s` | Fixed approval lifetime for requests with Authorization, including empty. `0s` disables that class |
+| `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` | `15m` | Fixed approval lifetime for requests without Authorization. `0s` disables that class |
+| `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` | 10000 | Positive shared bound on both classes of in-memory authorization grants               |
 
 **Timeouts and connections**
 
-| Setting                   | Default | Notes                                                        |
+| Environment variable      | Default | Notes                                                        |
 | ------------------------- | ------- | ------------------------------------------------------------ |
-| `dial_timeout`            | `10s`   |                                                              |
-| `tls_handshake_timeout`   | `10s`   |                                                              |
-| `response_header_timeout` | `30s`   | Also bounds incoming request headers                         |
-| `idle_timeout`            | `2m`    | Idle tunnels and I/O                                         |
-| `shutdown_timeout`        | `15s`   | Drain deadline                                               |
-| `max_connections`         | 256     | Accepted client connections, including incomplete CONNECTs   |
-| `max_leaf_certificates`   | 256     | Cached interception certificates                             |
+| `OCI_ACCELERATOR_DIAL_TIMEOUT` | `10s` |                                                              |
+| `OCI_ACCELERATOR_TLS_HANDSHAKE_TIMEOUT` | `10s` |                                                     |
+| `OCI_ACCELERATOR_RESPONSE_HEADER_TIMEOUT` | `30s` | Also bounds incoming request headers                |
+| `OCI_ACCELERATOR_IDLE_TIMEOUT` | `2m` | Idle tunnels and I/O                                         |
+| `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` | `15s` | Drain deadline                                           |
+| `OCI_ACCELERATOR_MAX_CONNECTIONS` | 256 | Accepted client connections, including incomplete CONNECTs   |
+| `OCI_ACCELERATOR_MAX_LEAF_CERTIFICATES` | 256 | Cached interception certificates                         |
 
 Timeout behavior:
 
-- For eligible blob range requests, `cache.fill_timeout` bounds the upstream fetch, starting
+- For eligible blob range requests, `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` bounds the upstream
+  fetch, starting
   before the first upstream GET, including when cache-fill admission is refused. Admitted
   background fills remain subject to the same deadline.
-- Delivery from an already-open cached reader is not limited by `cache.fill_timeout`, but idle-I/O
-  deadlines and shutdown handling still apply.
+- Delivery from an already-open cached reader is not limited by
+  `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`, but idle-I/O deadlines and shutdown handling still apply.
 - Other active transfers have idle-I/O deadlines, not total download deadlines. Uploads have no
   total size limit ([push and delete](#push-and-delete)).
 - Kernel filesystem calls cannot be preempted, so fill expiry and shutdown are not hard
   deadlines when storage stalls.
 
-Memory: `cache.max_entries` and `cache.max_authorization_entries` bound their indexes, not total
+Memory: `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` and
+`OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound their indexes, not total
 process RSS, so tune both to available memory. Bodies stream rather than accumulate in memory.
 
 ### Built-in limits
@@ -454,7 +442,7 @@ process RSS, so tune both to available memory. Bodies stream rather than accumul
 
 ## CA management
 
-The CA is `ca.crt` and `ca.key` in `ca_dir`: `data/ca/` on the host in the native example, or
+The CA is `ca.crt` and `ca.key` in `OCI_ACCELERATOR_CA_DIR`: `data/ca/` on the host in the native example, or
 `ca/` in the `oci-accelerator-ca` volume for containers. See
 [trusting the accelerator's certificate](how-it-works.md#trusting-the-accelerators-certificate)
 and [per-registry certificates](how-it-works.md#per-registry-certificates) for how the CA and
@@ -469,10 +457,13 @@ the CA directory is absent. Leave it absent initially and do not pre-create an e
 bin/oci-accelerator init-ca --dir data/ca
 ```
 
-- `init-ca` provisions only the root CA. It does not load YAML or start the proxy, cache, or any
-  network activity.
-- Pass `--dir`, or set `OCI_ACCELERATOR_CA_DIR`. The flag wins when both are present. Relative
-  paths are resolved from the working directory, and the parent must already exist.
+- `init-ca` provisions only the root CA. It does not load the full proxy configuration or start
+  the proxy, cache, or any network activity.
+- Pass `--dir`, set `OCI_ACCELERATOR_CA_DIR` in the process environment, or select a file with
+  `--env-file`. Only the CA directory is required. Precedence is `--dir`, process environment,
+  then file. Relative paths are resolved from the working directory, and the parent must exist.
+- The selected file must still be syntactically valid, including having no duplicate or unknown
+  keys. Typed values for settings unrelated to CA initialization are not validated.
 - On success it prints `ca_certificate="..."` (the public certificate path) and `ca_sha256=...`
   (the lowercase SHA-256 fingerprint). It never prints the private key. Startup logs the same
   `ca_sha256` for trusted distribution.
@@ -513,7 +504,7 @@ created ancestors.
 
 ### Back up and replace the CA
 
-Preserve `ca_dir` across restarts, back up both CA files securely, and use one proxy process
+Preserve `OCI_ACCELERATOR_CA_DIR` across restarts, back up both CA files securely, and use one proxy process
 per CA directory. Rotation is not automatic. **Never delete an established CA to repair
 startup.**
 
@@ -627,7 +618,8 @@ Docker push uses the same proxy and CA configuration as pull.
 - The upstream registry enforces write permissions using Docker's credentials.
 - Uploads do not warm the cache. The proxy does not manage upload sessions or follow write
   redirects.
-- Active uploads are limited by `idle_timeout` for stalled I/O, not by `cache.fill_timeout` or
+- Active uploads are limited by `OCI_ACCELERATOR_IDLE_TIMEOUT` for stalled I/O, not by
+  `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` or
   a total upload size.
 - Successful deletion does not invalidate existing pull [authorization grants](#authorization-grants).
   Previously approved exact GETs may still serve cached content until the original grant
@@ -659,7 +651,7 @@ Eligible range requests are unconditional SHA-256 blob Range GETs.
 - Until the full body is cached, a single range is selected from the full upstream stream and
   returned as `206`, while comma-separated ranges fall back to the full `200`.
 - An admitted fill continues reading and verifying the same GET after the selected range ends or
-  the client disconnects, bounded by `cache.fill_timeout` from request start.
+  the client disconnects, bounded by `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` from request start.
 - Ranged manifests, `If-Range` and other conditional requests, no-store requests, and a Range
   header named by `Connection` remain passthrough.
 
@@ -670,7 +662,7 @@ manifest GETs.
 
 - Every hop must use verified HTTPS and pass destination checks.
 - Userinfo, fragments, loops, and implicit private, link-local, or loopback destinations are
-  rejected. Add private storage destinations to `redirect_allowlist`.
+  rejected. Add private storage destinations to `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`.
 - Cross-origin redirects preserve only `Accept`, `Accept-Encoding`, and `User-Agent`, never
   credentials or cookies.
 - These restrictions do not apply to tunnel egress (see [limitations](#current-limitations)).
@@ -687,7 +679,7 @@ and the request and response headers that prevent a grant. Additionally:
 - Grants are keyed by a process-local HMAC of the original canonical URL and every forwarded
   end-to-end header. Transport-managed fields use their forwarded form, while other exact values and
   value order are preserved. Anonymous requests are distinct. Both classes share the
-  `cache.max_authorization_entries` bound and can refer to the same verified disk body.
+  `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound and can refer to the same verified disk body.
 - A grant starts from an eligible terminal `200`. It is never renewed on hits, persisted, or
   refreshed or coalesced in the background.
 - Tokens are opaque, so revocation or expiry can take effect as late as the grant's original
@@ -727,7 +719,7 @@ filling, and eviction.
 
 - Use one process per cache directory, and make sure its parent is owner-controlled. Unsafe or
   unusable configured storage fails startup.
-- `cache.max_bytes` charges body size plus 4 KiB metadata per entry, including active fills.
+- `OCI_ACCELERATOR_CACHE_MAX_BYTES` charges body size plus 4 KiB metadata per entry, including active fills.
   Reserve filesystem block, directory, and inode headroom beyond it.
 - Oversized or capacity-rejected objects continue streaming without being cached.
 - Failed cleanup retains its capacity charge until removal succeeds.
@@ -738,12 +730,12 @@ filling, and eviction.
 ### Concurrent fills
 
 - Concurrent clients authorize independently. One writer fills a key, and matching followers may
-  wait for it (`cache.fill_wait_timeout`) and then open the verified entry.
+  wait for it (`OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT`) and then open the verified entry.
 - Wait timeout, leader failure, or eviction causes one fresh authorized GET.
 - Follower cancellation does not control the leader.
 - Ordinary full-GET fills are request-owned: leader cancellation aborts storage.
 - An admitted ranged fill may finish after range delivery or client cancellation, bounded by
-  `cache.fill_timeout` from request start.
+  `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` from request start.
 - Entries are published only after complete length and digest verification.
 
 ### Startup recovery
@@ -758,7 +750,7 @@ filling, and eviction.
 ### Reset the cache
 
 Resetting permanently deletes cached content. The CA is unaffected. For a native deployment,
-stop the proxy and remove the whole `cache.dir`. For Compose, remove only the cache volume:
+stop the proxy and remove the whole `OCI_ACCELERATOR_CACHE_DIR`. For Compose, remove only the cache volume:
 
 ```sh
 docker compose down
@@ -801,7 +793,7 @@ original escaped request path:
 
 ### Metrics
 
-Set `metrics_listen: 127.0.0.1:9090` to enable a separate listener. There is no metrics route
+Set `OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090` to enable a separate listener. There is no metrics route
 on the CONNECT listener, admin API, or pprof endpoint.
 
 | Endpoint       | Purpose                                                  |
@@ -810,12 +802,12 @@ on the CONNECT listener, admin API, or pprof endpoint.
 | `GET /livez`   | Process responsiveness                                   |
 | `GET /readyz`  | Initialized and serving, not shutting down               |
 
-- To bind a non-loopback address, you must set `metrics_allow_remote: true`. Remote scraping has no
+- To bind a non-loopback address, you must set `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE=true`. Remote scraping has no
   authentication: restrict it with private network controls and never expose it publicly or
   through a portal.
 - A bind failure prevents startup.
 - Probes never contact upstream registries or depend on cache capacity, and are independent of
-  `max_connections`. In Kubernetes, you can use local exec probes with a loopback bind when
+  `OCI_ACCELERATOR_MAX_CONNECTIONS`. In Kubernetes, you can use local exec probes with a loopback bind when
   remote scraping is disabled.
 
 Metrics use the `oci_accelerator_` prefix and include:
@@ -893,20 +885,20 @@ percentage from 100 when traffic is present.
 On SIGINT or SIGTERM the proxy:
 
 1. stops admitting connections and disables intercepted keepalive
-2. drains until `shutdown_timeout`, then closes remaining connections, including opaque tunnels
+2. drains until `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT`, then closes remaining connections, including opaque tunnels
 3. cancels and joins ranged transfers, and waits for handlers and relay pumps to release their
    resources before the cache is closed, even beyond the drain deadline
 
 A stuck handler can therefore delay exit. A second signal uses the operating system's default
 termination behavior. For containers, keep the stop grace period longer than
-`shutdown_timeout` (see [Compose](#compose)).
+`OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` (see [Compose](#compose)).
 
 ### What survives a restart
 
 | State                    | After restart                                                       |
 | ------------------------ | ------------------------------------------------------------------- |
 | Configuration            | Re-read. Changes take effect only now                               |
-| Root CA                  | Re-checked and reused from `ca_dir`                                 |
+| Root CA                  | Re-checked and reused from `OCI_ACCELERATOR_CA_DIR`                 |
 | Leaf certificates        | Memory only, re-signed on demand                                    |
 | Authorization grants     | Cleared. The next delivery needs fresh upstream approval            |
 | Cache entries            | Kept. Each body is rehashed on first reuse                          |
@@ -920,14 +912,14 @@ termination behavior. For containers, keep the stop grace period longer than
 | `--check` passes but startup fails                           | `--check` does not inspect CA or cache state or bind listeners                                 | Read the startup error. See the rows below                                            |
 | Startup fails naming a CA check                              | CA directory or files are empty, incomplete, expired, mismatched, oversized, symlinked, foreign-owned, or wrongly permissioned | Correct the state per [CA directory requirements](#ca-directory-requirements). Never delete an established CA ([replace it](#back-up-and-replace-the-ca) instead) |
 | Startup fails on a missing directory                         | Neither `init-ca` nor startup creates ancestors                                                | Create the parent as the proxy user ([state directories](#state-directories))         |
-| Startup refuses unknown cache files                          | Unrecognized files in `cache.dir`. Startup never deletes them                                  | Investigate their origin, or [reset the cache](#reset-the-cache)                      |
-| Second proxy fails to start on the same cache                | One process per cache directory                                                                | Give each process its own `cache.dir` and `ca_dir`                                    |
-| `--check` rejects `metrics_listen`                           | Non-loopback address without `metrics_allow_remote: true`                                      | Use a loopback address, or opt in ([metrics](#metrics))                               |
-| Startup fails binding metrics                                | The metrics listener cannot bind. A bind failure prevents startup                              | Fix `metrics_listen` or free the address                                              |
+| Startup refuses unknown cache files                          | Unrecognized files in `OCI_ACCELERATOR_CACHE_DIR`. Startup never deletes them                  | Investigate their origin, or [reset the cache](#reset-the-cache)                      |
+| Second proxy fails to start on the same cache                | One process per cache directory                                                                | Give each process its own `OCI_ACCELERATOR_CACHE_DIR` and `OCI_ACCELERATOR_CA_DIR`     |
+| `--check` rejects `OCI_ACCELERATOR_METRICS_LISTEN`           | Non-loopback address without `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE=true`                        | Use a loopback address, or opt in ([metrics](#metrics))                               |
+| Startup fails binding metrics                                | The metrics listener cannot bind. A bind failure prevents startup                              | Fix `OCI_ACCELERATOR_METRICS_LISTEN` or free the address                              |
 | Container health is `unhealthy`                              | Metrics listener not at `127.0.0.1:9090`, or the proxy is not ready or is shutting down        | Restore the listener or override the health check ([image](#image)). It does not restart the container |
 | Docker reports an unknown certificate authority              | CA not installed under the exact `certs.d/<host[:port]>` directory                             | [Trust the CA](#trust-the-ca) for that authority                                      |
 | Private registry fails through the proxy with a TLS error    | The proxy process does not trust the upstream registry's real CA                               | Add it to the proxy's system trust store. Never disable verification                  |
-| Pulls work but no request records show the upstream registry | Registry not in `registries` (port must match), listed in `no-proxy`/`NO_PROXY`, or daemon not restarted | Fix `registries` or [Docker's proxy configuration](#point-docker-at-the-proxy)   |
+| Pulls work but no request records show the upstream registry | Registry not in `OCI_ACCELERATOR_REGISTRIES` (port must match), listed in `no-proxy`/`NO_PROXY`, or daemon not restarted | Fix `OCI_ACCELERATOR_REGISTRIES` or [Docker's proxy configuration](#point-docker-at-the-proxy) |
 | Revoked access or a deleted image still pulls briefly        | An existing [authorization grant](#authorization-grants)                                       | Wait for the applicable authorization TTL, or set both TTLs to `0s`                    |
 | `.ca-init-*` directories in the CA parent                    | A crash or SIGKILL during initialization                                                       | [Clean up staging directories](#clean-up-staging-directories)                         |
 | Compose warns about existing volumes                         | Volumes were created by `docker run`                                                           | Expected. Run only one proxy against them                                             |
@@ -973,7 +965,7 @@ sudo docker info
 
 ```sh
 amp orb service start registry-proxy \
-  --command './bin/oci-accelerator --config config.local.yaml'
+  --command './bin/oci-accelerator --env-file .env'
 amp orb service logs registry-proxy
 amp orb service stop registry-proxy
 ```

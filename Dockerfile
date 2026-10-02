@@ -2,8 +2,7 @@
 FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS build
 WORKDIR /src
 ENV GOTOOLCHAIN=local
-COPY go.mod go.sum ./
-RUN go mod download
+COPY go.mod ./
 COPY VERSION version.go ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
@@ -27,4 +26,4 @@ STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD ["wget", "-Y", "off", "-q", "-T", "2", "-O", "/dev/null", "http://127.0.0.1:9090/readyz"]
 ENTRYPOINT ["/usr/local/bin/oci-accelerator"]
-CMD ["--config", "/etc/oci-accelerator/config.yaml"]
+CMD []

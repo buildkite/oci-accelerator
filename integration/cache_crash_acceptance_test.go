@@ -72,9 +72,9 @@ func TestCacheCrashAcceptance(t *testing.T) {
 	proxyPort := freePort(t, "127.0.0.1")
 	cacheDir := filepath.Join(root, "cache")
 	proxyCA := filepath.Join(root, "proxy-ca")
-	config := filepath.Join(root, "proxy.yaml")
-	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 16777216\n  authorization_ttl: 0s\n  anonymous_authorization_ttl: 0s\n", proxyPort, authority, proxyCA, cacheDir), 0o600)
-	command := fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCA), shell(bin), shell(config))
+	config := filepath.Join(root, "proxy.env")
+	writeFile(t, config, fmt.Sprintf("OCI_ACCELERATOR_LISTEN=127.0.0.1:%d\nOCI_ACCELERATOR_REGISTRIES=%s\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_CACHE_MAX_BYTES=16777216\nOCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL=0s\nOCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL=0s\n", proxyPort, authority, proxyCA, cacheDir), 0o600)
+	command := fmt.Sprintf("env SSL_CERT_FILE=%s %s --env-file %s", shell(originCA), shell(bin), shell(config))
 	process := startProcess(t, command)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 

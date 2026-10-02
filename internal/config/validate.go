@@ -11,23 +11,23 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
-func validate(raw rawConfig, base string) (Config, error) {
+func validate(raw rawConfig) (Config, error) {
 	if len(raw.Registries) == 0 {
 		return Config{}, fmt.Errorf("%w: registries: must contain at least one authority", ErrInvalid)
 	}
-	if err := validatePath("ca_dir", string(raw.CADir)); err != nil {
+	if err := validatePath("ca_dir", raw.CADir); err != nil {
 		return Config{}, err
 	}
-	if err := validatePath("cache.dir", string(raw.Cache.Dir)); err != nil {
+	if err := validatePath("cache.dir", raw.Cache.Dir); err != nil {
 		return Config{}, err
 	}
-	listen, err := canonicalBindAddress(string(raw.Listen), false)
+	listen, err := canonicalBindAddress(raw.Listen, false)
 	if err != nil {
 		return Config{}, fmt.Errorf("listen: %w", err)
 	}
-	metricsListen := string(raw.MetricsListen)
+	metricsListen := raw.MetricsListen
 	if metricsListen != "" {
-		metricsListen, err = canonicalBindAddress(metricsListen, !bool(raw.MetricsAllowRemote))
+		metricsListen, err = canonicalBindAddress(metricsListen, !raw.MetricsAllowRemote)
 		if err != nil {
 			return Config{}, fmt.Errorf("metrics_listen: %w", err)
 		}
@@ -49,7 +49,7 @@ func validate(raw rawConfig, base string) (Config, error) {
 	}
 	for _, timeout := range []struct {
 		field string
-		value duration
+		value time.Duration
 	}{
 		{"dial_timeout", raw.DialTimeout},
 		{"tls_handshake_timeout", raw.TLSHandshakeTimeout},
@@ -79,52 +79,41 @@ func validate(raw rawConfig, base string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("redirect_allowlist: %w", err)
 	}
-	caDir := resolve(base, string(raw.CADir))
-	cacheDir := resolve(base, string(raw.Cache.Dir))
-	caDirAbsolute, err := filepath.Abs(caDir)
+	caDir, err := filepath.Abs(raw.CADir)
 	if err != nil {
 		return Config{}, fmt.Errorf("%w: ca_dir: cannot resolve directory path", ErrInvalid)
 	}
-	cacheDirAbsolute, err := filepath.Abs(cacheDir)
+	cacheDir, err := filepath.Abs(raw.Cache.Dir)
 	if err != nil {
 		return Config{}, fmt.Errorf("%w: cache.dir: cannot resolve directory path", ErrInvalid)
 	}
 	// The distinctness and nesting checks are lexical: they neither resolve
 	// symlinks nor inspect the filesystem. Startup ownership and layout checks
 	// apply separately.
-	if filepath.Clean(caDirAbsolute) == filepath.Clean(cacheDirAbsolute) {
+	if caDir == cacheDir {
 		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: must be distinct directory paths", ErrInvalid)
 	}
 	// Cache inventory owns every child of its root, including removal of
 	// abandoned staging directories. The CA must not live inside that namespace.
-	if relative, err := filepath.Rel(cacheDirAbsolute, caDirAbsolute); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+	if relative, err := filepath.Rel(cacheDir, caDir); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: ca_dir must not be inside cache.dir", ErrInvalid)
 	}
 
+	raw.Cache.Dir = cacheDir
 	return Config{
-		Listen:            listen,
-		MetricsListen:     metricsListen,
-		Registries:        registries,
-		RedirectAllowlist: redirectAllowlist,
-		CADir:             caDir,
-		Cache: Cache{
-			Dir:                       cacheDir,
-			MaxBytes:                  int64(raw.Cache.MaxBytes),
-			MaxFills:                  int(raw.Cache.MaxFills),
-			MaxEntries:                int(raw.Cache.MaxEntries),
-			FillTimeout:               time.Duration(raw.Cache.FillTimeout),
-			FillWaitTimeout:           time.Duration(raw.Cache.FillWaitTimeout),
-			AuthorizationTTL:          time.Duration(raw.Cache.AuthorizationTTL),
-			AnonymousAuthorizationTTL: time.Duration(raw.Cache.AnonymousAuthorizationTTL),
-			MaxAuthorizationEntries:   int(raw.Cache.MaxAuthorizationEntries),
-		},
-		DialTimeout:           time.Duration(raw.DialTimeout),
-		TLSHandshakeTimeout:   time.Duration(raw.TLSHandshakeTimeout),
-		ResponseHeaderTimeout: time.Duration(raw.ResponseHeaderTimeout),
-		IdleTimeout:           time.Duration(raw.IdleTimeout),
-		ShutdownTimeout:       time.Duration(raw.ShutdownTimeout),
-		MaxConnections:        int(raw.MaxConnections),
-		MaxLeafCertificates:   int(raw.MaxLeafCertificates),
+		Listen:                listen,
+		MetricsListen:         metricsListen,
+		Registries:            registries,
+		RedirectAllowlist:     redirectAllowlist,
+		CADir:                 caDir,
+		Cache:                 raw.Cache,
+		DialTimeout:           raw.DialTimeout,
+		TLSHandshakeTimeout:   raw.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: raw.ResponseHeaderTimeout,
+		IdleTimeout:           raw.IdleTimeout,
+		ShutdownTimeout:       raw.ShutdownTimeout,
+		MaxConnections:        raw.MaxConnections,
+		MaxLeafCertificates:   raw.MaxLeafCertificates,
 	}, nil
 }
 
@@ -184,18 +173,12 @@ func canonicalBindAddress(address string, loopback bool) (string, error) {
 	return net.JoinHostPort(canonicalHost, normalizedPort), nil
 }
 
-// parseAuthorities canonicalizes each element, rejecting the whole list if any
-// element is missing. A YAML null list element decodes to a nil pointer (a bare
-// []string would silently drop it), so a nil element is a typo that would narrow
-// the registry or allowlist set and must fail rather than be skipped.
-func parseAuthorities(texts []*strictString) ([]hostport.HostPort, error) {
+// parseAuthorities canonicalizes each element and rejects duplicates.
+func parseAuthorities(texts []string) ([]hostport.HostPort, error) {
 	authorities := make([]hostport.HostPort, len(texts))
 	seen := make(map[string]bool, len(texts))
 	for i, text := range texts {
-		if text == nil {
-			return nil, fmt.Errorf("%w: element %d: must not be null", ErrInvalid, i+1)
-		}
-		a, err := hostport.Parse(string(*text), "443")
+		a, err := hostport.Parse(text, "443")
 		if err != nil {
 			return nil, fmt.Errorf("%w: element %d: must be a hostname or IP literal with an optional port, without credentials", ErrInvalid, i+1)
 		}
@@ -206,11 +189,4 @@ func parseAuthorities(texts []*strictString) ([]hostport.HostPort, error) {
 		authorities[i] = a
 	}
 	return authorities, nil
-}
-
-func resolve(base, path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Clean(filepath.Join(base, path))
 }
