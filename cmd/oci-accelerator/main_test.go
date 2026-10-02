@@ -278,7 +278,7 @@ func TestRunCheckRejectsConflictingStateDirectoriesWithoutSideEffects(t *testing
 				t.Fatal(err)
 			}
 			err := run(context.Background(), []string{"--env-file", path, "--check"}, &bytes.Buffer{}, &bytes.Buffer{}, net.Listen)
-			if err == nil || !strings.Contains(err.Error(), "ca_dir and cache.dir") {
+			if err == nil || !strings.Contains(err.Error(), "OCI_ACCELERATOR_CA_DIR and OCI_ACCELERATOR_CACHE_DIR") {
 				t.Fatalf("error = %v, want state directory diagnostic", err)
 			}
 			if strings.Contains(err.Error(), secret) {

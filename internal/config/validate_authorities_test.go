@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -27,8 +26,9 @@ func TestAuthoritiesRejectInvalidEntries(t *testing.T) {
 			values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache"}
 			values[tt.field] = tt.value
 			_, err := load("", environmentLookup(values))
-			if !errors.Is(err, ErrInvalid) || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "cdn.example") {
-				t.Fatalf("error = %v", err)
+			assertInvalidSetting(t, err, "", tt.field)
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "cdn.example") {
+				t.Fatalf("error echoed value: %v", err)
 			}
 		})
 	}

@@ -123,7 +123,7 @@ func TestLoadDoesNotMutateEnvironmentOrDiscoverFiles(t *testing.T) {
 		t.Fatal("Load mutated process environment")
 	}
 	_, err := Load("")
-	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "registries") {
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "OCI_ACCELERATOR_REGISTRIES") {
 		t.Fatalf("dotenv was discovered: %v", err)
 	}
 }

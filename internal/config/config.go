@@ -9,8 +9,8 @@ import (
 )
 
 // ErrInvalid is wrapped by every error that reports invalid configuration,
-// so callers can match it with [errors.Is]. Messages
-// name the offending field or line where one applies, but never include
+// so callers can match it with [errors.Is]. Messages name the offending
+// OCI_ACCELERATOR_* variable or file line where one applies, but never include
 // configuration values.
 var ErrInvalid = errors.New("invalid configuration")
 

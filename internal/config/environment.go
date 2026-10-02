@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -45,13 +44,12 @@ func environmentSettings(raw *rawConfig) []environmentSetting {
 // including OCI_ACCELERATOR_* integration-test controls, are not configuration.
 func applyEnvironment(raw *rawConfig, lookup func(string) (string, bool)) error {
 	for _, setting := range environmentSettings(raw) {
-		name := environmentPrefix + setting.name
-		value, present := lookup(name)
+		value, present := lookup(environmentPrefix + setting.name)
 		if !present {
 			continue
 		}
 		if reason := setEnvironmentValue(setting.target, value); reason != "" {
-			return fmt.Errorf("%w: %s: %s", ErrInvalid, name, reason)
+			return invalid(reason, setting.name)
 		}
 	}
 	return nil
