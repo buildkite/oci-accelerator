@@ -202,10 +202,10 @@ func runLoadCase(t *testing.T, bin, originCA, authority string, counters *loadCo
 	caseRoot := t.TempDir()
 	proxyPort, metricsPort := freePort(t, "127.0.0.1"), freePort(t, "127.0.0.1")
 	cacheDir, proxyCA := filepath.Join(caseRoot, "cache"), filepath.Join(caseRoot, "ca")
-	pidFile, config := filepath.Join(caseRoot, "proxy.pid"), filepath.Join(caseRoot, "proxy.yaml")
+	pidFile, config := filepath.Join(caseRoot, "proxy.pid"), filepath.Join(caseRoot, "proxy.env")
 	maxBytes := int64(2<<30) + 1<<20
-	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nmetrics_listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: %d\n  max_fills: %d\n  max_entries: %d\n  fill_wait_timeout: %s\n  authorization_ttl: 0s\n  anonymous_authorization_ttl: 0s\nmax_connections: 64\n", proxyPort, metricsPort, authority, proxyCA, cacheDir, maxBytes, maxFills, maxEntries, wait), 0o600)
-	command := fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCA), shell(bin), shell(config))
+	writeFile(t, config, fmt.Sprintf("OCI_ACCELERATOR_LISTEN=127.0.0.1:%d\nOCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:%d\nOCI_ACCELERATOR_REGISTRIES=%s\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_CACHE_MAX_BYTES=%d\nOCI_ACCELERATOR_CACHE_MAX_FILLS=%d\nOCI_ACCELERATOR_CACHE_MAX_ENTRIES=%d\nOCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT=%s\nOCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL=0s\nOCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL=0s\nOCI_ACCELERATOR_MAX_CONNECTIONS=64\n", proxyPort, metricsPort, authority, proxyCA, cacheDir, maxBytes, maxFills, maxEntries, wait), 0o600)
+	command := fmt.Sprintf("env SSL_CERT_FILE=%s %s --env-file %s", shell(originCA), shell(bin), shell(config))
 	running := false
 	var process *testProcess
 	start := func() {

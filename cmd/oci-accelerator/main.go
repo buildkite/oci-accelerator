@@ -78,20 +78,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 	return serveUntilSignal(ctx, p, listener, metricsDone, cfg.ShutdownTimeout)
 }
 
-// resolveConfig parses the command line and loads the named configuration,
+// resolveConfig parses the command line and loads the optional configuration,
 // reporting handled when --help, --version, or --check has fully served the request.
 func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled bool, err error) {
 	flags := flag.NewFlagSet("oci-accelerator", flag.ContinueOnError)
 	// The flag package includes rejected arguments in its diagnostics. Suppress
 	// those diagnostics so command-line input is never reflected in an error.
 	flags.SetOutput(io.Discard)
-	configPath := flags.String("config", "", "path to YAML configuration")
+	envFile := flags.String("env-file", "", "path to an environment configuration file")
 	check := flags.Bool("check", false, "validate configuration without starting the proxy")
 	version := flags.Bool("version", false, "print the version and exit")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: oci-accelerator --config FILE [--check]")
+			fmt.Fprintln(stdout, "Usage: oci-accelerator [--env-file FILE] [--check]")
 			fmt.Fprintln(stdout, "       oci-accelerator --version")
 			fmt.Fprintln(stdout, "       oci-accelerator init-ca --dir DIR")
 			return config.Config{}, true, nil
@@ -103,11 +103,10 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 		_, err := fmt.Fprintln(stdout, "oci-accelerator "+ociaccelerator.Version())
 		return config.Config{}, true, err
 	}
-	if *configPath == "" || flags.NArg() != 0 {
-		return config.Config{}, false, errors.New("--config is required, and positional arguments are not supported")
+	if flags.NArg() != 0 {
+		return config.Config{}, false, errors.New("positional arguments are not supported")
 	}
-
-	cfg, err = config.Load(*configPath)
+	cfg, err = config.Load(*envFile)
 	if err != nil {
 		if errors.Is(err, config.ErrInvalid) {
 			return config.Config{}, false, fmt.Errorf("configuration validation failed: %w", err)

@@ -11,160 +11,164 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
-func validate(raw rawConfig, base string) (Config, error) {
+func validate(raw rawConfig) (Config, error) {
 	if len(raw.Registries) == 0 {
-		return Config{}, fmt.Errorf("%w: registries: must contain at least one authority", ErrInvalid)
+		return Config{}, invalid("must contain at least one authority", "REGISTRIES")
 	}
-	if err := validatePath("ca_dir", string(raw.CADir)); err != nil {
+	if err := validatePath("CA_DIR", raw.CADir); err != nil {
 		return Config{}, err
 	}
-	if err := validatePath("cache.dir", string(raw.Cache.Dir)); err != nil {
+	if err := validatePath("CACHE_DIR", raw.Cache.Dir); err != nil {
 		return Config{}, err
 	}
-	listen, err := canonicalBindAddress(string(raw.Listen), false)
-	if err != nil {
-		return Config{}, fmt.Errorf("listen: %w", err)
+	listen, reason := canonicalBindAddress(raw.Listen, false)
+	if reason != "" {
+		return Config{}, invalid(reason, "LISTEN")
 	}
-	metricsListen := string(raw.MetricsListen)
+	metricsListen := raw.MetricsListen
 	if metricsListen != "" {
-		metricsListen, err = canonicalBindAddress(metricsListen, !bool(raw.MetricsAllowRemote))
-		if err != nil {
-			return Config{}, fmt.Errorf("metrics_listen: %w", err)
+		metricsListen, reason = canonicalBindAddress(metricsListen, !raw.MetricsAllowRemote)
+		if reason != "" {
+			return Config{}, invalid(reason, "METRICS_LISTEN")
 		}
 	}
 	for _, limit := range []struct {
-		field string
-		value int64
+		setting string
+		value   int64
 	}{
-		{"cache.max_bytes", int64(raw.Cache.MaxBytes)},
-		{"cache.max_fills", int64(raw.Cache.MaxFills)},
-		{"cache.max_entries", int64(raw.Cache.MaxEntries)},
-		{"cache.max_authorization_entries", int64(raw.Cache.MaxAuthorizationEntries)},
-		{"max_connections", int64(raw.MaxConnections)},
-		{"max_leaf_certificates", int64(raw.MaxLeafCertificates)},
+		{"CACHE_MAX_BYTES", raw.Cache.MaxBytes},
+		{"CACHE_MAX_FILLS", int64(raw.Cache.MaxFills)},
+		{"CACHE_MAX_ENTRIES", int64(raw.Cache.MaxEntries)},
+		{"CACHE_MAX_AUTHORIZATION_ENTRIES", int64(raw.Cache.MaxAuthorizationEntries)},
+		{"MAX_CONNECTIONS", int64(raw.MaxConnections)},
+		{"MAX_LEAF_CERTIFICATES", int64(raw.MaxLeafCertificates)},
 	} {
 		if limit.value <= 0 {
-			return Config{}, fmt.Errorf("%w: %s: must be positive", ErrInvalid, limit.field)
+			return Config{}, invalid("must be positive", limit.setting)
 		}
 	}
 	for _, timeout := range []struct {
-		field string
-		value duration
+		setting string
+		value   time.Duration
 	}{
-		{"dial_timeout", raw.DialTimeout},
-		{"tls_handshake_timeout", raw.TLSHandshakeTimeout},
-		{"response_header_timeout", raw.ResponseHeaderTimeout},
-		{"idle_timeout", raw.IdleTimeout},
-		{"shutdown_timeout", raw.ShutdownTimeout},
-		{"cache.fill_timeout", raw.Cache.FillTimeout},
+		{"DIAL_TIMEOUT", raw.DialTimeout},
+		{"TLS_HANDSHAKE_TIMEOUT", raw.TLSHandshakeTimeout},
+		{"RESPONSE_HEADER_TIMEOUT", raw.ResponseHeaderTimeout},
+		{"IDLE_TIMEOUT", raw.IdleTimeout},
+		{"SHUTDOWN_TIMEOUT", raw.ShutdownTimeout},
+		{"CACHE_FILL_TIMEOUT", raw.Cache.FillTimeout},
 	} {
 		if timeout.value <= 0 {
-			return Config{}, fmt.Errorf("%w: %s: must be positive", ErrInvalid, timeout.field)
+			return Config{}, invalid("must be positive", timeout.setting)
 		}
 	}
-	if raw.Cache.FillWaitTimeout < 0 {
-		return Config{}, fmt.Errorf("%w: cache.fill_wait_timeout: must be non-negative", ErrInvalid)
+	for _, timeout := range []struct {
+		setting string
+		value   time.Duration
+	}{
+		{"CACHE_FILL_WAIT_TIMEOUT", raw.Cache.FillWaitTimeout},
+		{"CACHE_AUTHORIZATION_TTL", raw.Cache.AuthorizationTTL},
+		{"CACHE_ANONYMOUS_AUTHORIZATION_TTL", raw.Cache.AnonymousAuthorizationTTL},
+	} {
+		if timeout.value < 0 {
+			return Config{}, invalid("must be non-negative", timeout.setting)
+		}
 	}
-	if raw.Cache.AuthorizationTTL < 0 {
-		return Config{}, fmt.Errorf("%w: cache.authorization_ttl: must be non-negative", ErrInvalid)
+	registries, reason := parseAuthorities(raw.Registries)
+	if reason != "" {
+		return Config{}, invalid(reason, "REGISTRIES")
 	}
-	if raw.Cache.AnonymousAuthorizationTTL < 0 {
-		return Config{}, fmt.Errorf("%w: cache.anonymous_authorization_ttl: must be non-negative", ErrInvalid)
+	redirectAllowlist, reason := parseAuthorities(raw.RedirectAllowlist)
+	if reason != "" {
+		return Config{}, invalid(reason, "REDIRECT_ALLOWLIST")
 	}
-	registries, err := parseAuthorities(raw.Registries)
+	caDir, err := filepath.Abs(raw.CADir)
 	if err != nil {
-		return Config{}, fmt.Errorf("registries: %w", err)
+		return Config{}, invalid("cannot resolve directory path", "CA_DIR")
 	}
-	redirectAllowlist, err := parseAuthorities(raw.RedirectAllowlist)
+	cacheDir, err := filepath.Abs(raw.Cache.Dir)
 	if err != nil {
-		return Config{}, fmt.Errorf("redirect_allowlist: %w", err)
-	}
-	caDir := resolve(base, string(raw.CADir))
-	cacheDir := resolve(base, string(raw.Cache.Dir))
-	caDirAbsolute, err := filepath.Abs(caDir)
-	if err != nil {
-		return Config{}, fmt.Errorf("%w: ca_dir: cannot resolve directory path", ErrInvalid)
-	}
-	cacheDirAbsolute, err := filepath.Abs(cacheDir)
-	if err != nil {
-		return Config{}, fmt.Errorf("%w: cache.dir: cannot resolve directory path", ErrInvalid)
+		return Config{}, invalid("cannot resolve directory path", "CACHE_DIR")
 	}
 	// The distinctness and nesting checks are lexical: they neither resolve
 	// symlinks nor inspect the filesystem. Startup ownership and layout checks
 	// apply separately.
-	if filepath.Clean(caDirAbsolute) == filepath.Clean(cacheDirAbsolute) {
-		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: must be distinct directory paths", ErrInvalid)
+	if caDir == cacheDir {
+		return Config{}, invalid("must be distinct directory paths", "CA_DIR", "CACHE_DIR")
 	}
 	// Cache inventory owns every child of its root, including removal of
 	// abandoned staging directories. The CA must not live inside that namespace.
-	if relative, err := filepath.Rel(cacheDirAbsolute, caDirAbsolute); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return Config{}, fmt.Errorf("%w: ca_dir and cache.dir: ca_dir must not be inside cache.dir", ErrInvalid)
+	if relative, err := filepath.Rel(cacheDir, caDir); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return Config{}, invalid("the CA directory must not be inside the cache directory", "CA_DIR", "CACHE_DIR")
 	}
 
+	raw.Cache.Dir = cacheDir
 	return Config{
-		Listen:            listen,
-		MetricsListen:     metricsListen,
-		Registries:        registries,
-		RedirectAllowlist: redirectAllowlist,
-		CADir:             caDir,
-		Cache: Cache{
-			Dir:                       cacheDir,
-			MaxBytes:                  int64(raw.Cache.MaxBytes),
-			MaxFills:                  int(raw.Cache.MaxFills),
-			MaxEntries:                int(raw.Cache.MaxEntries),
-			FillTimeout:               time.Duration(raw.Cache.FillTimeout),
-			FillWaitTimeout:           time.Duration(raw.Cache.FillWaitTimeout),
-			AuthorizationTTL:          time.Duration(raw.Cache.AuthorizationTTL),
-			AnonymousAuthorizationTTL: time.Duration(raw.Cache.AnonymousAuthorizationTTL),
-			MaxAuthorizationEntries:   int(raw.Cache.MaxAuthorizationEntries),
-		},
-		DialTimeout:           time.Duration(raw.DialTimeout),
-		TLSHandshakeTimeout:   time.Duration(raw.TLSHandshakeTimeout),
-		ResponseHeaderTimeout: time.Duration(raw.ResponseHeaderTimeout),
-		IdleTimeout:           time.Duration(raw.IdleTimeout),
-		ShutdownTimeout:       time.Duration(raw.ShutdownTimeout),
-		MaxConnections:        int(raw.MaxConnections),
-		MaxLeafCertificates:   int(raw.MaxLeafCertificates),
+		Listen:                listen,
+		MetricsListen:         metricsListen,
+		Registries:            registries,
+		RedirectAllowlist:     redirectAllowlist,
+		CADir:                 caDir,
+		Cache:                 raw.Cache,
+		DialTimeout:           raw.DialTimeout,
+		TLSHandshakeTimeout:   raw.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: raw.ResponseHeaderTimeout,
+		IdleTimeout:           raw.IdleTimeout,
+		ShutdownTimeout:       raw.ShutdownTimeout,
+		MaxConnections:        raw.MaxConnections,
+		MaxLeafCertificates:   raw.MaxLeafCertificates,
 	}, nil
 }
 
+// invalid reports reason against the named settings, given without the
+// OCI_ACCELERATOR_ prefix. The reason must be fixed text that never contains
+// configuration values.
+func invalid(reason string, settings ...string) error {
+	names := make([]string, len(settings))
+	for i, setting := range settings {
+		names[i] = environmentPrefix + setting
+	}
+	return fmt.Errorf("%w: %s: %s", ErrInvalid, strings.Join(names, " and "), reason)
+}
+
 // validatePath rejects a directory path that is blank (or whitespace only) or
-// contains a NUL byte, naming the offending field in the error.
-func validatePath(field, value string) error {
+// contains a NUL byte, naming the offending setting in the error.
+func validatePath(setting, value string) error {
 	if strings.TrimSpace(value) == "" {
-		return fmt.Errorf("%w: %s: must be a non-blank directory path", ErrInvalid, field)
+		return invalid("must be a non-blank directory path", setting)
 	}
 	if strings.ContainsRune(value, 0) {
-		return fmt.Errorf("%w: %s: must not contain NUL", ErrInvalid, field)
+		return invalid("must not contain NUL", setting)
 	}
 	return nil
 }
 
 // canonicalBindAddress validates a host:port bind address and returns its
-// canonical form. The port is parsed once, range-checked, and re-emitted without
-// leading zeros. An empty host (":3128") and a wildcard host ("0.0.0.0"/"[::]")
-// are preserved verbatim so they remain valid net.Listen targets. Any other host
-// is validated and canonicalized by hostport.Canonicalize, but a trailing DNS
-// dot is preserved to keep the lookup absolute. When loopback is true the address
-// must bind an explicit loopback IP literal with no zone, matching the metrics
-// endpoint's constraints.
-func canonicalBindAddress(address string, loopback bool) (string, error) {
+// canonical form, or a fixed reason when the address is invalid. The port is
+// parsed once, range-checked, and re-emitted without leading zeros. An empty
+// host (":3128") and a wildcard host ("0.0.0.0"/"[::]") are preserved verbatim
+// so they remain valid net.Listen targets. Any other host is validated and
+// canonicalized by hostport.Canonicalize, but a trailing DNS dot is preserved
+// to keep the lookup absolute. When loopback is true the address must bind an
+// explicit loopback IP literal with no zone, matching the metrics endpoint's
+// constraints.
+func canonicalBindAddress(address string, loopback bool) (canonical, reason string) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
-		return "", fmt.Errorf("%w: must be a host:port address", ErrInvalid)
+		return "", "must be a host:port address"
 	}
 	portNumber, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || portNumber == 0 {
-		return "", fmt.Errorf("%w: port must be an integer from 1 to 65535", ErrInvalid)
+		return "", "port must be an integer from 1 to 65535"
 	}
 	normalizedPort := strconv.FormatUint(portNumber, 10)
 
 	if loopback {
 		ip := net.ParseIP(host)
 		if ip == nil || !ip.IsLoopback() || strings.Contains(host, "%") {
-			return "", fmt.Errorf("%w: host must be a loopback IP literal without a zone", ErrInvalid)
+			return "", "host must be a loopback IP literal without a zone"
 		}
-		return net.JoinHostPort(ip.String(), normalizedPort), nil
+		return net.JoinHostPort(ip.String(), normalizedPort), ""
 	}
 
 	canonicalHost := host
@@ -174,43 +178,31 @@ func canonicalBindAddress(address string, loopback bool) (string, error) {
 		} else {
 			canonicalHost, err = hostport.Canonicalize(host)
 			if err != nil {
-				return "", fmt.Errorf("%w: host must be a valid hostname or IP literal", ErrInvalid)
+				return "", "host must be a valid hostname or IP literal"
 			}
 			if strings.HasSuffix(host, ".") {
 				canonicalHost += "."
 			}
 		}
 	}
-	return net.JoinHostPort(canonicalHost, normalizedPort), nil
+	return net.JoinHostPort(canonicalHost, normalizedPort), ""
 }
 
-// parseAuthorities canonicalizes each element, rejecting the whole list if any
-// element is missing. A YAML null list element decodes to a nil pointer (a bare
-// []string would silently drop it), so a nil element is a typo that would narrow
-// the registry or allowlist set and must fail rather than be skipped.
-func parseAuthorities(texts []*strictString) ([]hostport.HostPort, error) {
-	authorities := make([]hostport.HostPort, len(texts))
+// parseAuthorities canonicalizes each element and rejects duplicates, returning
+// a fixed reason that names the offending element by position.
+func parseAuthorities(texts []string) (authorities []hostport.HostPort, reason string) {
+	authorities = make([]hostport.HostPort, len(texts))
 	seen := make(map[string]bool, len(texts))
 	for i, text := range texts {
-		if text == nil {
-			return nil, fmt.Errorf("%w: element %d: must not be null", ErrInvalid, i+1)
-		}
-		a, err := hostport.Parse(string(*text), "443")
+		a, err := hostport.Parse(text, "443")
 		if err != nil {
-			return nil, fmt.Errorf("%w: element %d: must be a hostname or IP literal with an optional port, without credentials", ErrInvalid, i+1)
+			return nil, fmt.Sprintf("element %d: must be a hostname or IP literal with an optional port, without credentials", i+1)
 		}
 		if seen[a.String()] {
-			return nil, fmt.Errorf("%w: element %d: duplicate authority", ErrInvalid, i+1)
+			return nil, fmt.Sprintf("element %d: duplicate authority", i+1)
 		}
 		seen[a.String()] = true
 		authorities[i] = a
 	}
-	return authorities, nil
-}
-
-func resolve(base, path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Clean(filepath.Join(base, path))
+	return authorities, ""
 }

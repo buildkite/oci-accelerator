@@ -28,18 +28,25 @@ and cache storage in detail.
 ## Usage
 
 ```
-oci-accelerator --config FILE [--check]
+oci-accelerator [--env-file FILE] [--check]
 oci-accelerator --version
 oci-accelerator init-ca --dir DIR
 ```
 
 | Command                                 | Description                                                                                                                                  |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `oci-accelerator --config FILE`         | Start the proxy with the YAML configuration in `FILE`. It stops gracefully on `SIGINT` or `SIGTERM`.                                         |
-| `oci-accelerator --config FILE --check` | Validate the configuration and exit, without starting the proxy or touching the CA or cache directories.                                     |
+| `oci-accelerator [--env-file FILE]`     | Start using built-in defaults, the optional dotenv file, and process environment overrides.                                                 |
+| `oci-accelerator [--env-file FILE] --check` | Validate the same effective configuration without starting the proxy or touching the CA or cache directories.                          |
+| `oci-accelerator init-ca --dir DIR`     | Create a root CA in `DIR`, or validate an existing one, without starting the proxy. It ignores environment configuration and prints the certificate path and its SHA-256 fingerprint. |
 | `oci-accelerator --version`            | Print the version compiled from the root `VERSION` file and exit, without configuration or startup.                                          |
-| `oci-accelerator init-ca --dir DIR`     | Create a root CA in `DIR`, or validate an existing one, without starting the proxy. Prints the certificate path and its SHA-256 fingerprint. |
 | `oci-accelerator --help`                | Print usage. `init-ca --help` describes `init-ca`.                                                                                           |
+
+Configuration uses `OCI_ACCELERATOR_*` environment variables only. You can explicitly
+select a dotenv file with `--env-file`. Process environment values override file values,
+including empty values. No file is discovered automatically or modified. See the
+[configuration guide](docs/deployment.md#configuration) for all variables and rules.
+YAML configuration and `--config` are no longer supported. If you are upgrading, migrate
+those settings to the corresponding `OCI_ACCELERATOR_*` variables.
 
 To publish a versioned image, open a PR that increases `VERSION`. See the
 [release process](docs/deployment.md#releasing-images) for tags and retry behavior.
@@ -54,15 +61,17 @@ Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
 
    ```sh
    go build -o bin/oci-accelerator ./cmd/oci-accelerator
+   cp .env.example .env
+   # Edit .env if you need different registries or paths.
    mkdir -m 0700 data
    ```
 
-2. Start the proxy with [`config.example.yaml`](config.example.yaml). It listens
-   on `127.0.0.1:3128`, creates its root CA and cache under `data` on first
-   start, and logs the CA's fingerprint as `ca_sha256`:
+2. Start the proxy. The example listens on `127.0.0.1:3128`, creates its root CA
+   and cache under `data` on first start, and logs the CA's fingerprint as
+   `ca_sha256`:
 
    ```sh
-   bin/oci-accelerator --config config.example.yaml
+   bin/oci-accelerator --env-file .env
    ```
 
 3. In another terminal, download the CA certificate and check that its
@@ -103,7 +112,7 @@ Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
    docker pull alpine
    ```
 
-To cache other upstream registries, add them to `registries` and trust the CA
+To cache other upstream registries, add them to `OCI_ACCELERATOR_REGISTRIES` and trust the CA
 for each one. The [deployment guide](docs/deployment.md) covers running as a
 service or container, remote Docker hosts, and every configuration setting.
 
@@ -121,7 +130,7 @@ go test ./...
 go test -race ./...
 ```
 
-To run the same checks as CI, including validating `config.example.yaml`:
+To run the same checks as CI:
 
 ```sh
 GOTOOLCHAIN=local CGO_ENABLED=1 bash .buildkite/check.sh

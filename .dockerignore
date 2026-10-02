@@ -1,7 +1,6 @@
 # Only compilation inputs enter the build context. Never send local CA keys or data.
 **
 !go.mod
-!go.sum
 !VERSION
 !version.go
 !cmd/

@@ -37,9 +37,9 @@ func TestDockerPushThroughCompiledProxy(t *testing.T) {
 	proxyPort := freePort(t, "127.0.0.1")
 	proxyCA := filepath.Join(root, "proxy-ca")
 	cacheDir := filepath.Join(root, "cache")
-	config := filepath.Join(root, "proxy.yaml")
-	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [%q]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 33554432\n", proxyPort, authority, proxyCA, cacheDir), 0o600)
-	startProcess(t, fmt.Sprintf("env SSL_CERT_FILE=%s %s --config %s", shell(originCAPath(root)), shell(bin), shell(config)))
+	config := filepath.Join(root, "proxy.env")
+	writeFile(t, config, fmt.Sprintf("OCI_ACCELERATOR_LISTEN=127.0.0.1:%d\nOCI_ACCELERATOR_REGISTRIES=%s\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_CACHE_MAX_BYTES=33554432\n", proxyPort, authority, proxyCA, cacheDir), 0o600)
+	startProcess(t, fmt.Sprintf("env SSL_CERT_FILE=%s %s --env-file %s", shell(originCAPath(root)), shell(bin), shell(config)))
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 
 	suffix := strings.ToLower(rand.Text())

@@ -2,5 +2,9 @@
 /bin/
 /data/
 /config.local.yaml
+/.env
+/.env.*
+!/.env.example
+!/.env.container-example
 /.idea/
 .DS_Store

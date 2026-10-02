@@ -27,12 +27,12 @@ func TestDockerPublicRegistriesThroughCompiledProxy(t *testing.T) {
 	run(t, "go", "build", "-o", bin, "../cmd/oci-accelerator")
 	proxyPort := freePort(t, "127.0.0.1")
 	proxyCA, cacheDir := filepath.Join(root, "proxy-ca"), filepath.Join(root, "cache")
-	config := filepath.Join(root, "proxy.yaml")
-	writeFile(t, config, fmt.Sprintf("listen: 127.0.0.1:%d\nregistries: [registry-1.docker.io, ghcr.io]\nca_dir: %q\ncache:\n  dir: %q\n  max_bytes: 268435456\n", proxyPort, proxyCA, cacheDir), 0o600)
+	config := filepath.Join(root, "proxy.env")
+	writeFile(t, config, fmt.Sprintf("OCI_ACCELERATOR_LISTEN=127.0.0.1:%d\nOCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_CACHE_MAX_BYTES=268435456\n", proxyPort, proxyCA, cacheDir), 0o600)
 
 	suffix := strings.ToLower(rand.Text())
 	prefix := "acc3d-" + suffix[:8]
-	proxyCmd := fmt.Sprintf("env SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt %s --config %s", shell(bin), shell(config))
+	proxyCmd := fmt.Sprintf("env SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt %s --env-file %s", shell(bin), shell(config))
 	proxy := startProcess(t, proxyCmd)
 	waitTCP(t, fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	proxyCert := filepath.Join(proxyCA, "ca.crt")
