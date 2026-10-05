@@ -74,16 +74,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		defer func() { runErr = errors.Join(runErr, stopMetrics()) }()
 	}
 
-	peerDone, stopPeers, err := startPeers(ctx, cfg, signer, logger, listen)
+	peeringDone, stopPeering, err := startPeering(ctx, cfg, signer, logger, listen)
 	if err != nil {
 		return err
 	}
-	if stopPeers != nil {
-		defer func() { runErr = errors.Join(runErr, stopPeers()) }()
+	if stopPeering != nil {
+		defer func() { runErr = errors.Join(runErr, stopPeering()) }()
 	}
 
 	logger.Info("proxy ready", "version", ociaccelerator.Version(), "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
-	return serveUntilSignal(ctx, p, listener, metricsDone, peerDone, cfg.ShutdownTimeout)
+	return serveUntilSignal(ctx, p, listener, metricsDone, peeringDone, cfg.ShutdownTimeout)
 }
 
 // resolveConfig parses the command line and loads the optional configuration,
@@ -199,7 +199,7 @@ func startMetrics(cfg config.Config, p *proxy.Proxy, listen func(string, string)
 
 // serveUntilSignal serves the proxy until a serving failure, a stopped auxiliary
 // service, or cancellation, then joins the serving and shutdown errors.
-func serveUntilSignal(ctx context.Context, p *proxy.Proxy, listener net.Listener, metricsDone, peerDone <-chan struct{}, timeout time.Duration) error {
+func serveUntilSignal(ctx context.Context, p *proxy.Proxy, listener net.Listener, metricsDone, peeringDone <-chan struct{}, timeout time.Duration) error {
 	var serveErr error
 	done := make(chan struct{})
 	go func() {
@@ -208,7 +208,7 @@ func serveUntilSignal(ctx context.Context, p *proxy.Proxy, listener net.Listener
 	}()
 	select {
 	case <-metricsDone:
-	case <-peerDone:
+	case <-peeringDone:
 	case <-done:
 	case <-ctx.Done():
 	}

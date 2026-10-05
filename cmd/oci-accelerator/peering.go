@@ -17,9 +17,9 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/peer"
 )
 
-// startPeers owns the peer listener, discovery loop and address book until its
+// startPeering owns the peer listener, discovery loop and address book until its
 // cleanup is called. Disabled peering creates no state or network activity.
-func startPeers(ctx context.Context, cfg config.Config, signer *ca.Authority, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, func() error, error) {
+func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, func() error, error) {
 	if cfg.Peer.Listen == "" {
 		return nil, nil, nil
 	}

@@ -21,15 +21,15 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/peer"
 )
 
-func TestStartPeersDisabledHasNoSideEffects(t *testing.T) {
+func TestStartPeeringDisabledHasNoSideEffects(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "peer")
 	called := false
-	done, cleanup, err := startPeers(context.Background(), config.Config{Peer: config.Peer{StateDir: dir}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), func(string, string) (net.Listener, error) {
+	done, cleanup, err := startPeering(context.Background(), config.Config{Peer: config.Peer{StateDir: dir}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), func(string, string) (net.Listener, error) {
 		called = true
 		return nil, errors.New("unexpected listen")
 	})
 	if err != nil || done != nil || cleanup != nil || called {
-		t.Fatalf("startPeers disabled: done nil %t, cleanup nil %t, error %v, listen called %t", done == nil, cleanup == nil, err, called)
+		t.Fatalf("startPeering disabled: done nil %t, cleanup nil %t, error %v, listen called %t", done == nil, cleanup == nil, err, called)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("disabled peering created state: %v", err)
@@ -42,7 +42,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	listener := newTestListener(t)
 	state := filepath.Join(root, "peer")
 	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state}, ShutdownTimeout: 100 * time.Millisecond}
-	done, cleanup, err := startPeers(context.Background(), cfg, signer, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
+	done, cleanup, err := startPeering(context.Background(), cfg, signer, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,11 +110,11 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	}
 }
 
-func TestStartPeersFailuresReleaseState(t *testing.T) {
+func TestStartPeeringFailuresReleaseState(t *testing.T) {
 	root := t.TempDir()
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	base := config.Config{Peer: config.Peer{Listen: "127.0.0.1:1", Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: time.Second}
-	_, _, err := startPeers(context.Background(), base, signer, slog.Default(), func(string, string) (net.Listener, error) { return nil, errors.New("private bind") })
+	_, _, err := startPeering(context.Background(), base, signer, slog.Default(), func(string, string) (net.Listener, error) { return nil, errors.New("private bind") })
 	if err == nil || err.Error() != "cannot listen on configured peer address" {
 		t.Fatalf("bind error = %v", err)
 	}
@@ -129,7 +129,7 @@ func TestStartPeersFailuresReleaseState(t *testing.T) {
 	if err := os.WriteFile(bad.Peer.StateDir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := startPeers(context.Background(), bad, signer, slog.Default(), net.Listen); err == nil || err.Error() != "peer state startup failed" {
+	if _, _, err := startPeering(context.Background(), bad, signer, slog.Default(), net.Listen); err == nil || err.Error() != "peer state startup failed" {
 		t.Fatalf("state error = %v", err)
 	}
 }
@@ -142,7 +142,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		failure := make(chan struct{})
 		listener := &faultListener{Listener: socket, accepting: make(chan struct{}), fail: failure, acceptErr: errors.New("private address")}
 		cfg := config.Config{Peer: config.Peer{Listen: socket.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: time.Second}
-		done, cleanup, err := startPeers(context.Background(), cfg, signer, slog.Default(), listenForTest(listener))
+		done, cleanup, err := startPeering(context.Background(), cfg, signer, slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -167,7 +167,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 		listener := newTestListener(t)
 		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: 10 * time.Millisecond}
-		_, cleanup, err := startPeers(context.Background(), cfg, signer, slog.Default(), listenForTest(listener))
+		_, cleanup, err := startPeering(context.Background(), cfg, signer, slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}
