@@ -21,7 +21,7 @@ restart retention, capacity limits, failed persistence, bounded connections, and
 shutdown. Run those checks alone with:
 
 ```sh
-go test -race ./internal/ca ./internal/peer ./internal/config ./cmd/oci-accelerator
+go test -race ./internal/ca ./internal/peering ./internal/config ./cmd/oci-accelerator
 ```
 
 These tests do not require Docker or external peers. Peer persistence failure

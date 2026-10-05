@@ -18,7 +18,7 @@ import (
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
 	"github.com/buildkite/oci-accelerator/internal/config"
-	"github.com/buildkite/oci-accelerator/internal/peer"
+	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
 func TestStartPeeringDisabledHasNoSideEffects(t *testing.T) {
@@ -54,10 +54,10 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := peer.Message{Address: "self.test:7443", Peers: []string{newTestListener(t).Addr().String()}}
-	client := peer.NewClient(clientTLS)
+	want := peering.Message{Address: "self.test:7443", Peers: []string{newTestListener(t).Addr().String()}}
+	client := peering.NewClient(clientTLS)
 	defer client.CloseIdleConnections()
-	got, err := peer.Exchange(context.Background(), client, listener.Addr().String(), peer.Message{Address: want.Peers[0]})
+	got, err := peering.Exchange(context.Background(), client, listener.Addr().String(), peering.Message{Address: want.Peers[0]})
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("authenticated exchange = %#v, %v, want %#v", got, err, want)
 	}
@@ -78,7 +78,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	}
 	unauthTLS := clientTLS.Clone()
 	unauthTLS.GetClientCertificate = nil
-	if err := post(peer.NewClient(unauthTLS), "unauth.test:7443"); err != nil {
+	if err := post(peering.NewClient(unauthTLS), "unauth.test:7443"); err != nil {
 		t.Fatal(err)
 	}
 	foreign := openPeerTestCA(t, filepath.Join(root, "foreign-ca"))
@@ -87,7 +87,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	foreignTLS.RootCAs = clientTLS.RootCAs
-	if err := post(peer.NewClient(foreignTLS), "foreign.test:7443"); err != nil {
+	if err := post(peering.NewClient(foreignTLS), "foreign.test:7443"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +100,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 		t.Fatal("serve completion channel remains open after cleanup")
 	}
 	assertListenerClosed(t, listener)
-	book, err := peer.OpenBook(state, cfg.Peer.Advertise)
+	book, err := peering.OpenBook(state, cfg.Peer.Advertise)
 	if err != nil {
 		t.Fatalf("state lock not released: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestStartPeeringFailuresReleaseState(t *testing.T) {
 	if err == nil || err.Error() != "cannot listen on configured peer address" {
 		t.Fatalf("bind error = %v", err)
 	}
-	book, err := peer.OpenBook(base.Peer.StateDir, base.Peer.Advertise)
+	book, err := peering.OpenBook(base.Peer.StateDir, base.Peer.Advertise)
 	if err != nil {
 		t.Fatalf("bind failure retained state lock: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		if err := cleanup(); err == nil || err.Error() != "peer listener stopped unexpectedly" {
 			t.Fatalf("cleanup error = %v", err)
 		}
-		book, err := peer.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
+		book, err := peering.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
 		if err != nil {
 			t.Fatalf("serve failure retained state lock: %v", err)
 		}
@@ -188,7 +188,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		if _, err := conn.Read(make([]byte, 1)); err == nil {
 			t.Fatal("stalled TLS connection remained open")
 		}
-		book, err := peer.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
+		book, err := peering.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
 		if err != nil {
 			t.Fatalf("cleanup retained state lock: %v", err)
 		}
@@ -288,7 +288,7 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 	}
 	assertListenerClosed(t, proxyListener)
 	assertListenerClosed(t, metricsListener)
-	book, err := peer.OpenBook(state, peerListener.Addr().String())
+	book, err := peering.OpenBook(state, peerListener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}

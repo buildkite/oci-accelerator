@@ -14,7 +14,7 @@ import (
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
 	"github.com/buildkite/oci-accelerator/internal/config"
-	"github.com/buildkite/oci-accelerator/internal/peer"
+	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
 // startPeering owns the peer listener, discovery loop and address book until its
@@ -27,22 +27,22 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if err != nil {
 		return nil, nil, errors.New("peer TLS startup failed")
 	}
-	book, err := peer.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
+	book, err := peering.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
 	if err != nil {
 		return nil, nil, errors.New("peer state startup failed")
 	}
-	rejected, err := book.Merge(peer.Message{Address: cfg.Peer.Advertise, Peers: cfg.Peer.Seeds})
+	rejected, err := book.Merge(peering.Message{Address: cfg.Peer.Advertise, Peers: cfg.Peer.Seeds})
 	if err != nil {
 		return nil, nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())
 	}
 	if rejected != 0 {
-		logger.Warn("peer address book full", "rejected", rejected, "limit", peer.MaxPeers)
+		logger.Warn("peer address book full", "rejected", rejected, "limit", peering.MaxPeers)
 	}
 	listener, err := listen("tcp", cfg.Peer.Listen)
 	if err != nil {
 		return nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
-	discovery := peer.NewDiscovery(book, peer.NewClient(clientTLS), logger)
+	discovery := peering.NewDiscovery(book, peering.NewClient(clientTLS), logger)
 	handler := discovery.Handler()
 	var handlerMu sync.Mutex
 	var handlers sync.WaitGroup
@@ -72,7 +72,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	serveDone := make(chan struct{})
 	var serveErr error
 	go func() {
-		if err := server.Serve(tls.NewListener(peer.LimitListener(listener, 32), serverTLS)); !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(tls.NewListener(peering.LimitListener(listener, 32), serverTLS)); !errors.Is(err, http.ErrServerClosed) {
 			serveErr = errors.New("peer listener stopped unexpectedly")
 		}
 		close(serveDone)

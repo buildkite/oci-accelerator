@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/hostport"
-	"github.com/buildkite/oci-accelerator/internal/peer"
+	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
 func validate(raw rawConfig) (Config, error) {
@@ -148,7 +148,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 	if raw.Advertise == "" {
 		return Peer{}, invalid("must be set when peer service is enabled", "PEER_ADVERTISE")
 	}
-	advertise, err := peer.CanonicalAddress(raw.Advertise)
+	advertise, err := peering.CanonicalAddress(raw.Advertise)
 	if err != nil {
 		return Peer{}, invalid("must be an explicit usable host:port address", "PEER_ADVERTISE")
 	}
@@ -174,7 +174,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 	seen := make(map[string]struct{}, len(raw.Seeds))
 	seeds := make([]string, 0, len(raw.Seeds))
 	for _, seed := range raw.Seeds {
-		canonical, canonicalErr := peer.CanonicalAddress(seed)
+		canonical, canonicalErr := peering.CanonicalAddress(seed)
 		if canonicalErr != nil {
 			return Peer{}, invalid("must contain explicit usable host:port addresses", "PEER_SEEDS")
 		}
@@ -187,7 +187,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 		seen[canonical] = struct{}{}
 		seeds = append(seeds, canonical)
 	}
-	if len(seeds) > peer.MaxPeers {
+	if len(seeds) > peering.MaxPeers {
 		return Peer{}, invalid("must contain at most 1024 unique addresses", "PEER_SEEDS")
 	}
 	return Peer{Listen: listen, Advertise: advertise, Seeds: seeds, StateDir: stateDir}, nil
