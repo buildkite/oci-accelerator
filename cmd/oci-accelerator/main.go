@@ -33,7 +33,7 @@ func main() {
 // run dispatches init-ca or starts the proxy and serves until ctx is cancelled.
 // It takes ownership of each listener returned by listen, which tests replace to
 // avoid binding real sockets. Deferred cleanup runs in reverse startup order
-// (metrics server, proxy listener, then cache), and its errors are joined with
+// (peer service, metrics server, proxy listener, then cache), and its errors are joined with
 // any serving or shutdown error.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen func(string, string) (net.Listener, error)) (runErr error) {
 	if len(args) > 0 && args[0] == "init-ca" {
@@ -74,8 +74,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		defer func() { runErr = errors.Join(runErr, stopMetrics()) }()
 	}
 
+	peerDone, stopPeers, err := startPeers(ctx, cfg, signer, logger, listen)
+	if err != nil {
+		return err
+	}
+	if stopPeers != nil {
+		defer func() { runErr = errors.Join(runErr, stopPeers()) }()
+	}
+
 	logger.Info("proxy ready", "version", ociaccelerator.Version(), "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
-	return serveUntilSignal(ctx, p, listener, metricsDone, cfg.ShutdownTimeout)
+	return serveUntilSignal(ctx, p, listener, metricsDone, peerDone, cfg.ShutdownTimeout)
 }
 
 // resolveConfig parses the command line and loads the optional configuration,
@@ -189,9 +197,9 @@ func startMetrics(cfg config.Config, p *proxy.Proxy, listen func(string, string)
 	return metricsDone, cleanup, nil
 }
 
-// serveUntilSignal serves the proxy until a serving failure, a stopped metrics
-// endpoint, or cancellation, then shuts down and joins the serving and shutdown errors.
-func serveUntilSignal(ctx context.Context, p *proxy.Proxy, listener net.Listener, metricsDone <-chan struct{}, timeout time.Duration) error {
+// serveUntilSignal serves the proxy until a serving failure, a stopped auxiliary
+// service, or cancellation, then joins the serving and shutdown errors.
+func serveUntilSignal(ctx context.Context, p *proxy.Proxy, listener net.Listener, metricsDone, peerDone <-chan struct{}, timeout time.Duration) error {
 	var serveErr error
 	done := make(chan struct{})
 	go func() {
@@ -200,6 +208,7 @@ func serveUntilSignal(ctx context.Context, p *proxy.Proxy, listener net.Listener
 	}()
 	select {
 	case <-metricsDone:
+	case <-peerDone:
 	case <-done:
 	case <-ctx.Done():
 	}

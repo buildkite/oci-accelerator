@@ -36,6 +36,7 @@ type Config struct {
 	RedirectAllowlist     []hostport.HostPort
 	CADir                 string
 	Cache                 Cache
+	Peer                  Peer
 	DialTimeout           time.Duration
 	TLSHandshakeTimeout   time.Duration
 	ResponseHeaderTimeout time.Duration
@@ -58,6 +59,15 @@ type Cache struct {
 	MaxAuthorizationEntries   int
 }
 
+// Peer holds peer discovery configuration. An empty Listen
+// disables peer service.
+type Peer struct {
+	Listen    string
+	Advertise string
+	Seeds     []string
+	StateDir  string
+}
+
 type rawConfig struct {
 	Listen                string
 	MetricsListen         string
@@ -66,6 +76,7 @@ type rawConfig struct {
 	RedirectAllowlist     []string
 	CADir                 string
 	Cache                 Cache
+	Peer                  Peer
 	DialTimeout           time.Duration
 	TLSHandshakeTimeout   time.Duration
 	ResponseHeaderTimeout time.Duration

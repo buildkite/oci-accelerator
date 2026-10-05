@@ -15,8 +15,10 @@ See [how it works](how-it-works.md) for the request flow and design.
   tunnels to arbitrary hosts and ports, which cannot be inspected or restricted to image
   pulls. Keep the default loopback bind, or bind a private interface behind network access
   controls and a firewall. Never expose the proxy through an Amp portal.
-- **The CA can sign any server identity.** Protect `ca.key`, never distribute it or bake it
-  into an image, and scope client trust to each intercepted registry rather than system-wide.
+- **The CA can sign any server identity.** Protect `ca.key`, never give it to Docker clients
+  or bake it into an image, and scope client trust to each intercepted registry rather than
+  system-wide. [Peering](#peer-discovery) requires securely provisioning the same CA key to
+  each trusted accelerator instance.
 - **The CA download is unauthenticated.** Verify its fingerprint through a trusted channel
   before installing it ([details](#trust-the-ca)).
 - **Upstream TLS is always verified**, using the proxy process's system trust store. There is
@@ -340,7 +342,9 @@ dotenv file are rejected.
 
 An unset variable retains the file value or default. A present empty variable is an explicit
 value. It disables `OCI_ACCELERATOR_METRICS_LISTEN` and clears
-`OCI_ACCELERATOR_REDIRECT_ALLOWLIST`. Other empty values fail validation, including required
+`OCI_ACCELERATOR_REDIRECT_ALLOWLIST`. Empty `OCI_ACCELERATOR_PEER_LISTEN` disables peering,
+provided the other peer settings are also empty. An empty `OCI_ACCELERATOR_PEER_SEEDS` is
+valid even when peering is enabled. Other empty values fail validation, including required
 registries and paths. `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`
 are comma-separated authority lists. Entries are whitespace-trimmed, the
 whole list replaces the file value, and empty members are rejected.
@@ -407,6 +411,15 @@ You can configure private registries explicitly.
 | `OCI_ACCELERATOR_LISTEN` | `127.0.0.1:3128` | host:port with a nonzero numeric port. Empty or wildcard hosts bind all interfaces      |
 | `OCI_ACCELERATOR_METRICS_LISTEN` | Disabled | host:port with a nonzero numeric port. Literal loopback IP required unless `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` |
 | `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` | `false` | Explicit boolean opt-in to non-loopback metrics and probe binding                       |
+
+**Peer discovery**
+
+| Environment variable | Default | Notes |
+| --- | --- | --- |
+| `OCI_ACCELERATOR_PEER_LISTEN` | Disabled | Separate TLS listener, host:port with a nonzero numeric port |
+| `OCI_ACCELERATOR_PEER_ADVERTISE` | Empty | Required reachable host:port when peering is enabled |
+| `OCI_ACCELERATOR_PEER_SEEDS` | Empty | Optional comma-separated host:port bootstrap addresses |
+| `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled |
 
 **Registries and state**
 
@@ -596,8 +609,8 @@ Docker-owned credentials do not change.
    ```
 
    The directory name is the exact authority from image names: use `registry.example:5000` for
-   a registry on port 5000, and omit `:443` when image names omit it. Never distribute `ca.key`
-   or install it as a Docker client key. See Docker's
+   a registry on port 5000, and omit `:443` when image names omit it. Never give `ca.key`
+   to Docker clients or install it as a Docker client key. See Docker's
    [certificate instructions](https://docs.docker.com/engine/security/certificates/) for other
    installation modes and platforms.
 
@@ -790,6 +803,90 @@ docker volume rm oci-accelerator-cache
 docker compose up -d
 ```
 
+## Peer discovery
+
+Peering exchanges addresses only. It does not share cache keys, cached content, registry
+credentials, or authorization grants. Image pulls and readiness do not depend on reachable peers.
+
+Provision the same `ca.crt` and `ca.key` into each instance's private CA directory through your
+trusted deployment system. Use separate local state directories or volumes for each instance,
+not a shared writable filesystem. Ordinary Docker clients receive only `ca.crt`.
+
+Add these settings to your existing configuration, substituting reachable addresses:
+
+```sh
+OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:7443
+OCI_ACCELERATOR_PEER_ADVERTISE=accelerator-a.example:7443
+OCI_ACCELERATOR_PEER_SEEDS=accelerator-b.example:7443,accelerator-c.example:7443
+OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
+```
+
+- `PEER_LISTEN` binds a separate TLS port. Keep the proxy and metrics listeners separate.
+- `PEER_ADVERTISE` is the address other instances dial. With containers, use a reachable host
+  address and published peer port, not the wildcard bind or a container-only hostname.
+- Seeds are optional, not an allowlist. An instance with no seeds can wait for an incoming
+  exchange. Ports are always explicit, including `:443`, and IPv6 uses `[address]:port`.
+  Seed entries are whitespace-trimmed, canonicalized, deduplicated, and exclude self.
+- Create the immediate parent of the state directory as the process user without group or
+  other write access. Startup creates the state directory with mode 0700. It must not equal,
+  contain, or be contained by the CA or cache directories. Relative paths use the working
+  directory. For the container layout, `/var/lib/oci-accelerator/peers` is a suitable sibling.
+- For Docker or Compose, explicitly publish the chosen peer port and persist peer state on a
+  writable volume. The default container configuration leaves peering disabled.
+- Run `oci-accelerator --env-file FILE --check` to validate without opening listeners or state.
+  To disable peering, clear all four peer settings. The existing address book remains on disk.
+
+### Peer trust
+
+Both sides require TLS 1.3 and dedicated, short-lived peer certificates signed by the locally
+configured CA. Each instance generates a separate peer leaf key and renews its certificate
+before expiry. Registry interception certificates are not accepted as peer certificates, and
+the public CA download does not grant peer access. The CA private key is never sent by the
+peer protocol. Certificates cannot outlive the CA.
+
+This establishes fleet membership, not independently trusted node identities. Every holder of
+the shared CA key can impersonate any peer. Compromising one instance compromises the fleet's
+trust domain, so individual-node revocation is not possible while it retains that key.
+
+Learned destinations are unrestricted. An authenticated peer can cause connection attempts to
+any hostname/IP and port reachable from your instance. Mutual TLS rejects non-peers but cannot
+prevent those initial connection attempts. Restrict network access as your deployment requires.
+Peer connections ignore proxy environment variables, never follow redirects, and never trust a
+CA downloaded from the destination. None of this changes registry authorization or proxy egress.
+
+### Discovery and retention
+
+The HTTPS `POST /v1/peers/exchange` request and response carry an `address` string and a `peers`
+array. Each exchange merges the sender and its known peers before replying with the receiver's
+full list. Newly learned addresses are contacted directly. Exchanges start immediately, normally
+repeat every 30 seconds with ±20% jitter, and use exponential failure backoff capped at five
+minutes before jitter. Requests have a five-second deadline. Each instance permits four outbound
+exchanges and 32 accepted peer connections, including incomplete TLS handshakes. Incoming
+headers, bodies, writes, and idle connections also have five-second deadlines. JSON messages
+are limited to 512 KiB and 1,024 list entries.
+
+Each instance retains up to 1,024 canonical addresses, excluding its configured self-address.
+Unreachable entries never expire. At capacity, existing entries remain and new addresses are
+rejected with a `peer address book full` warning. Different DNS aliases count as different
+addresses. A change of address does not remove the old entry from other instances.
+
+`peers.json` contains a versioned, sorted address list and is atomically replaced after changes.
+You may read it to inspect known addresses, but do not edit live state. Reachability and retry
+timing are local observations, not persisted or accepted from another instance. Startup also
+merges configured seeds and retries retained addresses. Removing a seed from configuration does
+not remove it from the book. Resetting one book does not forget an address fleet-wide, because
+other peers can advertise it again.
+
+State files must be regular, process-owned, mode 0600 files. Startup takes an exclusive process
+lock, removes recognized abandoned staging files, and rejects corrupt state, unsafe files, or
+unknown files without replacing the book. Bind or state startup failures prevent startup.
+Runtime persistence failures fail the exchange and log `peer address book update failed` while
+the proxy continues serving. If replacement succeeded but directory sync failed, the book retains
+the replaced state and retries persistence before acknowledging another exchange.
+A peer-listener failure stops the process rather than leaving an
+enabled service silently unavailable. Outage and recovery logs include the peer address but no
+raw network errors or credentials.
+
 ## Monitoring
 
 ### Logs
@@ -925,6 +1022,11 @@ A stuck handler can therefore delay exit. A second signal uses the operating sys
 termination behavior. For containers, keep the stop grace period longer than
 `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` (see [Compose](#compose)).
 
+When peering is enabled, outbound exchanges are cancelled on shutdown. Peer cleanup drains
+inbound exchanges with its own `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` window and joins remaining
+handlers before releasing the state lock. Allow time for both proxy and peer drain windows,
+plus metrics cleanup, in your container stop grace period. Filesystem stalls can delay exit.
+
 ### What survives a restart
 
 | State                    | After restart                                                       |
@@ -936,6 +1038,8 @@ termination behavior. For containers, keep the stop grace period longer than
 | Cache entries            | Kept. Each body is rehashed on first reuse                          |
 | Abandoned fills          | Removed at startup                                                  |
 | Metrics counters         | Reset                                                               |
+| Known peers              | Retained in `OCI_ACCELERATOR_PEER_STATE_DIR` when peering is enabled |
+| Peer reachability and leaf keys | Re-established, not persisted                                |
 
 ## Troubleshooting
 
@@ -960,7 +1064,8 @@ termination behavior. For containers, keep the stop grace period longer than
 
 - Redirect restrictions protect proxy-originated fetches only. They do not constrain the broader
   egress available through opaque CONNECT tunnels, so deployment network controls remain essential.
-- No shared or distributed storage, multi-instance coordination, or background prefetch.
+- No shared or distributed cache storage, cache-key exchange, or background prefetch.
+  Peer discovery shares addresses only.
 - No Kubernetes manifests, and no automated container runtime acceptance in CI.
 - Fault tests exercise process termination and private tmpfs exhaustion, not power loss or
   faulty-device certification. See the [testing guide](testing.md).
