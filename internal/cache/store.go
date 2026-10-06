@@ -47,6 +47,7 @@ type Store struct {
 	evictionOrder                                   list.List                            // entries ordered by (last, key) for eviction victim selection.
 	evictionAfterLast                               int64                                // resume after this (last, key) position even if its entry disappears or pins.
 	evictionAfter                                   string                               // paired with evictionAfterLast.
+	changes                                         chan struct{}                        // lazily created, never-closed notification that Keys may have changed.
 	lock                                            *os.File                             // held OS file lock enforcing single-process ownership of dir.
 	closed                                          bool                                 // true once the store is shutting down and rejecting new work.
 }

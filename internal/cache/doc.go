@@ -5,7 +5,8 @@
 // [Fill], and publishes it with [Fill.Commit] only after its size and digest
 // verify. A partial object is never visible. [Store.Get] returns a pinned
 // [Reader] for a committed object, verifying a persisted body once on its
-// first read after startup.
+// first read after startup. [Store.Keys] lists committed objects, and
+// [Store.Changes] wakes one subscriber after that list may have changed.
 // One process owns a cache directory, enforced by a file lock.
 //
 // See the repository README for caching behavior, docs/deployment.md for
