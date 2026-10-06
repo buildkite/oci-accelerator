@@ -66,6 +66,10 @@ independently trusted node identities.
 Instances exchange their advertised address and complete known-address list,
 merge newly learned addresses, and contact those addresses directly. For example,
 if A knows B and B knows C, A learns C through B and then contacts C itself.
+An inbound exchange that merges successfully postpones the next outbound request
+to its sender by the normal jittered interval, avoiding an immediate reverse
+exchange. It does not shorten existing backoff or defer contact with third-party
+addresses learned through that exchange. Requests already in flight can cross.
 The address book survives restarts and retains unreachable peers, with a limit
 of 1,024 addresses per instance. Retries use backoff, and peer outages do not
 affect proxy readiness or image pulls.
