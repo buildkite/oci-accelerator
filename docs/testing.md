@@ -22,7 +22,10 @@ bounded connections, and shutdown. Cache availability tests drive several nodes 
 on a fake clock with seeded destination choice, delivering requests through the real
 handler. They cover relays, the two-acknowledgement fanout, attempt budgets, partial
 address books, address moves and reuse, stale results, batching bounds, strict JSON,
-FIFO eviction, and a two-node exchange over mutual TLS. Run those checks alone with:
+FIFO eviction, and a two-node exchange over mutual TLS. Persistence tests cover snapshot
+round trips and bounds, startup reconciliation, discarded and unsafe snapshots, injected
+write failures, mutation during a checkpoint, interrupted writes, and a restart that keeps
+hints. They use injected errors and staging files, not power-loss testing. Run those checks alone with:
 
 ```sh
 go test -race ./internal/ca ./internal/peering ./internal/config ./cmd/oci-accelerator

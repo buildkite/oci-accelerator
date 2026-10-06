@@ -127,23 +127,24 @@ func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
 	root := t.TempDir()
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	listenerA, listenerB := newTestListener(t), newTestListener(t)
-	start := func(name string, listener *net.TCPListener, seeds []string, inventory *fakeInventory) *peering.Availability {
+	start := func(name string, listener net.Listener, seeds []string, inventory *fakeInventory) (*peering.Availability, func() error) {
 		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: listener.Addr().String(), Seeds: seeds, StateDir: filepath.Join(root, name)}, ShutdownTimeout: 100 * time.Millisecond}
 		_, availability, cleanup, err := startPeering(context.Background(), cfg, signer, inventory, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}
+		stop := sync.OnceValue(cleanup)
 		t.Cleanup(func() {
-			if err := cleanup(); err != nil {
+			if err := stop(); err != nil {
 				t.Error(err)
 			}
 		})
-		return availability
+		return availability, stop
 	}
 	key := strings.Repeat("ab", 32)
-	b := start("b", listenerB, nil, &fakeInventory{})
+	b, stopB := start("b", listenerB, nil, &fakeInventory{})
 	inventoryA := &fakeInventory{changes: make(chan struct{}, 1)}
-	a := start("a", listenerA, []string{listenerB.Addr().String()}, inventoryA)
+	a, _ := start("a", listenerA, []string{listenerB.Addr().String()}, inventoryA)
 	idA, err := os.ReadFile(filepath.Join(root, "a", "node-id"))
 	if err != nil {
 		t.Fatal(err)
@@ -196,10 +197,25 @@ func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
 		"oci_accelerator_availability_hint_evictions_total 0\n",
 		fmt.Sprintf("oci_accelerator_availability_sends_total{outcome=%q} %d\n", "acknowledged", stats.Acknowledged),
 		fmt.Sprintf("oci_accelerator_availability_sends_total{outcome=%q} %d\n", "failed", stats.Failed),
+		"oci_accelerator_availability_checkpoint_failures_total 0\n",
 	} {
 		if !strings.Contains(response.Body.String(), line) {
 			t.Fatalf("metrics missing %q", line)
 		}
+	}
+
+	// Cleanup checkpoints B's hints, and a restart restores them without any
+	// new delivery.
+	if err := stopB(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "b", "availability.json")); err != nil {
+		t.Fatalf("no availability checkpoint after cleanup: %v", err)
+	}
+	restartedListener := newTestListener(t)
+	restarted, _ := start("b", restartedListener, nil, &fakeInventory{})
+	if got := restarted.Owners(key); !reflect.DeepEqual(got, []string{string(idA)}) {
+		t.Fatalf("B owners after restart = %v", got)
 	}
 }
 

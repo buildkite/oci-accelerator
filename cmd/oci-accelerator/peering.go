@@ -18,7 +18,8 @@ import (
 )
 
 // startPeering owns the peer listener, discovery and availability loops, and
-// address book until its cleanup is called. Availability hints track the
+// address book until its cleanup is called, which saves the final
+// availability checkpoint before releasing the state lock. Availability hints track the
 // inventory of store. Disabled peering creates no state, subscribes to nothing,
 // and starts no network activity.
 func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, store peering.Inventory, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, *peering.Availability, func() error, error) {
@@ -40,7 +41,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if rejected != 0 {
 		logger.Warn("peer address book full", "rejected", rejected, "limit", peering.MaxPeers)
 	}
-	availability, err := peering.NewAvailability(book, store, peering.NewClient(clientTLS))
+	availability, err := peering.NewAvailability(book, store, peering.NewClient(clientTLS), logger)
 	if err != nil {
 		return nil, nil, nil, errors.Join(errors.New("peer availability startup failed"), book.Close())
 	}
@@ -112,7 +113,9 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		// Closing sockets cannot preempt a filesystem operation. Join handlers
 		// before releasing the state lock even if the drain deadline expired.
 		handlers.Wait()
-		return errors.Join(cleanupErr, serveErr, book.Close())
+		// Every availability owner has stopped, so the final checkpoint is the
+		// only writer and finishes before the lock is released.
+		return errors.Join(cleanupErr, serveErr, availability.Checkpoint(), book.Close())
 	}
 	logger.Info("peer service ready", "listen", listener.Addr().String(), "advertise", cfg.Peer.Advertise, "node_id", book.Snapshot().NodeID, "known_peers", len(book.Addresses()))
 	return serveDone, availability, cleanup, nil

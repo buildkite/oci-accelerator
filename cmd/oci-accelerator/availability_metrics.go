@@ -20,5 +20,8 @@ oci_accelerator_availability_hint_evictions_total %d
 # TYPE oci_accelerator_availability_sends_total counter
 oci_accelerator_availability_sends_total{outcome="acknowledged"} %d
 oci_accelerator_availability_sends_total{outcome="failed"} %d
-`, stats.Hints, stats.Evictions, stats.Acknowledged, stats.Failed)
+# HELP oci_accelerator_availability_checkpoint_failures_total Failed writes of the availability snapshot.
+# TYPE oci_accelerator_availability_checkpoint_failures_total counter
+oci_accelerator_availability_checkpoint_failures_total %d
+`, stats.Hints, stats.Evictions, stats.Acknowledged, stats.Failed, stats.CheckpointFailures)
 }

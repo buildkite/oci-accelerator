@@ -3,6 +3,8 @@ package peering
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"sync"
@@ -36,15 +38,20 @@ type Inventory interface {
 
 // Availability originates hints for the local cache inventory, merges hints
 // received from peers, and relays each hint with limited gossip to at most
-// hintFanout acknowledged destinations. Hints are advisory. Delivery is best
-// effort, with no withdrawal, expiry, or repair.
+// hintFanout acknowledged destinations. It checkpoints retained hints into the
+// book's state directory under the book's lock. Hints are advisory. Delivery
+// is best effort, with no withdrawal, expiry, or repair.
 type Availability struct {
-	book      *Book
-	inventory Inventory
-	changes   <-chan struct{}
-	client    *http.Client
-	wake      chan struct{}
-	send      func(context.Context, string, availabilityMessage) error
+	book            *Book
+	inventory       Inventory
+	changes         <-chan struct{}
+	client          *http.Client
+	logger          *slog.Logger
+	wake            chan struct{}
+	send            func(context.Context, string, availabilityMessage) error
+	persist         func(write func(io.Writer) error) error
+	checkpointEvery time.Duration
+	now             func() time.Time // fixed before Run starts
 
 	mu           sync.Mutex // guards the fields below
 	self         nodeID
@@ -54,22 +61,30 @@ type Availability struct {
 	busy         map[nodeID]bool // destinations with a request in flight
 	blockedUntil time.Time       // when the last dispatch found no idle destination, the next chance of one
 	random       *rand.Rand
-	now          func() time.Time
 	acknowledged uint64
 	failed       uint64
+	// revision advances with every change to persisted state, and saved is
+	// the revision of the last successful checkpoint.
+	revision, saved    uint64
+	checkpointFailures uint64
+	checkpointFailing  bool
 }
 
 // AvailabilityStats is a point-in-time view of availability state.
 type AvailabilityStats struct {
-	Hints        int
-	Evictions    uint64
-	Acknowledged uint64
-	Failed       uint64
+	Hints              int
+	Evictions          uint64
+	Acknowledged       uint64
+	Failed             uint64
+	CheckpointFailures uint64
 }
 
-// NewAvailability subscribes to inventory changes, then originates hints for
-// the current inventory, so no change between the two can be missed.
-func NewAvailability(book *Book, inventory Inventory, client *http.Client) (*Availability, error) {
+// NewAvailability restores the checkpointed hints in book's state directory,
+// subscribes to inventory changes, then reconciles the restored hints with
+// the current inventory, so no change between the two can be missed. A
+// missing, corrupt, oversized, unsupported, or foreign snapshot starts with
+// no hints. Unsafe or unreadable state fails, like other peer state.
+func NewAvailability(book *Book, inventory Inventory, client *http.Client, logger *slog.Logger) (*Availability, error) {
 	self, ok := parseNodeID(book.Snapshot().NodeID)
 	if !ok {
 		return nil, errAvailabilityIdentity
@@ -78,19 +93,33 @@ func NewAvailability(book *Book, inventory Inventory, client *http.Client) (*Ava
 		book:      book,
 		inventory: inventory,
 		client:    client,
+		logger:    logger,
 		wake:      make(chan struct{}, 1),
 		send: func(ctx context.Context, address string, message availabilityMessage) error {
 			return sendAvailability(ctx, client, address, message)
 		},
-		self:    self,
-		index:   newHintIndex(self),
-		backoff: make(map[destination]*destinationBackoff),
-		busy:    make(map[nodeID]bool),
-		random:  rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
-		now:     time.Now,
+		persist: func(write func(io.Writer) error) error {
+			return persistAvailabilityState(book.dir, write)
+		},
+		checkpointEvery: availabilityCheckpointInterval,
+		now:             time.Now,
+		self:            self,
+		index:           newHintIndex(self),
+		backoff:         make(map[destination]*destinationBackoff),
+		busy:            make(map[nodeID]bool),
+		random:          rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 	}
+	hints, err := loadAvailabilityState(book.dir, self)
+	switch {
+	case errors.Is(err, errStateCorrupt), errors.Is(err, errStateOversized), errors.Is(err, errStateVersion), errors.Is(err, errStateIdentity):
+		logger.Warn("availability state discarded", "reason", err.Error())
+		a.revision++ // replace the discarded snapshot at the next checkpoint
+	case err != nil:
+		return nil, err
+	}
+	a.restore(hints)
 	a.changes = inventory.Changes()
-	a.reconcile(inventory.Keys())
+	a.restoreInventory(inventory.Keys())
 	return a, nil
 }
 
@@ -121,26 +150,33 @@ func (a *Availability) Owners(key string) []string {
 	return a.index.owners(parsed)
 }
 
-// Stats reports retained hints and cumulative eviction and send counts.
+// Stats reports retained hints and cumulative eviction, send, and checkpoint
+// failure counts.
 func (a *Availability) Stats() AvailabilityStats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return AvailabilityStats{Hints: a.index.len(), Evictions: a.index.evictions, Acknowledged: a.acknowledged, Failed: a.failed}
+	return AvailabilityStats{
+		Hints: a.index.len(), Evictions: a.index.evictions, Acknowledged: a.acknowledged,
+		Failed: a.failed, CheckpointFailures: a.checkpointFailures,
+	}
 }
 
-// Run tracks inventory changes and forwards pending hints until ctx ends. It
-// keeps at most availabilityConcurrency requests in flight, one per
-// destination. Before returning it joins them and applies their results, so
-// no request remains reserved.
+// Run tracks inventory changes, forwards pending hints, and checkpoints
+// changed state until ctx ends. It keeps at most availabilityConcurrency
+// requests in flight, one per destination, and at most one checkpoint write.
+// Before returning it joins both and applies request results, so no request
+// remains reserved. Call Checkpoint afterwards to save the final state.
 func (a *Availability) Run(ctx context.Context) {
 	type result struct {
 		batch availabilityBatch
 		err   error
 	}
-	// The buffer holds every possible result, so requests never block.
+	// The buffers hold every possible result, so writers never block.
 	results := make(chan result, availabilityConcurrency)
+	checkpoints := make(chan checkpointResult, 1)
 	var requests sync.WaitGroup
 	active := 0
+	writing := false
 	defer func() {
 		requests.Wait()
 		for ; active > 0; active-- {
@@ -152,12 +188,19 @@ func (a *Availability) Run(ctx context.Context) {
 				a.complete(r.batch, nil)
 			}
 		}
+		if writing {
+			r := <-checkpoints
+			_ = a.finishCheckpoint(r.revision, r.err)
+		}
 		if a.client != nil {
 			a.client.CloseIdleConnections()
 		}
 	}()
 	timer := time.NewTimer(0)
 	defer timer.Stop()
+	// A fixed cadence, rather than a quiet period, keeps continuous changes
+	// from postponing checkpoints.
+	nextCheckpoint := a.now().Add(a.checkpointEvery)
 	for ctx.Err() == nil {
 		for _, batch := range a.dispatch(availabilityConcurrency - active) {
 			active++
@@ -169,7 +212,18 @@ func (a *Availability) Run(ctx context.Context) {
 				results <- result{batch: batch, err: a.send(requestCtx, batch.to.address, batch.message)}
 			}()
 		}
-		timer.Reset(a.nextWait(active))
+		wait := a.nextWait(active)
+		if !writing && a.dirty() {
+			if now := a.now(); now.Before(nextCheckpoint) {
+				wait = min(wait, nextCheckpoint.Sub(now))
+			} else {
+				snapshot := a.capture()
+				writing = true
+				nextCheckpoint = now.Add(a.checkpointEvery)
+				go func() { checkpoints <- checkpointResult{revision: snapshot.revision, err: a.writeCheckpoint(snapshot)} }()
+			}
+		}
+		timer.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return
@@ -180,6 +234,9 @@ func (a *Availability) Run(ctx context.Context) {
 		case result := <-results:
 			active--
 			a.complete(result.batch, result.err)
+		case r := <-checkpoints:
+			writing = false
+			_ = a.finishCheckpoint(r.revision, r.err)
 		}
 	}
 }
@@ -189,7 +246,9 @@ func (a *Availability) accept(message availabilityMessage) error {
 	a.mu.Lock()
 	now := a.now()
 	for _, c := range message.claims {
-		a.index.merge(c, now.Add(a.jitter(availabilityCadence)))
+		if a.index.merge(c, now.Add(a.jitter(availabilityCadence))) {
+			a.revision++
+		}
 	}
 	a.mu.Unlock()
 	select {
@@ -212,6 +271,25 @@ func (a *Availability) nextWait(active int) time.Duration {
 		due = a.blockedUntil
 	}
 	return max(due.Sub(a.now()), 0)
+}
+
+// restore admits checkpointed hints in FIFO order. Pending passes resume with
+// fresh jitter and their remaining budgets.
+func (a *Availability) restore(hints []*hint) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.now()
+	for _, h := range hints {
+		a.index.add(h)
+		if h.pending {
+			a.index.schedule(h, now.Add(a.jitter(availabilityCadence)))
+		}
+	}
+	// Smaller limits than the snapshot was written under evict its oldest
+	// records, and the next checkpoint records that.
+	if a.index.evictions != 0 {
+		a.revision++
+	}
 }
 
 // jitter requires mu. It spreads d by plus or minus 20 percent.

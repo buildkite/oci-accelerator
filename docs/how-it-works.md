@@ -108,7 +108,10 @@ C's only peers have already seen the hint, so C sends nothing.
 
 Hints are not proof of current availability or authorization. Eviction sends no
 withdrawal, hints never expire, and there is no repair, inventory exchange, or
-replay to newly discovered peers, so some nodes may never hear of an entry. No
+replay to newly discovered peers, so some nodes may never hear of an entry.
+Each instance checkpoints its hints and forwarding progress beside its address
+book, so an ordinary restart keeps what it knew without repeating finished
+passes. No
 instance fetches content from a peer, and hints never change cache keys or
 per-request upstream authorization. See
 [cache availability hints](deployment.md#cache-availability-hints) for the

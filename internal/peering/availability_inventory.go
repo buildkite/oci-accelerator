@@ -10,17 +10,32 @@ import (
 // Comparing successive inventories, rather than the bounded index, stops
 // unrelated changes from reannouncing a hint that FIFO eviction forgot.
 func (a *Availability) reconcile(keys []string) {
-	current := make([]cacheKey, 0, len(keys))
-	for _, text := range keys {
-		if key, ok := parseCacheKey(text); ok {
-			current = append(current, key)
-		}
-	}
-	slices.SortFunc(current, func(x, y cacheKey) int { return bytes.Compare(x[:], y[:]) })
-	current = slices.Compact(current)
-
+	current := parseInventory(keys)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.applyInventory(current)
+}
+
+// restoreInventory reconciles restored hints with the inventory at startup.
+// It forgets local hints for absent keys and originates hints for present
+// keys without a retained local hint. Retained local hints keep their seen
+// sets and forwarding progress. The inventory becomes the baseline.
+func (a *Availability) restoreInventory(keys []string) {
+	current := parseInventory(keys)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for e := a.index.fifo.Front(); e != nil; {
+		h := e.Value.(*hint)
+		e = e.Next()
+		if _, present := slices.BinarySearchFunc(current, h.key, compareCacheKeys); h.owner == a.self && !present && a.index.forget(h.key) {
+			a.revision++
+		}
+	}
+	a.applyInventory(current)
+}
+
+// applyInventory requires mu.
+func (a *Availability) applyInventory(current []cacheKey) {
 	now := a.now()
 	previous := a.baseline
 	i, j := 0, 0
@@ -32,14 +47,19 @@ func (a *Availability) reconcile(keys []string) {
 		case j == len(current):
 			order = -1
 		default:
-			order = bytes.Compare(previous[i][:], current[j][:])
+			order = compareCacheKeys(previous[i], current[j])
 		}
 		switch {
 		case order < 0:
-			a.index.forget(previous[i])
+			if a.index.forget(previous[i]) {
+				a.revision++
+			}
 			i++
 		case order > 0:
-			a.index.originate(current[j], now.Add(a.jitter(availabilityCadence)))
+			if a.index.find(a.self, current[j]) == nil {
+				a.index.originate(current[j], now.Add(a.jitter(availabilityCadence)))
+				a.revision++
+			}
 			j++
 		default:
 			i++
@@ -48,3 +68,17 @@ func (a *Availability) reconcile(keys []string) {
 	}
 	a.baseline = current
 }
+
+// parseInventory returns the valid keys sorted and unique.
+func parseInventory(keys []string) []cacheKey {
+	current := make([]cacheKey, 0, len(keys))
+	for _, text := range keys {
+		if key, ok := parseCacheKey(text); ok {
+			current = append(current, key)
+		}
+	}
+	slices.SortFunc(current, compareCacheKeys)
+	return slices.Compact(current)
+}
+
+func compareCacheKeys(x, y cacheKey) int { return bytes.Compare(x[:], y[:]) }

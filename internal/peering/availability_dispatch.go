@@ -136,14 +136,15 @@ func (a *Availability) settle(batch availabilityBatch, acknowledged bool, now ti
 			continue
 		}
 		h.inflight--
-		if acknowledged {
-			a.index.addSeen(h, []nodeID{batch.to.id})
+		if acknowledged && a.index.addSeen(h, []nodeID{batch.to.id}) {
+			a.revision++
 		}
 		if !h.pending {
 			continue
 		}
-		if acknowledged {
+		if acknowledged && !h.hasAcked(batch.to.id) {
 			h.ack(batch.to.id)
+			a.revision++
 		}
 		switch {
 		case !h.pending:
@@ -151,6 +152,7 @@ func (a *Availability) settle(batch availabilityBatch, acknowledged bool, now ti
 			a.index.schedule(h, now.Add(a.jitter(availabilityCadence)))
 		case h.inflight == 0:
 			a.index.finishPass(h)
+			a.revision++
 		}
 	}
 }
@@ -162,6 +164,7 @@ func (a *Availability) plan(h *hint, resolved []destination, round *dispatchRoun
 	if h.ackCount >= hintFanout || h.attempts == 0 {
 		if h.inflight == 0 {
 			a.index.finishPass(h)
+			a.revision++
 		}
 		return false
 	}
@@ -194,6 +197,7 @@ func (a *Availability) plan(h *hint, resolved []destination, round *dispatchRoun
 		// Every resolved peer has the hint. Discovery does not reopen the pass.
 		if h.inflight == 0 {
 			a.index.finishPass(h)
+			a.revision++
 		}
 		return false
 	}
@@ -209,6 +213,7 @@ func (a *Availability) plan(h *hint, resolved []destination, round *dispatchRoun
 		}
 		h.inflight++
 		h.attempts--
+		a.revision++
 		want--
 	}
 	switch {

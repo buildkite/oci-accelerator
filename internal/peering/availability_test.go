@@ -2,6 +2,8 @@ package peering
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,7 +18,7 @@ func TestNewAvailabilityOriginatesCurrentInventory(t *testing.T) {
 	}
 	defer book.Close()
 	inventory := newTestInventory(testCacheKey(2).String(), testCacheKey(1).String(), "not a key")
-	a, err := NewAvailability(book, inventory, nil)
+	a, err := NewAvailability(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

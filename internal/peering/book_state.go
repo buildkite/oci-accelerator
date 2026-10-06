@@ -1,6 +1,7 @@
 package peering
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -101,7 +102,7 @@ func inspectBookDir(dir string) error {
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(dir, name)
-		if name == ".lock" || name == bookStateName || name == nodeIDName {
+		if name == ".lock" || name == bookStateName || name == nodeIDName || name == availabilityStateName {
 			if err := validateRegular(path); err != nil {
 				return err
 			}
@@ -219,6 +220,16 @@ func replaceBookState(dir string, peers map[string]string, syncDir func(string) 
 }
 
 func replaceState(dir, name string, raw []byte, syncDir func(string) error) (bool, error) {
+	return replaceStateWith(dir, name, func(w io.Writer) error {
+		_, err := w.Write(raw)
+		return err
+	}, syncDir)
+}
+
+// replaceStateWith streams a replacement for name into a private temporary
+// file, syncs it, and renames it into place. A failure leaves the previous
+// file intact, and startup removes abandoned temporary files.
+func replaceStateWith(dir, name string, write func(io.Writer) error, syncDir func(string) error) (bool, error) {
 	f, err := os.CreateTemp(dir, ".peers-")
 	if err != nil {
 		return false, err
@@ -226,7 +237,10 @@ func replaceState(dir, name string, raw []byte, syncDir func(string) error) (boo
 	tmp := f.Name()
 	defer os.Remove(tmp)
 	if err = f.Chmod(0o600); err == nil {
-		_, err = f.Write(raw)
+		buffered := bufio.NewWriter(f)
+		if err = write(buffered); err == nil {
+			err = buffered.Flush()
+		}
 	}
 	if err == nil {
 		err = f.Sync()

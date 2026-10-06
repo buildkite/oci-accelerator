@@ -154,7 +154,7 @@ func newTestAvailability(t *testing.T, id, address string, now func() time.Time,
 	}
 	t.Cleanup(func() { book.Close() })
 	inventory := newTestInventory()
-	a, err := NewAvailability(book, inventory, nil)
+	a, err := NewAvailability(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

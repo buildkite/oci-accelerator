@@ -86,14 +86,14 @@ func newBoundedHintIndex(self nodeID, limits hintLimits) *hintIndex {
 	return &hintIndex{self: self, limits: limits, byKey: make(map[cacheKey][]*hint)}
 }
 
-// merge records a received claim. The local node's own claims are ignored
-// because its cache inventory is authoritative. A first receipt adds the local
-// ID and starts a forwarding pass due at due. A duplicate only unions seen
-// sets, without refreshing FIFO position, moving its deadline, or reopening a
-// finished pass.
-func (x *hintIndex) merge(c hintClaim, due time.Time) {
+// merge records a received claim and reports whether retained state changed.
+// The local node's own claims are ignored because its cache inventory is
+// authoritative. A first receipt adds the local ID and starts a forwarding
+// pass due at due. A duplicate only unions seen sets, without refreshing FIFO
+// position, moving its deadline, or reopening a finished pass.
+func (x *hintIndex) merge(c hintClaim, due time.Time) bool {
 	if c.owner == x.self {
-		return
+		return false
 	}
 	h := x.find(c.owner, c.key)
 	if h == nil {
@@ -107,30 +107,30 @@ func (x *hintIndex) merge(c hintClaim, due time.Time) {
 		if !h.suppressed {
 			x.startPass(h, due)
 		}
-		return
+		return true
 	}
-	if h.suppressed {
-		return
-	}
-	x.addSeen(h, c.seen)
+	return x.addSeen(h, c.seen)
 }
 
-// addSeen unions ids into a retained hint's seen set. A union that would
-// exceed the seen limit suppresses the hint instead, because truncating seen
-// and relaying could resend to nodes that already have the hint.
-func (x *hintIndex) addSeen(h *hint, ids []nodeID) {
+// addSeen unions ids into a retained hint's seen set and reports whether it
+// changed. A union that would exceed the seen limit suppresses the hint
+// instead, because truncating seen and relaying could resend to nodes that
+// already have the hint.
+func (x *hintIndex) addSeen(h *hint, ids []nodeID) bool {
 	if h.suppressed {
-		return
+		return false
 	}
 	missing := countMissing(h.seen, ids)
 	switch {
 	case missing == 0:
+		return false
 	case len(h.seen)+missing > maxHintSeen:
 		h.suppressed = true
 		x.finishPass(h)
 	default:
 		x.setSeen(h, unionNodeIDs(h.seen, ids))
 	}
+	return true
 }
 
 // originate starts a local hint for key due at due unless one is already
@@ -143,11 +143,14 @@ func (x *hintIndex) originate(key cacheKey, due time.Time) {
 	}
 }
 
-// forget removes the local hint for key, without any withdrawal.
-func (x *hintIndex) forget(key cacheKey) {
-	if h := x.find(x.self, key); h != nil {
+// forget removes the local hint for key, without any withdrawal, and reports
+// whether one was retained.
+func (x *hintIndex) forget(key cacheKey) bool {
+	h := x.find(x.self, key)
+	if h != nil {
 		x.remove(h)
 	}
+	return h != nil
 }
 
 // owners returns the sorted node IDs advertised as holding key. Hints are

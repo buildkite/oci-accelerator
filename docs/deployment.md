@@ -934,11 +934,13 @@ automatic ID rotation. Two other nodes sharing one ID can repeatedly replace eac
 Upgrade all peers together. The identity-aware schema is incompatible with address-only
 exchanges, with no fallback. Startup migrates version-1 `peers.json` lists to version-2 local
 candidates and learns their IDs through discovery. Keep a stopped-state backup if you need
-rollback, because older binaries cannot read the new state directory.
+rollback, because older binaries cannot read the new state directory. Binaries that do not
+persist availability hints refuse to start beside `availability.json`, so delete that file from
+the stopped instance's state directory before rolling back to one.
 
-State files must be regular, process-owned, mode 0600 files. Startup takes an exclusive process
-lock, removes recognized abandoned staging files, and rejects corrupt state, unsafe files, or
-unknown files without replacing the book. Bind or state startup failures prevent startup.
+State files, including `availability.json`, must be regular, process-owned, mode 0600 files.
+Startup takes an exclusive process lock, removes recognized abandoned staging files, and
+rejects corrupt state, unsafe files, or unknown files without replacing the book. Bind or state startup failures prevent startup.
 Runtime persistence failures fail the exchange and log `peer address book update failed` while
 the proxy continues serving. If replacement succeeded but directory sync failed, the book retains
 the replaced state and retries persistence before acknowledging another exchange.
@@ -1017,9 +1019,44 @@ content and sends nothing. A later notice can reinsert it. A hint whose `seen` s
 1,025 IDs stays available for lookup but is never forwarded again. These limits are built in.
 
 Hints are advisory. An owner may have evicted the entry, and hints never expire. No instance
-fetches content from peers, and hints never affect cache keys or upstream authorization. Hints
-are held in memory and are lost on restart. Startup announces the current cache inventory again.
+fetches content from peers, and hints never affect cache keys or upstream authorization.
 All instances need this protocol. Older instances reject it, which only consumes attempts.
+
+#### Persisted hints
+
+Retained hints are checkpointed to `availability.json` in the peer state directory, beside
+`peers.json`, under the same process lock and file rules. The file is versioned JSON with this
+instance's node ID and every retained hint in FIFO order: its owner, key, `seen` set,
+suppression, and whether its forwarding pass is pending, with the acknowledged destinations and
+attempts left. You may read it, but do not edit live state.
+
+- While hints change, a background checkpoint runs every 30 seconds, even under continuous
+  changes, so a busy instance rewrites the whole file at most that often. Duplicates that add
+  nothing do not count as changes. A checkpoint briefly copies the retained hints, about
+  150 bytes each, before writing them without holding the lock. Shutdown writes a final checkpoint after availability requests and handlers stop and
+  before the state lock is released. Each write streams to a private staging file, syncs it,
+  renames it into place, and syncs the directory.
+- The file is limited to 64 MiB, and admission keeps retained hints within that bound by
+  charging each hint 256 bytes plus 15 bytes per seen ID. With large seen sets this binds before
+  the memory limit, for example at about 4,300 hints with 1,025 seen IDs each. A
+  replacement can briefly need room for both the old and new files. Startup reads the file in
+  a stream, so loading needs memory for the restored hints rather than the whole file.
+- Startup restores hints before the peer listener starts. Pending passes resume about a second
+  later with their remaining attempts, and finished passes stay finished. Local hints for keys
+  no longer in the cache are dropped without a withdrawal, and cached keys without a retained
+  local hint are announced. A clean restart does not announce retained local keys again.
+- A missing file starts with no hints. A corrupt, oversized, unsupported, or another node's file
+  logs `availability state discarded` with the reason, starts with no hints, and is replaced at
+  the next checkpoint. The address book and node ID are untouched. Unsafe permissions, ownership,
+  symlinks, or lock failures still prevent startup, like other peer state.
+- A failed checkpoint logs `availability checkpoint failed` once, keeps serving from memory, and
+  retries at the next interval until `availability checkpoint recovered`. Logs never include
+  hints. Cache serving never depends on checkpoints.
+
+A `204` acknowledgement does not mean the hint is on disk. A crash loses changes since the last
+checkpoint and can restore a hint that FIFO eviction removed afterwards, so some hints may be
+sent again. Persistence reduces what a restart forgets, but it repairs neither missed gossip nor
+stale hints.
 
 ## Monitoring
 
@@ -1081,8 +1118,8 @@ Metrics use the `oci_accelerator_` prefix and include:
 - cache admission and rejection reasons, entries, readers, fills, bytes, reservations, and
   evictions (the fills gauge includes reservations whose staging is still in progress)
 - Go heap allocation and goroutine gauges
-- with peering enabled, retained availability hints, hint evictions, and availability requests by
-  outcome (`acknowledged` or `failed`)
+- with peering enabled, retained availability hints, hint evictions, availability requests by
+  outcome (`acknowledged` or `failed`), and failed availability checkpoints
 
 Interpreting them:
 
@@ -1159,9 +1196,9 @@ termination behavior. For containers, keep the stop grace period longer than
 `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` (see [Compose](#compose)).
 
 When peering is enabled, outbound exchanges and availability requests are cancelled on
-shutdown. Peer cleanup drains
-inbound exchanges with its own `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` window and joins remaining
-handlers before releasing the state lock. Allow time for both proxy and peer drain windows,
+shutdown. Peer cleanup drains inbound exchanges with its own `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT`
+window, joins remaining handlers, and writes a final availability checkpoint before releasing
+the state lock. Allow time for both proxy and peer drain windows,
 plus metrics cleanup, in your container stop grace period. Filesystem stalls can delay exit.
 
 ### What survives a restart
@@ -1176,7 +1213,7 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 | Abandoned fills          | Removed at startup                                                  |
 | Metrics counters         | Reset                                                               |
 | Known peers              | Retained in `OCI_ACCELERATOR_PEER_STATE_DIR` when peering is enabled |
-| Availability hints       | Lost. Startup announces the current cache inventory again           |
+| Availability hints       | Restored from the last checkpoint, then reconciled with the cache   |
 | Peer reachability and leaf keys | Re-established, not persisted                                |
 
 ## Troubleshooting
