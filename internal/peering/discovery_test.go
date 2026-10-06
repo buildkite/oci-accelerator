@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -69,10 +68,11 @@ func TestDiscoveryThreeNodesConvergeAndContactLearnedPeers(t *testing.T) {
 		nodes[i] = n
 	}
 	addresses := []string{nodes[0].book.self, nodes[1].book.self, nodes[2].book.self}
-	if _, err := nodes[0].book.Merge(Message{Address: addresses[1]}); err != nil {
+	ids := []string{nodes[0].book.Snapshot().NodeID, nodes[1].book.Snapshot().NodeID, nodes[2].book.Snapshot().NodeID}
+	if _, err := nodes[0].book.AddSeeds([]string{addresses[1]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := nodes[1].book.Merge(Message{Address: addresses[2]}); err != nil {
+	if _, err := nodes[1].book.AddSeeds([]string{addresses[2]}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -83,9 +83,14 @@ func TestDiscoveryThreeNodesConvergeAndContactLearnedPeers(t *testing.T) {
 		go func() { defer runs.Done(); n.discovery.Run(ctx) }()
 	}
 	t.Cleanup(func() { cancel(); runs.Wait() })
-	want := [][]string{{addresses[1], addresses[2]}, {addresses[0], addresses[2]}, {addresses[0], addresses[1]}}
-	for i := range want {
-		sort.Strings(want[i])
+	want := make([]map[string]string, len(nodes))
+	for i := range nodes {
+		want[i] = make(map[string]string)
+		for j := range nodes {
+			if j != i {
+				want[i][addresses[j]] = ids[j]
+			}
+		}
 	}
 	converged := func() bool {
 		for i, n := range nodes {
@@ -113,7 +118,7 @@ func TestDiscoveryRetriesFailureAndResetsAfterRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer book.Close()
-	if _, err := book.Merge(Message{Address: "peer.test:2"}); err != nil {
+	if _, err := book.AddSeeds([]string{"peer.test:2"}); err != nil {
 		t.Fatal(err)
 	}
 	var failing atomic.Bool
@@ -124,7 +129,7 @@ func TestDiscoveryRetriesFailureAndResetsAfterRecovery(t *testing.T) {
 		if failing.Load() {
 			return nil, context.DeadlineExceeded
 		}
-		body, _ := json.Marshal(Message{Address: "peer.test:2", Peers: []string{"learned.test:3"}})
+		body, _ := json.Marshal(Message{Address: "peer.test:2", NodeID: testNodeID(2), Peers: map[string]string{"learned.test:3": testNodeID(3)}})
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(body))}, nil
 	})
 	d := NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -136,7 +141,7 @@ func TestDiscoveryRetriesFailureAndResetsAfterRecovery(t *testing.T) {
 	eventually(t, time.Second, func() bool { return attempts.Load() >= 3 })
 	failing.Store(false)
 	eventually(t, time.Second, func() bool {
-		return reflect.DeepEqual(book.Snapshot().Peers, []string{"learned.test:3", "peer.test:2"})
+		return reflect.DeepEqual(book.Snapshot().Peers, map[string]string{"learned.test:3": testNodeID(3), "peer.test:2": testNodeID(2)})
 	})
 	before := attempts.Load()
 	eventually(t, time.Second, func() bool { return attempts.Load() >= before+2 })
@@ -166,7 +171,9 @@ func TestDiscoveryLimitsConcurrencyAndCancellationJoinsRequests(t *testing.T) {
 	}
 	defer book.Close()
 	for i := 0; i < 8; i++ {
-		_, _ = book.Merge(Message{Address: "peer" + string(rune('a'+i)) + ".test:1"})
+		if _, err := book.AddSeeds([]string{"peer" + string(rune('a'+i)) + ".test:1"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var active, maximum, finished atomic.Int32
 	started := make(chan struct{}, 8)
@@ -210,7 +217,7 @@ func TestDiscoveryAttemptsUntriedPeersBeforeRetryingDuePeers(t *testing.T) {
 	}
 	defer book.Close()
 	for _, host := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
-		if _, err := book.Merge(Message{Address: host + ".test:1"}); err != nil {
+		if _, err := book.AddSeeds([]string{host + ".test:1"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -257,20 +264,5 @@ func TestDiscoveryAttemptsUntriedPeersBeforeRetryingDuePeers(t *testing.T) {
 		if i == 3 {
 			close(release)
 		}
-	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not met before deadline")
-		}
-		time.Sleep(time.Millisecond)
 	}
 }

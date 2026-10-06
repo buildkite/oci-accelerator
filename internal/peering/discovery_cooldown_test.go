@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -40,7 +38,7 @@ func TestDiscoveryInboundDefersOnlySender(t *testing.T) {
 					return nil, context.DeadlineExceeded
 				})
 				if alreadyKnown {
-					if _, err := d.book.Merge(Message{Address: "a.test:1"}); err != nil {
+					if _, err := d.book.AddSeeds([]string{"a.test:1"}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -53,7 +51,7 @@ func TestDiscoveryInboundDefersOnlySender(t *testing.T) {
 					t.Fatalf("initial requests = %d, want 1", before)
 				}
 				time.Sleep(20 * time.Second)
-				response := cooldownRequest(d, Message{Address: "A.TEST.:1", Peers: []string{"c.test:3"}})
+				response := cooldownRequest(d, Message{Address: "A.TEST.:1", NodeID: testNodeID(1), Peers: map[string]string{"c.test:3": testNodeID(3)}})
 				if response.Code != http.StatusOK {
 					t.Fatalf("inbound status = %d", response.Code)
 				}
@@ -61,7 +59,7 @@ func TestDiscoveryInboundDefersOnlySender(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 					t.Fatal(err)
 				}
-				want := Message{Address: "b.test:2", Peers: []string{"a.test:1", "c.test:3"}}
+				want := Message{Address: "b.test:2", NodeID: d.book.Snapshot().NodeID, Peers: map[string]string{"a.test:1": testNodeID(1), "c.test:3": testNodeID(3)}}
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("response = %+v, want %+v", got, want)
 				}
@@ -72,7 +70,7 @@ func TestDiscoveryInboundDefersOnlySender(t *testing.T) {
 				// Refresh before the first cooldown expires. At t=63 even its
 				// longest jitter has expired, but the refreshed minimum has not.
 				time.Sleep(20 * time.Second)
-				if response := cooldownRequest(d, Message{Address: "a.test:1"}); response.Code != http.StatusOK {
+				if response := cooldownRequest(d, Message{Address: "a.test:1", NodeID: testNodeID(1)}); response.Code != http.StatusOK {
 					t.Fatalf("refresh status = %d", response.Code)
 				}
 				time.Sleep(23 * time.Second)
@@ -97,7 +95,7 @@ func TestDiscoveryRejectedInboundDoesNotDeferSender(t *testing.T) {
 			calls.Add(1)
 			return nil, context.DeadlineExceeded
 		})
-		if _, err := d.book.Merge(Message{Address: "a.test:1"}); err != nil {
+		if _, err := d.book.AddSeeds([]string{"a.test:1"}); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -105,12 +103,12 @@ func TestDiscoveryRejectedInboundDoesNotDeferSender(t *testing.T) {
 		go d.Run(ctx)
 		synctest.Wait()
 		time.Sleep(20 * time.Second)
-		invalid := Message{Address: "a.test:1", Peers: []string{"invalid"}}
+		invalid := Message{Address: "a.test:1", NodeID: testNodeID(1), Peers: map[string]string{"invalid": testNodeID(3)}}
 		if response := cooldownRequest(d, invalid); response.Code != http.StatusBadRequest {
 			t.Fatalf("invalid exchange status = %d", response.Code)
 		}
-		d.book.write = func(string, []string) (bool, error) { return false, syscall.ENOSPC }
-		if response := cooldownRequest(d, Message{Address: "a.test:1", Peers: []string{"c.test:3"}}); response.Code != http.StatusInternalServerError {
+		d.book.write = func(string, map[string]string) (bool, error) { return false, syscall.ENOSPC }
+		if response := cooldownRequest(d, Message{Address: "a.test:1", NodeID: testNodeID(1), Peers: map[string]string{"c.test:3": testNodeID(3)}}); response.Code != http.StatusInternalServerError {
 			t.Fatalf("failed merge status = %d", response.Code)
 		}
 		time.Sleep(17 * time.Second)
@@ -128,7 +126,7 @@ func TestDiscoveryInboundPreservesFailureBackoff(t *testing.T) {
 			calls.Add(1)
 			return nil, context.DeadlineExceeded
 		})
-		if _, err := d.book.Merge(Message{Address: "a.test:1"}); err != nil {
+		if _, err := d.book.AddSeeds([]string{"a.test:1"}); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -142,7 +140,7 @@ func TestDiscoveryInboundPreservesFailureBackoff(t *testing.T) {
 		if calls.Load() != 3 {
 			t.Fatalf("requests = %d, want 3", calls.Load())
 		}
-		if response := cooldownRequest(d, Message{Address: "a.test:1"}); response.Code != http.StatusOK {
+		if response := cooldownRequest(d, Message{Address: "a.test:1", NodeID: testNodeID(1)}); response.Code != http.StatusOK {
 			t.Fatalf("inbound status = %d", response.Code)
 		}
 		time.Sleep(37 * time.Second)
@@ -164,10 +162,10 @@ func TestDiscoveryInboundDuringOutboundExchange(t *testing.T) {
 			case <-r.Context().Done():
 				return nil, r.Context().Err()
 			}
-			body := `{"address":"a.test:1","peers":[]}`
+			body := `{"address":"a.test:1","nodeId":"000000000001","peers":{}}`
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewBufferString(body))}, nil
 		})
-		if _, err := d.book.Merge(Message{Address: "a.test:1"}); err != nil {
+		if _, err := d.book.AddSeeds([]string{"a.test:1"}); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -177,7 +175,7 @@ func TestDiscoveryInboundDuringOutboundExchange(t *testing.T) {
 		if calls.Load() != 1 {
 			t.Fatalf("initial requests = %d", calls.Load())
 		}
-		if response := cooldownRequest(d, Message{Address: "a.test:1"}); response.Code != http.StatusOK {
+		if response := cooldownRequest(d, Message{Address: "a.test:1", NodeID: testNodeID(1)}); response.Code != http.StatusOK {
 			t.Fatalf("inbound status = %d", response.Code)
 		}
 		synctest.Wait()
@@ -207,15 +205,18 @@ func TestDiscoveryInboundDuringOutboundExchange(t *testing.T) {
 
 func TestDiscoveryCooldownStateOnlyTracksRetainedPeers(t *testing.T) {
 	d := cooldownDiscovery(t, nil)
-	peers := make([]string, MaxPeers)
-	for i := range peers {
-		peers[i] = fmt.Sprintf("peer-%d.test:1", i)
+	peers := make(map[string]string, MaxPeers-1)
+	for i := 1; i < MaxPeers; i++ {
+		peers[fmt.Sprintf("peer-%d.test:1", i)] = testNodeID(i)
 	}
-	if _, err := d.book.Merge(Message{Address: "b.test:2", Peers: peers}); err != nil {
-		t.Fatal(err)
+	if result, err := d.book.Merge(Message{Address: "peer-0.test:1", NodeID: testNodeID(0), Peers: peers}); err != nil || result.Rejected != 0 {
+		t.Fatalf("filling Merge = %+v, %v", result, err)
 	}
-	for _, sender := range []string{"b.test:2", "overflow.test:1"} {
-		if response := cooldownRequest(d, Message{Address: sender}); response.Code != http.StatusOK {
+	for _, sender := range []Message{
+		{Address: "b.test:2", NodeID: d.book.Snapshot().NodeID},
+		{Address: "overflow.test:1", NodeID: testNodeID(MaxPeers)},
+	} {
+		if response := cooldownRequest(d, sender); response.Code != http.StatusOK {
 			t.Fatalf("inbound status = %d", response.Code)
 		}
 	}
@@ -237,23 +238,4 @@ func TestDiscoveryCooldownNeverShortensExistingDeadline(t *testing.T) {
 			t.Fatalf("deadline = %v, want %v", entry.next, deadline)
 		}
 	})
-}
-
-func cooldownDiscovery(t *testing.T, transport roundTripFunc) *Discovery {
-	t.Helper()
-	book, err := OpenBook(bookTestDir(t), "b.test:2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { book.Close() })
-	return NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-}
-
-func cooldownRequest(d *Discovery, message Message) *httptest.ResponseRecorder {
-	body, _ := json.Marshal(message)
-	request := httptest.NewRequest(http.MethodPost, "/v1/peers/exchange", bytes.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	d.Handler().ServeHTTP(response, request)
-	return response
 }

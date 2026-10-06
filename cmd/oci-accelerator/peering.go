@@ -31,7 +31,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if err != nil {
 		return nil, nil, errors.New("peer state startup failed")
 	}
-	rejected, err := book.Merge(peering.Message{Address: cfg.Peer.Advertise, Peers: cfg.Peer.Seeds})
+	rejected, err := book.AddSeeds(cfg.Peer.Seeds)
 	if err != nil {
 		return nil, nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())
 	}
@@ -102,6 +102,6 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		handlers.Wait()
 		return errors.Join(cleanupErr, serveErr, book.Close())
 	}
-	logger.Info("peer service ready", "listen", listener.Addr().String(), "advertise", cfg.Peer.Advertise, "known_peers", len(book.Snapshot().Peers))
+	logger.Info("peer service ready", "listen", listener.Addr().String(), "advertise", cfg.Peer.Advertise, "node_id", book.Snapshot().NodeID, "known_peers", len(book.Addresses()))
 	return serveDone, cleanup, nil
 }

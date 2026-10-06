@@ -17,8 +17,8 @@ const (
 )
 
 type bookState struct {
-	Version int      `json:"version"`
-	Peers   []string `json:"peers"`
+	Version int               `json:"version"`
+	Peers   map[string]string `json:"peers"`
 }
 
 type bookLock struct{ file *os.File }
@@ -140,7 +140,7 @@ func validateRegular(path string) error {
 	return nil
 }
 
-func loadBookState(dir string) ([]string, error) {
+func loadBookState(dir string) (map[string]string, error) {
 	path := filepath.Join(dir, bookStateName)
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -159,38 +159,59 @@ func loadBookState(dir string) ([]string, error) {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	var state bookState
-	if decoder.Decode(&state) != nil || decoder.Decode(&struct{}{}) != io.EOF || state.Version != 1 || state.Peers == nil || len(state.Peers) > MaxPeers {
+	var state struct {
+		Version int             `json:"version"`
+		Peers   json.RawMessage `json:"peers"`
+	}
+	if decoder.Decode(&state) != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		return nil, errBook
 	}
-	set := make(map[string]struct{}, len(state.Peers))
-	for _, address := range state.Peers {
+	peers := make(map[string]string)
+	switch state.Version {
+	case 1:
+		var addresses []string
+		if json.Unmarshal(state.Peers, &addresses) != nil || addresses == nil || len(addresses) > MaxPeers {
+			return nil, errBook
+		}
+		for i, address := range addresses {
+			if i > 0 && addresses[i-1] >= address {
+				return nil, errBook
+			}
+			peers[address] = ""
+		}
+	case 2:
+		keys := json.NewDecoder(bytes.NewReader(state.Peers))
+		if checkObjectKeys(keys, nil, func(string) error { return checkString(keys) }) != nil || json.Unmarshal(state.Peers, &peers) != nil {
+			return nil, errBook
+		}
+	default:
+		return nil, errBook
+	}
+	if len(peers) > MaxPeers {
+		return nil, errBook
+	}
+	ids := make(map[string]bool)
+	for address, id := range peers {
 		canonical, err := CanonicalAddress(address)
 		if err != nil || canonical != address {
 			return nil, errBook
 		}
-		if _, duplicate := set[address]; duplicate {
+		if id != "" && (!validNodeID(id) || ids[id]) {
 			return nil, errBook
 		}
-		set[address] = struct{}{}
-	}
-	peers := sortedAddresses(set)
-	for i := range peers {
-		if peers[i] != state.Peers[i] {
-			return nil, errBook
-		}
+		ids[id] = true
 	}
 	return peers, nil
 }
 
 // writeBookState reports whether rename published a replacement, separately
 // from its durability. Callers must retain published state even on sync failure.
-func writeBookState(dir string, peers []string) (bool, error) {
+func writeBookState(dir string, peers map[string]string) (bool, error) {
 	return replaceBookState(dir, peers, syncBookDir)
 }
 
-func replaceBookState(dir string, peers []string, syncDir func(string) error) (bool, error) {
-	raw, err := json.Marshal(bookState{Version: 1, Peers: peers})
+func replaceBookState(dir string, peers map[string]string, syncDir func(string) error) (bool, error) {
+	raw, err := json.Marshal(bookState{Version: 2, Peers: peers})
 	if err != nil || len(raw) > bookStateMax {
 		return false, errBook
 	}

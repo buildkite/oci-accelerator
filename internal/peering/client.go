@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -40,12 +39,8 @@ func Exchange(ctx context.Context, client *http.Client, destination string, mess
 	if err != nil {
 		return Message{}, errExchange
 	}
-	message, err = canonicalMessage(message)
+	body, err := encodeMessage(message)
 	if err != nil {
-		return Message{}, errExchange
-	}
-	body, err := json.Marshal(message)
-	if err != nil || len(body) > maxMessageBytes {
 		return Message{}, errExchange
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+destination+"/v1/peers/exchange", bytes.NewReader(body))
@@ -69,13 +64,7 @@ func Exchange(ctx context.Context, client *http.Client, destination string, mess
 	if err != nil || len(encoded) > maxMessageBytes {
 		return Message{}, errExchange
 	}
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	var result Message
-	if decoder.Decode(&result) != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		return Message{}, errExchange
-	}
-	result, err = canonicalMessage(result)
+	result, err := decodeMessage(encoded)
 	if err != nil {
 		return Message{}, errExchange
 	}

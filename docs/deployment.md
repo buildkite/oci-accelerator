@@ -805,7 +805,7 @@ docker compose up -d
 
 ## Peer discovery
 
-Peering exchanges addresses only. It does not share cache keys, cached content, registry
+Peering exchanges addresses and node IDs only. It does not share cache keys, cached content, registry
 credentials, or authorization grants. Image pulls and readiness do not depend on reachable peers.
 
 Provision the same `ca.crt` and `ca.key` into each instance's private CA directory through your
@@ -824,6 +824,7 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 - `PEER_LISTEN` binds a separate TLS port. Keep the proxy and metrics listeners separate.
 - `PEER_ADVERTISE` is the address other instances dial. With containers, use a reachable host
   address and published peer port, not the wildcard bind or a container-only hostname.
+  Each live node needs its own reachable `host:port`, not a shared load-balanced endpoint.
 - Seeds are optional, not an allowlist. An instance with no seeds can wait for an incoming
   exchange. Ports are always explicit, including `:443`, and IPv6 uses `[address]:port`.
   Seed entries are whitespace-trimmed, canonicalized, deduplicated, and exclude self.
@@ -856,10 +857,30 @@ CA downloaded from the destination. None of this changes registry authorization 
 
 ### Discovery and retention
 
-The HTTPS `POST /v1/peers/exchange` request and response carry an `address` string and a `peers`
-array. Each exchange merges the sender and its known peers before replying with the receiver's
-full list. Exchanges start immediately, normally repeat every 30 seconds with ±20% jitter, and
-use exponential failure backoff capped at five minutes before jitter. A successfully merged
+The HTTPS `POST /v1/peers/exchange` request and response have the same schema:
+
+```json
+{
+  "address": "node-a.internal:7443",
+  "nodeId": "fzyaLmuBTQWo",
+  "peers": {
+    "node-b.internal:7443": "K8r2_vN5xQpL",
+    "node-c.internal:7443": "mT4bY9-wH6sR"
+  }
+}
+```
+
+The receiver trusts the sender's own `address` and `nodeId`. It atomically replaces the
+mapping at that address and removes any other address with that ID. Third-party mappings
+in `peers` are added when neither their address nor their ID conflicts with a stored mapping.
+Otherwise, the receiver leaves the stored mapping unchanged and queues an exchange to the
+claimed address. It uses the responder's actual ID and advertised address, even if they differ
+from the claim or contacted alias. A failed verification leaves the book unchanged. Late
+responses that could undo intervening updates are discarded. Each reply contains the receiver's
+own identity and all its known mappings. An empty book sends `"peers": {}`.
+
+Exchanges start immediately, normally repeat every 30 seconds with ±20% jitter, and use
+exponential failure backoff capped at five minutes before jitter. A successfully merged
 inbound exchange defers the next outbound request to the sender's advertised address by the
 same jittered interval, without shortening an existing delay or clearing failure backoff.
 Third-party addresses learned from requests or responses remain eligible for immediate direct
@@ -869,24 +890,35 @@ cross. Invalid messages and failed merges do not defer requests. Cooldowns are h
 memory and reset on restart.
 
 Inbound exchanges do not prove that the sender's advertised listener is reachable. Regular
-inbound exchanges can keep postponing outbound probes and their outage warnings. Cooldowns
-trust the advertised address under the fleet-wide trust model, not a unique node identity.
+inbound exchanges can keep postponing outbound probes and their outage warnings. Node IDs
+are self-asserted within the existing fleet-wide trust model, not independently authenticated.
 
-Requests have a five-second deadline. Each instance permits four outbound exchanges and 32
-accepted peer connections, including incomplete TLS handshakes. Incoming
+Requests have a five-second deadline. Regular discovery and verification share four outbound
+exchange slots, with at most two used for verification-only addresses so regular discovery
+cannot be starved by conflicting gossip. Verification is asynchronous and does not delay inbound
+responses. Its queue deduplicates addresses and retains up to 1,024 pending or cooling-down probes. Excess claims
+are dropped with a `peer verification queue full` warning and can be submitted by later gossip.
+After an attempt, a verification-only address expires after its cooldown or backoff unless
+new gossip requests another attempt. Addresses already in the book keep their normal retries.
+Each instance permits 32 accepted peer connections, including incomplete TLS handshakes. Incoming
 headers, bodies, writes, and idle connections also have five-second deadlines. JSON messages
-are limited to 512 KiB and 1,024 list entries.
+are limited to 512 KiB and 1,024 peer mappings. Unknown fields, duplicate JSON keys, invalid
+IDs, and contradictory spellings of the same canonical address are rejected.
 
 Each instance retains up to 1,024 canonical addresses, excluding its configured self-address.
-Unreachable entries never expire. At capacity, existing entries remain and new addresses are
-rejected with a `peer address book full` warning. Different DNS aliases count as different
-addresses. A change of address does not remove the old entry from other instances.
+Unreachable entries do not expire merely because contact fails. At capacity, new unrelated
+addresses are rejected with a `peer address book full` warning, but identity replacements
+still work. Learning a node at a new address removes its previous address. Contacted aliases
+are replaced by the responder's advertised address. Losing a node's identity state gives it
+a new ID and does not automatically remove an unreachable old address.
 
-`peers.json` contains a versioned, sorted address list and is atomically replaced after changes.
+`peers.json` contains a versioned address-to-ID object with sorted keys and is atomically
+replaced after changes. Empty-string IDs represent unresolved local discovery candidates.
 You may read it to inspect known addresses, but do not edit live state. Reachability and retry
 timing are local observations, not persisted or accepted from another instance. Startup also
-merges configured seeds and retries retained addresses. Removing a seed from configuration does
-not remove it from the book. Resetting one book does not forget an address fleet-wide, because
+merges configured seeds and retries retained addresses. Seeds are not advertised until their
+IDs are learned. Removing a seed from configuration does not remove it from the book.
+Resetting one book does not forget an address fleet-wide, because
 other peers can advertise it again.
 
 On first peering-enabled startup, each instance generates a 12-character, case-sensitive
@@ -894,6 +926,14 @@ base64url node ID from 72 cryptographically random bits and persists it in `node
 peer state directory. Restarts and advertised-address changes preserve that ID. Give each
 instance its own persistent peer state volume. Do not clone this state into another instance,
 because doing so duplicates its identity. The ID is not a secret or authentication credential.
+Direct claims that conflict with this instance's own ID or address fail the exchange and log
+`peer identity collision`. Fix the advertised address or duplicated state rather than expecting
+automatic ID rotation. Two other nodes sharing one ID can repeatedly replace each other's records.
+
+Upgrade all peers together. The identity-aware schema is incompatible with address-only
+exchanges, with no fallback. Startup migrates version-1 `peers.json` lists to version-2 local
+candidates and learns their IDs through discovery. Keep a stopped-state backup if you need
+rollback, because older binaries cannot read the new state directory.
 
 State files must be regular, process-owned, mode 0600 files. Startup takes an exclusive process
 lock, removes recognized abandoned staging files, and rejects corrupt state, unsafe files, or
@@ -1083,7 +1123,7 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 - Redirect restrictions protect proxy-originated fetches only. They do not constrain the broader
   egress available through opaque CONNECT tunnels, so deployment network controls remain essential.
 - No shared or distributed cache storage, cache-key exchange, or background prefetch.
-  Peer discovery shares addresses only.
+  Peer discovery shares addresses and node IDs only.
 - No Kubernetes manifests, and no automated container runtime acceptance in CI.
 - Fault tests exercise process termination and private tmpfs exhaustion, not power loss or
   faulty-device certification. See the [testing guide](testing.md).

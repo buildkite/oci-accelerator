@@ -23,7 +23,7 @@ upstream registry again.
   entries are evicted, and objects that don't fit pass through uncached.
 - **Optional peer discovery.** Instances sharing a CA can discover and remember
   each other over a separate mutually authenticated TLS port. Peering exchanges
-  addresses only, not cache keys or content. See [peer discovery](docs/deployment.md#peer-discovery).
+  addresses and persistent node IDs, not cache keys or content. See [peer discovery](docs/deployment.md#peer-discovery).
 
 See [how it works](docs/how-it-works.md) for the request flow, authorization,
 and cache storage in detail.
