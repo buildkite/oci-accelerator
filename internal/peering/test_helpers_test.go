@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -67,4 +68,37 @@ func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+func mustNodeID(t *testing.T, s string) nodeID {
+	t.Helper()
+	id, ok := parseNodeID(s)
+	if !ok {
+		t.Fatalf("invalid test node ID %q", s)
+	}
+	return id
+}
+
+const testKeyText = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// claimFor returns a wire claim owned by testIDA and relayed by testIDB.
+func claimFor(i int) string {
+	return fmt.Sprintf(`{"ownerNodeId":"nodeA-ID_123","key":"%s","seen":["nodeA-ID_123","nodeB-ID_456"]}`, testCacheKey(i))
+}
+
+// testCacheKey returns a cache key that is distinct for each i.
+func testCacheKey(i int) cacheKey {
+	var key cacheKey
+	key[0], key[1], key[2], key[3] = byte(i>>24), byte(i>>16), byte(i>>8), byte(i)
+	return key
+}
+
+func testClaim(t *testing.T, owner string, key cacheKey, seen ...string) hintClaim {
+	t.Helper()
+	ids := make([]nodeID, len(seen))
+	for i, s := range seen {
+		ids[i] = mustNodeID(t, s)
+	}
+	slices.SortFunc(ids, compareNodeIDs)
+	return hintClaim{owner: mustNodeID(t, owner), key: key, seen: ids}
 }
