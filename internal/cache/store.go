@@ -49,6 +49,7 @@ type Store struct {
 	evictionAfter                                   string                               // paired with evictionAfterLast.
 	lock                                            *os.File                             // held OS file lock enforcing single-process ownership of dir.
 	closed                                          bool                                 // true once the store is shutting down and rejecting new work.
+	changes                                         chan struct{}                        // lazily allocated capacity-1 availability notification channel. See Changes.
 }
 
 // completedNotification is a shared, already-closed channel returned for entries
@@ -176,7 +177,10 @@ func (s *Store) Close() error {
 
 	// Mark the store closed and snapshot the fills and reader count under the lock.
 	s.mu.Lock()
-	s.closed = true
+	if !s.closed {
+		s.closed = true
+		s.notifyChangeLocked()
+	}
 	fs := make([]*Fill, 0, len(s.fills))
 	readers := s.readers // Includes readers of detached entries.
 	for _, f := range s.fills {

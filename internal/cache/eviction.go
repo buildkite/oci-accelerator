@@ -123,6 +123,7 @@ func (s *Store) buildEvictionOrderLocked() {
 func (s *Store) addEntryLocked(e *entry) {
 	s.entries[e.meta.Key] = e
 	s.insertEvictionLocked(e)
+	s.notifyChangeLocked()
 }
 
 // Replace the list node even when last is unchanged: an in-flight eviction
@@ -142,6 +143,9 @@ func (s *Store) deleteEntryLocked(e *entry) {
 	}
 	if s.entries[e.meta.Key] == e {
 		delete(s.entries, e.meta.Key)
+		if !e.invalid {
+			s.notifyChangeLocked()
+		}
 	}
 }
 

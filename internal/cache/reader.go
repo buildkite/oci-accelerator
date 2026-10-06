@@ -41,7 +41,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 		// Retire only this generation. Keep its pin and charge until Close,
 		// even if a replacement is published before this reader finishes.
 		r.store.mu.Lock()
-		r.entry.invalid = true
+		r.store.invalidateLocked(r.entry)
 		r.store.mu.Unlock()
 	}
 
@@ -245,9 +245,21 @@ func verifyBody(ctx context.Context, r io.Reader, digest string, afterVerificati
 
 func (s *Store) invalidate(e *entry) {
 	s.mu.Lock()
-	e.invalid = true
+	s.invalidateLocked(e)
 	s.mu.Unlock()
 	s.unpin(e)
+}
+
+// invalidateLocked retires e from new lookups and signals Changes the first
+// time a generation that still owns its key is retired.
+func (s *Store) invalidateLocked(e *entry) {
+	if e.invalid {
+		return
+	}
+	e.invalid = true
+	if s.entries[e.meta.Key] == e {
+		s.notifyChangeLocked()
+	}
 }
 
 func (s *Store) unpin(e *entry) {
