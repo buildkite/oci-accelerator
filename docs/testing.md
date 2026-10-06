@@ -18,7 +18,11 @@ Peer discovery uses local TLS and filesystem fixtures in the standard suite.
 They cover same-CA authentication, rejection of non-peer certificates, three-node
 convergence and direct contact with learned peers, inbound exchange cooldowns,
 retry recovery and fairness, restart retention, capacity limits, failed persistence,
-bounded connections, and shutdown. Run those checks alone with:
+bounded connections, and shutdown. Cache availability tests drive several nodes in lockstep
+on a fake clock with seeded destination choice, delivering requests through the real
+handler. They cover relays, the two-acknowledgement fanout, attempt budgets, partial
+address books, address moves and reuse, stale results, batching bounds, strict JSON,
+FIFO eviction, and a two-node exchange over mutual TLS. Run those checks alone with:
 
 ```sh
 go test -race ./internal/ca ./internal/peering ./internal/config ./cmd/oci-accelerator

@@ -9,27 +9,35 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
 	"github.com/buildkite/oci-accelerator/internal/config"
 	"github.com/buildkite/oci-accelerator/internal/peering"
+	"github.com/buildkite/oci-accelerator/internal/proxy"
 )
 
 func TestStartPeeringDisabledHasNoSideEffects(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "peer")
 	called := false
-	done, cleanup, err := startPeering(context.Background(), config.Config{Peer: config.Peer{StateDir: dir}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), func(string, string) (net.Listener, error) {
+	inventory := &fakeInventory{}
+	done, availability, cleanup, err := startPeering(context.Background(), config.Config{Peer: config.Peer{StateDir: dir}}, nil, inventory, slog.New(slog.NewTextHandler(io.Discard, nil)), func(string, string) (net.Listener, error) {
 		called = true
 		return nil, errors.New("unexpected listen")
 	})
-	if err != nil || done != nil || cleanup != nil || called {
-		t.Fatalf("startPeering disabled: done nil %t, cleanup nil %t, error %v, listen called %t", done == nil, cleanup == nil, err, called)
+	if err != nil || done != nil || availability != nil || cleanup != nil || called {
+		t.Fatalf("startPeering disabled: done nil %t, availability nil %t, cleanup nil %t, error %v, listen called %t", done == nil, availability == nil, cleanup == nil, err, called)
+	}
+	if inventory.calls.Load() != 0 {
+		t.Fatal("disabled peering read or subscribed to the cache inventory")
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("disabled peering created state: %v", err)
@@ -42,7 +50,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	listener := newTestListener(t)
 	state := filepath.Join(root, "peer")
 	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state}, ShutdownTimeout: 100 * time.Millisecond}
-	done, cleanup, err := startPeering(context.Background(), cfg, signer, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
+	done, _, cleanup, err := startPeering(context.Background(), cfg, signer, &fakeInventory{}, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,11 +123,91 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	}
 }
 
+func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
+	root := t.TempDir()
+	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
+	listenerA, listenerB := newTestListener(t), newTestListener(t)
+	start := func(name string, listener *net.TCPListener, seeds []string, inventory *fakeInventory) *peering.Availability {
+		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: listener.Addr().String(), Seeds: seeds, StateDir: filepath.Join(root, name)}, ShutdownTimeout: 100 * time.Millisecond}
+		_, availability, cleanup, err := startPeering(context.Background(), cfg, signer, inventory, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := cleanup(); err != nil {
+				t.Error(err)
+			}
+		})
+		return availability
+	}
+	key := strings.Repeat("ab", 32)
+	b := start("b", listenerB, nil, &fakeInventory{})
+	inventoryA := &fakeInventory{changes: make(chan struct{}, 1)}
+	a := start("a", listenerA, []string{listenerB.Addr().String()}, inventoryA)
+	idA, err := os.ReadFile(filepath.Join(root, "a", "node-id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A pass that starts before discovery resolves B finishes without sending,
+	// so recommit the entry until one pass reaches B.
+	deadline := time.Now().Add(20 * time.Second)
+	for !reflect.DeepEqual(b.Owners(key), []string{string(idA)}) {
+		if time.Now().After(deadline) {
+			t.Fatalf("B owners = %v, want A", b.Owners(key))
+		}
+		inventoryA.set(t)
+		inventoryA.set(t, key)
+		// Leave time for the pass, due about a second later, to run.
+		time.Sleep(2 * time.Second)
+	}
+	for a.Stats().Acknowledged == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("A stats = %+v", a.Stats())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The availability endpoint shares the fleet mTLS requirement.
+	_, clientTLS, err := signer.PeerTLSConfigs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthTLS := clientTLS.Clone()
+	unauthTLS.GetClientCertificate = nil
+	client := peering.NewClient(unauthTLS)
+	defer client.CloseIdleConnections()
+	body := `{"senderNodeId":"000000000009","recipientNodeId":"000000000008","claims":[]}`
+	if response, err := client.Post("https://"+listenerB.Addr().String()+"/v1/cache/availability", "application/json", strings.NewReader(body)); err == nil {
+		response.Body.Close()
+		t.Fatalf("unauthenticated availability request reached HTTP with status %d", response.StatusCode)
+	}
+
+	var published atomic.Pointer[peering.Availability]
+	published.Store(a)
+	server := newMetricsServer(config.Config{}, proxy.New(config.Config{}, nil, nil, nil), &published)
+	stats := a.Stats()
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if after := a.Stats(); after != stats {
+		t.Fatalf("stats changed during the scrape: %+v then %+v", stats, after)
+	}
+	for _, line := range []string{
+		"oci_accelerator_availability_hints 1\n",
+		"oci_accelerator_availability_hint_evictions_total 0\n",
+		fmt.Sprintf("oci_accelerator_availability_sends_total{outcome=%q} %d\n", "acknowledged", stats.Acknowledged),
+		fmt.Sprintf("oci_accelerator_availability_sends_total{outcome=%q} %d\n", "failed", stats.Failed),
+	} {
+		if !strings.Contains(response.Body.String(), line) {
+			t.Fatalf("metrics missing %q", line)
+		}
+	}
+}
+
 func TestStartPeeringFailuresReleaseState(t *testing.T) {
 	root := t.TempDir()
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	base := config.Config{Peer: config.Peer{Listen: "127.0.0.1:1", Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: time.Second}
-	_, _, err := startPeering(context.Background(), base, signer, slog.Default(), func(string, string) (net.Listener, error) { return nil, errors.New("private bind") })
+	_, _, _, err := startPeering(context.Background(), base, signer, &fakeInventory{}, slog.Default(), func(string, string) (net.Listener, error) { return nil, errors.New("private bind") })
 	if err == nil || err.Error() != "cannot listen on configured peer address" {
 		t.Fatalf("bind error = %v", err)
 	}
@@ -134,7 +222,7 @@ func TestStartPeeringFailuresReleaseState(t *testing.T) {
 	if err := os.WriteFile(bad.Peer.StateDir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := startPeering(context.Background(), bad, signer, slog.Default(), net.Listen); err == nil || err.Error() != "peer state startup failed" {
+	if _, _, _, err := startPeering(context.Background(), bad, signer, &fakeInventory{}, slog.Default(), net.Listen); err == nil || err.Error() != "peer state startup failed" {
 		t.Fatalf("state error = %v", err)
 	}
 }
@@ -147,7 +235,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		failure := make(chan struct{})
 		listener := &faultListener{Listener: socket, accepting: make(chan struct{}), fail: failure, acceptErr: errors.New("private address")}
 		cfg := config.Config{Peer: config.Peer{Listen: socket.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: time.Second}
-		done, cleanup, err := startPeering(context.Background(), cfg, signer, slog.Default(), listenForTest(listener))
+		done, _, cleanup, err := startPeering(context.Background(), cfg, signer, &fakeInventory{}, slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +260,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 		listener := newTestListener(t)
 		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: 10 * time.Millisecond}
-		_, cleanup, err := startPeering(context.Background(), cfg, signer, slog.Default(), listenForTest(listener))
+		_, _, cleanup, err := startPeering(context.Background(), cfg, signer, &fakeInventory{}, slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -313,4 +401,45 @@ func openPeerTestCA(t *testing.T, dir string) *ca.Authority {
 		t.Fatal(err)
 	}
 	return signer
+}
+
+// fakeInventory is a cache inventory that counts its use.
+type fakeInventory struct {
+	calls   atomic.Int32
+	changes chan struct{}
+	mu      sync.Mutex
+	keys    []string
+}
+
+func (i *fakeInventory) Keys() []string {
+	i.calls.Add(1)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.keys
+}
+
+func (i *fakeInventory) Changes() <-chan struct{} {
+	i.calls.Add(1)
+	return i.changes
+}
+
+// set replaces the keys and waits until the subscriber has read them.
+func (i *fakeInventory) set(t *testing.T, keys ...string) {
+	t.Helper()
+	i.mu.Lock()
+	i.keys = keys
+	i.mu.Unlock()
+	before := i.calls.Load()
+	deadline := time.Now().Add(5 * time.Second)
+	select {
+	case i.changes <- struct{}{}:
+	case <-time.After(5 * time.Second):
+		t.Fatal("inventory change was not taken")
+	}
+	for i.calls.Load() == before {
+		if time.Now().After(deadline) {
+			t.Fatal("inventory keys were not read after a change")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }

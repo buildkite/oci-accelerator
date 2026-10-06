@@ -17,33 +17,39 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
-// startPeering owns the peer listener, discovery loop and address book until its
-// cleanup is called. Disabled peering creates no state or network activity.
-func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, func() error, error) {
+// startPeering owns the peer listener, discovery and availability loops, and
+// address book until its cleanup is called. Availability hints track the
+// inventory of store. Disabled peering creates no state, subscribes to nothing,
+// and starts no network activity.
+func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, store peering.Inventory, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, *peering.Availability, func() error, error) {
 	if cfg.Peer.Listen == "" {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	serverTLS, clientTLS, err := signer.PeerTLSConfigs()
 	if err != nil {
-		return nil, nil, errors.New("peer TLS startup failed")
+		return nil, nil, nil, errors.New("peer TLS startup failed")
 	}
 	book, err := peering.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
 	if err != nil {
-		return nil, nil, errors.New("peer state startup failed")
+		return nil, nil, nil, errors.New("peer state startup failed")
 	}
 	rejected, err := book.AddSeeds(cfg.Peer.Seeds)
 	if err != nil {
-		return nil, nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())
+		return nil, nil, nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())
 	}
 	if rejected != 0 {
 		logger.Warn("peer address book full", "rejected", rejected, "limit", peering.MaxPeers)
 	}
+	availability, err := peering.NewAvailability(book, store, peering.NewClient(clientTLS))
+	if err != nil {
+		return nil, nil, nil, errors.Join(errors.New("peer availability startup failed"), book.Close())
+	}
 	listener, err := listen("tcp", cfg.Peer.Listen)
 	if err != nil {
-		return nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
+		return nil, nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
 	discovery := peering.NewDiscovery(book, peering.NewClient(clientTLS), logger)
-	handler := discovery.Handler()
+	handler := peering.PeerHandler(discovery.Handler(), availability.Handler())
 	var handlerMu sync.Mutex
 	var handlers sync.WaitGroup
 	stopping := false
@@ -77,11 +83,16 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		}
 		close(serveDone)
 	}()
-	discoveryCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
 	discoveryDone := make(chan struct{})
 	go func() {
-		discovery.Run(discoveryCtx)
+		discovery.Run(runCtx)
 		close(discoveryDone)
+	}()
+	availabilityDone := make(chan struct{})
+	go func() {
+		availability.Run(runCtx)
+		close(availabilityDone)
 	}()
 	cleanup := func() error {
 		cancel()
@@ -97,11 +108,12 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		}
 		<-serveDone
 		<-discoveryDone
+		<-availabilityDone
 		// Closing sockets cannot preempt a filesystem operation. Join handlers
 		// before releasing the state lock even if the drain deadline expired.
 		handlers.Wait()
 		return errors.Join(cleanupErr, serveErr, book.Close())
 	}
 	logger.Info("peer service ready", "listen", listener.Addr().String(), "advertise", cfg.Peer.Advertise, "node_id", book.Snapshot().NodeID, "known_peers", len(book.Addresses()))
-	return serveDone, cleanup, nil
+	return serveDone, availability, cleanup, nil
 }

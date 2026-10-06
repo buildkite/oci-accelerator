@@ -12,22 +12,33 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/peering"
 	"github.com/buildkite/oci-accelerator/internal/proxy"
 )
 
 func TestLifecycleProbesBeforeServing(t *testing.T) {
 	p := proxy.New(config.Config{}, nil, nil, nil)
-	server := newMetricsServer(config.Config{}, p)
+	server := newMetricsServer(config.Config{}, p, &atomic.Pointer[peering.Availability]{})
 	for path, want := range map[string]int{"/livez": http.StatusOK, "/readyz": http.StatusServiceUnavailable} {
 		response := httptest.NewRecorder()
 		server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != want || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("%s: status %d, headers %v", path, response.Code, response.Header())
 		}
+	}
+}
+
+func TestMetricsOmitAvailabilityWithoutPeering(t *testing.T) {
+	server := newMetricsServer(config.Config{}, proxy.New(config.Config{}, nil, nil, nil), &atomic.Pointer[peering.Availability]{})
+	response := httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "availability") {
+		t.Fatalf("status %d, availability metrics present without peering", response.Code)
 	}
 }
 

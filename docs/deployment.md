@@ -805,8 +805,9 @@ docker compose up -d
 
 ## Peer discovery
 
-Peering exchanges addresses and node IDs only. It does not share cache keys, cached content, registry
-credentials, or authorization grants. Image pulls and readiness do not depend on reachable peers.
+Peering exchanges addresses, node IDs, and [cache availability hints](#cache-availability-hints).
+It does not share cached content, registry credentials, or authorization grants. Image pulls and
+readiness do not depend on reachable peers.
 
 Provision the same `ca.crt` and `ca.key` into each instance's private CA directory through your
 trusted deployment system. Use separate local state directories or volumes for each instance,
@@ -945,6 +946,81 @@ A peer-listener failure stops the process rather than leaving an
 enabled service silently unavailable. Outage and recovery logs include the peer address but no
 raw network errors or credentials.
 
+### Cache availability hints
+
+When peering is enabled, each instance tells peers which cache keys it holds, using
+`POST /v1/cache/availability` on the same mutual-TLS peer listener:
+
+```json
+{
+  "senderNodeId": "K8r2_vN5xQpL",
+  "recipientNodeId": "mT4bY9-wH6sR",
+  "claims": [
+    {
+      "ownerNodeId": "fzyaLmuBTQWo",
+      "key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "seen": ["K8r2_vN5xQpL", "fzyaLmuBTQWo"]
+    }
+  ]
+}
+```
+
+- `senderNodeId` is the immediate sender, and `ownerNodeId` is the node that held the key.
+  Relays never replace the owner.
+- `recipientNodeId` is the intended receiver. A receiver with another ID returns `409` without
+  changing state, which covers an address reused by another node.
+- `key` is the cache key: a lowercase SHA-256 hex digest of the registry authority, repository,
+  object kind, digest, `Accept` values, and media type. It does not state those inputs, but a
+  peer that can guess them can confirm that this instance holds the object.
+- `seen` is the sorted, unique set of node IDs known to have received the hint. It must include
+  the owner and the sender.
+
+The receiver validates the whole batch before accepting any of it and returns `204` once the
+batch is in memory, `400` for invalid requests, and `503` while stopping. Only `204` counts as an
+acknowledgement, and it says nothing about durability or onward delivery. Requests are limited
+to 512 KiB and 512 claims, with at most 1,025 seen IDs per claim. Unknown, duplicate, missing,
+or differently cased fields, trailing data, and a sender equal to the receiver are rejected.
+
+Committing a cache entry originates a hint. Startup originates hints for the current cache
+inventory. Removal or invalidation forgets the local hint and cancels its pending work, without
+a withdrawal. A received hint is stored with the receiver added to `seen`. Hints owned by the
+receiver itself are ignored, because its own cache is authoritative. Unknown owners are stored
+and relayed like any other. Hints never create or change address book mappings.
+
+Each new hint gets one forwarding pass:
+
+- It starts about one second after the hint arrives, with ±20% jitter.
+- Destinations are chosen at random from resolved peers that are not in `seen`, at their current
+  addresses. Claims for one destination are batched.
+- The pass stops at two distinct acknowledged destinations, after six attempts including
+  successes, or when every resolved peer has the hint. Unseen peers can remain afterwards.
+  A pass that starts before discovery has resolved any unseen peer therefore sends nothing.
+  On a first start with only seeds, entries announced before the first exchange completes
+  are not forwarded.
+- Failed destinations back off from one second, doubling to 30 seconds with jitter. Backoff is
+  per node ID and address, and does not reset a hint's attempt budget.
+- An instance sends at most four availability requests at a time, at most one per destination,
+  each with a five-second deadline. Redirects are never followed.
+
+Duplicates merge `seen` sets but never refresh a hint, reset its budget, or reopen a finished
+pass. Learning a new peer does not reopen a finished pass either. Lost responses can deliver a
+hint twice, and ambiguous failures can reach more than two nodes. Partial address books can
+leave nodes uninformed, and there is no repair, inventory exchange, or replay. If A knows B, C,
+and D, while only D knows E, and A chooses B and C, then neither D nor E hears of A's entry.
+
+Each instance retains up to 200,000 hints, local and remote together, within an accounted
+64 MiB of memory. Each hint is charged 384 bytes plus 12 bytes per seen ID, so records with a
+few seen IDs reach the memory limit at roughly 160,000 hints. The previous cache inventory used
+to detect changes takes 32 bytes per cache entry outside that budget. When full, the oldest hints are
+evicted first, without refreshing order on duplicates. Evicting a hint never evicts cached
+content and sends nothing. A later notice can reinsert it. A hint whose `seen` set would exceed
+1,025 IDs stays available for lookup but is never forwarded again. These limits are built in.
+
+Hints are advisory. An owner may have evicted the entry, and hints never expire. No instance
+fetches content from peers, and hints never affect cache keys or upstream authorization. Hints
+are held in memory and are lost on restart. Startup announces the current cache inventory again.
+All instances need this protocol. Older instances reject it, which only consumes attempts.
+
 ## Monitoring
 
 ### Logs
@@ -1005,6 +1081,8 @@ Metrics use the `oci_accelerator_` prefix and include:
 - cache admission and rejection reasons, entries, readers, fills, bytes, reservations, and
   evictions (the fills gauge includes reservations whose staging is still in progress)
 - Go heap allocation and goroutine gauges
+- with peering enabled, retained availability hints, hint evictions, and availability requests by
+  outcome (`acknowledged` or `failed`)
 
 Interpreting them:
 
@@ -1080,7 +1158,8 @@ A stuck handler can therefore delay exit. A second signal uses the operating sys
 termination behavior. For containers, keep the stop grace period longer than
 `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` (see [Compose](#compose)).
 
-When peering is enabled, outbound exchanges are cancelled on shutdown. Peer cleanup drains
+When peering is enabled, outbound exchanges and availability requests are cancelled on
+shutdown. Peer cleanup drains
 inbound exchanges with its own `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` window and joins remaining
 handlers before releasing the state lock. Allow time for both proxy and peer drain windows,
 plus metrics cleanup, in your container stop grace period. Filesystem stalls can delay exit.
@@ -1097,6 +1176,7 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 | Abandoned fills          | Removed at startup                                                  |
 | Metrics counters         | Reset                                                               |
 | Known peers              | Retained in `OCI_ACCELERATOR_PEER_STATE_DIR` when peering is enabled |
+| Availability hints       | Lost. Startup announces the current cache inventory again           |
 | Peer reachability and leaf keys | Re-established, not persisted                                |
 
 ## Troubleshooting
@@ -1122,8 +1202,9 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 
 - Redirect restrictions protect proxy-originated fetches only. They do not constrain the broader
   egress available through opaque CONNECT tunnels, so deployment network controls remain essential.
-- No shared or distributed cache storage, cache-key exchange, or background prefetch.
-  Peer discovery shares addresses and node IDs only.
+- No shared or distributed cache storage, peer content fetching, or background prefetch.
+  Peers share addresses, node IDs, and advisory cache availability hints only. Hint delivery is
+  best effort, with no withdrawal, expiry, or repair.
 - No Kubernetes manifests, and no automated container runtime acceptance in CI.
 - Fault tests exercise process termination and private tmpfs exhaustion, not power loss or
   faulty-device certification. See the [testing guide](testing.md).

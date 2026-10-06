@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAvailabilityHandlerAcceptsValidBatch(t *testing.T) {
@@ -78,7 +79,7 @@ func TestAvailabilityHandlerReportsUnavailableAcceptance(t *testing.T) {
 func mergeInto(index *hintIndex) func(availabilityMessage) error {
 	return func(message availabilityMessage) error {
 		for _, c := range message.claims {
-			index.merge(c)
+			index.merge(c, time.Time{})
 		}
 		return nil
 	}

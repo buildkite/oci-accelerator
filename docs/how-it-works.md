@@ -82,10 +82,37 @@ known IDs stay local discovery candidates. Verification shares discovery's four
 outbound slots and has a bounded, deduplicated queue. Retries use backoff, and
 peer outages do not affect proxy readiness or image pulls.
 
-Peer destinations are unrestricted, unlike intercepted-registry egress. The
-protocol never shares cache keys, content, credentials, or authorization grants.
+Peer destinations are unrestricted, unlike intercepted-registry egress. Peers
+never share cached content, credentials, or authorization grants.
 See [peer discovery](deployment.md#peer-discovery) for configuration, trust, and
 retention details.
+
+### Cache availability hints are advisory gossip
+
+With peering enabled, each instance announces which cache keys it holds. A cache
+key is the existing SHA-256 hash of an object's registry, repository, digest, and
+representation headers. A hint does not state those inputs, but a peer that can
+guess them can confirm a match. When
+an entry is committed, the instance originates a hint that its node ID holds that
+key. Peers retain hints in a bounded directory keyed by owner ID and cache key,
+and relay them with limited gossip.
+
+Each hint carries a sorted `seen` set of node IDs known to have received it. A
+relay never replaces the owner. It adds itself to `seen`, then makes one
+forwarding pass that aims for two acknowledged destinations in total, chosen at
+random from resolved peers missing from `seen`. A pass stops after two
+acknowledgements, six attempts, or when every resolved peer has the hint. A
+duplicate merges its `seen` set but never reopens a finished pass. For example,
+if A knows only B, and B knows A and C, then A sends to B and B forwards to C.
+C's only peers have already seen the hint, so C sends nothing.
+
+Hints are not proof of current availability or authorization. Eviction sends no
+withdrawal, hints never expire, and there is no repair, inventory exchange, or
+replay to newly discovered peers, so some nodes may never hear of an entry. No
+instance fetches content from a peer, and hints never change cache keys or
+per-request upstream authorization. See
+[cache availability hints](deployment.md#cache-availability-hints) for the
+protocol, limits, and metrics.
 
 ### Play-by-play example
 

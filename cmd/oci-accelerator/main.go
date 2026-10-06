@@ -11,12 +11,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/buildkite/oci-accelerator"
 	"github.com/buildkite/oci-accelerator/internal/ca"
 	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/peering"
 	"github.com/buildkite/oci-accelerator/internal/proxy"
 )
 
@@ -66,7 +68,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 
 	p := proxy.New(cfg, signer, logger, store)
 
-	metricsDone, stopMetrics, err := startMetrics(cfg, p, listen)
+	// Peering starts after metrics but publishes availability stats to them.
+	var availability atomic.Pointer[peering.Availability]
+	metricsDone, stopMetrics, err := startMetrics(cfg, p, &availability, listen)
 	if err != nil {
 		return err
 	}
@@ -74,10 +78,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		defer func() { runErr = errors.Join(runErr, stopMetrics()) }()
 	}
 
-	peeringDone, stopPeering, err := startPeering(ctx, cfg, signer, logger, listen)
+	peeringDone, peerAvailability, stopPeering, err := startPeering(ctx, cfg, signer, store, logger, listen)
 	if err != nil {
 		return err
 	}
+	availability.Store(peerAvailability)
 	if stopPeering != nil {
 		defer func() { runErr = errors.Join(runErr, stopPeering()) }()
 	}
@@ -163,7 +168,7 @@ func closeProxyListener(listener net.Listener) error {
 // startMetrics serves the metrics endpoint when cfg enables it, returning nil
 // results when disabled and otherwise its completion channel and a cleanup the
 // caller must defer to drain the server.
-func startMetrics(cfg config.Config, p *proxy.Proxy, listen func(string, string) (net.Listener, error)) (chan struct{}, func() error, error) {
+func startMetrics(cfg config.Config, p *proxy.Proxy, availability *atomic.Pointer[peering.Availability], listen func(string, string) (net.Listener, error)) (chan struct{}, func() error, error) {
 	if cfg.MetricsListen == "" {
 		return nil, nil, nil
 	}
@@ -171,7 +176,7 @@ func startMetrics(cfg config.Config, p *proxy.Proxy, listen func(string, string)
 	if err != nil {
 		return nil, nil, errors.New("cannot listen on configured metrics address")
 	}
-	metricsServer := newMetricsServer(cfg, p)
+	metricsServer := newMetricsServer(cfg, p, availability)
 	metricsDone := make(chan struct{})
 	var metricsErr error
 	go func() {
@@ -238,10 +243,16 @@ func cacheDiagnostic(prefix string, err error) error {
 
 // newMetricsServer serves metrics and local lifecycle probes independently of
 // the proxy's connection admission limit. Probes never contact upstream services.
-func newMetricsServer(cfg config.Config, p *proxy.Proxy) *http.Server {
+func newMetricsServer(cfg config.Config, p *proxy.Proxy, availability *atomic.Pointer[peering.Availability]) *http.Server {
 	mux := http.NewServeMux()
 
-	mux.Handle("GET /metrics", p.MetricsHandler())
+	proxyMetrics := p.MetricsHandler()
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		proxyMetrics.ServeHTTP(w, r)
+		if a := availability.Load(); a != nil {
+			writeAvailabilityMetrics(w, a.Stats())
+		}
+	})
 
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
