@@ -26,6 +26,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		Transport: registryTransport{
 			upstream:        p.transport,
 			cache:           p.cache,
+			peerFetch:       p.peerFetch,
 			metrics:         p.metrics,
 			fillWaitTimeout: p.cfg.Cache.FillWaitTimeout,
 			authorization:   p.authorization,

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -18,12 +19,13 @@ import (
 // bypassed requests make one upstream round trip returned to the client
 // unchanged. Dependencies are explicit, never a Proxy reference.
 type registryTransport struct {
-	upstream        *http.Transport                            // shared DNS/dial/TLS/HTTP transport. Proxy owns its shutdown
-	cache           *cache.Store                               // object store owned by New's caller (nil disables caching)
-	metrics         *metrics                                   // request counters, including upstream connection attempts
-	fillWaitTimeout time.Duration                              // wait for another request's fill before one retry. Zero disables
-	authorization   *authorizationCache                        // exact-request grants (nil disables grant reuse)
-	startRangeFetch func(context.Context) (*rangeFetch, error) // registers a range fetch bounded by fill timeout and shutdown
+	upstream        *http.Transport                                              // shared DNS/dial/TLS/HTTP transport. Proxy owns its shutdown
+	cache           *cache.Store                                                 // object store owned by New's caller (nil disables caching)
+	peerFetch       func(context.Context, cache.Metadata) (io.ReadCloser, error) // optional peer body source
+	metrics         *metrics                                                     // request counters, including upstream connection attempts
+	fillWaitTimeout time.Duration                                                // wait for another request's fill before one retry. Zero disables
+	authorization   *authorizationCache                                          // exact-request grants (nil disables grant reuse)
+	startRangeFetch func(context.Context) (*rangeFetch, error)                   // registers a range fetch bounded by fill timeout and shutdown
 }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {

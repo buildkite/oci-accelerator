@@ -26,6 +26,7 @@ type metrics struct {
 	rejects                        map[string]uint64
 	upstream                       uint64
 	upstreamBytes, downstreamBytes uint64
+	peerBytes                      uint64
 	servedBytes, servedEntries     map[string]uint64
 	durations                      [len(requestDurationBounds) + 1]uint64
 	durationSum                    float64
@@ -52,6 +53,8 @@ type requestStats struct {
 	admission      string
 	reject         string
 	upstreamBytes  int64
+	peerBytes      int64
+	peer           bool // this response selected a peer stream rather than origin
 	// immutable marks the original request as a full immutable-object GET,
 	// decided before hop-by-hop stripping so a bypassed Range or conditional
 	// request that becomes a plain GET upstream stays out of served-source metrics.
@@ -111,6 +114,7 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	b.WriteString("# HELP oci_accelerator_upstream_get_attempts_total GET connection-acquisition attempts, including transport retries and DNS/dial/TLS failures before sending.\n")
 	writeScalar("upstream_get_attempts_total", "counter", m.upstream)
 	writeScalar("upstream_body_bytes_total", "counter", m.upstreamBytes)
+	writeScalar("peer_body_bytes_total", "counter", m.peerBytes)
 	writeScalar("downstream_bytes_total", "counter", m.downstreamBytes)
 	b.WriteString("# HELP oci_accelerator_served_bytes_total Immutable-object 200 response body bytes written downstream, including interrupted transfers, by body source.\n")
 	writeMap("oci_accelerator_served_bytes_total", "source", m.servedBytes)
@@ -172,6 +176,7 @@ func (m *metrics) snapshot() metricsSnapshot {
 		rejects:         maps.Clone(m.rejects),
 		upstream:        m.upstream,
 		upstreamBytes:   m.upstreamBytes,
+		peerBytes:       m.peerBytes,
 		downstreamBytes: m.downstreamBytes,
 		servedBytes:     maps.Clone(m.servedBytes),
 		servedEntries:   maps.Clone(m.servedEntries),
@@ -185,6 +190,7 @@ func (m *metrics) snapshot() metricsSnapshot {
 type metricsSnapshot struct {
 	requests, statuses, cache, fills, waits, fallback, rejects map[string]uint64
 	upstream, upstreamBytes, downstreamBytes                   uint64
+	peerBytes                                                  uint64
 	servedBytes, servedEntries                                 map[string]uint64
 	durations                                                  [len(requestDurationBounds) + 1]uint64
 	durationSum                                                float64
@@ -233,6 +239,7 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 		m.rejects[s.reject]++
 	}
 	m.upstreamBytes += uint64(s.upstreamBytes)
+	m.peerBytes += uint64(s.peerBytes)
 	m.downstreamBytes += uint64(downstream)
 	// Scope by request shape and status, not storage admission, so uncached
 	// origin responses still count. Grant hits record "hit".
@@ -240,6 +247,8 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 		source := "origin"
 		if s.cache == "hit" || s.cache == "wait_hit" {
 			source = "cache"
+		} else if s.peer {
+			source = "peer"
 		}
 		m.servedBytes[source] += uint64(downstream)
 		if outcome == "complete" {

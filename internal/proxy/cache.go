@@ -73,6 +73,22 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 		return resp, false, nil
 	}
 
+	// Authorization and admission belong to this node. A peer supplies only
+	// the body, so retain the origin's headers and its unread stream for fallback
+	// until a peer accepts. After selection, never retry or splice body sources.
+	if t.peerFetch != nil {
+		if body, err := t.peerFetch(req.Context(), meta); err == nil {
+			resp.Body.Close()
+			resp.Body = &countedBody{ReadCloser: body, stats: stats, peer: true}
+			stats.peer = true
+		}
+	}
+	if req.Context().Err() != nil {
+		fill.Abort()
+		resp.Body.Close()
+		return nil, false, req.Context().Err()
+	}
+
 	if fetch, _ := req.Context().Value(rangeFetchKey{}).(*rangeFetch); fetch != nil {
 		// Detach the fetch from client cancellation, but abort the fill if the client or fetch already went away.
 		if !fetch.stopClient() || fetch.client.Err() != nil || fetch.ctx.Err() != nil {

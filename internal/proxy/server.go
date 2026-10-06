@@ -22,20 +22,21 @@ const maxHeaderBytes = 64 << 10
 
 // Proxy is an HTTP CONNECT forward proxy.
 type Proxy struct {
-	cfg           config.Config                                           // static proxy configuration supplied at construction
-	server        *http.Server                                            // outer HTTP server accepting client CONNECT requests
-	configured    map[string]struct{}                                     // registries eligible for TLS interception and caching
-	signer        *ca.Authority                                           // certificate authority for signing intercepted TLS hosts
-	logger        *slog.Logger                                            // structured logger for proxy events
-	transport     *http.Transport                                         // upstream transport. Shutdown closes its idle connections
-	cache         *cache.Store                                            // object store owned by New's caller (nil disables caching)
-	authorization *authorizationCache                                     // bounded, process-local approvals shared across connections
-	destinations  map[string]struct{}                                     // registries plus redirect allowlist, exempt from the public-IP dial check
-	lookupIP      func(context.Context, string) ([]net.IPAddr, error)     // DNS resolver hook, overridable in tests
-	dialIP        func(context.Context, string, string) (net.Conn, error) // upstream dialer hook, overridable in tests
-	metrics       *metrics                                                // request and cache counters
-	rangeContext  context.Context                                         // shutdown cancellation for range transfers
-	cancelRanges  context.CancelFunc                                      // cancels rangeContext, invoked by Shutdown
+	cfg           config.Config                                                // static proxy configuration supplied at construction
+	server        *http.Server                                                 // outer HTTP server accepting client CONNECT requests
+	configured    map[string]struct{}                                          // registries eligible for TLS interception and caching
+	signer        *ca.Authority                                                // certificate authority for signing intercepted TLS hosts
+	logger        *slog.Logger                                                 // structured logger for proxy events
+	transport     *http.Transport                                              // upstream transport. Shutdown closes its idle connections
+	cache         *cache.Store                                                 // object store owned by New's caller (nil disables caching)
+	peerFetch     func(context.Context, cache.Metadata) (io.ReadCloser, error) // optional body source, configured before Serve
+	authorization *authorizationCache                                          // bounded, process-local approvals shared across connections
+	destinations  map[string]struct{}                                          // registries plus redirect allowlist, exempt from the public-IP dial check
+	lookupIP      func(context.Context, string) ([]net.IPAddr, error)          // DNS resolver hook, overridable in tests
+	dialIP        func(context.Context, string, string) (net.Conn, error)      // upstream dialer hook, overridable in tests
+	metrics       *metrics                                                     // request and cache counters
+	rangeContext  context.Context                                              // shutdown cancellation for range transfers
+	cancelRanges  context.CancelFunc                                           // cancels rangeContext, invoked by Shutdown
 
 	mu       sync.Mutex                // guards the mutable fields below
 	listener net.Listener              // active listener, nil before Serve or after shutdown
@@ -121,6 +122,13 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		},
 	}
 	return p
+}
+
+// SetPeerFetch installs an optional source for admitted cache misses. Call it
+// before Serve. The source receives authorized metadata, never client headers,
+// and must return a full matching body or an error without taking fill ownership.
+func (p *Proxy) SetPeerFetch(fetch func(context.Context, cache.Metadata) (io.ReadCloser, error)) {
+	p.peerFetch = fetch
 }
 
 // Serve accepts CONNECT requests and public CA downloads from listener until

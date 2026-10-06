@@ -126,15 +126,19 @@ func NewAvailability(book *Book, inventory Inventory, client *http.Client, logge
 // Handler serves availability batches addressed to the local node.
 func (a *Availability) Handler() http.Handler { return newAvailabilityHandler(a.self, a.accept) }
 
-// PeerHandler routes availability requests to availability and every other
-// request to discovery, which rejects unknown paths.
-func PeerHandler(discovery, availability http.Handler) http.Handler {
+// PeerHandler routes availability requests to availability, cache entry
+// requests to fetch, and every other request to discovery, which rejects
+// unknown paths.
+func PeerHandler(discovery, availability, fetch http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == availabilityPath {
+		switch r.URL.Path {
+		case availabilityPath:
 			availability.ServeHTTP(w, r)
-			return
+		case fetchPath:
+			fetch.ServeHTTP(w, r)
+		default:
+			discovery.ServeHTTP(w, r)
 		}
-		discovery.ServeHTTP(w, r)
 	})
 }
 

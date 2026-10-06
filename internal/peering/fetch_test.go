@@ -2,6 +2,7 @@ package peering
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,7 +19,7 @@ import (
 )
 
 func TestTransferFetchUsesResolvedOwnerAndExactMetadata(t *testing.T) {
-	meta := cache.Metadata{Key: testKeyText, Digest: testDigestText, Size: 7, MediaType: "application/octet-stream"}
+	meta := cache.Metadata{Key: testKeyText, Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("content"))), Size: 7, MediaType: "application/octet-stream"}
 	var calls atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -55,6 +56,7 @@ func TestTransferRejectsResponsesBeforeDelivery(t *testing.T) {
 	meta := cache.Metadata{Key: testKeyText, Digest: testDigestText, Size: 7, MediaType: "application/octet-stream"}
 	for name, mutate := range map[string]func(*http.Response){
 		"miss":            func(r *http.Response) { r.StatusCode = 404 },
+		"overload":        func(r *http.Response) { r.StatusCode = 503 },
 		"recipient":       func(r *http.Response) { r.Header.Set("X-OCI-Node-ID", testIDC) },
 		"digest":          func(r *http.Response) { r.Header.Set("Docker-Content-Digest", "sha256:"+strings.Repeat("0", 64)) },
 		"media":           func(r *http.Response) { r.Header.Set("Content-Type", "application/json") },
@@ -77,6 +79,9 @@ func TestTransferRejectsResponsesBeforeDelivery(t *testing.T) {
 			})
 			if b, err := transfer.Fetch(context.Background(), meta); b != nil || err == nil || calls != 1 || !body.closed || body.read != 0 || len(transfer.slots) != 0 {
 				t.Fatalf("body=%v err=%v calls=%d closed=%v read=%d", b, err, calls, body.closed, body.read)
+			}
+			if len(transfer.cooldowns) != 0 {
+				t.Fatal("setup rejection suppressed owner")
 			}
 		})
 	}
@@ -159,6 +164,13 @@ func TestTransferCancellationAndBodyDeadline(t *testing.T) {
 			if len(transfer.slots) != 0 {
 				t.Fatal("slot leaked")
 			}
+			want := 0
+			if action == "timeout" {
+				want = 1
+			}
+			if len(transfer.cooldowns) != want {
+				t.Fatalf("cooldowns=%d want=%d", len(transfer.cooldowns), want)
+			}
 		})
 	}
 }
@@ -205,6 +217,59 @@ func TestTransferParallelStreamsToOneOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer body.Close()
+	}
+}
+
+func TestTransferCorruptionCoolsOwnerUntilExpiry(t *testing.T) {
+	meta := cache.Metadata{Key: testKeyText, Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("content"))), Size: 7, MediaType: "application/octet-stream"}
+	transfer := testTransfer(t, meta, map[string]string{"b.test:443": testIDB})
+	calls := 0
+	transfer.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		payload := "corrupt"
+		if calls > 1 {
+			payload = "content"
+		}
+		return fetchResponse(meta, testIDB, io.NopCloser(strings.NewReader(payload))), nil
+	})
+	body, err := transfer.Fetch(context.Background(), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(body)
+	body.Close()
+	if err != errFetchIntegrity || len(got) >= int(meta.Size) {
+		t.Fatalf("corrupt body=%q err=%v", got, err)
+	}
+	if body, err := transfer.Fetch(context.Background(), meta); err == nil || body != nil || calls != 1 {
+		t.Fatalf("cooled peer contacted: %d calls, %v", calls, err)
+	}
+	otherKey := testCacheKey(8)
+	transfer.availability.index.merge(testClaim(t, testIDB, otherKey, testIDB), time.Now())
+	if len(transfer.candidates(otherKey.String())) != 1 {
+		t.Fatal("unrelated key suppressed")
+	}
+	transfer.mu.Lock()
+	transfer.cooldowns[fetchCooldownKey{mustNodeID(t, testIDB), meta.Key}] = time.Now().Add(-time.Second)
+	transfer.mu.Unlock()
+	body, err = transfer.Fetch(context.Background(), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = io.ReadAll(body)
+	body.Close()
+	if err != nil || string(got) != "content" || calls != 2 {
+		t.Fatalf("retry body=%q err=%v calls=%d", got, err, calls)
+	}
+}
+
+func TestTransferCooldownIsBounded(t *testing.T) {
+	transfer := testTransfer(t, cache.Metadata{Key: testKeyText}, nil)
+	for i := range MaxPeers + 10 {
+		transfer.cooldown(fetchCooldownKey{mustNodeID(t, testIDB), testCacheKey(i).String()})
+	}
+	if len(transfer.cooldowns) != MaxPeers {
+		t.Fatalf("cooldowns=%d", len(transfer.cooldowns))
 	}
 }
 

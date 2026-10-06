@@ -13,44 +13,56 @@ import (
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
+	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/config"
 	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
-// startPeering owns the peer listener, discovery and availability loops, and
-// address book until its cleanup is called, which saves the final
-// availability checkpoint before releasing the state lock. Availability hints track the
-// inventory of store. Disabled peering creates no state, subscribes to nothing,
-// and starts no network activity.
-func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, store peering.Inventory, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, *peering.Availability, func() error, error) {
+// startPeering owns the peer listener, discovery and availability loops, cache
+// entry transfers, and address book until its cleanup is called, which saves
+// the final availability checkpoint before releasing the state lock.
+// Availability hints track the inventory of store, and the transfer serves
+// store's committed entries to peers. A nil store advertises and serves
+// nothing. The caller must close store only after cleanup returns. Disabled
+// peering creates no state, subscribes to nothing, starts no network activity,
+// and returns only nil values.
+func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, store *cache.Store, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, *peering.Availability, *peering.Transfer, func() error, error) {
 	if cfg.Peer.Listen == "" {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	serverTLS, clientTLS, err := signer.PeerTLSConfigs()
 	if err != nil {
-		return nil, nil, nil, errors.New("peer TLS startup failed")
+		return nil, nil, nil, nil, errors.New("peer TLS startup failed")
 	}
 	book, err := peering.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
 	if err != nil {
-		return nil, nil, nil, errors.New("peer state startup failed")
+		return nil, nil, nil, nil, errors.New("peer state startup failed")
 	}
 	rejected, err := book.AddSeeds(cfg.Peer.Seeds)
 	if err != nil {
-		return nil, nil, nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())
+		return nil, nil, nil, nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())
 	}
 	if rejected != 0 {
 		logger.Warn("peer address book full", "rejected", rejected, "limit", peering.MaxPeers)
 	}
-	availability, err := peering.NewAvailability(book, store, peering.NewClient(clientTLS), logger)
+	var inventory peering.Inventory = emptyInventory{}
+	if store != nil {
+		inventory = store
+	}
+	availability, err := peering.NewAvailability(book, inventory, peering.NewClient(clientTLS), logger)
 	if err != nil {
-		return nil, nil, nil, errors.Join(errors.New("peer availability startup failed"), book.Close())
+		return nil, nil, nil, nil, errors.Join(errors.New("peer availability startup failed"), book.Close())
 	}
 	listener, err := listen("tcp", cfg.Peer.Listen)
 	if err != nil {
-		return nil, nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
+		return nil, nil, nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
+	runCtx, cancel := context.WithCancel(ctx)
 	discovery := peering.NewDiscovery(book, peering.NewClient(clientTLS), logger)
-	handler := peering.PeerHandler(discovery.Handler(), availability.Handler())
+	// Cancelling runCtx stops inbound streams and cold verification, and
+	// Close stops outbound streams. Each transfer lives within FillTimeout.
+	transfer := peering.NewTransfer(runCtx, book, availability, store, clientTLS, cfg.Cache.FillTimeout)
+	handler := peering.PeerHandler(discovery.Handler(), availability.Handler(), transfer.Handler())
 	var handlerMu sync.Mutex
 	var handlers sync.WaitGroup
 	stopping := false
@@ -67,6 +79,8 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 			defer handlers.Done()
 			handler.ServeHTTP(w, r)
 		}),
+		// Discovery and availability keep these short deadlines. The transfer
+		// handler replaces the write deadline for an accepted entry stream only.
 		ReadHeaderTimeout:            5 * time.Second,
 		ReadTimeout:                  5 * time.Second,
 		WriteTimeout:                 5 * time.Second,
@@ -84,7 +98,6 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		}
 		close(serveDone)
 	}()
-	runCtx, cancel := context.WithCancel(ctx)
 	discoveryDone := make(chan struct{})
 	go func() {
 		discovery.Run(runCtx)
@@ -96,7 +109,10 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		close(availabilityDone)
 	}()
 	cleanup := func() error {
+		// Cancel before draining, so active entry streams and cold
+		// verification end promptly instead of holding the drain deadline.
 		cancel()
+		transfer.Close()
 		handlerMu.Lock()
 		stopping = true
 		handlerMu.Unlock()
@@ -118,5 +134,12 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		return errors.Join(cleanupErr, serveErr, availability.Checkpoint(), book.Close())
 	}
 	logger.Info("peer service ready", "listen", listener.Addr().String(), "advertise", cfg.Peer.Advertise, "node_id", book.Snapshot().NodeID, "known_peers", len(book.Addresses()))
-	return serveDone, availability, cleanup, nil
+	return serveDone, availability, transfer, cleanup, nil
 }
+
+// emptyInventory stands in for a disabled cache, which holds no entries and
+// never changes. Its nil change channel never receives.
+type emptyInventory struct{}
+
+func (emptyInventory) Keys() []string           { return nil }
+func (emptyInventory) Changes() <-chan struct{} { return nil }

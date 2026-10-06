@@ -78,13 +78,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		defer func() { runErr = errors.Join(runErr, stopMetrics()) }()
 	}
 
-	peeringDone, peerAvailability, stopPeering, err := startPeering(ctx, cfg, signer, store, logger, listen)
+	peeringDone, peerAvailability, transfer, stopPeering, err := startPeering(ctx, cfg, signer, store, logger, listen)
 	if err != nil {
 		return err
 	}
 	availability.Store(peerAvailability)
 	if stopPeering != nil {
 		defer func() { runErr = errors.Join(runErr, stopPeering()) }()
+	}
+	// Configure peer fetching before serving, so no request races the setter.
+	if transfer != nil {
+		p.SetPeerFetch(transfer.Fetch)
 	}
 
 	logger.Info("proxy ready", "version", ociaccelerator.Version(), "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())

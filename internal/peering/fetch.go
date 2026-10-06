@@ -3,6 +3,7 @@ package peering
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,13 @@ type Transfer struct {
 	cancel       context.CancelFunc
 	timeout      time.Duration
 	slots        chan struct{}
+	mu           sync.Mutex
+	cooldowns    map[fetchCooldownKey]time.Time // transient failure suppression, bounded by MaxPeers
+}
+
+type fetchCooldownKey struct {
+	owner nodeID
+	key   string
 }
 
 // NewTransfer creates a separate bulk-data client. Discovery and availability
@@ -44,13 +52,14 @@ func NewTransfer(ctx context.Context, book *Book, availability *Availability, st
 		book: book, availability: availability, client: client,
 		handler: newFetchHandler(ctx, book.Snapshot().NodeID, store, timeout),
 		ctx:     ctx, cancel: cancel, timeout: timeout, slots: make(chan struct{}, maxPeerTransfers),
+		cooldowns: make(map[fetchCooldownKey]time.Time),
 	}
 }
 
 // Handler returns the local-only entry endpoint for the mutual-TLS listener.
 func (t *Transfer) Handler() http.Handler { return t.handler }
 
-// Close cancels active outbound streams. Their owners must still close bodies.
+// Close cancels entry serving and outbound streams. Callers still close bodies.
 func (t *Transfer) Close() {
 	t.cancel()
 	t.client.CloseIdleConnections()
@@ -85,13 +94,19 @@ func (t *Transfer) Fetch(ctx context.Context, meta cache.Metadata) (io.ReadClose
 	setup := time.AfterFunc(5*time.Second, cancel)
 	defer setup.Stop()
 	for _, peer := range peers[:min(2, len(peers))] {
+		failed := sync.OnceFunc(func() {
+			// Client disconnects and local shutdown do not implicate the owner.
+			if ctx.Err() == nil && t.ctx.Err() == nil {
+				t.cooldown(fetchCooldownKey{peer.id, meta.Key})
+			}
+		})
 		body, err := t.fetch(transferCtx, peer, meta)
 		if err == nil {
 			if !setup.Stop() || transferCtx.Err() != nil || ctx.Err() != nil {
 				body.Close()
 				break
 			}
-			return &fetchBody{ReadCloser: body, release: release}, nil
+			return &fetchBody{ReadCloser: body, release: release, failed: failed, hash: sha256.New(), digest: meta.Digest, remaining: meta.Size}, nil
 		}
 		if transferCtx.Err() != nil {
 			break
@@ -109,14 +124,44 @@ func (t *Transfer) candidates(key string) []destination {
 		addresses[id] = address
 	}
 	var peers []destination
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
 	for _, owner := range owners {
 		if address := addresses[owner]; owner != book.NodeID && address != "" {
 			id, _ := parseNodeID(owner)
+			if now.Before(t.cooldowns[fetchCooldownKey{id, key}]) {
+				continue
+			}
 			peers = append(peers, destination{id: id, address: address})
 		}
 	}
 	rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
 	return peers
+}
+
+// A failed body must not force every retry back to the same bad copy. Unrelated
+// keys and setup failures (including miss/overload) do not suppress an owner.
+// This local, nonpersistent cooldown does not remove or modify gossip hints.
+func (t *Transfer) cooldown(key fetchCooldownKey) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	var oldest fetchCooldownKey
+	var earliest time.Time
+	for peer, until := range t.cooldowns {
+		if !now.Before(until) {
+			delete(t.cooldowns, peer)
+			continue
+		}
+		if earliest.IsZero() || until.Before(earliest) {
+			oldest, earliest = peer, until
+		}
+	}
+	if _, exists := t.cooldowns[key]; !exists && len(t.cooldowns) >= MaxPeers {
+		delete(t.cooldowns, oldest)
+	}
+	t.cooldowns[key] = now.Add(30 * time.Second)
 }
 
 func (t *Transfer) fetch(ctx context.Context, peer destination, meta cache.Metadata) (io.ReadCloser, error) {
@@ -149,15 +194,4 @@ func (t *Transfer) fetch(ctx context.Context, peer destination, meta cache.Metad
 func exactHeader(header http.Header, name, value string) bool {
 	values := header.Values(name)
 	return len(values) == 1 && values[0] == value
-}
-
-type fetchBody struct {
-	io.ReadCloser
-	release func()
-}
-
-func (b *fetchBody) Close() error {
-	err := b.ReadCloser.Close()
-	b.release()
-	return err
 }
