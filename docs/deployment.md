@@ -889,6 +889,12 @@ merges configured seeds and retries retained addresses. Removing a seed from con
 not remove it from the book. Resetting one book does not forget an address fleet-wide, because
 other peers can advertise it again.
 
+On first peering-enabled startup, each instance generates a 12-character, case-sensitive
+base64url node ID from 72 cryptographically random bits and persists it in `node-id` in the
+peer state directory. Restarts and advertised-address changes preserve that ID. Give each
+instance its own persistent peer state volume. Do not clone this state into another instance,
+because doing so duplicates its identity. The ID is not a secret or authentication credential.
+
 State files must be regular, process-owned, mode 0600 files. Startup takes an exclusive process
 lock, removes recognized abandoned staging files, and rejects corrupt state, unsafe files, or
 unknown files without replacing the book. Bind or state startup failures prevent startup.

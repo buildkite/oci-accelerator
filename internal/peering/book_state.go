@@ -101,7 +101,7 @@ func inspectBookDir(dir string) error {
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(dir, name)
-		if name == ".lock" || name == bookStateName {
+		if name == ".lock" || name == bookStateName || name == nodeIDName {
 			if err := validateRegular(path); err != nil {
 				return err
 			}
@@ -194,6 +194,10 @@ func replaceBookState(dir string, peers []string, syncDir func(string) error) (b
 	if err != nil || len(raw) > bookStateMax {
 		return false, errBook
 	}
+	return replaceState(dir, bookStateName, raw, syncDir)
+}
+
+func replaceState(dir, name string, raw []byte, syncDir func(string) error) (bool, error) {
 	f, err := os.CreateTemp(dir, ".peers-")
 	if err != nil {
 		return false, err
@@ -210,7 +214,7 @@ func replaceBookState(dir string, peers []string, syncDir func(string) error) (b
 		err = closeErr
 	}
 	if err == nil {
-		err = os.Rename(tmp, filepath.Join(dir, bookStateName))
+		err = os.Rename(tmp, filepath.Join(dir, name))
 	}
 	if err != nil {
 		return false, err

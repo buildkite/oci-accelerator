@@ -13,6 +13,7 @@ type Book struct {
 	mu       sync.Mutex
 	dir      string
 	self     string
+	nodeID   string
 	peers    map[string]struct{}
 	lock     bookLock
 	unsynced bool
@@ -34,7 +35,12 @@ func OpenBook(dir, self string) (*Book, error) {
 		_ = lock.close()
 		return nil, errBook
 	}
-	b := &Book{dir: dir, self: canonicalSelf, peers: make(map[string]struct{}, len(peers)), lock: lock, write: writeBookState}
+	nodeID, err := loadNodeID(dir)
+	if err != nil {
+		_ = lock.close()
+		return nil, errBook
+	}
+	b := &Book{dir: dir, self: canonicalSelf, nodeID: nodeID, peers: make(map[string]struct{}, len(peers)), lock: lock, write: writeBookState}
 	for _, address := range peers {
 		if address != canonicalSelf {
 			b.peers[address] = struct{}{}
