@@ -25,10 +25,22 @@ address books, address moves and reuse, stale results, batching bounds, strict J
 FIFO eviction, and a two-node exchange over mutual TLS. Persistence tests cover snapshot
 round trips and bounds, startup reconciliation, discarded and unsafe snapshots, injected
 write failures, mutation during a checkpoint, interrupted writes, and a restart that keeps
-hints. They use injected errors and staging files, not power-loss testing. Run those checks alone with:
+hints. They use injected errors and staging files, not power-loss testing.
+
+Peer cache fill tests cover strict request decoding, exact response checks, bounded attempts
+and concurrency, cooldowns, deadlines, cancellation, cold verification, integrity failures
+before the final chunk, and the proxy rules that peers are contacted only after upstream
+approval and admission and never replaced mid-stream. `TestPeerFetchThroughProxyEndToEnd` in
+`cmd/oci-accelerator` runs two full instances and a third peer over real local TLS against a
+local origin fixture. One instance fills from the origin. The origin then authorizes the other
+instance's `GET` but stalls its body, so a complete response proves the bytes came from the
+peer. The test also checks that the credential never reaches the peer listener and that the
+peer-filled entry is committed and announced. It is not a Docker daemon test and needs no
+opt-in. Run those checks alone with:
 
 ```sh
-go test -race ./internal/ca ./internal/peering ./internal/config ./cmd/oci-accelerator
+go test -race ./internal/ca ./internal/peering ./internal/proxy ./internal/config ./cmd/oci-accelerator
+go test -race -run '^TestPeerFetchThroughProxyEndToEnd$' ./cmd/oci-accelerator
 ```
 
 These tests do not require Docker or external peers. Peer persistence failure

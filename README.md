@@ -21,9 +21,10 @@ upstream registry again.
   each upstream registry are signed on demand.
 - **Bounded, self-maintaining storage.** Disk use is capped, least-recently-used
   entries are evicted, and objects that don't fit pass through uncached.
-- **Optional peer discovery.** Instances sharing a CA can discover and remember
-  each other over a separate mutually authenticated TLS port. Peering exchanges
-  addresses and persistent node IDs, not cache keys or content. See [peer discovery](docs/deployment.md#peer-discovery).
+- **Optional peering.** Instances sharing a CA can discover each other over a
+  separate mutually authenticated TLS port, advertise which cache keys they hold,
+  and fill a local cache miss from a peer's copy after the upstream registry
+  approves the request. Credentials and approvals are never shared. See [peer discovery](docs/deployment.md#peer-discovery).
 
 See [how it works](docs/how-it-works.md) for the request flow, authorization,
 and cache storage in detail.

@@ -83,7 +83,9 @@ outbound slots and has a bounded, deduplicated queue. Retries use backoff, and
 peer outages do not affect proxy readiness or image pulls.
 
 Peer destinations are unrestricted, unlike intercepted-registry egress. Peers
-never share cached content, credentials, or authorization grants.
+never share credentials or authorization grants. Fleet membership does allow a
+peer to read any committed local cache entry, including private bytes, by naming
+its exact cache metadata (see [peer cache fills](#peer-cache-fills)).
 See [peer discovery](deployment.md#peer-discovery) for configuration, trust, and
 retention details.
 
@@ -111,11 +113,48 @@ withdrawal, hints never expire, and there is no repair, inventory exchange, or
 replay to newly discovered peers, so some nodes may never hear of an entry.
 Each instance checkpoints its hints and forwarding progress beside its address
 book, so an ordinary restart keeps what it knew without repeating finished
-passes. No
-instance fetches content from a peer, and hints never change cache keys or
-per-request upstream authorization. See
+passes. Hints never change cache keys or per-request upstream authorization. See
 [cache availability hints](deployment.md#cache-availability-hints) for the
 protocol, limits, and metrics.
+
+### Peer cache fills
+
+With peering and the cache enabled, a node can fill a cache miss from a peer
+that a hint names as an owner. The requesting node still authorizes Docker's
+request with the origin first, exactly as for any other miss:
+
+1. Docker's `GET` goes upstream with Docker's credentials. Only a cacheable
+   `200 OK` that this node admits as a cache fill continues. Denials, bypassed
+   requests, and refused admission never contact a peer.
+2. Before reading the origin body, the node asks up to two randomly chosen owners,
+   at their current resolved addresses, for the entry with the same cache key,
+   digest, size, and media type. Unresolved owners and the node itself are skipped.
+3. If a peer accepts, the node closes the unread origin body and streams the peer's
+   bytes to Docker and into the cache. Docker keeps the origin's response headers.
+   If no peer accepts, the origin body is used as usual.
+
+Peers receive only cache metadata, never client headers, credentials, or grants.
+The serving peer reads only its own committed cache and makes no upstream or peer
+request of its own. Authorization grants stay local: a grant serves only a local
+hit, so a miss always gets a fresh upstream `GET` before any peer is asked.
+
+Once a peer stream is chosen, the node never switches to another peer or to the
+origin mid-stream. If the stream fails, Docker's response fails, and a retry
+starts again with upstream approval.
+An accepted stream's read or integrity failure skips that owner for that cache key
+for 30 seconds, so the retry can choose another owner or the origin. Setup failures,
+client cancellation, and local shutdown do not trigger this cooldown. Other keys
+remain eligible. The fetch verifies the size and SHA-256 digest independently of the
+cache, and withholds the final chunk on a mismatch, so a corrupt body never looks
+complete. Earlier bytes, and ranges that end before the object does, can still be
+delivered before the integrity result. The cache verifies again before commit, and
+a failed fill never publishes or announces an entry. A cache write failure does not
+interrupt the peer stream. A successful commit announces a hint like any other fill.
+
+`OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` bounds each peer transfer on both nodes,
+including full `GET`s. A slow transfer that reaches it fails, where an origin
+stream would continue uncached. See [peer cache fills](deployment.md#peer-cache-fills)
+for the protocol and limits.
 
 ### Play-by-play example
 
@@ -251,7 +290,8 @@ the upstream registry on every delivery.
 - **Memory only.** Grants are never persisted, are cleared on restart, and both
   classes share the `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound (10000 by default).
 - **Bytes are shared, approvals are not.** Any client the upstream registry approves can
-  receive the cached copy, whoever filled it.
+  receive the cached copy, whoever filled it. With peering, the copy can also come from
+  another node's cache after this node's own upstream approval.
 
 If you make a public repository private, an existing anonymous approval can still
 serve an identical request until it expires, up to 15 minutes by default.
@@ -308,7 +348,7 @@ fresh upstream request.
 | `OCI_ACCELERATOR_CACHE_MAX_BYTES`     | 32 GiB  | Total size, counting each body plus 4 KiB of metadata    |
 | `OCI_ACCELERATOR_CACHE_MAX_ENTRIES`   | 100000  | Number of entries                                      |
 | `OCI_ACCELERATOR_CACHE_MAX_FILLS`     | 16      | Concurrent fills. Further misses stream without caching |
-| `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`  | 10m     | How long a fill may take                                |
+| `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`  | 10m     | How long a fill, or a peer transfer, may take           |
 
 In-progress fills count toward these limits. The limits don't include filesystem
 block and inode overhead, so leave some headroom on the disk.
@@ -327,5 +367,5 @@ rebuilt from commit times.
 
 Each body is hashed again, in full, before it is first served after startup, so
 that first hit is slower. A missing or corrupt entry is treated as a miss and
-refilled from the upstream response. Don't edit or delete files in a live cache.
+refilled like any other miss. Don't edit or delete files in a live cache.
 To reset it, stop the accelerator and remove the whole directory.

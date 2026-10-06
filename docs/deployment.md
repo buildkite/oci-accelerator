@@ -437,7 +437,7 @@ You can configure private registries explicitly.
 | `OCI_ACCELERATOR_CACHE_MAX_BYTES` | 32 GiB  | Includes body, metadata, and fill reservations                                          |
 | `OCI_ACCELERATOR_CACHE_MAX_FILLS` | 16      | Concurrent storage writers. Excess misses stream uncached                               |
 | `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` | 100000 | Entry slots, including fills and pending cleanup                                        |
-| `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` | `10m` | Bounds ranged fetches from request start. Ends ordinary full-GET cache admission        |
+| `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` | `10m` | Bounds ranged fetches from request start and each peer transfer. Ends ordinary full-GET cache admission |
 | `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` | `1s` | `0s` disables waiting for an existing fill                                           |
 | `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL` | `30s` | Fixed approval lifetime for requests with Authorization, including empty. `0s` disables that class |
 | `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` | `15m` | Fixed approval lifetime for requests without Authorization. `0s` disables that class |
@@ -461,6 +461,9 @@ Timeout behavior:
   fetch, starting
   before the first upstream GET, including when cache-fill admission is refused. Admitted
   background fills remain subject to the same deadline.
+- Each [peer cache fill](#peer-cache-fills) transfer is bounded by
+  `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` on both instances. A peer stream still running at the
+  deadline fails the response, even for a full GET that an origin stream would finish uncached.
 - Delivery from an already-open cached reader is not limited by
   `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`, but idle-I/O deadlines and shutdown handling still apply.
 - Other active transfers have idle-I/O deadlines, not total download deadlines. Uploads have no
@@ -805,9 +808,10 @@ docker compose up -d
 
 ## Peer discovery
 
-Peering exchanges addresses, node IDs, and [cache availability hints](#cache-availability-hints).
-It does not share cached content, registry credentials, or authorization grants. Image pulls and
-readiness do not depend on reachable peers.
+Peering exchanges addresses, node IDs, and [cache availability hints](#cache-availability-hints),
+and lets an instance fill an approved cache miss from a peer's copy ([peer cache fills](#peer-cache-fills)).
+It never shares registry credentials or authorization grants. Image pulls and readiness do not
+depend on reachable peers. Peering needs no settings beyond the four below.
 
 Provision the same `ca.crt` and `ca.key` into each instance's private CA directory through your
 trusted deployment system. Use separate local state directories or volumes for each instance,
@@ -849,6 +853,12 @@ peer protocol. Certificates cannot outlive the CA.
 This establishes fleet membership, not independently trusted node identities. Every holder of
 the shared CA key can impersonate any peer. Compromising one instance compromises the fleet's
 trust domain, so individual-node revocation is not possible while it retains that key.
+
+Fleet membership also grants read access to every committed entry in each instance's cache,
+including bytes from private repositories, to any peer that names the entry's exact cache
+metadata. Registry authorization still applies to Docker clients: each instance approves every
+client request with the upstream registry, or a local grant, before serving bytes from any
+source. Only enable peering among instances that may hold each other's cached content.
 
 Learned destinations are unrestricted. An authenticated peer can cause connection attempts to
 any hostname/IP and port reachable from your instance. Mutual TLS rejects non-peers but cannot
@@ -901,8 +911,10 @@ responses. Its queue deduplicates addresses and retains up to 1,024 pending or c
 are dropped with a `peer verification queue full` warning and can be submitted by later gossip.
 After an attempt, a verification-only address expires after its cooldown or backoff unless
 new gossip requests another attempt. Addresses already in the book keep their normal retries.
-Each instance permits 32 accepted peer connections, including incomplete TLS handshakes. Incoming
-headers, bodies, writes, and idle connections also have five-second deadlines. JSON messages
+Each instance permits 32 accepted peer connections, including incomplete TLS handshakes and
+[peer cache fill](#peer-cache-fills) transfers. Incoming headers, bodies, writes, and idle
+connections also have five-second deadlines, except that an accepted cache entry stream
+replaces the write deadline. JSON messages
 are limited to 512 KiB and 1,024 peer mappings. Unknown fields, duplicate JSON keys, invalid
 IDs, and contradictory spellings of the same canonical address are rejected.
 
@@ -1018,8 +1030,9 @@ evicted first, without refreshing order on duplicates. Evicting a hint never evi
 content and sends nothing. A later notice can reinsert it. A hint whose `seen` set would exceed
 1,025 IDs stays available for lookup but is never forwarded again. These limits are built in.
 
-Hints are advisory. An owner may have evicted the entry, and hints never expire. No instance
-fetches content from peers, and hints never affect cache keys or upstream authorization.
+Hints are advisory. An owner may have evicted the entry, and hints never expire. Hints choose
+candidate owners for [peer cache fills](#peer-cache-fills) but never affect cache keys or upstream
+authorization.
 All instances need this protocol. Older instances reject it, which only consumes attempts.
 
 #### Persisted hints
@@ -1057,6 +1070,72 @@ A `204` acknowledgement does not mean the hint is on disk. A crash loses changes
 checkpoint and can restore a hint that FIFO eviction removed afterwards, so some hints may be
 sent again. Persistence reduces what a restart forgets, but it repairs neither missed gossip nor
 stale hints.
+
+### Peer cache fills
+
+With peering and the cache enabled, an instance can fill a cache miss from a hinted owner
+instead of the origin body. The request flow and authorization rules are in
+[how it works](how-it-works.md#peer-cache-fills). An instance asks peers only after the upstream
+registry has returned a cacheable `200 OK` to Docker's own `GET` and the instance has admitted a
+cache fill. Grants serve only local hits, so a miss always gets that upstream `GET`.
+
+The requester sends `POST /v1/cache/fetch` on the same mutual-TLS peer listener and certificates.
+The following metadata is illustrative:
+
+```json
+{
+  "recipientNodeId": "mT4bY9-wH6sR",
+  "key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "size": 4194304,
+  "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip"
+}
+```
+
+The handler reads only its own committed cache and never contacts the origin or another peer.
+
+| Status | Meaning |
+| --- | --- |
+| `200` | The full body of the entry matching every field, with `Content-Length`, `Content-Type`, `Docker-Content-Digest`, and `X-OCI-Node-ID` |
+| `400` | Invalid request. All five fields are required with exact names. Unknown, duplicate, or null fields, trailing data, and bodies over 8 KiB are rejected |
+| `404` | No committed entry matches, including when the cache is disabled |
+| `409` | `recipientNodeId` is not this instance, which covers an address reused by another node |
+| `503` | Eight transfers are already being served |
+
+Every response closes its connection, and redirects are never followed. The requester accepts a
+response only if its status, length, and headers match exactly, with no encoding or range.
+
+Selection and failure:
+
+- An instance serves at most eight inbound transfers and runs at most eight outbound transfers.
+  When outbound transfers are saturated, it uses the origin body without contacting a peer.
+- It tries at most two owners, chosen at random from hinted owners with a resolved address,
+  never itself. Both attempts share one five-second budget for receiving accepted headers.
+- Before a stream is accepted, any failure falls back to the next owner or the origin body.
+  After acceptance, the stream is never replaced: a read error or integrity failure fails
+  Docker's response, and a retry repeats the whole flow, including upstream approval.
+- An accepted stream's read or integrity failure skips that owner for that cache key for
+  30 seconds. Setup failures, client cancellation, and local shutdown do not trigger this
+  cooldown, and other keys remain eligible. This in-memory cooldown holds at most 1,024
+  owner/key pairs and never modifies hints.
+
+Integrity:
+
+- The requester hashes the stream as it arrives and withholds the final chunk unless the size
+  and SHA-256 digest match. Earlier bytes, and range responses that end before the object does,
+  can reach Docker before that result, as with any streaming fill.
+- The cache verifies the stored body again before commit. A failed fill is never published or
+  announced. A successful one originates a [hint](#cache-availability-hints) as usual, best effort.
+- A cache write failure ends the fill but does not interrupt the peer stream to Docker.
+- An owner's first read of an entry after restart rehashes the whole body. It finishes that
+  verification within the transfer deadline even if the requester disconnects, so retries do
+  not restart it.
+
+`OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` bounds each transfer on both instances, from acceptance on
+the owner and from the first attempt on the requester. Unlike an origin body, which continues
+uncached after that deadline, a peer stream that is still running fails Docker's response,
+including a full `GET`. Raise the timeout if your largest objects cannot cross the peer network
+within it. Shutdown cancels active inbound and outbound transfers.
 
 ## Monitoring
 
@@ -1114,7 +1193,8 @@ Metrics use the `oci_accelerator_` prefix and include:
 
 - request counts, bounded status classes, duration histograms, and active requests and
   connections
-- cache, fill, wait, fallback, and upstream GET and body counters
+- cache, fill, wait, fallback, and upstream GET and body counters, plus
+  `oci_accelerator_peer_body_bytes_total` for body bytes read from peers
 - cache admission and rejection reasons, entries, readers, fills, bytes, reservations, and
   evictions (the fills gauge includes reservations whose staging is still in progress)
 - Go heap allocation and goroutine gauges
@@ -1125,8 +1205,9 @@ Interpreting them:
 
 - Labels are fixed enums and never contain clients, repositories, paths, digests, tokens, or URLs.
 - Counters reset on restart. Request-owned body counters are recorded when requests complete.
-- For a detached range fill, `oci_accelerator_upstream_body_bytes_total` and
-  `oci_accelerator_fills_total` update when its pump completes, while store fill statistics remain
+- For a detached range fill, `oci_accelerator_upstream_body_bytes_total`,
+  `oci_accelerator_peer_body_bytes_total`, and `oci_accelerator_fills_total` update when its
+  pump completes, separately from the range request, while store fill statistics remain
   available independently.
 - Logical cache bytes exclude filesystem overhead. Go heap allocation is not RSS.
 - `oci_accelerator_upstream_get_attempts_total` counts connection-acquisition attempts,
@@ -1138,9 +1219,9 @@ Interpreting them:
 
 ### Cache delivery ratios
 
-`oci_accelerator_served_bytes_total{source="cache|origin"}` and
-`oci_accelerator_served_entries_total{source="cache|origin"}` measure how much digest-addressed
-content clients received from the cache versus the upstream registry.
+`oci_accelerator_served_bytes_total{source="cache|origin|peer"}` and
+`oci_accelerator_served_entries_total{source="cache|origin|peer"}` measure how much
+digest-addressed content clients received from the local cache, the upstream registry, or a peer.
 
 - **Scope.** Only `200` responses to query-free `GET`s for a full, unescaped SHA-256 blob or
   manifest digest, without `Range` or `If-*` headers. Errors, `HEAD`, tags, ranges, conditional
@@ -1150,10 +1231,12 @@ content clients received from the cache versus the upstream registry.
   digests, successful cache fills, or integrity checks.
 - **Source** is where the response body came from. `cache` covers ordinary hits,
   authorization-grant hits, and responses served after waiting for another request's fill.
-  `origin` covers cold fills and responses that bypassed storage because of `no-store`,
-  capacity, or unsupported metadata. Upstream authorization GETs do not affect attribution.
-- Both sources are exported as zero before traffic, update when each request ends, and reset on
-  restart. They measure application deliveries, not wire bandwidth or bandwidth savings.
+  `origin` covers cold fills from the upstream registry and responses that bypassed storage because of `no-store`,
+  capacity, or unsupported metadata. `peer` covers fills whose body came from a
+  [peer](#peer-cache-fills). Upstream authorization GETs do not affect attribution.
+- `cache` and `origin` are exported as zero before traffic, and `peer` appears after the first
+  peer-sourced response. All update when each request ends and reset on restart. They measure
+  application deliveries, not wire bandwidth or bandwidth savings.
 
 Five-minute cache byte percentage across all instances. Apply `rate` before aggregation, and
 drop a zero-traffic denominator so dashboards display N/A rather than coercing no traffic to
@@ -1177,8 +1260,8 @@ Delivery percentage:
 and on () (sum(rate(oci_accelerator_served_entries_total[5m])) > 0)
 ```
 
-For origin percentage, replace `source="cache"` with `source="origin"`, or subtract the cache
-percentage from 100 when traffic is present.
+For origin or peer percentage, replace `source="cache"` with `source="origin"` or
+`source="peer"`. Without peer traffic, the origin percentage is 100 minus the cache percentage.
 
 ## Lifecycle
 
@@ -1195,11 +1278,11 @@ A stuck handler can therefore delay exit. A second signal uses the operating sys
 termination behavior. For containers, keep the stop grace period longer than
 `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` (see [Compose](#compose)).
 
-When peering is enabled, outbound exchanges and availability requests are cancelled on
-shutdown. Peer cleanup drains inbound exchanges with its own `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT`
-window, joins remaining handlers, and writes a final availability checkpoint before releasing
-the state lock. Allow time for both proxy and peer drain windows,
-plus metrics cleanup, in your container stop grace period. Filesystem stalls can delay exit.
+When peering is enabled, outbound exchanges, availability requests, and peer cache transfers in
+both directions are cancelled on shutdown. Peer cleanup drains inbound exchanges with its own
+`OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` window, joins remaining handlers, and writes a final
+availability checkpoint before releasing the state lock. Allow time for both proxy and peer
+drain windows, plus metrics cleanup, in your container stop grace period. Filesystem stalls can delay exit.
 
 ### What survives a restart
 
@@ -1239,9 +1322,15 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 
 - Redirect restrictions protect proxy-originated fetches only. They do not constrain the broader
   egress available through opaque CONNECT tunnels, so deployment network controls remain essential.
-- No shared or distributed cache storage, peer content fetching, or background prefetch.
-  Peers share addresses, node IDs, and advisory cache availability hints only. Hint delivery is
-  best effort, with no withdrawal, expiry, or repair.
+- No shared or distributed cache storage or background prefetch. Peers fill only cache misses
+  that this instance has already approved upstream and admitted, so peering saves origin body
+  bytes but not upstream authorization requests. Hint delivery is best effort, with no
+  withdrawal, expiry, or repair, so a stale hint costs a failed attempt before origin fallback.
+- A peer stream that fails after acceptance fails the client response rather than falling back,
+  and a slow peer transfer can hit `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` where an origin stream
+  would have finished uncached.
+- Fleet membership grants read access to every instance's committed cache entries, including
+  private repository bytes. Individual peers cannot be revoked while they hold the CA key.
 - No Kubernetes manifests, and no automated container runtime acceptance in CI.
 - Fault tests exercise process termination and private tmpfs exhaustion, not power loss or
   faulty-device certification. See the [testing guide](testing.md).
