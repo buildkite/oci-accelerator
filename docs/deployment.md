@@ -858,10 +858,22 @@ CA downloaded from the destination. None of this changes registry authorization 
 
 The HTTPS `POST /v1/peers/exchange` request and response carry an `address` string and a `peers`
 array. Each exchange merges the sender and its known peers before replying with the receiver's
-full list. Newly learned addresses are contacted directly. Exchanges start immediately, normally
-repeat every 30 seconds with ±20% jitter, and use exponential failure backoff capped at five
-minutes before jitter. Requests have a five-second deadline. Each instance permits four outbound
-exchanges and 32 accepted peer connections, including incomplete TLS handshakes. Incoming
+full list. Exchanges start immediately, normally repeat every 30 seconds with ±20% jitter, and
+use exponential failure backoff capped at five minutes before jitter. A successfully merged
+inbound exchange defers the next outbound request to the sender's advertised address by the
+same jittered interval, without shortening an existing delay or clearing failure backoff.
+Third-party addresses learned from requests or responses remain eligible for immediate direct
+contact unless they already have a cooldown or backoff.
+Incoming requests are still answered during the cooldown, and requests already in flight can
+cross. Invalid messages and failed merges do not defer requests. Cooldowns are held only in
+memory and reset on restart.
+
+Inbound exchanges do not prove that the sender's advertised listener is reachable. Regular
+inbound exchanges can keep postponing outbound probes and their outage warnings. Cooldowns
+trust the advertised address under the fleet-wide trust model, not a unique node identity.
+
+Requests have a five-second deadline. Each instance permits four outbound exchanges and 32
+accepted peer connections, including incomplete TLS handshakes. Incoming
 headers, bodies, writes, and idle connections also have five-second deadlines. JSON messages
 are limited to 512 KiB and 1,024 list entries.
 
