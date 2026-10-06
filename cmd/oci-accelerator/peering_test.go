@@ -54,17 +54,22 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := peering.Message{Address: "self.test:7443", Peers: []string{newTestListener(t).Addr().String()}}
+	selfID, err := os.ReadFile(filepath.Join(state, "node-id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerAddress, peerID := newTestListener(t).Addr().String(), "000000000001"
+	want := peering.Message{Address: "self.test:7443", NodeID: string(selfID), Peers: map[string]string{peerAddress: peerID}}
 	client := peering.NewClient(clientTLS)
 	defer client.CloseIdleConnections()
-	got, err := peering.Exchange(context.Background(), client, listener.Addr().String(), peering.Message{Address: want.Peers[0]})
+	got, err := peering.Exchange(context.Background(), client, listener.Addr().String(), peering.Message{Address: peerAddress, NodeID: peerID, Peers: map[string]string{}})
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("authenticated exchange = %#v, %v, want %#v", got, err, want)
 	}
 
 	post := func(client *http.Client, address string) error {
 		defer client.CloseIdleConnections()
-		req, err := http.NewRequest(http.MethodPost, "https://"+listener.Addr().String()+"/v1/peers/exchange", strings.NewReader(fmt.Sprintf(`{"address":%q,"peers":[]}`, address)))
+		req, err := http.NewRequest(http.MethodPost, "https://"+listener.Addr().String()+"/v1/peers/exchange", strings.NewReader(fmt.Sprintf(`{"address":%q,"nodeId":"000000000002","peers":{}}`, address)))
 		if err != nil {
 			return err
 		}
@@ -266,7 +271,7 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 		time.Sleep(time.Millisecond)
 	}
 	for _, listener := range []*net.TCPListener{proxyListener, metricsListener} {
-		response, err := client.Post("http://"+listener.Addr().String()+"/v1/peers/exchange", "application/json", strings.NewReader(`{"address":"bad.test:1"}`))
+		response, err := client.Post("http://"+listener.Addr().String()+"/v1/peers/exchange", "application/json", strings.NewReader(`{"address":"bad.test:1","nodeId":"000000000001","peers":{}}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -293,8 +298,11 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 		t.Fatal(err)
 	}
 	defer book.Close()
-	if got := book.Snapshot().Peers; !reflect.DeepEqual(got, []string{unresponsive.Addr().String()}) {
-		t.Fatalf("persisted peers after outage = %v", got)
+	if got := book.Addresses(); !reflect.DeepEqual(got, []string{unresponsive.Addr().String()}) {
+		t.Fatalf("persisted addresses after outage = %v", got)
+	}
+	if got := book.Snapshot().Peers; len(got) != 0 {
+		t.Fatalf("unresolved seed exported with an identity: %v", got)
 	}
 }
 

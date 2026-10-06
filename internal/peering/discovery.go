@@ -2,10 +2,10 @@ package peering
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -24,6 +24,7 @@ type Discovery struct {
 	maxBackoff time.Duration
 	mu         sync.Mutex // guards schedules and inbound merge versus outbound scheduling
 	known      map[string]*peerSchedule
+	pending    map[string]bool // bounded verification work, false while cooling down
 }
 
 type peerSchedule struct {
@@ -36,7 +37,8 @@ func NewDiscovery(book *Book, client *http.Client, logger *slog.Logger) *Discove
 	return &Discovery{
 		book: book, client: client, logger: logger, wake: make(chan struct{}, 1),
 		interval: 30 * time.Second, maxBackoff: 5 * time.Minute,
-		known: make(map[string]*peerSchedule),
+		known:   make(map[string]*peerSchedule),
+		pending: make(map[string]bool),
 	}
 }
 
@@ -48,8 +50,11 @@ func (d *Discovery) Handler() http.Handler { return NewHandler(d.receiveInbound)
 // in the address book and never prevent the proxy from serving.
 func (d *Discovery) Run(ctx context.Context) {
 	type result struct {
-		address string
-		err     error
+		address      string
+		message      Message
+		before       bookView
+		err          error
+		verification bool
 	}
 	results := make(chan result, exchangeConcurrency)
 	var requests sync.WaitGroup
@@ -58,39 +63,48 @@ func (d *Discovery) Run(ctx context.Context) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	active := 0
+	verifying := 0
 	for ctx.Err() == nil {
 		d.mu.Lock()
 		now := time.Now()
-		snapshot := d.book.Snapshot()
+		snapshot, before := d.book.observe()
 		wait := d.interval
-		for _, address := range snapshot.Peers {
-			if d.known[address] == nil {
-				d.known[address] = &peerSchedule{}
-			}
-		}
+		addresses := d.destinations(before, now)
 		// Oldest due first keeps slow or failing peers from starving addresses
 		// later in the book. Untried addresses have the earliest possible time.
-		sort.SliceStable(snapshot.Peers, func(i, j int) bool {
-			return d.known[snapshot.Peers[i]].next.Before(d.known[snapshot.Peers[j]].next)
+		sort.SliceStable(addresses, func(i, j int) bool {
+			return d.known[addresses[i]].next.Before(d.known[addresses[j]].next)
 		})
-		for _, address := range snapshot.Peers {
+		for _, address := range addresses {
 			entry := d.known[address]
 			if entry.running {
+				continue
+			}
+			_, retained := before.peers[address]
+			verification := !retained
+			// Unverified hints cannot monopolize all slots and starve regular
+			// discovery, even when their deadlines precede every known peer.
+			if verification && verifying >= exchangeConcurrency/2 {
 				continue
 			}
 			if !entry.next.After(now) && active < exchangeConcurrency {
 				entry.running = true
 				active++
+				if verification {
+					verifying++
+				}
 				requests.Add(1)
 				go func() {
 					defer requests.Done()
 					message, err := Exchange(ctx, d.client, address, snapshot)
-					if err == nil && ctx.Err() == nil {
-						_, err = d.receive(message)
-					}
-					results <- result{address, err}
+					results <- result{address: address, message: message, before: before, err: err, verification: verification}
 				}()
 			} else if remaining := entry.next.Sub(now); remaining > 0 && remaining < wait {
+				wait = remaining
+			}
+		}
+		for address, pending := range d.pending {
+			if remaining := d.known[address].next.Sub(now); !pending && remaining > 0 && remaining < wait {
 				wait = remaining
 			}
 		}
@@ -103,10 +117,23 @@ func (d *Discovery) Run(ctx context.Context) {
 		case <-timer.C:
 		case result := <-results:
 			active--
+			if result.verification {
+				verifying--
+			}
 			d.mu.Lock()
 			entry := d.known[result.address]
 			entry.running = false
+			if result.err == nil && ctx.Err() == nil {
+				_, result.err = d.receive(result.message, result.address, &result.before)
+			}
 			if result.err != nil {
+				// Failed hints retain backoff but release their queue slots after
+				// it expires. Only fresh gossip requests another verification.
+				if _, pending := d.pending[result.address]; pending {
+					d.pending[result.address] = false
+				}
+			}
+			if result.err != nil && !errors.Is(result.err, errStaleObservation) {
 				if entry.failures == 0 {
 					d.logger.Warn("peer exchange unavailable", "peer", result.address)
 				}
@@ -129,8 +156,8 @@ func (d *Discovery) receiveInbound(message Message) (Message, error) {
 	// Do not let Run schedule a newly merged sender before its cooldown is set.
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	response, err := d.receive(message)
-	if err == nil && slices.Contains(response.Peers, message.Address) {
+	response, err := d.receive(message, "", nil)
+	if err == nil && response.Peers[message.Address] == message.NodeID {
 		entry := d.known[message.Address]
 		if entry == nil {
 			entry = &peerSchedule{}
@@ -143,20 +170,84 @@ func (d *Discovery) receiveInbound(message Message) (Message, error) {
 	return response, err
 }
 
-func (d *Discovery) receive(message Message) (Message, error) {
-	rejected, err := d.book.Merge(message)
+// receive requires mu. Network verification is queued, never performed while
+// holding the scheduler or book locks or while serving an inbound exchange.
+func (d *Discovery) receive(message Message, destination string, before *bookView) (Message, error) {
+	result, err := d.book.merge(message, destination, before)
 	if err != nil {
-		d.logger.Error("peer address book update failed")
+		if errors.Is(err, errIdentityCollision) {
+			d.logger.Warn("peer identity collision", "peer", message.Address)
+		} else if !errors.Is(err, errStaleObservation) {
+			d.logger.Error("peer address book update failed")
+		}
 		return Message{}, err
 	}
-	if rejected != 0 {
-		d.logger.Warn("peer address book full", "rejected", rejected, "limit", MaxPeers)
+	response, view := d.book.observe()
+	d.prune(view, time.Now())
+	for _, address := range []string{destination, message.Address} {
+		if _, exists := d.pending[address]; exists {
+			d.pending[address] = false
+		}
+	}
+	if result.Rejected != 0 {
+		d.logger.Warn("peer address book full", "rejected", result.Rejected, "limit", MaxPeers)
+	}
+	dropped := 0
+	for _, address := range result.Verify {
+		if _, exists := d.pending[address]; !exists && len(d.pending) == MaxPeers {
+			dropped++
+			continue
+		}
+		d.pending[address] = true
+		if d.known[address] == nil {
+			d.known[address] = &peerSchedule{}
+		}
+	}
+	if dropped != 0 {
+		d.logger.Warn("peer verification queue full", "rejected", dropped, "limit", MaxPeers)
 	}
 	select {
 	case d.wake <- struct{}{}:
 	default:
 	}
-	return d.book.Snapshot(), nil
+	return response, nil
+}
+
+// destinations requires mu. Pending verifications share scheduling and backoff
+// with regular discovery. Completed probes retain a cooldown until expiry so
+// repeated stale gossip cannot create a tight loop. Removed peers are pruned
+// only after their in-flight requests have returned.
+func (d *Discovery) destinations(view bookView, now time.Time) []string {
+	d.prune(view, now)
+	addresses := sortedAddresses(view.peers)
+	for address, pending := range d.pending {
+		if _, retained := view.peers[address]; pending && !retained {
+			addresses = append(addresses, address)
+		}
+	}
+	sort.Strings(addresses)
+	for _, address := range addresses {
+		if d.known[address] == nil {
+			d.known[address] = &peerSchedule{}
+		}
+	}
+	return addresses
+}
+
+func (d *Discovery) prune(view bookView, now time.Time) {
+	for address, pending := range d.pending {
+		entry := d.known[address]
+		if !pending && !entry.running && !entry.next.After(now) {
+			delete(d.pending, address)
+		}
+	}
+	for address, entry := range d.known {
+		_, retained := view.peers[address]
+		_, verifying := d.pending[address]
+		if !retained && !verifying && !entry.running {
+			delete(d.known, address)
+		}
+	}
 }
 
 // deferExchange requires mu. Neither direction may shorten an existing delay.

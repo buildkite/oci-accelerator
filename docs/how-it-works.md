@@ -63,16 +63,24 @@ the public CA certificate alone does not grant access. Because each instance hol
 the shared signing key, authentication establishes fleet membership rather than
 independently trusted node identities.
 
-Instances exchange their advertised address and complete known-address list,
-merge newly learned addresses, and contact those addresses directly. For example,
-if A knows B and B knows C, A learns C through B and then contacts C itself.
+Each instance persists a random 12-character node ID across restarts and address
+changes. Instances exchange their advertised address, node ID, and known
+address-to-ID mappings. They trust a sender's own mapping, replacing its old
+address when it moves. Third-party claims that conflict with a stored address
+or ID are verified by contacting the claimed address before replacement. The
+responder's actual ID and advertised address win, not the gossip or contacted
+alias. Failed verification leaves the book unchanged, and late responses cannot
+undo intervening binding changes. For example, if A knows B and B knows C,
+A learns C through B and then contacts C itself.
 An inbound exchange that merges successfully postpones the next outbound request
 to its sender by the normal jittered interval, avoiding an immediate reverse
 exchange. It does not shorten existing backoff or defer contact with third-party
 addresses learned through that exchange. Requests already in flight can cross.
-The address book survives restarts and retains unreachable peers, with a limit
-of 1,024 addresses per instance. Retries use backoff, and peer outages do not
-affect proxy readiness or image pulls.
+The address book survives restarts and retains unreachable peers unless their
+mapping is replaced, with a limit of 1,024 addresses per instance. Seeds without
+known IDs stay local discovery candidates. Verification shares discovery's four
+outbound slots and has a bounded, deduplicated queue. Retries use backoff, and
+peer outages do not affect proxy readiness or image pulls.
 
 Peer destinations are unrestricted, unlike intercepted-registry egress. The
 protocol never shares cache keys, content, credentials, or authorization grants.

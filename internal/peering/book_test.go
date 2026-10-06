@@ -16,10 +16,12 @@ func TestBookMergePersistsCanonicalUnion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rejected, err := b.Merge(Message{Address: "B.TEST:2", Peers: []string{"a.test:1", "SELF.TEST:443", "A.TEST.:01"}}); err != nil || rejected != 0 {
-		t.Fatalf("Merge = %d, %v", rejected, err)
+	self := b.Snapshot().NodeID
+	result, err := b.Merge(Message{Address: "B.TEST:2", NodeID: testNodeID(2), Peers: map[string]string{"A.TEST.:01": testNodeID(1), "SELF.TEST:443": self}})
+	if err != nil || result.Rejected != 0 || len(result.Verify) != 0 {
+		t.Fatalf("Merge = %+v, %v", result, err)
 	}
-	want := Message{Address: "self.test:443", Peers: []string{"a.test:1", "b.test:2"}}
+	want := Message{Address: "self.test:443", NodeID: self, Peers: map[string]string{"a.test:1": testNodeID(1), "b.test:2": testNodeID(2)}}
 	if got := b.Snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Snapshot = %#v, want %#v", got, want)
 	}
@@ -42,7 +44,8 @@ func TestBookReopenWithNewSelfAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Merge(Message{Address: "new-self.test:1", Peers: []string{"other.test:2"}}); err != nil {
+	self := b.Snapshot().NodeID
+	if _, err := b.Merge(Message{Address: "new-self.test:1", NodeID: testNodeID(1), Peers: map[string]string{"other.test:2": testNodeID(2)}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Close(); err != nil {
@@ -53,8 +56,9 @@ func TestBookReopenWithNewSelfAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if got := b.Snapshot(); got.Address != "new-self.test:1" || !reflect.DeepEqual(got.Peers, []string{"other.test:2"}) {
-		t.Fatalf("reopened address book = %+v", got)
+	want := Message{Address: "new-self.test:1", NodeID: self, Peers: map[string]string{"other.test:2": testNodeID(2)}}
+	if got := b.Snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("reopened address book = %#v, want %#v", got, want)
 	}
 }
 
@@ -70,7 +74,7 @@ func TestBookConcurrentMergesUnion(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			address := fmt.Sprintf("peer-%02d.test:1", i)
-			if _, err := b.Merge(Message{Address: address}); err != nil {
+			if _, err := b.Merge(Message{Address: address, NodeID: testNodeID(i)}); err != nil {
 				t.Errorf("Merge: %v", err)
 			}
 		}()
@@ -87,20 +91,25 @@ func TestBookCapPreservesExistingAndCountsUniqueRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	peers := make([]string, MaxPeers-1)
-	for i := range peers {
-		peers[i] = fmt.Sprintf("p%04d.test:1", i)
+	peers := make(map[string]string, MaxPeers-1)
+	for i := range MaxPeers - 1 {
+		peers[fmt.Sprintf("p%04d.test:1", i)] = testNodeID(i)
 	}
-	if _, err := b.Merge(Message{Address: "first.test:1", Peers: peers}); err != nil {
-		t.Fatal(err)
+	first := testNodeID(MaxPeers)
+	if result, err := b.Merge(Message{Address: "first.test:1", NodeID: first, Peers: peers}); err != nil || result.Rejected != 0 {
+		t.Fatalf("filling Merge = %+v, %v", result, err)
 	}
-	rejected, err := b.Merge(Message{Address: "new-a.test:1", Peers: []string{"new-b.test:1", "NEW-B.TEST:1", "p0000.test:1"}})
-	if err != nil || rejected != 2 {
-		t.Fatalf("Merge = %d, %v", rejected, err)
+	result, err := b.Merge(Message{Address: "new-a.test:1", NodeID: testNodeID(MaxPeers + 1), Peers: map[string]string{"new-b.test:1": testNodeID(MaxPeers + 2), "p0000.test:1": testNodeID(0)}})
+	if err != nil || result.Rejected != 2 {
+		t.Fatalf("Merge = %+v, %v", result, err)
+	}
+	rejected, err := b.AddSeeds([]string{"new-c.test:1", "NEW-C.TEST.:1", "p0001.test:1"})
+	if err != nil || rejected != 1 {
+		t.Fatalf("AddSeeds = %d, %v", rejected, err)
 	}
 	got := b.Snapshot().Peers
-	if len(got) != MaxPeers || got[0] != "first.test:1" {
-		t.Fatalf("existing peers changed, count %d first %q", len(got), got[0])
+	if len(got) != MaxPeers || got["first.test:1"] != first || len(b.Addresses()) != MaxPeers {
+		t.Fatalf("existing peers changed, count %d first %q", len(got), got["first.test:1"])
 	}
 }
 
@@ -110,10 +119,10 @@ func TestBookInvalidMessageDoesNotMutate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if _, err := b.Merge(Message{Address: "good.test:1", Peers: []string{"bad"}}); err == nil {
+	if _, err := b.Merge(Message{Address: "good.test:1", NodeID: testNodeID(1), Peers: map[string]string{"bad": testNodeID(2)}}); err == nil {
 		t.Fatal("Merge succeeded")
 	}
-	if len(b.Snapshot().Peers) != 0 {
+	if len(b.Addresses()) != 0 {
 		t.Fatal("invalid merge mutated book")
 	}
 }
@@ -125,19 +134,19 @@ func TestBookFailedPersistencePreservesMemoryAndFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if _, err := b.Merge(Message{Address: "old.test:1"}); err != nil {
+	if _, err := b.Merge(Message{Address: "old.test:1", NodeID: testNodeID(1)}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(filepath.Join(dir, bookStateName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.write = func(string, []string) (bool, error) { return false, syscall.ENOSPC }
-	if _, err := b.Merge(Message{Address: "new.test:1"}); err == nil {
+	b.write = func(string, map[string]string) (bool, error) { return false, syscall.ENOSPC }
+	if _, err := b.Merge(Message{Address: "new.test:1", NodeID: testNodeID(2)}); err == nil {
 		t.Fatal("Merge succeeded")
 	}
 	after, _ := os.ReadFile(filepath.Join(dir, bookStateName))
-	if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(b.Snapshot().Peers, []string{"old.test:1"}) {
+	if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(b.Snapshot().Peers, map[string]string{"old.test:1": testNodeID(1)}) {
 		t.Fatal("failed persistence changed state")
 	}
 }
@@ -149,11 +158,11 @@ func TestBookDirectorySyncFailureRetainsPublishedPeersAndRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if _, err := b.Merge(Message{Address: "old.test:1"}); err != nil {
+	if _, err := b.Merge(Message{Address: "old.test:1", NodeID: testNodeID(1)}); err != nil {
 		t.Fatal(err)
 	}
 	syncCalls := 0
-	b.write = func(dir string, peers []string) (bool, error) {
+	b.write = func(dir string, peers map[string]string) (bool, error) {
 		return replaceBookState(dir, peers, func(dir string) error {
 			syncCalls++
 			if syncCalls == 1 {
@@ -162,11 +171,11 @@ func TestBookDirectorySyncFailureRetainsPublishedPeersAndRetries(t *testing.T) {
 			return syncBookDir(dir)
 		})
 	}
-	message := Message{Address: "new.test:1"}
+	message := Message{Address: "new.test:1", NodeID: testNodeID(2)}
 	if _, err := b.Merge(message); err == nil {
 		t.Fatal("acknowledged an exchange whose directory sync failed")
 	}
-	want := []string{"new.test:1", "old.test:1"}
+	want := map[string]string{"new.test:1": testNodeID(2), "old.test:1": testNodeID(1)}
 	if got := b.Snapshot().Peers; !reflect.DeepEqual(got, want) {
 		t.Fatalf("memory lost published peers: %v", got)
 	}
@@ -190,7 +199,7 @@ func TestBookClosePreventsMergeAndReleasesLock(t *testing.T) {
 	if err := b.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Merge(Message{Address: "peer.test:1"}); err == nil {
+	if _, err := b.Merge(Message{Address: "peer.test:1", NodeID: testNodeID(1)}); err == nil {
 		t.Fatal("Merge after Close succeeded")
 	}
 	reopened, err := OpenBook(dir, "self.test:1")
@@ -198,13 +207,4 @@ func TestBookClosePreventsMergeAndReleasesLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened.Close()
-}
-
-func bookTestDir(t *testing.T) string {
-	t.Helper()
-	parent := t.TempDir()
-	if err := os.Chmod(parent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return filepath.Join(parent, "book")
 }

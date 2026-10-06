@@ -3,6 +3,7 @@ package peering
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -19,12 +20,17 @@ func TestOpenBookValidatesSelfBeforeFilesystem(t *testing.T) {
 
 func TestOpenBookRejectsInvalidState(t *testing.T) {
 	tests := map[string]string{
-		"corrupt":       `{`,
-		"version":       `{"version":2,"peers":[]}`,
-		"unknown field": `{"version":1,"peers":[],"extra":1}`,
-		"invalid peer":  `{"version":1,"peers":["bad"]}`,
-		"duplicate":     `{"version":1,"peers":["a.test:1","a.test:1"]}`,
-		"oversized":     strings.Repeat(" ", bookStateMax+1),
+		"corrupt":           `{`,
+		"version":           `{"version":3,"peers":{}}`,
+		"unknown field":     `{"version":2,"peers":{},"extra":1}`,
+		"invalid peer":      `{"version":2,"peers":{"bad":"000000000001"}}`,
+		"invalid node ID":   `{"version":2,"peers":{"a.test:1":"short"}}`,
+		"null node ID":      `{"version":2,"peers":{"a.test:1":null}}`,
+		"duplicate address": `{"version":2,"peers":{"a.test:1":"000000000001","a.test:1":"000000000002"}}`,
+		"duplicate node ID": `{"version":2,"peers":{"a.test:1":"000000000001","b.test:1":"000000000001"}}`,
+		"v1 invalid peer":   `{"version":1,"peers":["bad"]}`,
+		"v1 duplicate":      `{"version":1,"peers":["a.test:1","a.test:1"]}`,
+		"oversized":         strings.Repeat(" ", bookStateMax+1),
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -42,10 +48,31 @@ func TestOpenBookRejectsInvalidState(t *testing.T) {
 	}
 }
 
+func TestOpenBookMigratesVersion1AddressesToCandidates(t *testing.T) {
+	dir := bookTestDir(t)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":1,"peers":["a.test:1","b.test:2"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := OpenBook(dir, "self.test:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if got := b.Addresses(); !reflect.DeepEqual(got, []string{"a.test:1", "b.test:2"}) {
+		t.Fatalf("Addresses = %v", got)
+	}
+	if got := b.Snapshot().Peers; len(got) != 0 {
+		t.Fatalf("version 1 addresses exported with identities: %v", got)
+	}
+}
+
 func TestOpenBookRejectsUnsafeAndUnknownFiles(t *testing.T) {
 	for name, setup := range map[string]func(string) error{
 		"state permissions": func(dir string) error {
-			return os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":1,"peers":[]}`), 0o644)
+			return os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":2,"peers":{}}`), 0o644)
 		},
 		"state symlink": func(dir string) error { return os.Symlink("missing", filepath.Join(dir, bookStateName)) },
 		"unknown":       func(dir string) error { return os.WriteFile(filepath.Join(dir, "other"), nil, 0o600) },
@@ -90,7 +117,7 @@ func TestReplaceBookStateRenameFailureCleansStage(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, bookStateName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	published, err := writeBookState(dir, []string{"peer.test:1"})
+	published, err := writeBookState(dir, map[string]string{"peer.test:1": testNodeID(1)})
 	if err == nil || published {
 		t.Fatalf("rename over directory: published=%t, error=%v", published, err)
 	}
