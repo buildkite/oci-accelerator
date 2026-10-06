@@ -14,6 +14,19 @@ go test -race ./...
 go vet ./...
 ```
 
+Peer discovery uses local TLS and filesystem fixtures in the standard suite.
+They cover same-CA authentication, rejection of non-peer certificates, three-node
+convergence and direct contact with learned peers, retry recovery and fairness,
+restart retention, capacity limits, failed persistence, bounded connections, and
+shutdown. Run those checks alone with:
+
+```sh
+go test -race ./internal/ca ./internal/peering ./internal/config ./cmd/oci-accelerator
+```
+
+These tests do not require Docker or external peers. Peer persistence failure
+tests include injected errors and abandoned-file recovery, not power-loss testing.
+
 Platform notes:
 
 - Plain process-lifecycle tests run on Unix without requiring procfs.

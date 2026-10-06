@@ -55,6 +55,26 @@ intercepted registry, including redirects. Public hosts need no configuration,
 but a private or internal address is refused unless its host and port belong to
 a configured registry or are listed in `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`.
 
+### Peer discovery is separate from image delivery
+
+You can enable a separate TLS listener for instances sharing the same CA. Mutual
+TLS verifies dedicated peer certificates against that CA on both sides. Possessing
+the public CA certificate alone does not grant access. Because each instance holds
+the shared signing key, authentication establishes fleet membership rather than
+independently trusted node identities.
+
+Instances exchange their advertised address and complete known-address list,
+merge newly learned addresses, and contact those addresses directly. For example,
+if A knows B and B knows C, A learns C through B and then contacts C itself.
+The address book survives restarts and retains unreachable peers, with a limit
+of 1,024 addresses per instance. Retries use backoff, and peer outages do not
+affect proxy readiness or image pulls.
+
+Peer destinations are unrestricted, unlike intercepted-registry egress. The
+protocol never shares cache keys, content, credentials, or authorization grants.
+See [peer discovery](deployment.md#peer-discovery) for configuration, trust, and
+retention details.
+
 ### Play-by-play example
 
 This is `docker pull alpine:latest` on a Docker host with an empty image store,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
 func validate(raw rawConfig) (Config, error) {
@@ -31,6 +32,10 @@ func validate(raw rawConfig) (Config, error) {
 		if reason != "" {
 			return Config{}, invalid(reason, "METRICS_LISTEN")
 		}
+	}
+	peerConfig, err := validatePeer(raw.Peer, listen, metricsListen, raw.CADir, raw.Cache.Dir)
+	if err != nil {
+		return Config{}, err
 	}
 	for _, limit := range []struct {
 		setting string
@@ -110,6 +115,7 @@ func validate(raw rawConfig) (Config, error) {
 		RedirectAllowlist:     redirectAllowlist,
 		CADir:                 caDir,
 		Cache:                 raw.Cache,
+		Peer:                  peerConfig,
 		DialTimeout:           raw.DialTimeout,
 		TLSHandshakeTimeout:   raw.TLSHandshakeTimeout,
 		ResponseHeaderTimeout: raw.ResponseHeaderTimeout,
@@ -118,6 +124,83 @@ func validate(raw rawConfig) (Config, error) {
 		MaxConnections:        raw.MaxConnections,
 		MaxLeafCertificates:   raw.MaxLeafCertificates,
 	}, nil
+}
+
+func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string) (Peer, error) {
+	if raw.Listen == "" {
+		for _, setting := range []struct{ name, value string }{{"PEER_ADVERTISE", raw.Advertise}, {"PEER_STATE_DIR", raw.StateDir}} {
+			if setting.value != "" {
+				return Peer{}, invalid("must be empty when peer service is disabled", setting.name, "PEER_LISTEN")
+			}
+		}
+		if len(raw.Seeds) != 0 {
+			return Peer{}, invalid("must be empty when peer service is disabled", "PEER_SEEDS", "PEER_LISTEN")
+		}
+		return Peer{}, nil
+	}
+	listen, reason := canonicalBindAddress(raw.Listen, false)
+	if reason != "" {
+		return Peer{}, invalid(reason, "PEER_LISTEN")
+	}
+	if listen == proxyListen || listen == metricsListen {
+		return Peer{}, invalid("must not equal another listener", "PEER_LISTEN")
+	}
+	if raw.Advertise == "" {
+		return Peer{}, invalid("must be set when peer service is enabled", "PEER_ADVERTISE")
+	}
+	advertise, err := peering.CanonicalAddress(raw.Advertise)
+	if err != nil {
+		return Peer{}, invalid("must be an explicit usable host:port address", "PEER_ADVERTISE")
+	}
+	if raw.StateDir == "" {
+		return Peer{}, invalid("must be set when peer service is enabled", "PEER_STATE_DIR")
+	}
+	if err := validatePath("PEER_STATE_DIR", raw.StateDir); err != nil {
+		return Peer{}, err
+	}
+	stateDir, err := filepath.Abs(raw.StateDir)
+	if err != nil {
+		return Peer{}, invalid("cannot resolve directory path", "PEER_STATE_DIR")
+	}
+	for _, owned := range []struct{ name, path string }{{"CA_DIR", caPath}, {"CACHE_DIR", cachePath}} {
+		absolute, absErr := filepath.Abs(owned.path)
+		if absErr != nil {
+			return Peer{}, invalid("cannot resolve directory path", owned.name)
+		}
+		if pathsOverlap(stateDir, absolute) {
+			return Peer{}, invalid("directory paths must not equal or contain one another", "PEER_STATE_DIR", owned.name)
+		}
+	}
+	seen := make(map[string]struct{}, len(raw.Seeds))
+	seeds := make([]string, 0, len(raw.Seeds))
+	for _, seed := range raw.Seeds {
+		canonical, canonicalErr := peering.CanonicalAddress(seed)
+		if canonicalErr != nil {
+			return Peer{}, invalid("must contain explicit usable host:port addresses", "PEER_SEEDS")
+		}
+		if canonical == advertise {
+			continue
+		}
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		seeds = append(seeds, canonical)
+	}
+	if len(seeds) > peering.MaxPeers {
+		return Peer{}, invalid("must contain at most 1024 unique addresses", "PEER_SEEDS")
+	}
+	return Peer{Listen: listen, Advertise: advertise, Seeds: seeds, StateDir: stateDir}, nil
+}
+
+func pathsOverlap(a, b string) bool {
+	for _, pair := range [][2]string{{a, b}, {b, a}} {
+		relative, err := filepath.Rel(pair[0], pair[1])
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // invalid reports reason against the named settings, given without the
