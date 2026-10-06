@@ -805,8 +805,9 @@ docker compose up -d
 
 ## Peer discovery
 
-Peering exchanges addresses only. It does not share cache keys, cached content, registry
-credentials, or authorization grants. Image pulls and readiness do not depend on reachable peers.
+Peering exchanges addresses and [cache availability](#cache-availability) metadata. It does
+not share cached content, registry credentials, or authorization grants. Image pulls and
+readiness do not depend on reachable peers.
 
 Provision the same `ca.crt` and `ca.key` into each instance's private CA directory through your
 trusted deployment system. Use separate local state directories or volumes for each instance,
@@ -898,6 +899,84 @@ the replaced state and retries persistence before acknowledging another exchange
 A peer-listener failure stops the process rather than leaving an
 enabled service silently unavailable. Outage and recovery logs include the peer address but no
 raw network errors or credentials.
+
+### Cache availability
+
+Cache availability is enabled automatically with peering and has no separate settings. Each
+instance pushes metadata claims about its cache entries to peers with HTTPS
+`POST /v1/cache/availability` on the peer listener, using the same fleet mutual TLS, connection
+limits, and five-second inbound deadlines as discovery. Address exchange is unchanged. Image
+pulls do not consult the resulting directory, and it does not affect readiness.
+
+A request carries the sender's advertised address and up to 512 claims, within the 512 KiB body
+limit. The receiver replies `204 No Content` after merging the whole batch:
+
+```json
+{
+  "sender": "accelerator-b.example:7443",
+  "claims": [
+    {
+      "owner": "accelerator-a.example:7443",
+      "session": "3f9c0d2e8b7a41c6a5d4e3f2a1b0c9d8",
+      "key": "9b2f4c6e8a0d1f3b5c7e9a1d3f5b7c9e1a3d5f7b9c1e3a5d7f9b1c3e5a7d9f1b",
+      "revision": 42,
+      "present": true,
+      "expires": 1791295200000,
+      "seen": ["accelerator-a.example:7443", "accelerator-b.example:7443"]
+    }
+  ]
+}
+```
+
+- `owner` is the advertised address of the instance that holds or withdrew the entry, and
+  `session` is 32 random hex characters chosen at process start. The session is not a stable
+  identity and is not persisted.
+- `key` is the 64-hex [cache entry key](how-it-works.md#entries). `present` is `false` for a
+  withdrawal. `revision` increases with each change from that owner session.
+- `expires` is an absolute Unix time in milliseconds that relays preserve. Receivers reject
+  claims expiring more than 10 minutes plus 30 seconds in the future, so keep instance clocks
+  within 30 seconds of each other.
+- `seen` is a sorted, unique list of up to 1,025 addresses that already hold this revision. It
+  must include the owner and the sender.
+
+**Timing.** Each instance claims an initial snapshot of its cache at startup, then batches cache
+changes in rounds of about one second with ±20% jitter. Each round sends to at most four peers,
+rotating through the address book. Requests have a five-second deadline. Only a `204` response
+marks the destination as seen. Any other outcome is retried with exponential backoff capped at
+five minutes, tracked separately from discovery. Every two minutes the owner renews positive
+claims with a new revision, which resets `seen`, and a lease of 10 minutes. An instance stops
+sending a revision once every peer in its current address book has seen it.
+
+**Receiver limits.** Received claims are held only in memory. Each instance retains at most
+200,000 records within an approximate 64 MiB budget that counts claims and their `seen` lists.
+At capacity, new records are refused rather than evicting unexpired ones, so the directory can be
+partial. The receiver answers `503`, and the sender logs `cache availability peer unavailable`
+and retries later. The same limits apply to an instance's own claims, with a
+`cache availability capacity reached` warning when local entries cannot fit. Large `seen` lists
+can exhaust the byte budget well before the record limit. If a record's `seen` list cannot grow,
+the instance keeps the record but stops relaying it, rather than resend to destinations it could
+not remember. A withdrawal that cannot
+be stored or relayed leaves the earlier positive claim in place until it expires, so withdrawals
+can lag by up to 10 minutes plus clock skew under capacity pressure. A full 1,025-address
+`seen` list also stops relaying, even if the current book contains additional unseen addresses.
+
+**Restarts and address changes.** A restarted instance uses a new session. Claims from its
+previous process are not overridden and can survive for up to 10 minutes. After an address
+change, claims under the old address stop being renewed and expire. Entries awaiting their first
+rehash after startup are claimed, and an entry found corrupt on read is withdrawn.
+
+**Mixed versions.** Instances without this feature reject the new endpoint. The sender logs
+`cache availability peer unavailable` and backs off, while address discovery continues to work
+in both directions.
+
+**Trust and privacy.** Claims are advisory statements trusted at the fleet level. Any holder of
+the shared CA key can forge claims for any address, and claims are never authorization. Claims
+can reveal cache usage: anyone who can compute the key for a known image and read claims can
+tell which instances hold it. Restrict peer network access accordingly. No credentials, grants,
+or content are exchanged.
+
+**Convergence.** Delivery is best effort. There is no guarantee that every instance learns every
+claim in large fleets, with large caches, or under sustained churn.
 
 ## Monitoring
 
@@ -1034,9 +1113,10 @@ A stuck handler can therefore delay exit. A second signal uses the operating sys
 termination behavior. For containers, keep the stop grace period longer than
 `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` (see [Compose](#compose)).
 
-When peering is enabled, outbound exchanges are cancelled on shutdown. Peer cleanup drains
-inbound exchanges with its own `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` window and joins remaining
-handlers before releasing the state lock. Allow time for both proxy and peer drain windows,
+When peering is enabled, outbound exchanges and availability pushes are cancelled on shutdown.
+Peer cleanup drains inbound exchanges and availability pushes with its own
+`OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` window and joins remaining handlers before releasing the
+state lock. Allow time for both proxy and peer drain windows,
 plus metrics cleanup, in your container stop grace period. Filesystem stalls can delay exit.
 
 ### What survives a restart
@@ -1052,6 +1132,7 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 | Metrics counters         | Reset                                                               |
 | Known peers              | Retained in `OCI_ACCELERATOR_PEER_STATE_DIR` when peering is enabled |
 | Peer reachability and leaf keys | Re-established, not persisted                                |
+| Cache availability claims | Memory only. Rebuilt under a new session from the cache and peers |
 
 ## Troubleshooting
 
@@ -1076,8 +1157,9 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 
 - Redirect restrictions protect proxy-originated fetches only. They do not constrain the broader
   egress available through opaque CONNECT tunnels, so deployment network controls remain essential.
-- No shared or distributed cache storage, cache-key exchange, or background prefetch.
-  Peer discovery shares addresses only.
+- No shared or distributed cache storage, peer content fetching, or background prefetch.
+  Peering shares addresses and [cache availability](#cache-availability) metadata only, and
+  image pulls do not use that metadata.
 - No Kubernetes manifests, and no automated container runtime acceptance in CI.
 - Fault tests exercise process termination and private tmpfs exhaustion, not power loss or
   faulty-device certification. See the [testing guide](testing.md).

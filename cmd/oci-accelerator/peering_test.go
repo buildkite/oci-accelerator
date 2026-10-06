@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ import (
 func TestStartPeeringDisabledHasNoSideEffects(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "peer")
 	called := false
-	done, cleanup, err := startPeering(context.Background(), config.Config{Peer: config.Peer{StateDir: dir}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), func(string, string) (net.Listener, error) {
+	done, cleanup, err := startPeering(context.Background(), config.Config{Peer: config.Peer{StateDir: dir}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, func(string, string) (net.Listener, error) {
 		called = true
 		return nil, errors.New("unexpected listen")
 	})
@@ -42,7 +43,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	listener := newTestListener(t)
 	state := filepath.Join(root, "peer")
 	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state}, ShutdownTimeout: 100 * time.Millisecond}
-	done, cleanup, err := startPeering(context.Background(), cfg, signer, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
+	done, cleanup, err := startPeering(context.Background(), cfg, signer, slog.New(slog.NewTextHandler(io.Discard, nil)), openPeerTestStore(t), listenForTest(listener))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,9 +63,10 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 		t.Fatalf("authenticated exchange = %#v, %v, want %#v", got, err, want)
 	}
 
-	post := func(client *http.Client, address string) error {
+	// Both peer endpoints share the listener's fleet client authentication.
+	post := func(client *http.Client, path, body string) error {
 		defer client.CloseIdleConnections()
-		req, err := http.NewRequest(http.MethodPost, "https://"+listener.Addr().String()+"/v1/peers/exchange", strings.NewReader(fmt.Sprintf(`{"address":%q,"peers":[]}`, address)))
+		req, err := http.NewRequest(http.MethodPost, "https://"+listener.Addr().String()+path, strings.NewReader(body))
 		if err != nil {
 			return err
 		}
@@ -72,23 +74,29 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 		resp, err := client.Do(req)
 		if err == nil {
 			resp.Body.Close()
-			return fmt.Errorf("request unexpectedly reached HTTP with status %d", resp.StatusCode)
+			return fmt.Errorf("%s request unexpectedly reached HTTP with status %d", path, resp.StatusCode)
 		}
 		return nil
 	}
 	unauthTLS := clientTLS.Clone()
 	unauthTLS.GetClientCertificate = nil
-	if err := post(peering.NewClient(unauthTLS), "unauth.test:7443"); err != nil {
-		t.Fatal(err)
-	}
 	foreign := openPeerTestCA(t, filepath.Join(root, "foreign-ca"))
 	_, foreignTLS, err := foreign.PeerTLSConfigs()
 	if err != nil {
 		t.Fatal(err)
 	}
 	foreignTLS.RootCAs = clientTLS.RootCAs
-	if err := post(peering.NewClient(foreignTLS), "foreign.test:7443"); err != nil {
-		t.Fatal(err)
+	for name, tlsConfig := range map[string]*tls.Config{"unauth": unauthTLS, "foreign": foreignTLS} {
+		address := name + ".test:7443"
+		requests := map[string]string{
+			"/v1/peers/exchange":     fmt.Sprintf(`{"address":%q,"peers":[]}`, address),
+			"/v1/cache/availability": availabilityTestBody(t, address, address, strings.Repeat("a", 64)),
+		}
+		for path, body := range requests {
+			if err := post(peering.NewClient(tlsConfig), path, body); err != nil {
+				t.Fatalf("%s client: %v", name, err)
+			}
+		}
 	}
 
 	if err := cleanup(); err != nil {
@@ -114,7 +122,7 @@ func TestStartPeeringFailuresReleaseState(t *testing.T) {
 	root := t.TempDir()
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	base := config.Config{Peer: config.Peer{Listen: "127.0.0.1:1", Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: time.Second}
-	_, _, err := startPeering(context.Background(), base, signer, slog.Default(), func(string, string) (net.Listener, error) { return nil, errors.New("private bind") })
+	_, _, err := startPeering(context.Background(), base, signer, slog.Default(), nil, func(string, string) (net.Listener, error) { return nil, errors.New("private bind") })
 	if err == nil || err.Error() != "cannot listen on configured peer address" {
 		t.Fatalf("bind error = %v", err)
 	}
@@ -129,7 +137,7 @@ func TestStartPeeringFailuresReleaseState(t *testing.T) {
 	if err := os.WriteFile(bad.Peer.StateDir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := startPeering(context.Background(), bad, signer, slog.Default(), net.Listen); err == nil || err.Error() != "peer state startup failed" {
+	if _, _, err := startPeering(context.Background(), bad, signer, slog.Default(), nil, net.Listen); err == nil || err.Error() != "peer state startup failed" {
 		t.Fatalf("state error = %v", err)
 	}
 }
@@ -142,7 +150,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		failure := make(chan struct{})
 		listener := &faultListener{Listener: socket, accepting: make(chan struct{}), fail: failure, acceptErr: errors.New("private address")}
 		cfg := config.Config{Peer: config.Peer{Listen: socket.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: time.Second}
-		done, cleanup, err := startPeering(context.Background(), cfg, signer, slog.Default(), listenForTest(listener))
+		done, cleanup, err := startPeering(context.Background(), cfg, signer, slog.Default(), openPeerTestStore(t), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -167,7 +175,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 		listener := newTestListener(t)
 		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: 10 * time.Millisecond}
-		_, cleanup, err := startPeering(context.Background(), cfg, signer, slog.Default(), listenForTest(listener))
+		_, cleanup, err := startPeering(context.Background(), cfg, signer, slog.Default(), openPeerTestStore(t), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}

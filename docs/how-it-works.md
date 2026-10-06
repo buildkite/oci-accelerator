@@ -74,10 +74,48 @@ The address book survives restarts and retains unreachable peers, with a limit
 of 1,024 addresses per instance. Retries use backoff, and peer outages do not
 affect proxy readiness or image pulls.
 
-Peer destinations are unrestricted, unlike intercepted-registry egress. The
-protocol never shares cache keys, content, credentials, or authorization grants.
+Peer destinations are unrestricted, unlike intercepted-registry egress. Address
+exchange never shares cache keys, content, credentials, or authorization grants.
 See [peer discovery](deployment.md#peer-discovery) for configuration, trust, and
 retention details.
+
+### Cache availability hints
+
+When peering is enabled, each instance also announces which cache keys it holds,
+using a separate `POST /v1/cache/availability` endpoint on the same mutually
+authenticated listener. This builds an approximate, in-memory directory of which
+peer addresses probably have which entries. It is metadata only. Instances never
+fetch content from each other, and the directory does not change readiness, image
+pulls, or upstream authorization.
+
+Each announcement, called a claim, belongs to the owner's advertised address and a
+random session chosen at process start. The session separates process lifetimes.
+It is not a stable node identity. A claim says that the owner holds or no longer
+holds one key, and carries a revision number and an absolute expiry time.
+
+- **Initial snapshot, then changes.** At startup the instance claims committed
+  cache entries within the directory's limits, including entries that will be rehashed on first reuse.
+  Later publications, evictions, and entries found corrupt on read produce new
+  positive claims or withdrawals.
+- **Leases.** Positive claims are renewed every two minutes with a new revision
+  and a 10-minute lease. Withdrawals are kept at least until the lease of the positive
+  claim they replace has expired, so a delayed positive cannot bring an entry back.
+- **Relaying.** Receivers store claims and forward them unchanged, except that
+  each claim carries a `seen` list of addresses that already hold that revision.
+  An instance sends a claim only to peers missing from that list, and adds a peer
+  after that peer acknowledges it. Once every peer in its address book has seen a
+  revision, it stops sending that revision. A new revision starts a new `seen` list.
+- **Self-claims are local.** An instance ignores claims about its own address from
+  peers, so only its own inventory can advertise its keys.
+
+For example, if A fills a layer, A sends a claim to B with `seen` set to A. B
+adds itself and forwards the claim to C with `seen` set to A and B. C then knows
+that A probably holds the layer, and never sends that revision back to A or B.
+
+The directory is a hint, not a guarantee. A listed peer may have evicted the
+entry, may be unreachable, or may have restarted. See
+[cache availability](deployment.md#cache-availability) for timing, limits, and
+trust details.
 
 ### Play-by-play example
 

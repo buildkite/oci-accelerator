@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	testSelf  = "self.test:1"
 	testOwner = "owner.test:1"
 	testPeerA = "a.test:1"
 	testPeerB = "b.test:1"
@@ -662,21 +661,8 @@ func testAddresses(n int, required ...string) []string {
 	return addresses
 }
 
-func testKey(i int) string     { return fmt.Sprintf("%064x", i) }
 func testSession(i int) string { return fmt.Sprintf("%032x", i) }
 
 func claimEqual(a, b Claim) bool {
 	return fieldsOf(a) == fieldsOf(b) && slices.Equal(a.Seen, b.Seen)
-}
-
-// claimFields is Claim without Seen, so claims can be compared with ==.
-type claimFields struct {
-	Owner, Session, Key string
-	Revision            uint64
-	Present             bool
-	Expires             int64
-}
-
-func fieldsOf(c Claim) claimFields {
-	return claimFields{c.Owner, c.Session, c.Key, c.Revision, c.Present, c.Expires}
 }

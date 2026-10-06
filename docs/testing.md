@@ -18,10 +18,13 @@ Peer discovery uses local TLS and filesystem fixtures in the standard suite.
 They cover same-CA authentication, rejection of non-peer certificates, three-node
 convergence and direct contact with learned peers, inbound exchange cooldowns,
 retry recovery and fairness, restart retention, capacity limits, failed persistence,
-bounded connections, and shutdown. Run those checks alone with:
+bounded connections, and shutdown. Cache availability tests cover claim validation, `seen`
+filtering and acknowledgement, revision and withdrawal ordering, session coexistence, record and
+memory limits, bounded batches, expiry, the push endpoint and client, rejection of non-peer
+clients on the shared listener, and cache change notifications. Run those checks alone with:
 
 ```sh
-go test -race ./internal/ca ./internal/peering ./internal/config ./cmd/oci-accelerator
+go test -race ./internal/ca ./internal/peering ./internal/cache ./internal/config ./cmd/oci-accelerator
 ```
 
 These tests do not require Docker or external peers. Peer persistence failure
