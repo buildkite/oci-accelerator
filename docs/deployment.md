@@ -343,11 +343,13 @@ dotenv file are rejected.
 An unset variable retains the file value or default. A present empty variable is an explicit
 value. It disables `OCI_ACCELERATOR_METRICS_LISTEN` and clears
 `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`. Empty `OCI_ACCELERATOR_PEER_LISTEN` disables peering,
-provided the other peer settings are also empty. An empty `OCI_ACCELERATOR_PEER_SEEDS` is
-valid even when peering is enabled. Other empty values fail validation, including required
-registries and paths. `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`
-are comma-separated authority lists. Entries are whitespace-trimmed, the
-whole list replaces the file value, and empty members are rejected.
+provided `OCI_ACCELERATOR_PEER_ADVERTISE`, `OCI_ACCELERATOR_PEER_SEEDS`, and
+`OCI_ACCELERATOR_PEER_STATE_DIR` are also empty. Disabled peering ignores
+`OCI_ACCELERATOR_PEER_HINT_CHECKPOINT_INTERVAL`, which must still be valid. An empty
+`OCI_ACCELERATOR_PEER_SEEDS` is valid even when peering is enabled. Other empty values fail
+validation, including required registries and paths. `OCI_ACCELERATOR_REGISTRIES` and
+`OCI_ACCELERATOR_REDIRECT_ALLOWLIST` are comma-separated authority lists. Entries are
+whitespace-trimmed, the whole list replaces the file value, and empty members are rejected.
 
 Use exactly `true` or `false` for booleans, decimal integers without a sign or leading zeros
 for numbers, and Go duration strings such as `500ms`, `30s`, or `2m` for durations. Relative
@@ -420,6 +422,7 @@ You can configure private registries explicitly.
 | `OCI_ACCELERATOR_PEER_ADVERTISE` | Empty | Required reachable host:port when peering is enabled |
 | `OCI_ACCELERATOR_PEER_SEEDS` | Empty | Optional comma-separated host:port bootstrap addresses |
 | `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled |
+| `OCI_ACCELERATOR_PEER_HINT_CHECKPOINT_INTERVAL` | `30s` | Minimum spacing between [provider hint checkpoints](#persisted-hints), at least `1s` |
 
 **Registries and state**
 
@@ -1032,13 +1035,16 @@ instance's node ID and every retained hint in FIFO order: its provider, key, `se
 suppression, and whether its forwarding pass is pending, with the acknowledged destinations and
 attempts left. You may read it, but do not edit live state.
 
-- While hints change, a background checkpoint runs every 30 seconds, even under continuous
-  changes, so a busy instance rewrites the whole file at most that often. Duplicates that add
-  nothing do not count as changes. A checkpoint briefly copies the retained hints, about
-  150 bytes each, before writing them without holding the lock. Shutdown writes a final
-  checkpoint after announcements and handlers stop and before the state lock is released.
-  Each write streams to a private staging file, syncs it, renames it into place, and syncs the
-  directory.
+- While hints change, a background checkpoint runs every
+  `OCI_ACCELERATOR_PEER_HINT_CHECKPOINT_INTERVAL` (default 30 seconds, minimum 1 second), even
+  under continuous changes, so a busy instance rewrites the whole file at most that often. A
+  shorter interval loses less on a crash but costs more I/O. Each checkpoint rewrites the
+  whole file, so a 30 MB file that changes constantly costs about 15 MB/s at a 2 second
+  interval. Duplicates that add nothing do not count as changes. A checkpoint briefly copies
+  the retained hints, about 150 bytes each, before writing them without holding the lock.
+  Shutdown writes a final checkpoint after announcements and handlers stop and before the
+  state lock is released. Each write streams to a private staging file, syncs it, renames it
+  into place, and syncs the directory.
 - The file is limited to 64 MiB, and admission keeps retained hints within that bound by
   charging each hint 256 bytes plus 15 bytes per seen ID. With large seen sets this binds before
   the memory limit, for example at about 4,300 hints with 1,025 seen IDs each. A replacement

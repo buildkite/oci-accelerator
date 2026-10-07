@@ -26,6 +26,10 @@ const (
 	DefaultCacheMaxAuthorizationEntries         = 10000
 )
 
+// DefaultPeerHintCheckpointInterval is the minimum spacing between background
+// provider hint checkpoints when the configuration omits it.
+const DefaultPeerHintCheckpointInterval = 30 * time.Second
+
 // Config is the validated result of [Load]. Directory paths are absolute, with
 // relative inputs resolved against the working directory. Bind addresses are
 // validated and normalized.
@@ -60,12 +64,14 @@ type Cache struct {
 }
 
 // Peer holds peer discovery configuration. An empty Listen
-// disables peer service.
+// disables peer service and leaves every field zero. HintCheckpointInterval is
+// the minimum spacing between background writes of changed provider hints.
 type Peer struct {
-	Listen    string
-	Advertise string
-	Seeds     []string
-	StateDir  string
+	Listen                 string
+	Advertise              string
+	Seeds                  []string
+	StateDir               string
+	HintCheckpointInterval time.Duration
 }
 
 type rawConfig struct {
@@ -125,6 +131,7 @@ func defaults() rawConfig {
 			AnonymousAuthorizationTTL: DefaultCacheAnonymousAuthorizationTTL,
 			MaxAuthorizationEntries:   DefaultCacheMaxAuthorizationEntries,
 		},
+		Peer:                  Peer{HintCheckpointInterval: DefaultPeerHintCheckpointInterval},
 		DialTimeout:           10 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,

@@ -41,7 +41,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if rejected != 0 {
 		logger.Warn("peer address book full", "rejected", rejected, "limit", peering.MaxPeers)
 	}
-	hints, err := peering.NewProviderHints(book, store, peering.NewClient(clientTLS), logger)
+	hints, err := peering.NewProviderHints(book, store, peering.NewClient(clientTLS), cfg.Peer.HintCheckpointInterval, logger)
 	if err != nil {
 		return nil, nil, nil, errors.Join(errors.New("peer provider hint startup failed"), book.Close())
 	}

@@ -154,7 +154,7 @@ func newTestProviderHints(t *testing.T, id, address string, now func() time.Time
 	}
 	t.Cleanup(func() { book.Close() })
 	inventory := newTestInventory()
-	a, err := NewProviderHints(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a, err := NewProviderHints(book, inventory, nil, 30*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

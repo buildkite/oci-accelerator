@@ -26,6 +26,7 @@ func environmentSettings(raw *rawConfig) []environmentSetting {
 		{"PEER_ADVERTISE", &raw.Peer.Advertise},
 		{"PEER_SEEDS", &raw.Peer.Seeds},
 		{"PEER_STATE_DIR", &raw.Peer.StateDir},
+		{"PEER_HINT_CHECKPOINT_INTERVAL", &raw.Peer.HintCheckpointInterval},
 		{"CACHE_MAX_BYTES", &raw.Cache.MaxBytes},
 		{"CACHE_MAX_FILLS", &raw.Cache.MaxFills},
 		{"CACHE_MAX_ENTRIES", &raw.Cache.MaxEntries},

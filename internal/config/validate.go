@@ -127,6 +127,11 @@ func validate(raw rawConfig) (Config, error) {
 }
 
 func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string) (Peer, error) {
+	// The interval has a default, so disabled peering ignores it rather than
+	// requiring it to be empty. A bad value still fails.
+	if raw.HintCheckpointInterval < time.Second {
+		return Peer{}, invalid("must be at least 1s", "PEER_HINT_CHECKPOINT_INTERVAL")
+	}
 	if raw.Listen == "" {
 		for _, setting := range []struct{ name, value string }{{"PEER_ADVERTISE", raw.Advertise}, {"PEER_STATE_DIR", raw.StateDir}} {
 			if setting.value != "" {
@@ -190,7 +195,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 	if len(seeds) > peering.MaxPeers {
 		return Peer{}, invalid("must contain at most 1024 unique addresses", "PEER_SEEDS")
 	}
-	return Peer{Listen: listen, Advertise: advertise, Seeds: seeds, StateDir: stateDir}, nil
+	return Peer{Listen: listen, Advertise: advertise, Seeds: seeds, StateDir: stateDir, HintCheckpointInterval: raw.HintCheckpointInterval}, nil
 }
 
 func pathsOverlap(a, b string) bool {

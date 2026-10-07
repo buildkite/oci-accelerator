@@ -49,7 +49,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	listener := newTestListener(t)
 	state := filepath.Join(root, "peer")
-	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state}, ShutdownTimeout: 100 * time.Millisecond}
+	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state, HintCheckpointInterval: config.DefaultPeerHintCheckpointInterval}, ShutdownTimeout: 100 * time.Millisecond}
 	done, _, cleanup, err := startPeering(context.Background(), cfg, signer, &fakeInventory{}, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestPeerProviderHintsPropagateOverMutualTLS(t *testing.T) {
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	listenerA, listenerB := newTestListener(t), newTestListener(t)
 	start := func(name string, listener net.Listener, seeds []string, inventory *fakeInventory) (*peering.ProviderHints, func() error) {
-		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: listener.Addr().String(), Seeds: seeds, StateDir: filepath.Join(root, name)}, ShutdownTimeout: 100 * time.Millisecond}
+		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: listener.Addr().String(), Seeds: seeds, StateDir: filepath.Join(root, name), HintCheckpointInterval: config.DefaultPeerHintCheckpointInterval}, ShutdownTimeout: 100 * time.Millisecond}
 		_, hints, cleanup, err := startPeering(context.Background(), cfg, signer, inventory, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
@@ -219,10 +219,36 @@ func TestPeerProviderHintsPropagateOverMutualTLS(t *testing.T) {
 	}
 }
 
+func TestPeerHintCheckpointIntervalControlsBackgroundCheckpoints(t *testing.T) {
+	root := t.TempDir()
+	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
+	listener := newTestListener(t)
+	state := filepath.Join(root, "peer")
+	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state, HintCheckpointInterval: 50 * time.Millisecond}, ShutdownTimeout: 100 * time.Millisecond}
+	// The cached key becomes a local hint at startup, so the state is dirty
+	// and only the configured interval delays the first background checkpoint.
+	inventory := &fakeInventory{keys: []string{strings.Repeat("ab", 32)}}
+	_, _, cleanup, err := startPeering(context.Background(), cfg, signer, inventory, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(state, "provider-hints.json")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no background provider hint checkpoint before cleanup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestStartPeeringFailuresReleaseState(t *testing.T) {
 	root := t.TempDir()
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
-	base := config.Config{Peer: config.Peer{Listen: "127.0.0.1:1", Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: time.Second}
+	base := config.Config{Peer: config.Peer{Listen: "127.0.0.1:1", Advertise: "self.test:1", StateDir: filepath.Join(root, "state"), HintCheckpointInterval: config.DefaultPeerHintCheckpointInterval}, ShutdownTimeout: time.Second}
 	_, _, _, err := startPeering(context.Background(), base, signer, &fakeInventory{}, slog.Default(), func(string, string) (net.Listener, error) { return nil, errors.New("private bind") })
 	if err == nil || err.Error() != "cannot listen on configured peer address" {
 		t.Fatalf("bind error = %v", err)
@@ -250,7 +276,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		socket := newTestListener(t)
 		failure := make(chan struct{})
 		listener := &faultListener{Listener: socket, accepting: make(chan struct{}), fail: failure, acceptErr: errors.New("private address")}
-		cfg := config.Config{Peer: config.Peer{Listen: socket.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: time.Second}
+		cfg := config.Config{Peer: config.Peer{Listen: socket.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state"), HintCheckpointInterval: config.DefaultPeerHintCheckpointInterval}, ShutdownTimeout: time.Second}
 		done, _, cleanup, err := startPeering(context.Background(), cfg, signer, &fakeInventory{}, slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
@@ -275,7 +301,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		root := t.TempDir()
 		signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 		listener := newTestListener(t)
-		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: 10 * time.Millisecond}
+		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state"), HintCheckpointInterval: config.DefaultPeerHintCheckpointInterval}, ShutdownTimeout: 10 * time.Millisecond}
 		_, _, cleanup, err := startPeering(context.Background(), cfg, signer, &fakeInventory{}, slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)

@@ -4,10 +4,7 @@ import (
 	"errors"
 	"io"
 	"syscall"
-	"time"
 )
-
-const hintCheckpointInterval = 30 * time.Second
 
 var errHintCheckpoint = errors.New("provider hint checkpoint failed")
 

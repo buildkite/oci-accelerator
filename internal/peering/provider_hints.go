@@ -26,7 +26,10 @@ const (
 	announceScanLimit = announceConcurrency * maxAnnouncementHints
 )
 
-var errHintIdentity = errors.New("invalid local node identity")
+var (
+	errHintIdentity           = errors.New("invalid local node identity")
+	errHintCheckpointInterval = errors.New("provider hint checkpoint interval must be positive")
+)
 
 // Inventory reports the local cache's committed keys. Changes must return the
 // same never-closed channel on every call, and a receive means Keys may have
@@ -83,8 +86,12 @@ type ProviderHintStats struct {
 // subscribes to inventory changes, then reconciles the restored hints with
 // the current inventory, so no change between the two can be missed. A
 // missing, corrupt, oversized, unsupported, or foreign snapshot starts with
-// no hints. Unsafe or unreadable state fails, like other peer state.
-func NewProviderHints(book *Book, inventory Inventory, client *http.Client, logger *slog.Logger) (*ProviderHints, error) {
+// no hints. Unsafe or unreadable state fails, like other peer state. Run
+// writes changed state at most once per checkpointEvery, which must be positive.
+func NewProviderHints(book *Book, inventory Inventory, client *http.Client, checkpointEvery time.Duration, logger *slog.Logger) (*ProviderHints, error) {
+	if checkpointEvery <= 0 {
+		return nil, errHintCheckpointInterval
+	}
 	self, ok := parseNodeID(book.Snapshot().NodeID)
 	if !ok {
 		return nil, errHintIdentity
@@ -101,7 +108,7 @@ func NewProviderHints(book *Book, inventory Inventory, client *http.Client, logg
 		persist: func(write func(io.Writer) error) error {
 			return persistHintSnapshot(book.dir, write)
 		},
-		checkpointEvery: hintCheckpointInterval,
+		checkpointEvery: checkpointEvery,
 		now:             time.Now,
 		self:            self,
 		index:           newHintIndex(self),

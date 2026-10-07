@@ -132,7 +132,7 @@ func TestProviderHintsDiscardsUnusableSnapshots(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { book.Close() })
-			restarted, err := NewProviderHints(book, inventory, nil, slog.New(slog.NewTextHandler(&logs, nil)))
+			restarted, err := NewProviderHints(book, inventory, nil, 30*time.Second, slog.New(slog.NewTextHandler(&logs, nil)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -367,7 +367,7 @@ func reopenProviderHints(t *testing.T, a *ProviderHints, inventory Inventory) *P
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { book.Close() })
-	restarted, err := NewProviderHints(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	restarted, err := NewProviderHints(book, inventory, nil, 30*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

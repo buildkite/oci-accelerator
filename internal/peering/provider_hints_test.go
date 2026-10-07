@@ -2,6 +2,7 @@ package peering
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -18,7 +19,7 @@ func TestNewProviderHintsAnnouncesCurrentInventory(t *testing.T) {
 	}
 	defer book.Close()
 	inventory := newTestInventory(testCacheKey(2).String(), testCacheKey(1).String(), "not a key")
-	a, err := NewProviderHints(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a, err := NewProviderHints(book, inventory, nil, 30*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,6 +31,19 @@ func TestNewProviderHintsAnnouncesCurrentInventory(t *testing.T) {
 	}
 	if a.index.len() != 2 {
 		t.Fatalf("hints = %d", a.index.len())
+	}
+}
+
+func TestNewProviderHintsRejectsNonPositiveCheckpointInterval(t *testing.T) {
+	book, err := OpenBook(bookTestDir(t), "self.test:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer book.Close()
+	for _, interval := range []time.Duration{0, -time.Second} {
+		if _, err := NewProviderHints(book, newTestInventory(), nil, interval, slog.New(slog.NewTextHandler(io.Discard, nil))); !errors.Is(err, errHintCheckpointInterval) {
+			t.Errorf("interval %v: error = %v", interval, err)
+		}
 	}
 }
 
