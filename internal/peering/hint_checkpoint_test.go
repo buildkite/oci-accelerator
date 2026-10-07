@@ -17,13 +17,13 @@ import (
 	"time"
 )
 
-func TestAvailabilityCheckpointRestoresStateAcrossRestart(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDC, "c.test:443", time.Now, 1)
+func TestProviderHintsCheckpointRestoresStateAcrossRestart(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDC, "c.test:443", time.Now, 1)
 	completed, pending := testCacheKey(1), testCacheKey(2)
 	inventory.set(completed.String(), pending.String())
 	a.reconcile(inventory.Keys())
-	remote := testClaim(t, testIDA, testCacheKey(3), testIDA)
-	if err := a.accept(availabilityMessage{sender: remote.owner, recipient: a.self, claims: []hintClaim{remote}}); err != nil {
+	remote := testHint(t, testIDA, testCacheKey(3), testIDA)
+	if err := a.accept(announcement{sender: remote.provider, recipient: a.self, hints: []announcedHint{remote}}); err != nil {
 		t.Fatal(err)
 	}
 	peer := mustNodeID(t, testIDA)
@@ -42,13 +42,13 @@ func TestAvailabilityCheckpointRestoresStateAcrossRestart(t *testing.T) {
 	if err := a.Checkpoint(); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Lstat(filepath.Join(a.book.dir, availabilityStateName))
+	info, err := os.Lstat(filepath.Join(a.book.dir, hintSnapshotName))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("snapshot mode = %v, err %v", info.Mode(), err)
 	}
 	want := fifoSummary(a)
 
-	restarted := reopenAvailability(t, a, inventory)
+	restarted := reopenProviderHints(t, a, inventory)
 	if got := fifoSummary(restarted); !reflect.DeepEqual(got, want) {
 		t.Fatalf("restored FIFO\n%v\nwant\n%v", got, want)
 	}
@@ -62,18 +62,18 @@ func TestAvailabilityCheckpointRestoresStateAcrossRestart(t *testing.T) {
 	if h := restarted.index.find(restarted.self, completed); h.pending || h.queued >= 0 {
 		t.Fatal("a completed pass restarted")
 	}
-	if got := restarted.Owners(testCacheKey(3).String()); !slices.Equal(got, []string{testIDA}) {
-		t.Fatalf("remote owners after restart = %v", got)
+	if got := restarted.Providers(testCacheKey(3).String()); !slices.Equal(got, []string{testIDA}) {
+		t.Fatalf("remote providers after restart = %v", got)
 	}
 }
 
-func TestAvailabilityRestartReconcilesInventory(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDC, "c.test:443", time.Now, 1)
+func TestProviderHintsRestartReconcilesInventory(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDC, "c.test:443", time.Now, 1)
 	kept, removed, added := testCacheKey(1), testCacheKey(2), testCacheKey(3)
 	inventory.set(kept.String(), removed.String())
 	a.reconcile(inventory.Keys())
-	remote := testClaim(t, testIDA, removed, testIDA)
-	if err := a.accept(availabilityMessage{sender: remote.owner, recipient: a.self, claims: []hintClaim{remote}}); err != nil {
+	remote := testHint(t, testIDA, removed, testIDA)
+	if err := a.accept(announcement{sender: remote.provider, recipient: a.self, hints: []announcedHint{remote}}); err != nil {
 		t.Fatal(err)
 	}
 	a.mu.Lock()
@@ -84,7 +84,7 @@ func TestAvailabilityRestartReconcilesInventory(t *testing.T) {
 	}
 
 	inventory.set(kept.String(), added.String())
-	restarted := reopenAvailability(t, a, inventory)
+	restarted := reopenProviderHints(t, a, inventory)
 	if h := restarted.index.find(restarted.self, kept); h == nil || h.pending {
 		t.Fatalf("retained local hint = %+v", h)
 	}
@@ -94,7 +94,7 @@ func TestAvailabilityRestartReconcilesInventory(t *testing.T) {
 	if h := restarted.index.find(restarted.self, added); h == nil || !h.pending {
 		t.Fatalf("new key after restart = %+v", h)
 	}
-	if got := restarted.Owners(removed.String()); !slices.Equal(got, []string{testIDA}) {
+	if got := restarted.Providers(removed.String()); !slices.Equal(got, []string{testIDA}) {
 		t.Fatalf("startup reconciliation changed remote hints: %v", got)
 	}
 	if !restarted.dirty() {
@@ -102,27 +102,27 @@ func TestAvailabilityRestartReconcilesInventory(t *testing.T) {
 	}
 }
 
-func TestAvailabilityDiscardsUnusableSnapshots(t *testing.T) {
+func TestProviderHintsDiscardsUnusableSnapshots(t *testing.T) {
 	// Each case is named after the reason it logs.
-	cases := map[string]func(t *testing.T, a *Availability) []byte{
-		"corrupt": func(*testing.T, *Availability) []byte { return []byte(`{"version":1,`) },
-		"unsupported version": func(*testing.T, *Availability) []byte {
+	cases := map[string]func(t *testing.T, a *ProviderHints) []byte{
+		"corrupt": func(*testing.T, *ProviderHints) []byte { return []byte(`{"version":1,`) },
+		"unsupported version": func(*testing.T, *ProviderHints) []byte {
 			return []byte(`{"version":9,"nodeId":"` + testIDC + `","hints":[]}`)
 		},
-		"another node ID": func(t *testing.T, a *Availability) []byte {
+		"another node ID": func(t *testing.T, a *ProviderHints) []byte {
 			other := newHintIndex(mustNodeID(t, testIDB))
-			other.originate(testCacheKey(1), time.Time{})
+			other.announce(testCacheKey(1), time.Time{})
 			return encodeTestSnapshot(t, mustNodeID(t, testIDB), other)
 		},
 	}
 	for name, snapshot := range cases {
 		t.Run(name, func(t *testing.T) {
-			a, inventory := newTestAvailability(t, testIDC, "c.test:443", time.Now, 1)
+			a, inventory := newTestProviderHints(t, testIDC, "c.test:443", time.Now, 1)
 			if _, err := a.book.Merge(Message{Address: "a.test:443", NodeID: testIDA, Peers: map[string]string{}}); err != nil {
 				t.Fatal(err)
 			}
 			dir := a.book.dir
-			if err := os.WriteFile(filepath.Join(dir, availabilityStateName), snapshot(t, a), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, hintSnapshotName), snapshot(t, a), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			var logs bytes.Buffer
@@ -132,14 +132,14 @@ func TestAvailabilityDiscardsUnusableSnapshots(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { book.Close() })
-			restarted, err := NewAvailability(book, inventory, nil, slog.New(slog.NewTextHandler(&logs, nil)))
+			restarted, err := NewProviderHints(book, inventory, nil, slog.New(slog.NewTextHandler(&logs, nil)))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if restarted.index.len() != 0 {
 				t.Fatalf("restored %d hints from an unusable snapshot", restarted.index.len())
 			}
-			if !strings.Contains(logs.String(), "availability state discarded") || !strings.Contains(logs.String(), name) || strings.Contains(logs.String(), testCacheKey(1).String()) {
+			if !strings.Contains(logs.String(), "provider hint state discarded") || !strings.Contains(logs.String(), name) || strings.Contains(logs.String(), testCacheKey(1).String()) {
 				t.Fatalf("logs = %q", logs.String())
 			}
 			// Identity and the address book are untouched.
@@ -149,15 +149,15 @@ func TestAvailabilityDiscardsUnusableSnapshots(t *testing.T) {
 			if err := restarted.Checkpoint(); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := loadAvailabilityState(dir, restarted.self); err != nil {
+			if _, err := loadHintSnapshot(dir, restarted.self); err != nil {
 				t.Fatalf("discarded snapshot was not replaced: %v", err)
 			}
 		})
 	}
 }
 
-func TestAvailabilityUnsafeSnapshotFailsStartup(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDC, "c.test:443", time.Now, 1)
+func TestProviderHintsUnsafeSnapshotFailsStartup(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDC, "c.test:443", time.Now, 1)
 	inventory.set(testCacheKey(1).String())
 	a.reconcile(inventory.Keys())
 	if err := a.Checkpoint(); err != nil {
@@ -165,17 +165,17 @@ func TestAvailabilityUnsafeSnapshotFailsStartup(t *testing.T) {
 	}
 	dir := a.book.dir
 	a.book.Close()
-	if err := os.Chmod(filepath.Join(dir, availabilityStateName), 0o644); err != nil {
+	if err := os.Chmod(filepath.Join(dir, hintSnapshotName), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if book, err := OpenBook(dir, "c.test:443"); err == nil {
 		book.Close()
-		t.Fatal("startup accepted a group-readable availability snapshot")
+		t.Fatal("startup accepted a group-readable provider hint snapshot")
 	}
 }
 
-func TestAvailabilityCheckpointFailureKeepsStateDirty(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDC, "c.test:443", time.Now, 1)
+func TestProviderHintsCheckpointFailureKeepsStateDirty(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDC, "c.test:443", time.Now, 1)
 	var logs bytes.Buffer
 	a.logger = slog.New(slog.NewTextHandler(&logs, nil))
 	inventory.set(testCacheKey(1).String())
@@ -183,7 +183,7 @@ func TestAvailabilityCheckpointFailureKeepsStateDirty(t *testing.T) {
 	if err := a.Checkpoint(); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(a.book.dir, availabilityStateName)
+	path := filepath.Join(a.book.dir, hintSnapshotName)
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestAvailabilityCheckpointFailureKeepsStateDirty(t *testing.T) {
 	// A write that fails partway, as on a full disk, leaves the old snapshot.
 	healthy := a.persist
 	a.persist = func(write func(io.Writer) error) error {
-		_, err := replaceStateWith(a.book.dir, availabilityStateName, func(w io.Writer) error {
+		_, err := replaceStateWith(a.book.dir, hintSnapshotName, func(w io.Writer) error {
 			_, _ = w.Write([]byte(`{"version":1,`))
 			return &os.PathError{Op: "write", Path: "/private/path", Err: syscall.ENOSPC}
 		}, syncBookDir)
@@ -201,7 +201,7 @@ func TestAvailabilityCheckpointFailureKeepsStateDirty(t *testing.T) {
 	inventory.set(testCacheKey(1).String(), testCacheKey(2).String())
 	a.reconcile(inventory.Keys())
 	for range 3 {
-		if err := a.Checkpoint(); !errors.Is(err, errAvailabilityCheckpoint) {
+		if err := a.Checkpoint(); !errors.Is(err, errHintCheckpoint) {
 			t.Fatalf("checkpoint err = %v", err)
 		}
 	}
@@ -212,7 +212,7 @@ func TestAvailabilityCheckpointFailureKeepsStateDirty(t *testing.T) {
 	if !a.dirty() || a.Stats().CheckpointFailures != 3 {
 		t.Fatalf("dirty %v, failures %d", a.dirty(), a.Stats().CheckpointFailures)
 	}
-	if n := strings.Count(logs.String(), "availability checkpoint failed"); n != 1 {
+	if n := strings.Count(logs.String(), "provider hint checkpoint failed"); n != 1 {
 		t.Fatalf("logged %d failures", n)
 	}
 	if !strings.Contains(logs.String(), "no space left on device") || strings.Contains(logs.String(), "/private/path") {
@@ -223,19 +223,19 @@ func TestAvailabilityCheckpointFailureKeepsStateDirty(t *testing.T) {
 	if err := a.Checkpoint(); err != nil || a.dirty() {
 		t.Fatalf("recovery checkpoint err %v, dirty %v", err, a.dirty())
 	}
-	if !strings.Contains(logs.String(), "availability checkpoint recovered") {
+	if !strings.Contains(logs.String(), "provider hint checkpoint recovered") {
 		t.Fatal("recovery was not logged")
 	}
-	hints, err := loadAvailabilityState(a.book.dir, a.self)
+	hints, err := loadHintSnapshot(a.book.dir, a.self)
 	if err != nil || len(hints) != 2 {
 		t.Fatalf("recovered snapshot has %d hints, err %v", len(hints), err)
 	}
 }
 
-func TestAvailabilityDuplicateClaimsLeaveStateClean(t *testing.T) {
-	a, _ := newTestAvailability(t, testIDC, "c.test:443", time.Now, 1)
-	claim := testClaim(t, testIDA, testCacheKey(1), testIDA)
-	message := availabilityMessage{sender: claim.owner, recipient: a.self, claims: []hintClaim{claim}}
+func TestProviderHintsDuplicateHintsLeaveStateClean(t *testing.T) {
+	a, _ := newTestProviderHints(t, testIDC, "c.test:443", time.Now, 1)
+	announced := testHint(t, testIDA, testCacheKey(1), testIDA)
+	message := announcement{sender: announced.provider, recipient: a.self, hints: []announcedHint{announced}}
 	if err := a.accept(message); err != nil {
 		t.Fatal(err)
 	}
@@ -247,12 +247,12 @@ func TestAvailabilityDuplicateClaimsLeaveStateClean(t *testing.T) {
 		t.Fatal(err)
 	}
 	if a.dirty() {
-		t.Fatal("a duplicate claim dirtied the state")
+		t.Fatal("a duplicate hint dirtied the state")
 	}
 }
 
-func TestAvailabilityCheckpointDuringMutationStaysDirty(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDC, "c.test:443", time.Now, 1)
+func TestProviderHintsCheckpointDuringMutationStaysDirty(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDC, "c.test:443", time.Now, 1)
 	inventory.set(testCacheKey(1).String())
 	a.reconcile(inventory.Keys())
 	healthy := a.persist
@@ -266,8 +266,8 @@ func TestAvailabilityCheckpointDuringMutationStaysDirty(t *testing.T) {
 	go func() { done <- a.Checkpoint() }()
 	<-writing
 	// Mutations proceed while the checkpoint writes without the lock.
-	claim := testClaim(t, testIDA, testCacheKey(2), testIDA)
-	if err := a.accept(availabilityMessage{sender: claim.owner, recipient: a.self, claims: []hintClaim{claim}}); err != nil {
+	announced := testHint(t, testIDA, testCacheKey(2), testIDA)
+	if err := a.accept(announcement{sender: announced.provider, recipient: a.self, hints: []announcedHint{announced}}); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
@@ -281,13 +281,13 @@ func TestAvailabilityCheckpointDuringMutationStaysDirty(t *testing.T) {
 	if err := a.Checkpoint(); err != nil {
 		t.Fatal(err)
 	}
-	if hints, err := loadAvailabilityState(a.book.dir, a.self); err != nil || len(hints) != 2 {
+	if hints, err := loadHintSnapshot(a.book.dir, a.self); err != nil || len(hints) != 2 {
 		t.Fatalf("snapshot has %d hints, err %v", len(hints), err)
 	}
 }
 
-func TestAvailabilityRunCheckpointsPeriodicallyAndRetriesFailures(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDC, "c.test:443", time.Now, 1)
+func TestProviderHintsRunCheckpointsPeriodicallyAndRetriesFailures(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDC, "c.test:443", time.Now, 1)
 	a.checkpointEvery = 20 * time.Millisecond
 	var mu sync.Mutex
 	failing := false
@@ -312,7 +312,7 @@ func TestAvailabilityRunCheckpointsPeriodicallyAndRetriesFailures(t *testing.T) 
 	}()
 	inventory.set(testCacheKey(1).String())
 	eventually(t, 5*time.Second, func() bool {
-		hints, err := loadAvailabilityState(a.book.dir, a.self)
+		hints, err := loadHintSnapshot(a.book.dir, a.self)
 		return err == nil && len(hints) == 1
 	})
 
@@ -331,13 +331,13 @@ func TestAvailabilityRunCheckpointsPeriodicallyAndRetriesFailures(t *testing.T) 
 	failing = false
 	mu.Unlock()
 	eventually(t, 5*time.Second, func() bool {
-		hints, err := loadAvailabilityState(a.book.dir, a.self)
+		hints, err := loadHintSnapshot(a.book.dir, a.self)
 		return err == nil && len(hints) == 2
 	})
 }
 
-func TestAvailabilityInterruptedWriteLeavesUsableSnapshot(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDC, "c.test:443", time.Now, 1)
+func TestProviderHintsInterruptedWriteLeavesUsableSnapshot(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDC, "c.test:443", time.Now, 1)
 	inventory.set(testCacheKey(1).String())
 	a.reconcile(inventory.Keys())
 	if err := a.Checkpoint(); err != nil {
@@ -347,16 +347,16 @@ func TestAvailabilityInterruptedWriteLeavesUsableSnapshot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(a.book.dir, ".peers-interrupted"), []byte(`{"version":1,"hin`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	restarted := reopenAvailability(t, a, inventory)
+	restarted := reopenProviderHints(t, a, inventory)
 	assertNoStagingFiles(t, restarted.book.dir)
 	if restarted.index.find(restarted.self, testCacheKey(1)) == nil || restarted.dirty() {
 		t.Fatal("previous snapshot was not restored after an interrupted write")
 	}
 }
 
-// reopenAvailability simulates a restart: it releases a's book and opens a
-// new book and availability on the same state directory.
-func reopenAvailability(t *testing.T, a *Availability, inventory Inventory) *Availability {
+// reopenProviderHints simulates a restart: it releases a's book and opens a
+// new book and provider hints on the same state directory.
+func reopenProviderHints(t *testing.T, a *ProviderHints, inventory Inventory) *ProviderHints {
 	t.Helper()
 	dir, address := a.book.dir, a.book.self
 	if err := a.book.Close(); err != nil {
@@ -367,7 +367,7 @@ func reopenAvailability(t *testing.T, a *Availability, inventory Inventory) *Ava
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { book.Close() })
-	restarted, err := NewAvailability(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	restarted, err := NewProviderHints(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func reopenAvailability(t *testing.T, a *Availability, inventory Inventory) *Ava
 }
 
 // fifoSummary returns each retained hint's persisted fields in FIFO order.
-func fifoSummary(a *Availability) []hintState {
+func fifoSummary(a *ProviderHints) []hintState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var summary []hintState

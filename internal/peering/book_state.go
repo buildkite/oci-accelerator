@@ -102,7 +102,7 @@ func inspectBookDir(dir string) error {
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(dir, name)
-		if name == ".lock" || name == bookStateName || name == nodeIDName || name == availabilityStateName {
+		if name == ".lock" || name == bookStateName || name == nodeIDName || name == hintSnapshotName {
 			if err := validateRegular(path); err != nil {
 				return err
 			}

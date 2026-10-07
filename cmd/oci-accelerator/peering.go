@@ -17,12 +17,12 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
-// startPeering owns the peer listener, discovery and availability loops, and
-// address book until its cleanup is called, which saves the final
-// availability checkpoint before releasing the state lock. Availability hints track the
+// startPeering owns the peer listener, discovery and provider hint loops, and
+// address book until its cleanup is called, which saves the final provider
+// hint checkpoint before releasing the state lock. Provider hints announce the
 // inventory of store. Disabled peering creates no state, subscribes to nothing,
 // and starts no network activity.
-func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, store peering.Inventory, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, *peering.Availability, func() error, error) {
+func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, store peering.Inventory, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, *peering.ProviderHints, func() error, error) {
 	if cfg.Peer.Listen == "" {
 		return nil, nil, nil, nil
 	}
@@ -41,16 +41,16 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if rejected != 0 {
 		logger.Warn("peer address book full", "rejected", rejected, "limit", peering.MaxPeers)
 	}
-	availability, err := peering.NewAvailability(book, store, peering.NewClient(clientTLS), logger)
+	hints, err := peering.NewProviderHints(book, store, peering.NewClient(clientTLS), logger)
 	if err != nil {
-		return nil, nil, nil, errors.Join(errors.New("peer availability startup failed"), book.Close())
+		return nil, nil, nil, errors.Join(errors.New("peer provider hint startup failed"), book.Close())
 	}
 	listener, err := listen("tcp", cfg.Peer.Listen)
 	if err != nil {
 		return nil, nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
 	discovery := peering.NewDiscovery(book, peering.NewClient(clientTLS), logger)
-	handler := peering.PeerHandler(discovery.Handler(), availability.Handler())
+	handler := peering.PeerHandler(discovery.Handler(), hints.Handler())
 	var handlerMu sync.Mutex
 	var handlers sync.WaitGroup
 	stopping := false
@@ -90,10 +90,10 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		discovery.Run(runCtx)
 		close(discoveryDone)
 	}()
-	availabilityDone := make(chan struct{})
+	hintsDone := make(chan struct{})
 	go func() {
-		availability.Run(runCtx)
-		close(availabilityDone)
+		hints.Run(runCtx)
+		close(hintsDone)
 	}()
 	cleanup := func() error {
 		cancel()
@@ -109,14 +109,14 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		}
 		<-serveDone
 		<-discoveryDone
-		<-availabilityDone
+		<-hintsDone
 		// Closing sockets cannot preempt a filesystem operation. Join handlers
 		// before releasing the state lock even if the drain deadline expired.
 		handlers.Wait()
-		// Every availability owner has stopped, so the final checkpoint is the
+		// Every provider hint goroutine has stopped, so the final checkpoint is the
 		// only writer and finishes before the lock is released.
-		return errors.Join(cleanupErr, serveErr, availability.Checkpoint(), book.Close())
+		return errors.Join(cleanupErr, serveErr, hints.Checkpoint(), book.Close())
 	}
 	logger.Info("peer service ready", "listen", listener.Addr().String(), "advertise", cfg.Peer.Advertise, "node_id", book.Snapshot().NodeID, "known_peers", len(book.Addresses()))
-	return serveDone, availability, cleanup, nil
+	return serveDone, hints, cleanup, nil
 }

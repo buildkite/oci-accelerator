@@ -19,12 +19,12 @@ type destinationBackoff struct {
 	next     time.Time
 }
 
-// availabilityBatch is one request in flight with the hints it carries. The
+// announcementBatch is one request in flight with the hints it carries. The
 // recipient is credited on acknowledgement, never whichever node answers at
 // the address.
-type availabilityBatch struct {
+type announcementBatch struct {
 	to      destination
-	message availabilityMessage
+	message announcement
 	hints   []*hint
 	size    int // encoded bytes
 }
@@ -33,16 +33,16 @@ type availabilityBatch struct {
 // destination and at most limit in total.
 type dispatchRound struct {
 	limit   int
-	batches []*availabilityBatch
-	byID    map[nodeID]*availabilityBatch
-	full    int // batches that cannot take another claim
+	batches []*announcementBatch
+	byID    map[nodeID]*announcementBatch
+	full    int // batches that cannot take another hint
 }
 
 // dispatch reserves due work for up to free new requests. For each due hint it
 // rechecks the merged seen set against the current resolved book, randomly
 // chooses eligible unseen destinations within the hint's remaining fanout and
-// attempt budget, and batches claims per destination within the wire bounds.
-func (a *Availability) dispatch(free int) []availabilityBatch {
+// attempt budget, and batches hints per destination within the wire bounds.
+func (a *ProviderHints) dispatch(free int) []announcementBatch {
 	if free <= 0 {
 		return nil
 	}
@@ -75,9 +75,9 @@ func (a *Availability) dispatch(free int) []availabilityBatch {
 		return nil
 	}
 	a.blockedUntil = time.Time{}
-	round := &dispatchRound{limit: min(free, max(available, 1)), byID: make(map[nodeID]*availabilityBatch)}
+	round := &dispatchRound{limit: min(free, max(available, 1)), byID: make(map[nodeID]*announcementBatch)}
 	var retry []*hint
-	for range availabilityScanLimit {
+	for range announceScanLimit {
 		if len(round.batches) == round.limit && round.full == round.limit {
 			break
 		}
@@ -94,7 +94,7 @@ func (a *Availability) dispatch(free int) []availabilityBatch {
 	for _, h := range retry {
 		a.index.schedule(h, now)
 	}
-	batches := make([]availabilityBatch, len(round.batches))
+	batches := make([]announcementBatch, len(round.batches))
 	for i, batch := range round.batches {
 		a.busy[batch.to.id] = true
 		batches[i] = *batch
@@ -105,7 +105,7 @@ func (a *Availability) dispatch(free int) []availabilityBatch {
 // complete applies one request's result. Acknowledgement adds the intended
 // recipient to seen and counts it once toward the fanout. A record evicted or
 // forgotten meanwhile is not recreated, and its replacement is unaffected.
-func (a *Availability) complete(batch availabilityBatch, err error) {
+func (a *ProviderHints) complete(batch announcementBatch, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
@@ -121,7 +121,7 @@ func (a *Availability) complete(batch availabilityBatch, err error) {
 
 // abandon releases a cancelled request without counting it or backing off
 // its destination. The attempts it used stay spent.
-func (a *Availability) abandon(batch availabilityBatch) {
+func (a *ProviderHints) abandon(batch announcementBatch) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.settle(batch, false, a.now())
@@ -129,7 +129,7 @@ func (a *Availability) abandon(batch availabilityBatch) {
 
 // settle requires mu. It releases batch's reservations and advances the
 // forwarding pass of every hint it carried that is still retained.
-func (a *Availability) settle(batch availabilityBatch, acknowledged bool, now time.Time) {
+func (a *ProviderHints) settle(batch announcementBatch, acknowledged bool, now time.Time) {
 	delete(a.busy, batch.to.id)
 	for _, h := range batch.hints {
 		if h.element == nil {
@@ -149,7 +149,7 @@ func (a *Availability) settle(batch availabilityBatch, acknowledged bool, now ti
 		switch {
 		case !h.pending:
 		case h.ackCount < hintFanout && h.attempts > 0:
-			a.index.schedule(h, now.Add(a.jitter(availabilityCadence)))
+			a.index.schedule(h, now.Add(a.jitter(announceCadence)))
 		case h.inflight == 0:
 			a.index.finishPass(h)
 			a.revision++
@@ -160,7 +160,7 @@ func (a *Availability) settle(batch availabilityBatch, acknowledged bool, now ti
 // plan requires mu. It reserves destinations for h in round and reports
 // whether h should retry as soon as a request slot frees. Otherwise h is
 // rescheduled for later, finished, or left to its in-flight results.
-func (a *Availability) plan(h *hint, resolved []destination, round *dispatchRound, now time.Time) (retry bool) {
+func (a *ProviderHints) plan(h *hint, resolved []destination, round *dispatchRound, now time.Time) (retry bool) {
 	if h.ackCount >= hintFanout || h.attempts == 0 {
 		if h.inflight == 0 {
 			a.index.finishPass(h)
@@ -182,7 +182,7 @@ func (a *Availability) plan(h *hint, resolved []destination, round *dispatchRoun
 		unseen++
 		next := time.Time{}
 		if a.busy[d.id] {
-			next = now.Add(a.jitter(availabilityCadence))
+			next = now.Add(a.jitter(announceCadence))
 		} else if a.coolingDown(d, now) {
 			next = a.backoff[d].next
 		} else {
@@ -226,30 +226,30 @@ func (a *Availability) plan(h *hint, resolved []destination, round *dispatchRoun
 	return false
 }
 
-// reserve requires mu. It adds h's claim to the batch for d, creating one if
-// round has a free slot, and reports false when the claim cannot fit.
-func (a *Availability) reserve(round *dispatchRound, d destination, h *hint) bool {
+// reserve requires mu. It adds h to the batch for d, creating one if
+// round has a free slot, and reports false when the hint cannot fit.
+func (a *ProviderHints) reserve(round *dispatchRound, d destination, h *hint) bool {
 	batch := round.byID[d.id]
 	if batch == nil {
 		if len(round.batches) == round.limit {
 			return false
 		}
-		batch = &availabilityBatch{to: d, message: availabilityMessage{sender: a.self, recipient: d.id}, size: availabilityEnvelopeSize}
+		batch = &announcementBatch{to: d, message: announcement{sender: a.self, recipient: d.id}, size: announcementEnvelopeSize}
 		round.byID[d.id] = batch
 		round.batches = append(round.batches, batch)
 	}
-	size := claimWireSize(len(h.seen))
-	if len(batch.message.claims) > 0 {
+	size := hintWireSize(len(h.seen))
+	if len(batch.message.hints) > 0 {
 		size++ // separator
 	}
-	if len(batch.message.claims) == maxAvailabilityClaim || batch.size+size > maxAvailabilityBytes {
+	if len(batch.message.hints) == maxAnnouncementHints || batch.size+size > maxAnnouncementBytes {
 		return false
 	}
 	// Seen slices are replaced, never modified, so the batch may share it.
-	batch.message.claims = append(batch.message.claims, hintClaim{owner: h.owner, key: h.key, seen: h.seen})
+	batch.message.hints = append(batch.message.hints, announcedHint{provider: h.provider, key: h.key, seen: h.seen})
 	batch.hints = append(batch.hints, h)
 	batch.size += size
-	if len(batch.message.claims) == maxAvailabilityClaim || batch.size+claimWireSize(1)+1 > maxAvailabilityBytes {
+	if len(batch.message.hints) == maxAnnouncementHints || batch.size+hintWireSize(1)+1 > maxAnnouncementBytes {
 		round.full++
 	}
 	return true
@@ -257,7 +257,7 @@ func (a *Availability) reserve(round *dispatchRound, d destination, h *hint) boo
 
 // resolvedPeers returns the book's identified peers sorted by ID, so seeded
 // selection is reproducible. Unresolved candidates are never destinations.
-func (a *Availability) resolvedPeers() []destination {
+func (a *ProviderHints) resolvedPeers() []destination {
 	snapshot := a.book.Snapshot()
 	peers := make([]destination, 0, len(snapshot.Peers))
 	for address, text := range snapshot.Peers {
@@ -271,7 +271,7 @@ func (a *Availability) resolvedPeers() []destination {
 
 // pruneBackoff requires mu. It drops backoff for destinations whose ID and
 // address pairing is no longer in the book.
-func (a *Availability) pruneBackoff(resolved []destination) {
+func (a *ProviderHints) pruneBackoff(resolved []destination) {
 	current := make(map[destination]bool, len(resolved))
 	for _, d := range resolved {
 		current[d] = true
@@ -284,13 +284,13 @@ func (a *Availability) pruneBackoff(resolved []destination) {
 }
 
 // coolingDown requires mu.
-func (a *Availability) coolingDown(d destination, now time.Time) bool {
+func (a *ProviderHints) coolingDown(d destination, now time.Time) bool {
 	b := a.backoff[d]
 	return b != nil && b.next.After(now)
 }
 
 // recordFailure requires mu.
-func (a *Availability) recordFailure(d destination, now time.Time) {
+func (a *ProviderHints) recordFailure(d destination, now time.Time) {
 	b := a.backoff[d]
 	if b == nil {
 		b = &destinationBackoff{}
@@ -299,7 +299,7 @@ func (a *Availability) recordFailure(d destination, now time.Time) {
 	if b.failures < 10 {
 		b.failures++
 	}
-	b.next = now.Add(a.jitter(retryDelay(availabilityCadence, availabilityMaxBackoff, b.failures)))
+	b.next = now.Add(a.jitter(retryDelay(announceCadence, announceMaxBackoff, b.failures)))
 }
 
 func (h *hint) hasAcked(id nodeID) bool {
@@ -315,9 +315,9 @@ func (h *hint) ack(id nodeID) {
 
 // Node IDs and hex keys contain no characters that JSON escapes, so encoded
 // sizes are exact. Each seen ID adds its quoted text and a separator, less
-// one separator for the first. Valid claims always have a seen ID.
-var availabilityEnvelopeSize = len(`{"senderNodeId":"","recipientNodeId":"","claims":[]}`) + 2*nodeIDLen
+// one separator for the first. Valid hints always have a seen ID.
+var announcementEnvelopeSize = len(`{"senderNodeId":"","recipientNodeId":"","hints":[]}`) + 2*nodeIDLen
 
-func claimWireSize(seen int) int {
-	return len(`{"ownerNodeId":"","key":"","seen":[]}`) + nodeIDLen + 2*cacheKeyLen + seen*(nodeIDLen+3) - 1
+func hintWireSize(seen int) int {
+	return len(`{"providerNodeId":"","key":"","seen":[]}`) + nodeIDLen + 2*cacheKeyLen + seen*(nodeIDLen+3) - 1
 }

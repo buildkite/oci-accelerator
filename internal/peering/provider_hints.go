@@ -18,15 +18,15 @@ const (
 	// hintAttempts caps dispatches per pass, including successful ones.
 	hintAttempts = 6
 
-	availabilityConcurrency    = 4
-	availabilityCadence        = time.Second
-	availabilityRequestTimeout = 5 * time.Second
-	availabilityMaxBackoff     = 30 * time.Second
-	// availabilityScanLimit bounds the due hints examined in one round.
-	availabilityScanLimit = availabilityConcurrency * maxAvailabilityClaim
+	announceConcurrency    = 4
+	announceCadence        = time.Second
+	announceRequestTimeout = 5 * time.Second
+	announceMaxBackoff     = 30 * time.Second
+	// announceScanLimit bounds the due hints examined in one round.
+	announceScanLimit = announceConcurrency * maxAnnouncementHints
 )
 
-var errAvailabilityIdentity = errors.New("invalid local node identity")
+var errHintIdentity = errors.New("invalid local node identity")
 
 // Inventory reports the local cache's committed keys. Changes must return the
 // same never-closed channel on every call, and a receive means Keys may have
@@ -36,19 +36,19 @@ type Inventory interface {
 	Changes() <-chan struct{}
 }
 
-// Availability originates hints for the local cache inventory, merges hints
+// ProviderHints announces hints for the local cache inventory, merges hints
 // received from peers, and relays each hint with limited gossip to at most
 // hintFanout acknowledged destinations. It checkpoints retained hints into the
 // book's state directory under the book's lock. Hints are advisory. Delivery
 // is best effort, with no withdrawal, expiry, or repair.
-type Availability struct {
+type ProviderHints struct {
 	book            *Book
 	inventory       Inventory
 	changes         <-chan struct{}
 	client          *http.Client
 	logger          *slog.Logger
 	wake            chan struct{}
-	send            func(context.Context, string, availabilityMessage) error
+	send            func(context.Context, string, announcement) error
 	persist         func(write func(io.Writer) error) error
 	checkpointEvery time.Duration
 	now             func() time.Time // fixed before Run starts
@@ -70,8 +70,8 @@ type Availability struct {
 	checkpointFailing  bool
 }
 
-// AvailabilityStats is a point-in-time view of availability state.
-type AvailabilityStats struct {
+// ProviderHintStats is a point-in-time view of provider hint state.
+type ProviderHintStats struct {
 	Hints              int
 	Evictions          uint64
 	Acknowledged       uint64
@@ -79,29 +79,29 @@ type AvailabilityStats struct {
 	CheckpointFailures uint64
 }
 
-// NewAvailability restores the checkpointed hints in book's state directory,
+// NewProviderHints restores the checkpointed hints in book's state directory,
 // subscribes to inventory changes, then reconciles the restored hints with
 // the current inventory, so no change between the two can be missed. A
 // missing, corrupt, oversized, unsupported, or foreign snapshot starts with
 // no hints. Unsafe or unreadable state fails, like other peer state.
-func NewAvailability(book *Book, inventory Inventory, client *http.Client, logger *slog.Logger) (*Availability, error) {
+func NewProviderHints(book *Book, inventory Inventory, client *http.Client, logger *slog.Logger) (*ProviderHints, error) {
 	self, ok := parseNodeID(book.Snapshot().NodeID)
 	if !ok {
-		return nil, errAvailabilityIdentity
+		return nil, errHintIdentity
 	}
-	a := &Availability{
+	a := &ProviderHints{
 		book:      book,
 		inventory: inventory,
 		client:    client,
 		logger:    logger,
 		wake:      make(chan struct{}, 1),
-		send: func(ctx context.Context, address string, message availabilityMessage) error {
-			return sendAvailability(ctx, client, address, message)
+		send: func(ctx context.Context, address string, message announcement) error {
+			return sendAnnouncement(ctx, client, address, message)
 		},
 		persist: func(write func(io.Writer) error) error {
-			return persistAvailabilityState(book.dir, write)
+			return persistHintSnapshot(book.dir, write)
 		},
-		checkpointEvery: availabilityCheckpointInterval,
+		checkpointEvery: hintCheckpointInterval,
 		now:             time.Now,
 		self:            self,
 		index:           newHintIndex(self),
@@ -109,10 +109,10 @@ func NewAvailability(book *Book, inventory Inventory, client *http.Client, logge
 		busy:            make(map[nodeID]bool),
 		random:          rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 	}
-	hints, err := loadAvailabilityState(book.dir, self)
+	hints, err := loadHintSnapshot(book.dir, self)
 	switch {
 	case errors.Is(err, errStateCorrupt), errors.Is(err, errStateOversized), errors.Is(err, errStateVersion), errors.Is(err, errStateIdentity):
-		logger.Warn("availability state discarded", "reason", err.Error())
+		logger.Warn("provider hint state discarded", "reason", err.Error())
 		a.revision++ // replace the discarded snapshot at the next checkpoint
 	case err != nil:
 		return nil, err
@@ -123,56 +123,56 @@ func NewAvailability(book *Book, inventory Inventory, client *http.Client, logge
 	return a, nil
 }
 
-// Handler serves availability batches addressed to the local node.
-func (a *Availability) Handler() http.Handler { return newAvailabilityHandler(a.self, a.accept) }
+// Handler serves announcements addressed to the local node.
+func (a *ProviderHints) Handler() http.Handler { return newAnnounceHandler(a.self, a.accept) }
 
-// PeerHandler routes availability requests to availability and every other
-// request to discovery, which rejects unknown paths.
-func PeerHandler(discovery, availability http.Handler) http.Handler {
+// PeerHandler routes announcements to announce and every other request to
+// discovery, which rejects unknown paths.
+func PeerHandler(discovery, announce http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == availabilityPath {
-			availability.ServeHTTP(w, r)
+		if r.URL.Path == announcePath {
+			announce.ServeHTTP(w, r)
 			return
 		}
 		discovery.ServeHTTP(w, r)
 	})
 }
 
-// Owners returns the sorted node IDs advertised as holding key. The result is
-// advisory: an owner may have evicted the entry, and a hint grants no access.
-func (a *Availability) Owners(key string) []string {
+// Providers returns the sorted node IDs advertised as holding key. The result is
+// advisory: a provider may have evicted the entry, and a hint grants no access.
+func (a *ProviderHints) Providers(key string) []string {
 	parsed, ok := parseCacheKey(key)
 	if !ok {
 		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.index.owners(parsed)
+	return a.index.providers(parsed)
 }
 
 // Stats reports retained hints and cumulative eviction, send, and checkpoint
 // failure counts.
-func (a *Availability) Stats() AvailabilityStats {
+func (a *ProviderHints) Stats() ProviderHintStats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return AvailabilityStats{
+	return ProviderHintStats{
 		Hints: a.index.len(), Evictions: a.index.evictions, Acknowledged: a.acknowledged,
 		Failed: a.failed, CheckpointFailures: a.checkpointFailures,
 	}
 }
 
 // Run tracks inventory changes, forwards pending hints, and checkpoints
-// changed state until ctx ends. It keeps at most availabilityConcurrency
+// changed state until ctx ends. It keeps at most announceConcurrency
 // requests in flight, one per destination, and at most one checkpoint write.
 // Before returning it joins both and applies request results, so no request
 // remains reserved. Call Checkpoint afterwards to save the final state.
-func (a *Availability) Run(ctx context.Context) {
+func (a *ProviderHints) Run(ctx context.Context) {
 	type result struct {
-		batch availabilityBatch
+		batch announcementBatch
 		err   error
 	}
 	// The buffers hold every possible result, so writers never block.
-	results := make(chan result, availabilityConcurrency)
+	results := make(chan result, announceConcurrency)
 	checkpoints := make(chan checkpointResult, 1)
 	var requests sync.WaitGroup
 	active := 0
@@ -202,12 +202,12 @@ func (a *Availability) Run(ctx context.Context) {
 	// from postponing checkpoints.
 	nextCheckpoint := a.now().Add(a.checkpointEvery)
 	for ctx.Err() == nil {
-		for _, batch := range a.dispatch(availabilityConcurrency - active) {
+		for _, batch := range a.dispatch(announceConcurrency - active) {
 			active++
 			requests.Add(1)
 			go func() {
 				defer requests.Done()
-				requestCtx, cancel := context.WithTimeout(ctx, availabilityRequestTimeout)
+				requestCtx, cancel := context.WithTimeout(ctx, announceRequestTimeout)
 				defer cancel()
 				results <- result{batch: batch, err: a.send(requestCtx, batch.to.address, batch.message)}
 			}()
@@ -242,11 +242,11 @@ func (a *Availability) Run(ctx context.Context) {
 }
 
 // accept merges a validated batch and wakes Run to schedule new hints.
-func (a *Availability) accept(message availabilityMessage) error {
+func (a *ProviderHints) accept(message announcement) error {
 	a.mu.Lock()
 	now := a.now()
-	for _, c := range message.claims {
-		if a.index.merge(c, now.Add(a.jitter(availabilityCadence))) {
+	for _, c := range message.hints {
+		if a.index.merge(c, now.Add(a.jitter(announceCadence))) {
 			a.revision++
 		}
 	}
@@ -260,11 +260,11 @@ func (a *Availability) accept(message availabilityMessage) error {
 
 // nextWait returns how long Run may sleep before due work can make progress.
 // With every request slot or every destination busy, only a result can.
-func (a *Availability) nextWait(active int) time.Duration {
+func (a *ProviderHints) nextWait(active int) time.Duration {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	due, ok := a.index.nextDue()
-	if !ok || active == availabilityConcurrency {
+	if !ok || active == announceConcurrency {
 		return time.Hour
 	}
 	if a.blockedUntil.After(due) {
@@ -275,14 +275,14 @@ func (a *Availability) nextWait(active int) time.Duration {
 
 // restore admits checkpointed hints in FIFO order. Pending passes resume with
 // fresh jitter and their remaining budgets.
-func (a *Availability) restore(hints []*hint) {
+func (a *ProviderHints) restore(hints []*hint) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
 	for _, h := range hints {
 		a.index.add(h)
 		if h.pending {
-			a.index.schedule(h, now.Add(a.jitter(availabilityCadence)))
+			a.index.schedule(h, now.Add(a.jitter(announceCadence)))
 		}
 	}
 	// Smaller limits than the snapshot was written under evict its oldest
@@ -293,6 +293,6 @@ func (a *Availability) restore(hints []*hint) {
 }
 
 // jitter requires mu. It spreads d by plus or minus 20 percent.
-func (a *Availability) jitter(d time.Duration) time.Duration {
+func (a *ProviderHints) jitter(d time.Duration) time.Duration {
 	return time.Duration(float64(d) * (0.8 + a.random.Float64()*0.4))
 }

@@ -85,9 +85,9 @@ func mustNodeID(t *testing.T, s string) nodeID {
 
 const testKeyText = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-// claimFor returns a wire claim owned by testIDA and relayed by testIDB.
-func claimFor(i int) string {
-	return fmt.Sprintf(`{"ownerNodeId":"nodeA-ID_123","key":"%s","seen":["nodeA-ID_123","nodeB-ID_456"]}`, testCacheKey(i))
+// hintFor returns a wire hint provided by testIDA and relayed by testIDB.
+func hintFor(i int) string {
+	return fmt.Sprintf(`{"providerNodeId":"nodeA-ID_123","key":"%s","seen":["nodeA-ID_123","nodeB-ID_456"]}`, testCacheKey(i))
 }
 
 // testCacheKey returns a cache key that is distinct for each i.
@@ -97,14 +97,14 @@ func testCacheKey(i int) cacheKey {
 	return key
 }
 
-func testClaim(t *testing.T, owner string, key cacheKey, seen ...string) hintClaim {
+func testHint(t *testing.T, provider string, key cacheKey, seen ...string) announcedHint {
 	t.Helper()
 	ids := make([]nodeID, len(seen))
 	for i, s := range seen {
 		ids[i] = mustNodeID(t, s)
 	}
 	slices.SortFunc(ids, compareNodeIDs)
-	return hintClaim{owner: mustNodeID(t, owner), key: key, seen: ids}
+	return announcedHint{provider: mustNodeID(t, provider), key: key, seen: ids}
 }
 
 // testInventory is a controllable cache inventory.
@@ -136,10 +136,10 @@ func (i *testInventory) set(keys ...string) {
 	}
 }
 
-// newTestAvailability opens a book with a fixed node ID and an availability
+// newTestProviderHints opens a book with a fixed node ID and provider hints
 // with a seeded random source and the given clock. Its send fails until the
 // test replaces it.
-func newTestAvailability(t *testing.T, id, address string, now func() time.Time, seed uint64) (*Availability, *testInventory) {
+func newTestProviderHints(t *testing.T, id, address string, now func() time.Time, seed uint64) (*ProviderHints, *testInventory) {
 	t.Helper()
 	dir := bookTestDir(t)
 	if err := os.Mkdir(dir, 0o700); err != nil {
@@ -154,7 +154,7 @@ func newTestAvailability(t *testing.T, id, address string, now func() time.Time,
 	}
 	t.Cleanup(func() { book.Close() })
 	inventory := newTestInventory()
-	a, err := NewAvailability(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a, err := NewProviderHints(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func newTestAvailability(t *testing.T, id, address string, now func() time.Time,
 	return a, inventory
 }
 
-// testFleet runs availability nodes in lockstep on one fake clock. Each step
+// testFleet runs provider hint nodes in lockstep on one fake clock. Each step
 // dispatches every node's due work and delivers it synchronously through the
 // target's real handler, so requests use the wire codec.
 type testFleet struct {
@@ -180,14 +180,14 @@ type testFleet struct {
 
 type fleetNode struct {
 	name, id, address string
-	a                 *Availability
+	a                 *ProviderHints
 	inventory         *testInventory
 }
 
 type fleetRequest struct {
 	from, to  string // node names, or the address when no node listens there
 	recipient string // node ID the sender addressed
-	claims    int
+	hints     int
 }
 
 func newTestFleet(t *testing.T, seed uint64, names ...string) *testFleet {
@@ -195,8 +195,8 @@ func newTestFleet(t *testing.T, seed uint64, names ...string) *testFleet {
 	f := &testFleet{t: t, now: time.Unix(1_000_000, 0), byName: map[string]*fleetNode{}, byAddress: map[string]*fleetNode{}}
 	for i, name := range names {
 		n := &fleetNode{name: name, id: testNodeID(i + 1), address: strings.ToLower(name) + ".test:443"}
-		n.a, n.inventory = newTestAvailability(t, n.id, n.address, func() time.Time { return f.now }, seed+uint64(i))
-		n.a.send = func(_ context.Context, address string, message availabilityMessage) error {
+		n.a, n.inventory = newTestProviderHints(t, n.id, n.address, func() time.Time { return f.now }, seed+uint64(i))
+		n.a.send = func(_ context.Context, address string, message announcement) error {
 			return f.deliver(n, address, message)
 		}
 		f.nodes = append(f.nodes, n)
@@ -222,8 +222,8 @@ func (f *testFleet) bind(from, address, id string) {
 	}
 }
 
-// originate makes key part of name's cache inventory.
-func (f *testFleet) originate(name string, key cacheKey) {
+// announce makes key part of name's cache inventory.
+func (f *testFleet) announce(name string, key cacheKey) {
 	n := f.byName[name]
 	n.inventory.set(append(n.inventory.Keys(), key.String())...)
 	n.a.reconcile(n.inventory.Keys())
@@ -232,10 +232,10 @@ func (f *testFleet) originate(name string, key cacheKey) {
 // step advances past every cadence deadline, then dispatches and delivers each
 // node's due work in order. It returns the number of requests sent.
 func (f *testFleet) step() int {
-	f.now = f.now.Add(2 * availabilityCadence)
+	f.now = f.now.Add(2 * announceCadence)
 	before := len(f.sent)
 	for _, n := range f.nodes {
-		for _, batch := range n.a.dispatch(availabilityConcurrency) {
+		for _, batch := range n.a.dispatch(announceConcurrency) {
 			n.a.complete(batch, n.a.send(context.Background(), batch.to.address, batch.message))
 		}
 	}
@@ -260,8 +260,8 @@ func (f *testFleet) settle() {
 	f.t.Fatal("fleet did not settle")
 }
 
-func (f *testFleet) deliver(from *fleetNode, address string, message availabilityMessage) error {
-	request := fleetRequest{from: from.name, to: address, recipient: message.recipient.String(), claims: len(message.claims)}
+func (f *testFleet) deliver(from *fleetNode, address string, message announcement) error {
+	request := fleetRequest{from: from.name, to: address, recipient: message.recipient.String(), hints: len(message.hints)}
 	target := f.byAddress[address]
 	if target != nil {
 		request.to = target.name
@@ -272,25 +272,25 @@ func (f *testFleet) deliver(from *fleetNode, address string, message availabilit
 		deliver, fail = f.fault(request)
 	}
 	if target == nil || !deliver {
-		return errAvailabilitySend
+		return errAnnounceSend
 	}
-	body, err := encodeAvailability(message)
+	body, err := encodeAnnouncement(message)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	response := serveAvailability(target.a.Handler(), http.MethodPost, availabilityPath, "application/json", string(body))
+	response := serveAnnouncement(target.a.Handler(), http.MethodPost, announcePath, "application/json", string(body))
 	if fail || response.Code != http.StatusNoContent {
-		return errAvailabilitySend
+		return errAnnounceSend
 	}
 	return nil
 }
 
-// hint returns name's retained record for owner's key, or nil.
-func (f *testFleet) hint(name, owner string, key cacheKey) *hint {
+// hint returns name's retained record for provider's key, or nil.
+func (f *testFleet) hint(name, provider string, key cacheKey) *hint {
 	n := f.byName[name]
 	n.a.mu.Lock()
 	defer n.a.mu.Unlock()
-	return n.a.index.find(mustNodeID(f.t, f.byName[owner].id), key)
+	return n.a.index.find(mustNodeID(f.t, f.byName[provider].id), key)
 }
 
 // requests returns the requests sent from one node, in order.

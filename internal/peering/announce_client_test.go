@@ -10,20 +10,20 @@ import (
 	"testing"
 )
 
-func TestSendAvailabilityDeliversOverTLS(t *testing.T) {
+func TestSendAnnouncementDeliversOverTLS(t *testing.T) {
 	self := mustNodeID(t, testIDC)
-	var received []availabilityMessage
-	server := httptest.NewTLSServer(newAvailabilityHandler(self, func(message availabilityMessage) error {
+	var received []announcement
+	server := httptest.NewTLSServer(newAnnounceHandler(self, func(message announcement) error {
 		received = append(received, message)
 		return nil
 	}))
 	defer server.Close()
-	message := availabilityMessage{
+	message := announcement{
 		sender:    mustNodeID(t, testIDB),
 		recipient: self,
-		claims:    []hintClaim{testClaim(t, testIDA, testCacheKey(1), testIDA, testIDB)},
+		hints:     []announcedHint{testHint(t, testIDA, testCacheKey(1), testIDA, testIDB)},
 	}
-	if err := sendAvailability(context.Background(), server.Client(), serverAddress(server), message); err != nil {
+	if err := sendAnnouncement(context.Background(), server.Client(), serverAddress(server), message); err != nil {
 		t.Fatal(err)
 	}
 	if len(received) != 1 || !reflect.DeepEqual(received[0], message) {
@@ -31,25 +31,25 @@ func TestSendAvailabilityDeliversOverTLS(t *testing.T) {
 	}
 }
 
-func TestSendAvailabilityDeliversLargestBatch(t *testing.T) {
+func TestSendAnnouncementDeliversLargestBatch(t *testing.T) {
 	self := mustNodeID(t, testIDC)
 	index := newHintIndex(self)
-	server := httptest.NewTLSServer(newAvailabilityHandler(self, mergeInto(index)))
+	server := httptest.NewTLSServer(newAnnounceHandler(self, mergeInto(index)))
 	defer server.Close()
 	ids := []string{testIDA, testIDB}
 	for i := range maxHintSeen - 2 {
 		ids = append(ids, testNodeID(i))
 	}
-	// 33 claims with full seen sets fit the byte bound, and 34 do not.
-	message := availabilityMessage{sender: mustNodeID(t, testIDB), recipient: self}
+	// 33 hints with full seen sets fit the byte bound, and 34 do not.
+	message := announcement{sender: mustNodeID(t, testIDB), recipient: self}
 	for i := range 34 {
-		message.claims = append(message.claims, testClaim(t, testIDA, testCacheKey(i), ids...))
+		message.hints = append(message.hints, testHint(t, testIDA, testCacheKey(i), ids...))
 	}
-	if err := sendAvailability(context.Background(), server.Client(), serverAddress(server), message); err == nil {
+	if err := sendAnnouncement(context.Background(), server.Client(), serverAddress(server), message); err == nil {
 		t.Fatal("oversized batch sent")
 	}
-	message.claims = message.claims[:33]
-	if err := sendAvailability(context.Background(), server.Client(), serverAddress(server), message); err != nil {
+	message.hints = message.hints[:33]
+	if err := sendAnnouncement(context.Background(), server.Client(), serverAddress(server), message); err != nil {
 		t.Fatal(err)
 	}
 	if index.len() != 33 {
@@ -57,22 +57,22 @@ func TestSendAvailabilityDeliversLargestBatch(t *testing.T) {
 	}
 }
 
-func TestSendAvailabilityRequiresNoContent(t *testing.T) {
-	message := availabilityMessage{
+func TestSendAnnouncementRequiresNoContent(t *testing.T) {
+	message := announcement{
 		sender:    mustNodeID(t, testIDB),
 		recipient: mustNodeID(t, testIDC),
-		claims:    []hintClaim{testClaim(t, testIDA, testCacheKey(1), testIDA, testIDB)},
+		hints:     []announcedHint{testHint(t, testIDA, testCacheKey(1), testIDA, testIDB)},
 	}
 	for _, status := range []int{http.StatusOK, http.StatusAccepted, http.StatusBadRequest, http.StatusConflict, http.StatusServiceUnavailable} {
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) }))
-		if err := sendAvailability(context.Background(), server.Client(), serverAddress(server), message); err == nil {
+		if err := sendAnnouncement(context.Background(), server.Client(), serverAddress(server), message); err == nil {
 			t.Errorf("status %d counted as an acknowledgement", status)
 		}
 		server.Close()
 	}
 }
 
-func TestSendAvailabilityDoesNotFollowRedirects(t *testing.T) {
+func TestSendAnnouncementDoesNotFollowRedirects(t *testing.T) {
 	var targetCalls atomic.Int32
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		targetCalls.Add(1)
@@ -80,17 +80,17 @@ func TestSendAvailabilityDoesNotFollowRedirects(t *testing.T) {
 	}))
 	defer target.Close()
 	redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, target.URL+availabilityPath, http.StatusTemporaryRedirect)
+		http.Redirect(w, r, target.URL+announcePath, http.StatusTemporaryRedirect)
 	}))
 	defer redirect.Close()
 	client := redirect.Client()
 	client.CheckRedirect = nil // the sender must not rely on the caller's policy
-	message := availabilityMessage{
+	message := announcement{
 		sender:    mustNodeID(t, testIDB),
 		recipient: mustNodeID(t, testIDC),
-		claims:    []hintClaim{testClaim(t, testIDA, testCacheKey(1), testIDA, testIDB)},
+		hints:     []announcedHint{testHint(t, testIDA, testCacheKey(1), testIDA, testIDB)},
 	}
-	if err := sendAvailability(context.Background(), client, serverAddress(redirect), message); err == nil {
+	if err := sendAnnouncement(context.Background(), client, serverAddress(redirect), message); err == nil {
 		t.Fatal("redirect counted as an acknowledgement")
 	}
 	if targetCalls.Load() != 0 {
@@ -98,7 +98,7 @@ func TestSendAvailabilityDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
-func TestSendAvailabilityRejectsInvalidBatchBeforeSending(t *testing.T) {
+func TestSendAnnouncementRejectsInvalidBatchBeforeSending(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -106,17 +106,17 @@ func TestSendAvailabilityRejectsInvalidBatchBeforeSending(t *testing.T) {
 	}))
 	defer server.Close()
 	sender, recipient := mustNodeID(t, testIDB), mustNodeID(t, testIDC)
-	invalid := []availabilityMessage{
+	invalid := []announcement{
 		{sender: sender, recipient: recipient},
-		{sender: sender, recipient: recipient, claims: []hintClaim{testClaim(t, testIDA, testCacheKey(1), testIDA)}},
+		{sender: sender, recipient: recipient, hints: []announcedHint{testHint(t, testIDA, testCacheKey(1), testIDA)}},
 	}
 	for _, message := range invalid {
-		if err := sendAvailability(context.Background(), server.Client(), serverAddress(server), message); err == nil {
+		if err := sendAnnouncement(context.Background(), server.Client(), serverAddress(server), message); err == nil {
 			t.Errorf("invalid batch %+v sent", message)
 		}
 	}
-	valid := availabilityMessage{sender: sender, recipient: recipient, claims: []hintClaim{testClaim(t, testIDA, testCacheKey(1), testIDA, testIDB)}}
-	if err := sendAvailability(context.Background(), server.Client(), "bad address", valid); err == nil {
+	valid := announcement{sender: sender, recipient: recipient, hints: []announcedHint{testHint(t, testIDA, testCacheKey(1), testIDA, testIDB)}}
+	if err := sendAnnouncement(context.Background(), server.Client(), "bad address", valid); err == nil {
 		t.Error("invalid destination accepted")
 	}
 	if calls.Load() != 0 {

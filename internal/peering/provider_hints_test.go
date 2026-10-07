@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestNewAvailabilityOriginatesCurrentInventory(t *testing.T) {
+func TestNewProviderHintsAnnouncesCurrentInventory(t *testing.T) {
 	dir := bookTestDir(t)
 	book, err := OpenBook(dir, "self.test:443")
 	if err != nil {
@@ -18,7 +18,7 @@ func TestNewAvailabilityOriginatesCurrentInventory(t *testing.T) {
 	}
 	defer book.Close()
 	inventory := newTestInventory(testCacheKey(2).String(), testCacheKey(1).String(), "not a key")
-	a, err := NewAvailability(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a, err := NewProviderHints(book, inventory, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,13 +33,13 @@ func TestNewAvailabilityOriginatesCurrentInventory(t *testing.T) {
 	}
 }
 
-func TestAvailabilityRunForwardsInventoryChanges(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDA, "a.test:443", time.Now, 1)
+func TestProviderHintsRunForwardsInventoryChanges(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDA, "a.test:443", time.Now, 1)
 	if _, err := a.book.Merge(Message{Address: "b.test:443", NodeID: testIDB, Peers: map[string]string{}}); err != nil {
 		t.Fatal(err)
 	}
-	received := make(chan availabilityMessage, 1)
-	a.send = func(_ context.Context, address string, message availabilityMessage) error {
+	received := make(chan announcement, 1)
+	a.send = func(_ context.Context, address string, message announcement) error {
 		if address != "b.test:443" {
 			t.Errorf("sent to %s", address)
 		}
@@ -59,7 +59,7 @@ func TestAvailabilityRunForwardsInventoryChanges(t *testing.T) {
 	inventory.set(testCacheKey(1).String())
 	select {
 	case message := <-received:
-		if message.recipient != mustNodeID(t, testIDB) || len(message.claims) != 1 || message.claims[0].owner != a.self {
+		if message.recipient != mustNodeID(t, testIDB) || len(message.hints) != 1 || message.hints[0].provider != a.self {
 			t.Fatalf("message = %+v", message)
 		}
 	case <-time.After(5 * time.Second):
@@ -71,8 +71,8 @@ func TestAvailabilityRunForwardsInventoryChanges(t *testing.T) {
 	}
 }
 
-func TestAvailabilityRunBoundsConcurrencyAndJoinsRequests(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDA, "a.test:443", time.Now, 1)
+func TestProviderHintsRunBoundsConcurrencyAndJoinsRequests(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDA, "a.test:443", time.Now, 1)
 	for i := range 8 {
 		if _, err := a.book.Merge(Message{Address: testNodeID(i) + ".test:443", NodeID: testNodeID(i), Peers: map[string]string{}}); err != nil {
 			t.Fatal(err)
@@ -81,7 +81,7 @@ func TestAvailabilityRunBoundsConcurrencyAndJoinsRequests(t *testing.T) {
 	var active, peak, finished atomic.Int32
 	var once sync.Once
 	saturated := make(chan struct{})
-	a.send = func(ctx context.Context, _ string, _ availabilityMessage) error {
+	a.send = func(ctx context.Context, _ string, _ announcement) error {
 		n := active.Add(1)
 		for {
 			old := peak.Load()
@@ -89,7 +89,7 @@ func TestAvailabilityRunBoundsConcurrencyAndJoinsRequests(t *testing.T) {
 				break
 			}
 		}
-		if n == availabilityConcurrency {
+		if n == announceConcurrency {
 			once.Do(func() { close(saturated) })
 		}
 		<-ctx.Done() // a slow peer holds its slot until cancellation
@@ -116,21 +116,21 @@ func TestAvailabilityRunBoundsConcurrencyAndJoinsRequests(t *testing.T) {
 	time.Sleep(50 * time.Millisecond) // give an extra request a chance to start
 	cancel()
 	<-done
-	if peak.Load() != availabilityConcurrency {
+	if peak.Load() != announceConcurrency {
 		t.Fatalf("peak concurrent requests = %d", peak.Load())
 	}
-	if active.Load() != 0 || finished.Load() != availabilityConcurrency {
+	if active.Load() != 0 || finished.Load() != announceConcurrency {
 		t.Fatalf("Run returned with %d active, %d finished", active.Load(), finished.Load())
 	}
 }
 
-func TestAvailabilityRunAppliesInFlightResultsOnShutdown(t *testing.T) {
-	a, inventory := newTestAvailability(t, testIDA, "a.test:443", time.Now, 1)
+func TestProviderHintsRunAppliesInFlightResultsOnShutdown(t *testing.T) {
+	a, inventory := newTestProviderHints(t, testIDA, "a.test:443", time.Now, 1)
 	if _, err := a.book.Merge(Message{Address: "b.test:443", NodeID: testIDB, Peers: map[string]string{}}); err != nil {
 		t.Fatal(err)
 	}
 	started := make(chan struct{})
-	a.send = func(ctx context.Context, _ string, _ availabilityMessage) error {
+	a.send = func(ctx context.Context, _ string, _ announcement) error {
 		close(started)
 		<-ctx.Done()
 		return ctx.Err()
@@ -160,9 +160,9 @@ func TestAvailabilityRunAppliesInFlightResultsOnShutdown(t *testing.T) {
 	}
 }
 
-func TestAvailabilityOwnersRejectsInvalidKeys(t *testing.T) {
-	a, _ := newTestAvailability(t, testIDA, "a.test:443", time.Now, 1)
-	if got := a.Owners("NOT-A-KEY"); got != nil {
-		t.Fatalf("owners = %v", got)
+func TestProvidersRejectsInvalidKeys(t *testing.T) {
+	a, _ := newTestProviderHints(t, testIDA, "a.test:443", time.Now, 1)
+	if got := a.Providers("NOT-A-KEY"); got != nil {
+		t.Fatalf("providers = %v", got)
 	}
 }

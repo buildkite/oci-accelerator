@@ -23,7 +23,7 @@ import (
 
 func TestLifecycleProbesBeforeServing(t *testing.T) {
 	p := proxy.New(config.Config{}, nil, nil, nil)
-	server := newMetricsServer(config.Config{}, p, &atomic.Pointer[peering.Availability]{})
+	server := newMetricsServer(config.Config{}, p, &atomic.Pointer[peering.ProviderHints]{})
 	for path, want := range map[string]int{"/livez": http.StatusOK, "/readyz": http.StatusServiceUnavailable} {
 		response := httptest.NewRecorder()
 		server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
@@ -33,12 +33,12 @@ func TestLifecycleProbesBeforeServing(t *testing.T) {
 	}
 }
 
-func TestMetricsOmitAvailabilityWithoutPeering(t *testing.T) {
-	server := newMetricsServer(config.Config{}, proxy.New(config.Config{}, nil, nil, nil), &atomic.Pointer[peering.Availability]{})
+func TestMetricsOmitProviderHintsWithoutPeering(t *testing.T) {
+	server := newMetricsServer(config.Config{}, proxy.New(config.Config{}, nil, nil, nil), &atomic.Pointer[peering.ProviderHints]{})
 	response := httptest.NewRecorder()
 	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "availability") {
-		t.Fatalf("status %d, availability metrics present without peering", response.Code)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "provider_hint") || strings.Contains(response.Body.String(), "announcements") {
+		t.Fatalf("status %d, provider hint metrics present without peering", response.Code)
 	}
 }
 

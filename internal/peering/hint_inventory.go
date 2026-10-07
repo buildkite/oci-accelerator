@@ -5,11 +5,11 @@ import (
 	"slices"
 )
 
-// reconcile originates hints for keys added since the previous inventory and
+// reconcile announces hints for keys added since the previous inventory and
 // forgets local hints for keys that disappeared, without withdrawals.
 // Comparing successive inventories, rather than the bounded index, stops
 // unrelated changes from reannouncing a hint that FIFO eviction forgot.
-func (a *Availability) reconcile(keys []string) {
+func (a *ProviderHints) reconcile(keys []string) {
 	current := parseInventory(keys)
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -17,17 +17,17 @@ func (a *Availability) reconcile(keys []string) {
 }
 
 // restoreInventory reconciles restored hints with the inventory at startup.
-// It forgets local hints for absent keys and originates hints for present
+// It forgets local hints for absent keys and announces hints for present
 // keys without a retained local hint. Retained local hints keep their seen
 // sets and forwarding progress. The inventory becomes the baseline.
-func (a *Availability) restoreInventory(keys []string) {
+func (a *ProviderHints) restoreInventory(keys []string) {
 	current := parseInventory(keys)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for e := a.index.fifo.Front(); e != nil; {
 		h := e.Value.(*hint)
 		e = e.Next()
-		if _, present := slices.BinarySearchFunc(current, h.key, compareCacheKeys); h.owner == a.self && !present && a.index.forget(h.key) {
+		if _, present := slices.BinarySearchFunc(current, h.key, compareCacheKeys); h.provider == a.self && !present && a.index.forget(h.key) {
 			a.revision++
 		}
 	}
@@ -35,7 +35,7 @@ func (a *Availability) restoreInventory(keys []string) {
 }
 
 // applyInventory requires mu.
-func (a *Availability) applyInventory(current []cacheKey) {
+func (a *ProviderHints) applyInventory(current []cacheKey) {
 	now := a.now()
 	previous := a.baseline
 	i, j := 0, 0
@@ -57,7 +57,7 @@ func (a *Availability) applyInventory(current []cacheKey) {
 			i++
 		case order > 0:
 			if a.index.find(a.self, current[j]) == nil {
-				a.index.originate(current[j], now.Add(a.jitter(availabilityCadence)))
+				a.index.announce(current[j], now.Add(a.jitter(announceCadence)))
 				a.revision++
 			}
 			j++

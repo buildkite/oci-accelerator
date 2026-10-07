@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-func TestAvailabilityEvictionSendsNoWithdrawal(t *testing.T) {
+func TestProviderHintsEvictionSendsNoWithdrawal(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	f.know("B", "A")
 	key, other := testCacheKey(1), testCacheKey(2)
-	f.originate("A", key)
-	f.originate("A", other)
+	f.announce("A", key)
+	f.announce("A", other)
 	f.settle()
 	before := len(f.sent)
 
@@ -32,11 +32,11 @@ func TestAvailabilityEvictionSendsNoWithdrawal(t *testing.T) {
 	}
 }
 
-func TestAvailabilityRemovalCancelsPendingLocalWork(t *testing.T) {
+func TestProviderHintsRemovalCancelsPendingLocalWork(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.byName["A"].inventory.set()
 	f.byName["A"].a.reconcile(nil)
 	f.settle()
@@ -45,12 +45,12 @@ func TestAvailabilityRemovalCancelsPendingLocalWork(t *testing.T) {
 	}
 }
 
-func TestAvailabilityRecommitDoesNotResetRemoteForwarding(t *testing.T) {
+func TestProviderHintsRecommitDoesNotResetRemoteForwarding(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C")
 	f.know("A", "B")
 	f.know("B", "A", "C")
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.settle()
 	remote := f.hint("B", "A", key)
 	if remote == nil || remote.pending {
@@ -61,7 +61,7 @@ func TestAvailabilityRecommitDoesNotResetRemoteForwarding(t *testing.T) {
 	// Removal and recommit start a fresh local pass on A.
 	f.byName["A"].inventory.set()
 	f.byName["A"].a.reconcile(nil)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.settle()
 	if got := len(f.requests("A")); got != 2 {
 		t.Fatalf("A sent %d requests, want one per pass", got)
@@ -71,18 +71,18 @@ func TestAvailabilityRecommitDoesNotResetRemoteForwarding(t *testing.T) {
 	}
 }
 
-func TestAvailabilityUnrelatedChangesDoNotReannounceForgottenHints(t *testing.T) {
+func TestProviderHintsUnrelatedChangesDoNotReannounceForgottenHints(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	a := f.byName["A"].a
 	a.index = newBoundedHintIndex(a.self, hintLimits{records: 1, cost: maxHintCost, encoded: hintSnapshotBudget})
 	first, second, third := testCacheKey(1), testCacheKey(2), testCacheKey(3)
-	f.originate("A", first)
-	f.originate("A", second) // FIFO forgets the first hint
+	f.announce("A", first)
+	f.announce("A", second) // FIFO forgets the first hint
 	if f.hint("A", "A", first) != nil {
 		t.Fatal("first hint survived FIFO eviction")
 	}
-	f.originate("A", third)
+	f.announce("A", third)
 	if f.hint("A", "A", first) != nil {
 		t.Fatal("an unrelated change reannounced a forgotten hint")
 	}

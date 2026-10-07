@@ -29,12 +29,12 @@ func TestStartPeeringDisabledHasNoSideEffects(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "peer")
 	called := false
 	inventory := &fakeInventory{}
-	done, availability, cleanup, err := startPeering(context.Background(), config.Config{Peer: config.Peer{StateDir: dir}}, nil, inventory, slog.New(slog.NewTextHandler(io.Discard, nil)), func(string, string) (net.Listener, error) {
+	done, hints, cleanup, err := startPeering(context.Background(), config.Config{Peer: config.Peer{StateDir: dir}}, nil, inventory, slog.New(slog.NewTextHandler(io.Discard, nil)), func(string, string) (net.Listener, error) {
 		called = true
 		return nil, errors.New("unexpected listen")
 	})
-	if err != nil || done != nil || availability != nil || cleanup != nil || called {
-		t.Fatalf("startPeering disabled: done nil %t, availability nil %t, cleanup nil %t, error %v, listen called %t", done == nil, availability == nil, cleanup == nil, err, called)
+	if err != nil || done != nil || hints != nil || cleanup != nil || called {
+		t.Fatalf("startPeering disabled: done nil %t, hints nil %t, cleanup nil %t, error %v, listen called %t", done == nil, hints == nil, cleanup == nil, err, called)
 	}
 	if inventory.calls.Load() != 0 {
 		t.Fatal("disabled peering read or subscribed to the cache inventory")
@@ -123,13 +123,13 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	}
 }
 
-func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
+func TestPeerProviderHintsPropagateOverMutualTLS(t *testing.T) {
 	root := t.TempDir()
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	listenerA, listenerB := newTestListener(t), newTestListener(t)
-	start := func(name string, listener net.Listener, seeds []string, inventory *fakeInventory) (*peering.Availability, func() error) {
+	start := func(name string, listener net.Listener, seeds []string, inventory *fakeInventory) (*peering.ProviderHints, func() error) {
 		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: listener.Addr().String(), Seeds: seeds, StateDir: filepath.Join(root, name)}, ShutdownTimeout: 100 * time.Millisecond}
-		_, availability, cleanup, err := startPeering(context.Background(), cfg, signer, inventory, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
+		_, hints, cleanup, err := startPeering(context.Background(), cfg, signer, inventory, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +139,7 @@ func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		return availability, stop
+		return hints, stop
 	}
 	key := strings.Repeat("ab", 32)
 	b, stopB := start("b", listenerB, nil, &fakeInventory{})
@@ -152,9 +152,9 @@ func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
 	// A pass that starts before discovery resolves B finishes without sending,
 	// so recommit the entry until one pass reaches B.
 	deadline := time.Now().Add(20 * time.Second)
-	for !reflect.DeepEqual(b.Owners(key), []string{string(idA)}) {
+	for !reflect.DeepEqual(b.Providers(key), []string{string(idA)}) {
 		if time.Now().After(deadline) {
-			t.Fatalf("B owners = %v, want A", b.Owners(key))
+			t.Fatalf("B providers = %v, want A", b.Providers(key))
 		}
 		inventoryA.set(t)
 		inventoryA.set(t, key)
@@ -168,7 +168,7 @@ func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// The availability endpoint shares the fleet mTLS requirement.
+	// The announce endpoint shares the fleet mTLS requirement.
 	_, clientTLS, err := signer.PeerTLSConfigs()
 	if err != nil {
 		t.Fatal(err)
@@ -177,13 +177,13 @@ func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
 	unauthTLS.GetClientCertificate = nil
 	client := peering.NewClient(unauthTLS)
 	defer client.CloseIdleConnections()
-	body := `{"senderNodeId":"000000000009","recipientNodeId":"000000000008","claims":[]}`
-	if response, err := client.Post("https://"+listenerB.Addr().String()+"/v1/cache/availability", "application/json", strings.NewReader(body)); err == nil {
+	body := `{"senderNodeId":"000000000009","recipientNodeId":"000000000008","hints":[]}`
+	if response, err := client.Post("https://"+listenerB.Addr().String()+"/v1/cache/announce", "application/json", strings.NewReader(body)); err == nil {
 		response.Body.Close()
-		t.Fatalf("unauthenticated availability request reached HTTP with status %d", response.StatusCode)
+		t.Fatalf("unauthenticated announcement reached HTTP with status %d", response.StatusCode)
 	}
 
-	var published atomic.Pointer[peering.Availability]
+	var published atomic.Pointer[peering.ProviderHints]
 	published.Store(a)
 	server := newMetricsServer(config.Config{}, proxy.New(config.Config{}, nil, nil, nil), &published)
 	stats := a.Stats()
@@ -193,11 +193,11 @@ func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
 		t.Fatalf("stats changed during the scrape: %+v then %+v", stats, after)
 	}
 	for _, line := range []string{
-		"oci_accelerator_availability_hints 1\n",
-		"oci_accelerator_availability_hint_evictions_total 0\n",
-		fmt.Sprintf("oci_accelerator_availability_sends_total{outcome=%q} %d\n", "acknowledged", stats.Acknowledged),
-		fmt.Sprintf("oci_accelerator_availability_sends_total{outcome=%q} %d\n", "failed", stats.Failed),
-		"oci_accelerator_availability_checkpoint_failures_total 0\n",
+		"oci_accelerator_provider_hints 1\n",
+		"oci_accelerator_provider_hint_evictions_total 0\n",
+		fmt.Sprintf("oci_accelerator_announcements_total{outcome=%q} %d\n", "acknowledged", stats.Acknowledged),
+		fmt.Sprintf("oci_accelerator_announcements_total{outcome=%q} %d\n", "failed", stats.Failed),
+		"oci_accelerator_provider_hint_checkpoint_failures_total 0\n",
 	} {
 		if !strings.Contains(response.Body.String(), line) {
 			t.Fatalf("metrics missing %q", line)
@@ -209,13 +209,13 @@ func TestPeerAvailabilityPropagatesOverMutualTLS(t *testing.T) {
 	if err := stopB(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "b", "availability.json")); err != nil {
-		t.Fatalf("no availability checkpoint after cleanup: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "b", "provider-hints.json")); err != nil {
+		t.Fatalf("no provider hint checkpoint after cleanup: %v", err)
 	}
 	restartedListener := newTestListener(t)
 	restarted, _ := start("b", restartedListener, nil, &fakeInventory{})
-	if got := restarted.Owners(key); !reflect.DeepEqual(got, []string{string(idA)}) {
-		t.Fatalf("B owners after restart = %v", got)
+	if got := restarted.Providers(key); !reflect.DeepEqual(got, []string{string(idA)}) {
+		t.Fatalf("B providers after restart = %v", got)
 	}
 }
 

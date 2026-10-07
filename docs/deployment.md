@@ -805,7 +805,7 @@ docker compose up -d
 
 ## Peer discovery
 
-Peering exchanges addresses, node IDs, and [cache availability hints](#cache-availability-hints).
+Peering exchanges addresses, node IDs, and [provider hints](#provider-hints).
 It does not share cached content, registry credentials, or authorization grants. Image pulls and
 readiness do not depend on reachable peers.
 
@@ -935,10 +935,10 @@ Upgrade all peers together. The identity-aware schema is incompatible with addre
 exchanges, with no fallback. Startup migrates version-1 `peers.json` lists to version-2 local
 candidates and learns their IDs through discovery. Keep a stopped-state backup if you need
 rollback, because older binaries cannot read the new state directory. Binaries that do not
-persist availability hints refuse to start beside `availability.json`, so delete that file from
+persist provider hints refuse to start beside `provider-hints.json`, so delete that file from
 the stopped instance's state directory before rolling back to one.
 
-State files, including `availability.json`, must be regular, process-owned, mode 0600 files.
+State files, including `provider-hints.json`, must be regular, process-owned, mode 0600 files.
 Startup takes an exclusive process lock, removes recognized abandoned staging files, and
 rejects corrupt state, unsafe files, or unknown files without replacing the book. Bind or state startup failures prevent startup.
 Runtime persistence failures fail the exchange and log `peer address book update failed` while
@@ -948,18 +948,18 @@ A peer-listener failure stops the process rather than leaving an
 enabled service silently unavailable. Outage and recovery logs include the peer address but no
 raw network errors or credentials.
 
-### Cache availability hints
+### Provider hints
 
-When peering is enabled, each instance tells peers which cache keys it holds, using
-`POST /v1/cache/availability` on the same mutual-TLS peer listener:
+When peering is enabled, each instance announces which cache keys it holds to its peers, using
+`POST /v1/cache/announce` on the same mutual-TLS peer listener:
 
 ```json
 {
   "senderNodeId": "K8r2_vN5xQpL",
   "recipientNodeId": "mT4bY9-wH6sR",
-  "claims": [
+  "hints": [
     {
-      "ownerNodeId": "fzyaLmuBTQWo",
+      "providerNodeId": "fzyaLmuBTQWo",
       "key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       "seen": ["K8r2_vN5xQpL", "fzyaLmuBTQWo"]
     }
@@ -967,33 +967,34 @@ When peering is enabled, each instance tells peers which cache keys it holds, us
 }
 ```
 
-- `senderNodeId` is the immediate sender, and `ownerNodeId` is the node that held the key.
-  Relays never replace the owner.
+- `senderNodeId` is the immediate sender, and `providerNodeId` is the node that held the key.
+  Relays never replace the provider.
 - `recipientNodeId` is the intended receiver. A receiver with another ID returns `409` without
   changing state, which covers an address reused by another node.
 - `key` is the cache key: a lowercase SHA-256 hex digest of the registry authority, repository,
   object kind, digest, `Accept` values, and media type. It does not state those inputs, but a
   peer that can guess them can confirm that this instance holds the object.
 - `seen` is the sorted, unique set of node IDs known to have received the hint. It must include
-  the owner and the sender.
+  the provider and the sender.
 
-The receiver validates the whole batch before accepting any of it and returns `204` once the
-batch is in memory, `400` for invalid requests, and `503` while stopping. Only `204` counts as an
-acknowledgement, and it says nothing about durability or onward delivery. Requests are limited
-to 512 KiB and 512 claims, with at most 1,025 seen IDs per claim. Unknown, duplicate, missing,
-or differently cased fields, trailing data, and a sender equal to the receiver are rejected.
+The receiver validates the whole announcement before accepting any of it and returns `204` once
+it is in memory, `400` for invalid requests, and `503` while stopping. Only `204` counts as an
+acknowledgement, and it says nothing about durability or onward delivery. Announcements are
+limited to 512 KiB and 512 hints, with at most 1,025 seen IDs per hint. Unknown, duplicate,
+missing, or differently cased fields, trailing data, and a sender equal to the receiver are
+rejected.
 
-Committing a cache entry originates a hint. Startup originates hints for the current cache
+Committing a cache entry announces a hint. Startup announces hints for the current cache
 inventory. Removal or invalidation forgets the local hint and cancels its pending work, without
-a withdrawal. A received hint is stored with the receiver added to `seen`. Hints owned by the
-receiver itself are ignored, because its own cache is authoritative. Unknown owners are stored
-and relayed like any other. Hints never create or change address book mappings.
+a withdrawal. A received hint is stored with the receiver added to `seen`. Hints whose provider
+is the receiver itself are ignored, because its own cache is authoritative. Unknown providers are
+stored and relayed like any other. Hints never create or change address book mappings.
 
 Each new hint gets one forwarding pass:
 
 - It starts about one second after the hint arrives, with ±20% jitter.
 - Destinations are chosen at random from resolved peers that are not in `seen`, at their current
-  addresses. Claims for one destination are batched.
+  addresses. Hints for one destination are batched into one announcement.
 - The pass stops at two distinct acknowledged destinations, after six attempts including
   successes, or when every resolved peer has the hint. Unseen peers can remain afterwards.
   A pass that starts before discovery has resolved any unseen peer therefore sends nothing.
@@ -1001,8 +1002,8 @@ Each new hint gets one forwarding pass:
   are not forwarded.
 - Failed destinations back off from one second, doubling to 30 seconds with jitter. Backoff is
   per node ID and address, and does not reset a hint's attempt budget.
-- An instance sends at most four availability requests at a time, at most one per destination,
-  each with a five-second deadline. Redirects are never followed.
+- An instance sends at most four announcements at a time, at most one per destination, each
+  with a five-second deadline. Redirects are never followed.
 
 Duplicates merge `seen` sets but never refresh a hint, reset its budget, or reopen a finished
 pass. Learning a new peer does not reopen a finished pass either. Lost responses can deliver a
@@ -1013,45 +1014,47 @@ and D, while only D knows E, and A chooses B and C, then neither D nor E hears o
 Each instance retains up to 200,000 hints, local and remote together, within an accounted
 64 MiB of memory. Each hint is charged 384 bytes plus 12 bytes per seen ID, so records with a
 few seen IDs reach the memory limit at roughly 160,000 hints. The previous cache inventory used
-to detect changes takes 32 bytes per cache entry outside that budget. When full, the oldest hints are
-evicted first, without refreshing order on duplicates. Evicting a hint never evicts cached
-content and sends nothing. A later notice can reinsert it. A hint whose `seen` set would exceed
-1,025 IDs stays available for lookup but is never forwarded again. These limits are built in.
+to detect changes takes 32 bytes per cache entry outside that budget. When full, the oldest
+hints are evicted first, without refreshing order on duplicates. Evicting a hint never evicts
+cached content and sends nothing. A later announcement can reinsert it. A hint whose `seen` set
+would exceed 1,025 IDs stays available for lookup but is never forwarded again. These limits
+are built in.
 
-Hints are advisory. An owner may have evicted the entry, and hints never expire. No instance
+Hints are advisory. A provider may have evicted the entry, and hints never expire. No instance
 fetches content from peers, and hints never affect cache keys or upstream authorization.
 All instances need this protocol. Older instances reject it, which only consumes attempts.
 
 #### Persisted hints
 
-Retained hints are checkpointed to `availability.json` in the peer state directory, beside
+Retained hints are checkpointed to `provider-hints.json` in the peer state directory, beside
 `peers.json`, under the same process lock and file rules. The file is versioned JSON with this
-instance's node ID and every retained hint in FIFO order: its owner, key, `seen` set,
+instance's node ID and every retained hint in FIFO order: its provider, key, `seen` set,
 suppression, and whether its forwarding pass is pending, with the acknowledged destinations and
 attempts left. You may read it, but do not edit live state.
 
 - While hints change, a background checkpoint runs every 30 seconds, even under continuous
   changes, so a busy instance rewrites the whole file at most that often. Duplicates that add
   nothing do not count as changes. A checkpoint briefly copies the retained hints, about
-  150 bytes each, before writing them without holding the lock. Shutdown writes a final checkpoint after availability requests and handlers stop and
-  before the state lock is released. Each write streams to a private staging file, syncs it,
-  renames it into place, and syncs the directory.
+  150 bytes each, before writing them without holding the lock. Shutdown writes a final
+  checkpoint after announcements and handlers stop and before the state lock is released.
+  Each write streams to a private staging file, syncs it, renames it into place, and syncs the
+  directory.
 - The file is limited to 64 MiB, and admission keeps retained hints within that bound by
   charging each hint 256 bytes plus 15 bytes per seen ID. With large seen sets this binds before
-  the memory limit, for example at about 4,300 hints with 1,025 seen IDs each. A
-  replacement can briefly need room for both the old and new files. Startup reads the file in
-  a stream, so loading needs memory for the restored hints rather than the whole file.
+  the memory limit, for example at about 4,300 hints with 1,025 seen IDs each. A replacement
+  can briefly need room for both the old and new files. Startup reads the file in a stream, so
+  loading needs memory for the restored hints rather than the whole file.
 - Startup restores hints before the peer listener starts. Pending passes resume about a second
   later with their remaining attempts, and finished passes stay finished. Local hints for keys
   no longer in the cache are dropped without a withdrawal, and cached keys without a retained
   local hint are announced. A clean restart does not announce retained local keys again.
 - A missing file starts with no hints. A corrupt, oversized, unsupported, or another node's file
-  logs `availability state discarded` with the reason, starts with no hints, and is replaced at
-  the next checkpoint. The address book and node ID are untouched. Unsafe permissions, ownership,
-  symlinks, or lock failures still prevent startup, like other peer state.
-- A failed checkpoint logs `availability checkpoint failed` once, keeps serving from memory, and
-  retries at the next interval until `availability checkpoint recovered`. Logs never include
-  hints. Cache serving never depends on checkpoints.
+  logs `provider hint state discarded` with the reason, starts with no hints, and is replaced at
+  the next checkpoint. The address book and node ID are untouched. Unsafe permissions,
+  ownership, symlinks, or lock failures still prevent startup, like other peer state.
+- A failed checkpoint logs `provider hint checkpoint failed` once, keeps serving from memory,
+  and retries at the next interval until `provider hint checkpoint recovered`. Logs never
+  include hints. Cache serving never depends on checkpoints.
 
 A `204` acknowledgement does not mean the hint is on disk. A crash loses changes since the last
 checkpoint and can restore a hint that FIFO eviction removed afterwards, so some hints may be
@@ -1118,8 +1121,8 @@ Metrics use the `oci_accelerator_` prefix and include:
 - cache admission and rejection reasons, entries, readers, fills, bytes, reservations, and
   evictions (the fills gauge includes reservations whose staging is still in progress)
 - Go heap allocation and goroutine gauges
-- with peering enabled, retained availability hints, hint evictions, availability requests by
-  outcome (`acknowledged` or `failed`), and failed availability checkpoints
+- with peering enabled, retained provider hints, hint evictions, announcements by outcome
+  (`acknowledged` or `failed`), and failed provider hint checkpoints
 
 Interpreting them:
 
@@ -1195,9 +1198,9 @@ A stuck handler can therefore delay exit. A second signal uses the operating sys
 termination behavior. For containers, keep the stop grace period longer than
 `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` (see [Compose](#compose)).
 
-When peering is enabled, outbound exchanges and availability requests are cancelled on
+When peering is enabled, outbound exchanges and announcements are cancelled on
 shutdown. Peer cleanup drains inbound exchanges with its own `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT`
-window, joins remaining handlers, and writes a final availability checkpoint before releasing
+window, joins remaining handlers, and writes a final provider hint checkpoint before releasing
 the state lock. Allow time for both proxy and peer drain windows,
 plus metrics cleanup, in your container stop grace period. Filesystem stalls can delay exit.
 
@@ -1213,7 +1216,7 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 | Abandoned fills          | Removed at startup                                                  |
 | Metrics counters         | Reset                                                               |
 | Known peers              | Retained in `OCI_ACCELERATOR_PEER_STATE_DIR` when peering is enabled |
-| Availability hints       | Restored from the last checkpoint, then reconciled with the cache   |
+| Provider hints           | Restored from the last checkpoint, then reconciled with the cache   |
 | Peer reachability and leaf keys | Re-established, not persisted                                |
 
 ## Troubleshooting
@@ -1240,7 +1243,7 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 - Redirect restrictions protect proxy-originated fetches only. They do not constrain the broader
   egress available through opaque CONNECT tunnels, so deployment network controls remain essential.
 - No shared or distributed cache storage, peer content fetching, or background prefetch.
-  Peers share addresses, node IDs, and advisory cache availability hints only. Hint delivery is
+  Peers share addresses, node IDs, and advisory provider hints only. Hint delivery is
   best effort, with no withdrawal, expiry, or repair.
 - No Kubernetes manifests, and no automated container runtime acceptance in CI.
 - Fault tests exercise process termination and private tmpfs exhaustion, not power loss or

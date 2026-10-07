@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-const availabilityCheckpointInterval = 30 * time.Second
+const hintCheckpointInterval = 30 * time.Second
 
-var errAvailabilityCheckpoint = errors.New("availability checkpoint failed")
+var errHintCheckpoint = errors.New("provider hint checkpoint failed")
 
 // checkpointResult reports one background write of the state at revision.
 type checkpointResult struct {
@@ -20,7 +20,7 @@ type checkpointResult struct {
 // Checkpoint synchronously writes the state if it changed since the last
 // successful checkpoint. Call it only after Run has returned, so it is the
 // only writer.
-func (a *Availability) Checkpoint() error {
+func (a *ProviderHints) Checkpoint() error {
 	if !a.dirty() {
 		return nil
 	}
@@ -30,29 +30,29 @@ func (a *Availability) Checkpoint() error {
 
 // capture takes a consistent copy of the index in FIFO order. Filesystem I/O
 // happens later, without the lock.
-func (a *Availability) capture() availabilitySnapshot {
+func (a *ProviderHints) capture() hintSnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	snapshot := availabilitySnapshot{self: a.self, revision: a.revision, hints: make([]hint, 0, a.index.len())}
+	snapshot := hintSnapshot{self: a.self, revision: a.revision, hints: make([]hint, 0, a.index.len())}
 	for e := a.index.fifo.Front(); e != nil; e = e.Next() {
 		h := e.Value.(*hint)
 		snapshot.hints = append(snapshot.hints, hint{
-			owner: h.owner, key: h.key, seen: h.seen, suppressed: h.suppressed,
+			provider: h.provider, key: h.key, seen: h.seen, suppressed: h.suppressed,
 			pending: h.pending, acked: h.acked, ackCount: h.ackCount, attempts: h.attempts,
 		})
 	}
 	return snapshot
 }
 
-func (a *Availability) writeCheckpoint(snapshot availabilitySnapshot) error {
-	return a.persist(func(w io.Writer) error { return writeAvailabilitySnapshot(w, snapshot) })
+func (a *ProviderHints) writeCheckpoint(snapshot hintSnapshot) error {
+	return a.persist(func(w io.Writer) error { return writeHintSnapshot(w, snapshot) })
 }
 
 // finishCheckpoint records a write's outcome. A checkpoint captured before
 // later mutations leaves the state dirty, and a failure keeps it dirty for
 // the next interval. Only the first failure in a run of failures logs, with
 // the system error alone, never paths or hints.
-func (a *Availability) finishCheckpoint(revision uint64, err error) error {
+func (a *ProviderHints) finishCheckpoint(revision uint64, err error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err != nil {
@@ -66,26 +66,26 @@ func (a *Availability) finishCheckpoint(revision uint64, err error) error {
 			} else if errors.Is(err, errStateOversized) {
 				cause = errStateOversized.Error()
 			}
-			a.logger.Warn("availability checkpoint failed", "cause", cause)
+			a.logger.Warn("provider hint checkpoint failed", "cause", cause)
 		}
-		return errAvailabilityCheckpoint
+		return errHintCheckpoint
 	}
 	if a.checkpointFailing {
 		a.checkpointFailing = false
-		a.logger.Info("availability checkpoint recovered")
+		a.logger.Info("provider hint checkpoint recovered")
 	}
 	a.saved = max(a.saved, revision)
 	return nil
 }
 
-func (a *Availability) dirty() bool {
+func (a *ProviderHints) dirty() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.revision != a.saved
 }
 
-// persistAvailabilityState atomically replaces the snapshot in dir.
-func persistAvailabilityState(dir string, write func(io.Writer) error) error {
-	_, err := replaceStateWith(dir, availabilityStateName, write, syncBookDir)
+// persistHintSnapshot atomically replaces the snapshot in dir.
+func persistHintSnapshot(dir string, write func(io.Writer) error) error {
+	_, err := replaceStateWith(dir, hintSnapshotName, write, syncBookDir)
 	return err
 }

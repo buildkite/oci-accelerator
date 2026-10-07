@@ -12,10 +12,10 @@ const (
 	maxHintCost    = 64 << 20
 	// maxHintSeen admits every node a full address book can describe.
 	maxHintSeen = MaxPeers + 1
-	// maxAvailabilitySnapshot bounds the encoded snapshot file. The index
+	// maxHintSnapshot bounds the encoded snapshot file. The index
 	// keeps its records within this less a fixed allowance for the header.
-	maxAvailabilitySnapshot = 64 << 20
-	hintSnapshotBudget      = maxAvailabilitySnapshot - 4<<10
+	maxHintSnapshot    = 64 << 20
+	hintSnapshotBudget = maxHintSnapshot - 4<<10
 
 	// hintBaseCost estimates one record's memory apart from its seen IDs: the
 	// record itself with its inline forwarding state, its share of the key
@@ -27,7 +27,7 @@ const (
 	hintEncodedPerSeen = nodeIDLen + 3
 )
 
-// hintIndex is the bounded directory of availability hints, keyed by owner and
+// hintIndex is the bounded directory of provider hints, keyed by provider and
 // cache key. Local and remote hints share one FIFO, and admission or seen
 // growth evicts the oldest whole records to stay within every limit.
 // Duplicates never refresh FIFO position. The caller serializes access.
@@ -47,7 +47,7 @@ type hintLimits struct {
 	cost, encoded int64
 }
 
-// hint records that owner held key. Seen lists the nodes known to have
+// hint records that provider held key. Seen lists the nodes known to have
 // received it. A suppressed hint's seen set could not hold a complete union,
 // so it remains available for lookup but is never forwarded again. Its seen
 // set may lack the local ID when the first receipt was already full.
@@ -57,7 +57,7 @@ type hintLimits struct {
 // finishes at the fanout, when attempts run out, or when no resolved peer is
 // unseen. A finished pass never reopens while the record survives.
 type hint struct {
-	owner      nodeID
+	provider   nodeID
 	key        cacheKey
 	seen       []nodeID // sorted, unique
 	suppressed bool
@@ -71,11 +71,11 @@ type hint struct {
 	element    *list.Element
 }
 
-// hintClaim is one validated wire claim.
-type hintClaim struct {
-	owner nodeID
-	key   cacheKey
-	seen  []nodeID // sorted, unique, contains owner and sender
+// announcedHint is one validated hint from an announcement.
+type announcedHint struct {
+	provider nodeID
+	key      cacheKey
+	seen     []nodeID // sorted, unique, contains provider and sender
 }
 
 func newHintIndex(self nodeID) *hintIndex {
@@ -86,18 +86,18 @@ func newBoundedHintIndex(self nodeID, limits hintLimits) *hintIndex {
 	return &hintIndex{self: self, limits: limits, byKey: make(map[cacheKey][]*hint)}
 }
 
-// merge records a received claim and reports whether retained state changed.
-// The local node's own claims are ignored because its cache inventory is
+// merge records a received hint and reports whether retained state changed.
+// The local node's own hints are ignored because its cache inventory is
 // authoritative. A first receipt adds the local ID and starts a forwarding
 // pass due at due. A duplicate only unions seen sets, without refreshing FIFO
 // position, moving its deadline, or reopening a finished pass.
-func (x *hintIndex) merge(c hintClaim, due time.Time) bool {
-	if c.owner == x.self {
+func (x *hintIndex) merge(c announcedHint, due time.Time) bool {
+	if c.provider == x.self {
 		return false
 	}
-	h := x.find(c.owner, c.key)
+	h := x.find(c.provider, c.key)
 	if h == nil {
-		h = &hint{owner: c.owner, key: c.key, queued: -1}
+		h = &hint{provider: c.provider, key: c.key, queued: -1}
 		h.seen = unionNodeIDs(c.seen, []nodeID{x.self})
 		if len(h.seen) > maxHintSeen {
 			h.seen = slices.Clone(c.seen)
@@ -133,11 +133,11 @@ func (x *hintIndex) addSeen(h *hint, ids []nodeID) bool {
 	return true
 }
 
-// originate starts a local hint for key due at due unless one is already
+// announce starts a local hint for key due at due unless one is already
 // retained, so a retained record keeps its seen set and forwarding progress.
-func (x *hintIndex) originate(key cacheKey, due time.Time) {
+func (x *hintIndex) announce(key cacheKey, due time.Time) {
 	if x.find(x.self, key) == nil {
-		h := &hint{owner: x.self, key: key, seen: []nodeID{x.self}, queued: -1}
+		h := &hint{provider: x.self, key: key, seen: []nodeID{x.self}, queued: -1}
 		x.add(h)
 		x.startPass(h, due)
 	}
@@ -153,16 +153,16 @@ func (x *hintIndex) forget(key cacheKey) bool {
 	return h != nil
 }
 
-// owners returns the sorted node IDs advertised as holding key. Hints are
+// providers returns the sorted node IDs advertised as holding key. Hints are
 // advisory and may be stale.
-func (x *hintIndex) owners(key cacheKey) []string {
+func (x *hintIndex) providers(key cacheKey) []string {
 	hints := x.byKey[key]
-	owners := make([]string, 0, len(hints))
+	providers := make([]string, 0, len(hints))
 	for _, h := range hints {
-		owners = append(owners, h.owner.String())
+		providers = append(providers, h.provider.String())
 	}
-	slices.Sort(owners)
-	return owners
+	slices.Sort(providers)
+	return providers
 }
 
 func (x *hintIndex) len() int { return x.fifo.Len() }
@@ -214,9 +214,9 @@ func (x *hintIndex) nextDue() (time.Time, bool) {
 	return x.queue[0].due, true
 }
 
-func (x *hintIndex) find(owner nodeID, key cacheKey) *hint {
+func (x *hintIndex) find(provider nodeID, key cacheKey) *hint {
 	for _, h := range x.byKey[key] {
-		if h.owner == owner {
+		if h.provider == provider {
 			return h
 		}
 	}

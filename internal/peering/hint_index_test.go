@@ -11,7 +11,7 @@ import (
 func TestHintIndexFirstReceiptAddsSelfAndStartsPass(t *testing.T) {
 	x := newHintIndex(mustNodeID(t, testIDC))
 	key := testCacheKey(1)
-	x.merge(testClaim(t, testIDA, key, testIDA, testIDB), time.Time{})
+	x.merge(testHint(t, testIDA, key, testIDA, testIDB), time.Time{})
 	h := x.find(mustNodeID(t, testIDA), key)
 	if h == nil {
 		t.Fatal("hint not retained")
@@ -27,12 +27,12 @@ func TestHintIndexFirstReceiptAddsSelfAndStartsPass(t *testing.T) {
 func TestHintIndexDuplicateUnionsWithoutReopeningOrRefreshing(t *testing.T) {
 	x := newBoundedHintIndex(mustNodeID(t, testIDC), hintLimits{records: 2, cost: maxHintCost, encoded: hintSnapshotBudget})
 	first, second, third := testCacheKey(1), testCacheKey(2), testCacheKey(3)
-	x.merge(testClaim(t, testIDA, first, testIDA), time.Time{})
-	x.merge(testClaim(t, testIDA, second, testIDA), time.Time{})
+	x.merge(testHint(t, testIDA, first, testIDA), time.Time{})
+	x.merge(testHint(t, testIDA, second, testIDA), time.Time{})
 	h := x.find(mustNodeID(t, testIDA), first)
 	x.finishPass(h)
 
-	x.merge(testClaim(t, testIDA, first, testIDA, testIDB, testNodeID(7)), time.Time{})
+	x.merge(testHint(t, testIDA, first, testIDA, testIDB, testNodeID(7)), time.Time{})
 	if got := seenStrings(h); !slices.Equal(got, []string{testNodeID(7), testIDA, testIDB, testIDC}) {
 		t.Fatalf("seen after duplicate = %v", got)
 	}
@@ -40,7 +40,7 @@ func TestHintIndexDuplicateUnionsWithoutReopeningOrRefreshing(t *testing.T) {
 		t.Fatal("duplicate reopened a finished pass")
 	}
 	// The duplicate did not refresh FIFO position, so first is still oldest.
-	x.merge(testClaim(t, testIDA, third, testIDA), time.Time{})
+	x.merge(testHint(t, testIDA, third, testIDA), time.Time{})
 	if x.find(mustNodeID(t, testIDA), first) != nil || x.find(mustNodeID(t, testIDA), second) == nil {
 		t.Fatal("duplicate refreshed FIFO position")
 	}
@@ -49,51 +49,51 @@ func TestHintIndexDuplicateUnionsWithoutReopeningOrRefreshing(t *testing.T) {
 	}
 }
 
-func TestHintIndexIgnoresClaimsOwnedBySelf(t *testing.T) {
+func TestHintIndexIgnoresHintsProvidedBySelf(t *testing.T) {
 	x := newHintIndex(mustNodeID(t, testIDC))
-	x.merge(testClaim(t, testIDC, testCacheKey(1), testIDB, testIDC), time.Time{})
+	x.merge(testHint(t, testIDC, testCacheKey(1), testIDB, testIDC), time.Time{})
 	if x.len() != 0 {
-		t.Fatalf("retained %d hints owned by self", x.len())
+		t.Fatalf("retained %d hints provided by self", x.len())
 	}
 }
 
-func TestHintIndexOwnersIncludesUnknownOwners(t *testing.T) {
+func TestHintIndexProvidersIncludeUnknownProviders(t *testing.T) {
 	x := newHintIndex(mustNodeID(t, testIDC))
 	key, other := testCacheKey(1), testCacheKey(2)
-	x.merge(testClaim(t, testNodeID(9), key, testNodeID(9), testIDB), time.Time{})
-	x.merge(testClaim(t, testIDA, key, testIDA), time.Time{})
-	x.merge(testClaim(t, testIDB, other, testIDB), time.Time{})
-	x.originate(key, time.Time{})
-	if got := x.owners(key); !slices.Equal(got, []string{testNodeID(9), testIDA, testIDC}) {
-		t.Fatalf("owners = %v", got)
+	x.merge(testHint(t, testNodeID(9), key, testNodeID(9), testIDB), time.Time{})
+	x.merge(testHint(t, testIDA, key, testIDA), time.Time{})
+	x.merge(testHint(t, testIDB, other, testIDB), time.Time{})
+	x.announce(key, time.Time{})
+	if got := x.providers(key); !slices.Equal(got, []string{testNodeID(9), testIDA, testIDC}) {
+		t.Fatalf("providers = %v", got)
 	}
-	if got := x.owners(testCacheKey(3)); len(got) != 0 {
-		t.Fatalf("owners of unknown key = %v", got)
+	if got := x.providers(testCacheKey(3)); len(got) != 0 {
+		t.Fatalf("providers of unknown key = %v", got)
 	}
 }
 
-func TestHintIndexOriginateAndForgetLocalHints(t *testing.T) {
+func TestHintIndexAnnounceAndForgetLocalHints(t *testing.T) {
 	self := mustNodeID(t, testIDC)
 	x := newHintIndex(self)
 	key := testCacheKey(1)
-	x.originate(key, time.Time{})
+	x.announce(key, time.Time{})
 	h := x.find(self, key)
 	if h == nil || !h.pending || !slices.Equal(seenStrings(h), []string{testIDC}) {
 		t.Fatalf("local hint = %+v", h)
 	}
 	x.finishPass(h)
 	x.addSeen(h, []nodeID{mustNodeID(t, testIDA)})
-	x.originate(key, time.Time{})
+	x.announce(key, time.Time{})
 	if x.find(self, key) != h || h.pending || len(h.seen) != 2 {
-		t.Fatal("originating a retained local hint reset it")
+		t.Fatal("announcing a retained local hint reset it")
 	}
 
-	x.merge(testClaim(t, testIDA, key, testIDA), time.Time{})
+	x.merge(testHint(t, testIDA, key, testIDA), time.Time{})
 	x.forget(key)
 	if x.find(self, key) != nil {
 		t.Fatal("forget kept the local hint")
 	}
-	if got := x.owners(key); !slices.Equal(got, []string{testIDA}) {
+	if got := x.providers(key); !slices.Equal(got, []string{testIDA}) {
 		t.Fatalf("forget changed remote hints: %v", got)
 	}
 	x.forget(testCacheKey(2)) // absent keys are a no-op
@@ -102,9 +102,9 @@ func TestHintIndexOriginateAndForgetLocalHints(t *testing.T) {
 func TestHintIndexEvictsWholeRecordsInFIFOOrderUnderCount(t *testing.T) {
 	self := mustNodeID(t, testIDC)
 	x := newBoundedHintIndex(self, hintLimits{records: 3, cost: maxHintCost, encoded: hintSnapshotBudget})
-	x.originate(testCacheKey(1), time.Time{})
+	x.announce(testCacheKey(1), time.Time{})
 	for i := 2; i <= 5; i++ {
-		x.merge(testClaim(t, testIDA, testCacheKey(i), testIDA), time.Time{})
+		x.merge(testHint(t, testIDA, testCacheKey(i), testIDA), time.Time{})
 	}
 	if x.len() != 3 || x.evictions != 2 {
 		t.Fatalf("len = %d, evictions = %d", x.len(), x.evictions)
@@ -122,15 +122,15 @@ func TestHintIndexSeenGrowthEvictsOtherRecords(t *testing.T) {
 	limit := 3 * hintCost(2)
 	x := newBoundedHintIndex(self, hintLimits{records: 10, cost: limit, encoded: hintSnapshotBudget})
 	growing := testCacheKey(1)
-	x.merge(testClaim(t, testIDA, growing, testIDA), time.Time{})
-	x.merge(testClaim(t, testIDA, testCacheKey(2), testIDA), time.Time{})
-	x.merge(testClaim(t, testIDA, testCacheKey(3), testIDA), time.Time{})
+	x.merge(testHint(t, testIDA, growing, testIDA), time.Time{})
+	x.merge(testHint(t, testIDA, testCacheKey(2), testIDA), time.Time{})
+	x.merge(testHint(t, testIDA, testCacheKey(3), testIDA), time.Time{})
 
 	seen := []string{testIDA}
 	for i := range (hintBaseCost / nodeIDLen) + 1 {
 		seen = append(seen, testNodeID(i))
 	}
-	x.merge(testClaim(t, testIDA, growing, seen...), time.Time{})
+	x.merge(testHint(t, testIDA, growing, seen...), time.Time{})
 	h := x.find(mustNodeID(t, testIDA), growing)
 	if h == nil || len(h.seen) != len(seen)+1 {
 		t.Fatal("record being updated was evicted or truncated")
@@ -151,7 +151,7 @@ func TestHintIndexSeenGrowthEvictsOtherRecords(t *testing.T) {
 func TestHintIndexEncodedBudgetEvicts(t *testing.T) {
 	x := newBoundedHintIndex(mustNodeID(t, testIDC), hintLimits{records: 10, cost: maxHintCost, encoded: 2 * hintEncodedSize(2)})
 	for i := 1; i <= 3; i++ {
-		x.merge(testClaim(t, testIDA, testCacheKey(i), testIDA), time.Time{})
+		x.merge(testHint(t, testIDA, testCacheKey(i), testIDA), time.Time{})
 	}
 	if x.len() != 2 || x.find(mustNodeID(t, testIDA), testCacheKey(1)) != nil {
 		t.Fatalf("encoded budget kept %d records", x.len())
@@ -169,7 +169,7 @@ func TestHintIndexSeenOverflowSuppressesForwarding(t *testing.T) {
 	for i := range maxHintSeen / 2 {
 		half = append(half, testNodeID(i))
 	}
-	x.merge(testClaim(t, testIDA, key, half...), time.Time{})
+	x.merge(testHint(t, testIDA, key, half...), time.Time{})
 	h := x.find(mustNodeID(t, testIDA), key)
 	before := seenStrings(h)
 
@@ -177,41 +177,41 @@ func TestHintIndexSeenOverflowSuppressesForwarding(t *testing.T) {
 	for i := maxHintSeen / 2; i < maxHintSeen; i++ {
 		other = append(other, testNodeID(i))
 	}
-	x.merge(testClaim(t, testIDA, key, other...), time.Time{})
+	x.merge(testHint(t, testIDA, key, other...), time.Time{})
 	if !h.suppressed || h.pending {
 		t.Fatalf("suppressed = %v, pending = %v", h.suppressed, h.pending)
 	}
 	if !slices.Equal(seenStrings(h), before) {
 		t.Fatal("overflowing merge changed seen")
 	}
-	if got := x.owners(key); !slices.Equal(got, []string{testIDA}) {
+	if got := x.providers(key); !slices.Equal(got, []string{testIDA}) {
 		t.Fatalf("suppressed hint left lookup: %v", got)
 	}
 	// Later merges cannot revive a suppressed hint.
-	x.merge(testClaim(t, testIDA, key, testIDA, testIDB), time.Time{})
+	x.merge(testHint(t, testIDA, key, testIDA, testIDB), time.Time{})
 	if !h.suppressed || h.pending || containsNodeID(h.seen, mustNodeID(t, testIDB)) {
 		t.Fatal("merge changed a suppressed hint")
 	}
 	assertHintAccounting(t, x)
 }
 
-func TestHintIndexFullClaimWithoutSelfIsSuppressed(t *testing.T) {
+func TestHintIndexFullHintWithoutSelfIsSuppressed(t *testing.T) {
 	x := newHintIndex(mustNodeID(t, testIDC))
 	seen := []string{testIDA}
 	for i := range maxHintSeen - 1 {
 		seen = append(seen, testNodeID(i))
 	}
-	x.merge(testClaim(t, testIDA, testCacheKey(1), seen...), time.Time{})
+	x.merge(testHint(t, testIDA, testCacheKey(1), seen...), time.Time{})
 	h := x.find(mustNodeID(t, testIDA), testCacheKey(1))
 	if h == nil || !h.suppressed || h.pending || len(h.seen) != maxHintSeen {
-		t.Fatalf("full claim = %+v", h)
+		t.Fatalf("full hint = %+v", h)
 	}
 }
 
 func TestHintBaseCostCoversRecordOverhead(t *testing.T) {
 	// The record with its inline forwarding state and its FIFO element, each
 	// rounded up to a 16-byte allocation class, as Go uses below 256 bytes, a key-map slot doubled for
-	// load-factor slack, its owner slot under that key, and its due-queue slot.
+	// load-factor slack, its provider slot under that key, and its due-queue slot.
 	roundUp := func(n uintptr) uintptr { return (n + 15) &^ 15 }
 	mapSlot := 2 * (unsafe.Sizeof(cacheKey{}) + unsafe.Sizeof([]*hint{}))
 	pointer := unsafe.Sizeof(&hint{})
@@ -237,7 +237,7 @@ func assertHintAccounting(t *testing.T, x *hintIndex) {
 	records := 0
 	for e := x.fifo.Front(); e != nil; e = e.Next() {
 		h := e.Value.(*hint)
-		if x.find(h.owner, h.key) != h {
+		if x.find(h.provider, h.key) != h {
 			t.Fatal("FIFO record missing from key map")
 		}
 		cost += hintCost(len(h.seen))

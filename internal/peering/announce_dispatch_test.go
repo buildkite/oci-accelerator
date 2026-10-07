@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestAvailabilityRelayPreservesOwnerAndAccumulatesSeen(t *testing.T) {
+func TestProviderHintsRelayPreservesProviderAndAccumulatesSeen(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C", "D", "E")
 	// A chain: each node knows only its neighbours.
 	f.know("A", "B")
@@ -15,7 +15,7 @@ func TestAvailabilityRelayPreservesOwnerAndAccumulatesSeen(t *testing.T) {
 	f.know("D", "C", "E")
 	f.know("E", "D")
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.settle()
 
 	// Each node has seen the path so far plus the next hop it reached.
@@ -42,11 +42,11 @@ func TestAvailabilityRelayPreservesOwnerAndAccumulatesSeen(t *testing.T) {
 	}
 }
 
-func TestAvailabilityPassStopsAfterTwoAcknowledgements(t *testing.T) {
+func TestProviderHintsPassStopsAfterTwoAcknowledgements(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C", "D", "E")
 	f.know("A", "B", "C", "D", "E")
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.settle()
 
 	sent := f.requests("A")
@@ -63,15 +63,15 @@ func TestAvailabilityPassStopsAfterTwoAcknowledgements(t *testing.T) {
 	}
 }
 
-func TestAvailabilityDuplicateDoesNotReopenCompletedPass(t *testing.T) {
+func TestProviderHintsDuplicateDoesNotReopenCompletedPass(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C")
 	f.know("A", "B", "C")
 	f.know("B", "A", "C")
 	key := testCacheKey(1)
-	f.originate("C", key)
-	claim := testClaim(t, f.byName["C"].id, key, f.byName["C"].id)
-	// C knows nobody, so deliver its claim to A directly.
-	if err := f.byName["A"].a.accept(availabilityMessage{sender: claim.owner, recipient: mustNodeID(t, f.byName["A"].id), claims: []hintClaim{claim}}); err != nil {
+	f.announce("C", key)
+	announced := testHint(t, f.byName["C"].id, key, f.byName["C"].id)
+	// C knows nobody, so deliver its hint to A directly.
+	if err := f.byName["A"].a.accept(announcement{sender: announced.provider, recipient: mustNodeID(t, f.byName["A"].id), hints: []announcedHint{announced}}); err != nil {
 		t.Fatal(err)
 	}
 	f.settle()
@@ -82,8 +82,8 @@ func TestAvailabilityDuplicateDoesNotReopenCompletedPass(t *testing.T) {
 	before := len(f.sent)
 
 	// A duplicate with new seen IDs merges without restarting forwarding.
-	duplicate := testClaim(t, f.byName["C"].id, key, f.byName["C"].id, testNodeID(9))
-	if err := f.byName["A"].a.accept(availabilityMessage{sender: claim.owner, recipient: mustNodeID(t, f.byName["A"].id), claims: []hintClaim{duplicate}}); err != nil {
+	duplicate := testHint(t, f.byName["C"].id, key, f.byName["C"].id, testNodeID(9))
+	if err := f.byName["A"].a.accept(announcement{sender: announced.provider, recipient: mustNodeID(t, f.byName["A"].id), hints: []announcedHint{duplicate}}); err != nil {
 		t.Fatal(err)
 	}
 	f.settle()
@@ -92,7 +92,7 @@ func TestAvailabilityDuplicateDoesNotReopenCompletedPass(t *testing.T) {
 	}
 }
 
-func TestAvailabilityPartialBooksLeaveNodesUninformed(t *testing.T) {
+func TestProviderHintsPartialBooksLeaveNodesUninformed(t *testing.T) {
 	// A knows B, C, D. B and C know A and each other. D knows A and E, and E
 	// knows only D. Find the seed for which A chooses B and C.
 	for seed := uint64(1); seed < 200; seed++ {
@@ -103,7 +103,7 @@ func TestAvailabilityPartialBooksLeaveNodesUninformed(t *testing.T) {
 		f.know("D", "A", "E")
 		f.know("E", "D")
 		key := testCacheKey(1)
-		f.originate("A", key)
+		f.announce("A", key)
 		f.step()
 		first := f.requests("A")
 		if len(first) != 2 || first[0].to == "D" || first[1].to == "D" {
@@ -125,12 +125,12 @@ func TestAvailabilityPartialBooksLeaveNodesUninformed(t *testing.T) {
 	t.Fatal("no seed made A choose B and C")
 }
 
-func TestAvailabilityAllBookSeenFinishesWithoutSending(t *testing.T) {
+func TestProviderHintsAllBookSeenFinishesWithoutSending(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	f.know("B", "A")
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.settle()
 	if got := len(f.requests("B")); got != 0 {
 		t.Fatalf("B sent %d requests, though A already has the hint", got)
@@ -144,19 +144,19 @@ func TestAvailabilityAllBookSeenFinishesWithoutSending(t *testing.T) {
 	}
 }
 
-func TestAvailabilityDuplicateBeforeDispatchRemovesSeenDestinations(t *testing.T) {
+func TestProviderHintsDuplicateBeforeDispatchRemovesSeenDestinations(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C", "O")
 	f.know("A", "B", "C")
 	key := testCacheKey(1)
-	owner, b := f.byName["O"].id, f.byName["B"].id
+	provider, b := f.byName["O"].id, f.byName["B"].id
 	self := mustNodeID(t, f.byName["A"].id)
-	first := testClaim(t, owner, key, owner)
-	if err := f.byName["A"].a.accept(availabilityMessage{sender: first.owner, recipient: self, claims: []hintClaim{first}}); err != nil {
+	first := testHint(t, provider, key, provider)
+	if err := f.byName["A"].a.accept(announcement{sender: first.provider, recipient: self, hints: []announcedHint{first}}); err != nil {
 		t.Fatal(err)
 	}
 	// Before A dispatches, a duplicate reports that B already has the hint.
-	duplicate := testClaim(t, owner, key, owner, b)
-	if err := f.byName["A"].a.accept(availabilityMessage{sender: mustNodeID(t, b), recipient: self, claims: []hintClaim{duplicate}}); err != nil {
+	duplicate := testHint(t, provider, key, provider, b)
+	if err := f.byName["A"].a.accept(announcement{sender: mustNodeID(t, b), recipient: self, hints: []announcedHint{duplicate}}); err != nil {
 		t.Fatal(err)
 	}
 	f.settle()
@@ -169,12 +169,12 @@ func TestAvailabilityDuplicateBeforeDispatchRemovesSeenDestinations(t *testing.T
 	}
 }
 
-func TestAvailabilityFailuresConsumeAttemptBudget(t *testing.T) {
+func TestProviderHintsFailuresConsumeAttemptBudget(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C", "D")
 	f.know("A", "B", "C", "D")
 	f.fault = func(fleetRequest) (bool, bool) { return false, true }
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.settle()
 	if got := len(f.requests("A")); got != hintAttempts {
 		t.Fatalf("A sent %d requests, want %d", got, hintAttempts)
@@ -188,13 +188,13 @@ func TestAvailabilityFailuresConsumeAttemptBudget(t *testing.T) {
 	}
 }
 
-func TestAvailabilityLostAcknowledgementsStayWithinBudgets(t *testing.T) {
+func TestProviderHintsLostAcknowledgementsStayWithinBudgets(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C", "D")
 	f.know("A", "B", "C", "D")
 	// Requests arrive, but every response is lost.
 	f.fault = func(r fleetRequest) (bool, bool) { return true, r.from == "A" }
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.settle()
 	sent := f.requests("A")
 	if len(sent) != hintAttempts {
@@ -212,12 +212,12 @@ func TestAvailabilityLostAcknowledgementsStayWithinBudgets(t *testing.T) {
 	}
 }
 
-func TestAvailabilityReplacementAfterFailureReachesFanout(t *testing.T) {
+func TestProviderHintsReplacementAfterFailureReachesFanout(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C", "D")
 	f.know("A", "B", "C", "D")
 	f.fault = func(r fleetRequest) (bool, bool) { return r.to != "B", r.to == "B" }
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.settle()
 	h := f.hint("A", "A", key)
 	if h.ackCount != hintFanout || !slices.Equal(f.seenNames(h), []string{"A", "C", "D"}) {
@@ -228,12 +228,12 @@ func TestAvailabilityReplacementAfterFailureReachesFanout(t *testing.T) {
 	}
 }
 
-func TestAvailabilityPendingPassSelectsNewlyDiscoveredPeer(t *testing.T) {
+func TestProviderHintsPendingPassSelectsNewlyDiscoveredPeer(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C")
 	f.know("A", "B")
 	f.fault = func(r fleetRequest) (bool, bool) { return r.to != "B", r.to == "B" }
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.step()
 	h := f.hint("A", "A", key)
 	if !h.pending {
@@ -247,16 +247,16 @@ func TestAvailabilityPendingPassSelectsNewlyDiscoveredPeer(t *testing.T) {
 	}
 }
 
-func TestAvailabilityDispatchWaitsWhileEveryDestinationIsBusy(t *testing.T) {
+func TestProviderHintsDispatchWaitsWhileEveryDestinationIsBusy(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	a := f.byName["A"].a
-	f.originate("A", testCacheKey(1))
-	f.now = f.now.Add(2 * availabilityCadence)
-	first := a.dispatch(availabilityConcurrency)
-	f.originate("A", testCacheKey(2))
-	f.now = f.now.Add(2 * availabilityCadence)
-	if more := a.dispatch(availabilityConcurrency); len(more) != 0 {
+	f.announce("A", testCacheKey(1))
+	f.now = f.now.Add(2 * announceCadence)
+	first := a.dispatch(announceConcurrency)
+	f.announce("A", testCacheKey(2))
+	f.now = f.now.Add(2 * announceCadence)
+	if more := a.dispatch(announceConcurrency); len(more) != 0 {
 		t.Fatalf("busy destination received %d requests", len(more))
 	}
 	// The due hint stays queued, and Run sleeps until a result instead of
@@ -268,23 +268,23 @@ func TestAvailabilityDispatchWaitsWhileEveryDestinationIsBusy(t *testing.T) {
 		t.Fatalf("nextWait = %v while every destination is busy", wait)
 	}
 	a.complete(first[0], nil)
-	if got := a.dispatch(availabilityConcurrency); len(got) != 1 {
+	if got := a.dispatch(announceConcurrency); len(got) != 1 {
 		t.Fatalf("no dispatch after the destination freed: %d", len(got))
 	}
 }
 
-func TestAvailabilityDispatchReservesWithinRemainingFanout(t *testing.T) {
+func TestProviderHintsDispatchReservesWithinRemainingFanout(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C", "D", "E", "F")
 	f.know("A", "B", "C", "D", "E", "F")
 	a := f.byName["A"].a
 	key := testCacheKey(1)
-	f.originate("A", key)
-	f.now = f.now.Add(2 * availabilityCadence)
-	first := a.dispatch(availabilityConcurrency)
+	f.announce("A", key)
+	f.now = f.now.Add(2 * announceCadence)
+	first := a.dispatch(announceConcurrency)
 	if len(first) != hintFanout {
 		t.Fatalf("first dispatch created %d requests", len(first))
 	}
-	if again := a.dispatch(availabilityConcurrency); len(again) != 0 {
+	if again := a.dispatch(announceConcurrency); len(again) != 0 {
 		t.Fatalf("in-flight work allowed %d more requests", len(again))
 	}
 	h := f.hint("A", "A", key)
@@ -292,47 +292,47 @@ func TestAvailabilityDispatchReservesWithinRemainingFanout(t *testing.T) {
 		t.Fatalf("inflight %d attempts %d", h.inflight, h.attempts)
 	}
 	// One failure frees one slot for one replacement.
-	a.complete(first[0], errAvailabilitySend)
+	a.complete(first[0], errAnnounceSend)
 	a.complete(first[1], nil)
-	f.now = f.now.Add(2 * availabilityCadence)
-	replacement := a.dispatch(availabilityConcurrency)
+	f.now = f.now.Add(2 * announceCadence)
+	replacement := a.dispatch(announceConcurrency)
 	if len(replacement) != 1 || replacement[0].to.id == first[0].to.id || replacement[0].to.id == first[1].to.id {
 		t.Fatalf("replacement = %+v", replacement)
 	}
 }
 
-func TestAvailabilityBatchesClaimsPerDestinationWithinBounds(t *testing.T) {
+func TestProviderHintsBatchesHintsPerDestinationWithinBounds(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	a := f.byName["A"].a
-	keys := make([]string, maxAvailabilityClaim+88)
+	keys := make([]string, maxAnnouncementHints+88)
 	for i := range keys {
 		keys[i] = testCacheKey(i).String()
 	}
 	f.byName["A"].inventory.set(keys...)
 	a.reconcile(f.byName["A"].inventory.Keys())
-	f.now = f.now.Add(2 * availabilityCadence)
-	batches := a.dispatch(availabilityConcurrency)
-	if len(batches) != 1 || len(batches[0].message.claims) != maxAvailabilityClaim {
-		t.Fatalf("batches = %d, claims = %d", len(batches), len(batches[0].message.claims))
+	f.now = f.now.Add(2 * announceCadence)
+	batches := a.dispatch(announceConcurrency)
+	if len(batches) != 1 || len(batches[0].message.hints) != maxAnnouncementHints {
+		t.Fatalf("batches = %d, hints = %d", len(batches), len(batches[0].message.hints))
 	}
-	encoded, err := encodeAvailability(batches[0].message)
+	encoded, err := encodeAnnouncement(batches[0].message)
 	if err != nil || len(encoded) != batches[0].size {
 		t.Fatalf("encoded %d bytes, accounted %d, err %v", len(encoded), batches[0].size, err)
 	}
 	// One destination allows one request at a time.
-	if more := a.dispatch(availabilityConcurrency); len(more) != 0 {
+	if more := a.dispatch(announceConcurrency); len(more) != 0 {
 		t.Fatalf("busy destination received %d more requests", len(more))
 	}
 	a.complete(batches[0], nil)
-	f.now = f.now.Add(2 * availabilityCadence)
-	rest := a.dispatch(availabilityConcurrency)
-	if len(rest) != 1 || len(rest[0].message.claims) != 88 {
+	f.now = f.now.Add(2 * announceCadence)
+	rest := a.dispatch(announceConcurrency)
+	if len(rest) != 1 || len(rest[0].message.hints) != 88 {
 		t.Fatalf("remaining batches = %+v", len(rest))
 	}
 }
 
-func TestAvailabilityBatchSizeBoundSplitsLargeClaims(t *testing.T) {
+func TestProviderHintsBatchSizeBoundSplitsLargeHints(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	a := f.byName["A"].a
@@ -343,28 +343,28 @@ func TestAvailabilityBatchSizeBoundSplitsLargeClaims(t *testing.T) {
 		for j := range maxHintSeen - 2 {
 			ids = append(ids, testNodeID(3000+j))
 		}
-		claim := testClaim(t, testNodeID(2000), testCacheKey(i), ids...)
-		if err := a.accept(availabilityMessage{sender: sender, recipient: a.self, claims: []hintClaim{claim}}); err != nil {
+		announced := testHint(t, testNodeID(2000), testCacheKey(i), ids...)
+		if err := a.accept(announcement{sender: sender, recipient: a.self, hints: []announcedHint{announced}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	f.now = f.now.Add(2 * availabilityCadence)
-	batches := a.dispatch(availabilityConcurrency)
-	if len(batches) != 1 || len(batches[0].message.claims) >= 40 {
-		t.Fatalf("batch claims = %d", len(batches[0].message.claims))
+	f.now = f.now.Add(2 * announceCadence)
+	batches := a.dispatch(announceConcurrency)
+	if len(batches) != 1 || len(batches[0].message.hints) >= 40 {
+		t.Fatalf("batch hints = %d", len(batches[0].message.hints))
 	}
-	encoded, err := encodeAvailability(batches[0].message)
-	if err != nil || len(encoded) != batches[0].size || len(encoded) > maxAvailabilityBytes {
+	encoded, err := encodeAnnouncement(batches[0].message)
+	if err != nil || len(encoded) != batches[0].size || len(encoded) > maxAnnouncementBytes {
 		t.Fatalf("encoded %d bytes, accounted %d, err %v", len(encoded), batches[0].size, err)
 	}
 }
 
-func TestAvailabilitySameIDAddressMoveKeepsSeenAndBudget(t *testing.T) {
+func TestProviderHintsSameIDAddressMoveKeepsSeenAndBudget(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C")
 	f.know("A", "B", "C")
 	f.fault = func(fleetRequest) (bool, bool) { return false, true }
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.step()
 	h := f.hint("A", "A", key)
 	attempts := h.attempts
@@ -392,12 +392,12 @@ func TestAvailabilitySameIDAddressMoveKeepsSeenAndBudget(t *testing.T) {
 	}
 }
 
-func TestAvailabilityAddressReuseByAnotherNodeIsNotCredited(t *testing.T) {
+func TestProviderHintsAddressReuseByAnotherNodeIsNotCredited(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C")
 	// A's book still maps C's address to B, as after an address reuse.
 	f.bind("A", f.byName["C"].address, f.byName["B"].id)
 	key := testCacheKey(1)
-	f.originate("A", key)
+	f.announce("A", key)
 	f.settle()
 	sent := f.requests("A")
 	if len(sent) == 0 || sent[0].to != "C" || sent[0].recipient != f.byName["B"].id {
@@ -410,27 +410,27 @@ func TestAvailabilityAddressReuseByAnotherNodeIsNotCredited(t *testing.T) {
 	if h.ackCount != 0 || len(h.seen) != 1 {
 		t.Fatal("a wrong-recipient rejection was credited")
 	}
-	// Availability never changes discovery's mappings.
+	// Provider hints never change discovery's mappings.
 	if peers := f.byName["A"].a.book.Snapshot().Peers; len(peers) != 1 || peers[f.byName["C"].address] != f.byName["B"].id {
 		t.Fatalf("book = %v", peers)
 	}
 }
 
-func TestAvailabilityStaleResultDoesNotTouchReplacementRecord(t *testing.T) {
+func TestProviderHintsStaleResultDoesNotTouchReplacementRecord(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C")
 	f.know("A", "B", "C")
 	a := f.byName["A"].a
 	key := testCacheKey(1)
-	f.originate("A", key)
-	f.now = f.now.Add(2 * availabilityCadence)
-	batches := a.dispatch(availabilityConcurrency)
+	f.announce("A", key)
+	f.now = f.now.Add(2 * announceCadence)
+	batches := a.dispatch(announceConcurrency)
 	if len(batches) != hintFanout {
 		t.Fatalf("batches = %d", len(batches))
 	}
 	// The entry is removed and recommitted while requests are in flight.
 	f.byName["A"].inventory.set()
 	a.reconcile(nil)
-	f.originate("A", key)
+	f.announce("A", key)
 	replacement := f.hint("A", "A", key)
 	for _, batch := range batches {
 		a.complete(batch, nil)
@@ -443,36 +443,36 @@ func TestAvailabilityStaleResultDoesNotTouchReplacementRecord(t *testing.T) {
 	}
 }
 
-func TestAvailabilityEvictedRecordIsNotRecreatedByAcknowledgement(t *testing.T) {
+func TestProviderHintsEvictedRecordIsNotRecreatedByAcknowledgement(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	a := f.byName["A"].a
 	a.index = newBoundedHintIndex(a.self, hintLimits{records: 1, cost: maxHintCost, encoded: hintSnapshotBudget})
-	f.originate("A", testCacheKey(1))
-	f.now = f.now.Add(2 * availabilityCadence)
-	batches := a.dispatch(availabilityConcurrency)
-	f.originate("A", testCacheKey(2)) // evicts the first record
+	f.announce("A", testCacheKey(1))
+	f.now = f.now.Add(2 * announceCadence)
+	batches := a.dispatch(announceConcurrency)
+	f.announce("A", testCacheKey(2)) // evicts the first record
 	a.complete(batches[0], nil)
 	if f.hint("A", "A", testCacheKey(1)) != nil || a.index.len() != 1 {
 		t.Fatal("acknowledgement recreated an evicted record")
 	}
 }
 
-func TestAvailabilityUnknownOwnersStayAdvisory(t *testing.T) {
+func TestProviderHintsUnknownProvidersStayAdvisory(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	a := f.byName["A"].a
 	before := a.book.Snapshot()
 	unknown := testNodeID(77)
-	claim := testClaim(t, unknown, testCacheKey(1), unknown, f.byName["B"].id)
-	if err := a.accept(availabilityMessage{sender: mustNodeID(t, f.byName["B"].id), recipient: a.self, claims: []hintClaim{claim}}); err != nil {
+	announced := testHint(t, unknown, testCacheKey(1), unknown, f.byName["B"].id)
+	if err := a.accept(announcement{sender: mustNodeID(t, f.byName["B"].id), recipient: a.self, hints: []announcedHint{announced}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.Owners(testCacheKey(1).String()); !slices.Equal(got, []string{unknown}) {
-		t.Fatalf("owners = %v", got)
+	if got := a.Providers(testCacheKey(1).String()); !slices.Equal(got, []string{unknown}) {
+		t.Fatalf("providers = %v", got)
 	}
 	if after := a.book.Snapshot(); len(after.Peers) != len(before.Peers) {
-		t.Fatalf("availability changed discovery: %v", after.Peers)
+		t.Fatalf("provider hints changed discovery: %v", after.Peers)
 	}
 	f.settle()
 	if sent := f.requests("A"); len(sent) != 0 {
@@ -480,12 +480,12 @@ func TestAvailabilityUnknownOwnersStayAdvisory(t *testing.T) {
 	}
 }
 
-func TestAvailabilityIdleNodesSendNothing(t *testing.T) {
+func TestProviderHintsIdleNodesSendNothing(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C")
 	f.know("A", "B", "C")
 	f.know("B", "A", "C")
 	f.know("C", "A", "B")
-	f.originate("A", testCacheKey(1))
+	f.announce("A", testCacheKey(1))
 	f.settle()
 	before := len(f.sent)
 	for range 50 {
@@ -496,65 +496,65 @@ func TestAvailabilityIdleNodesSendNothing(t *testing.T) {
 	}
 }
 
-func TestAvailabilityBusyDestinationDoesNotBlockOthers(t *testing.T) {
+func TestProviderHintsBusyDestinationDoesNotBlockOthers(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B", "C", "D")
 	f.know("A", "B", "C", "D")
 	a := f.byName["A"].a
-	f.originate("A", testCacheKey(1))
-	f.now = f.now.Add(2 * availabilityCadence)
-	first := a.dispatch(availabilityConcurrency)
+	f.announce("A", testCacheKey(1))
+	f.now = f.now.Add(2 * announceCadence)
+	first := a.dispatch(announceConcurrency)
 	busy := map[nodeID]bool{}
 	for _, batch := range first {
 		busy[batch.to.id] = true
 	}
 	// Another hint becomes due while both requests are still in flight.
-	f.originate("A", testCacheKey(2))
-	f.now = f.now.Add(2 * availabilityCadence)
-	second := a.dispatch(availabilityConcurrency)
+	f.announce("A", testCacheKey(2))
+	f.now = f.now.Add(2 * announceCadence)
+	second := a.dispatch(announceConcurrency)
 	if len(second) != 1 || busy[second[0].to.id] {
 		t.Fatalf("second dispatch = %+v", second)
 	}
 }
 
-func TestClaimWireSizeMatchesEncoding(t *testing.T) {
+func TestHintWireSizeMatchesEncoding(t *testing.T) {
 	sender, recipient := mustNodeID(t, testIDB), mustNodeID(t, testIDC)
 	for _, n := range []int{1, 2, 3, maxHintSeen} {
 		ids := []string{testIDB}
 		for i := range n - 1 {
 			ids = append(ids, testNodeID(i))
 		}
-		claim := testClaim(t, testIDB, testCacheKey(n), ids...)
-		one, err := encodeAvailability(availabilityMessage{sender: sender, recipient: recipient, claims: []hintClaim{claim}})
+		announced := testHint(t, testIDB, testCacheKey(n), ids...)
+		one, err := encodeAnnouncement(announcement{sender: sender, recipient: recipient, hints: []announcedHint{announced}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := availabilityEnvelopeSize + claimWireSize(n); len(one) != want {
+		if want := announcementEnvelopeSize + hintWireSize(n); len(one) != want {
 			t.Fatalf("seen %d: encoded %d, computed %d", n, len(one), want)
 		}
 	}
 }
 
-func TestAvailabilityBackoffDelaysRetriesToFailedDestination(t *testing.T) {
+func TestProviderHintsBackoffDelaysRetriesToFailedDestination(t *testing.T) {
 	f := newTestFleet(t, 1, "A", "B")
 	f.know("A", "B")
 	a := f.byName["A"].a
-	f.originate("A", testCacheKey(1))
-	f.now = f.now.Add(2 * availabilityCadence)
-	first := a.dispatch(availabilityConcurrency)
-	a.complete(first[0], errAvailabilitySend)
-	f.now = f.now.Add(2 * availabilityCadence)
-	second := a.dispatch(availabilityConcurrency)
+	f.announce("A", testCacheKey(1))
+	f.now = f.now.Add(2 * announceCadence)
+	first := a.dispatch(announceConcurrency)
+	a.complete(first[0], errAnnounceSend)
+	f.now = f.now.Add(2 * announceCadence)
+	second := a.dispatch(announceConcurrency)
 	if len(second) != 1 {
 		t.Fatalf("no retry after the first backoff: %d", len(second))
 	}
 	// A second failure doubles the delay to about two seconds.
-	a.complete(second[0], errAvailabilitySend)
+	a.complete(second[0], errAnnounceSend)
 	f.now = f.now.Add(1500 * time.Millisecond)
-	if got := a.dispatch(availabilityConcurrency); len(got) != 0 {
+	if got := a.dispatch(announceConcurrency); len(got) != 0 {
 		t.Fatal("retried a destination during its backoff")
 	}
-	f.now = f.now.Add(availabilityCadence)
-	if got := a.dispatch(availabilityConcurrency); len(got) != 1 {
+	f.now = f.now.Add(announceCadence)
+	if got := a.dispatch(announceConcurrency); len(got) != 1 {
 		t.Fatalf("no retry after the second backoff: %d", len(got))
 	}
 }

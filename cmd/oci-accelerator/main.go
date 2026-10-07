@@ -68,9 +68,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 
 	p := proxy.New(cfg, signer, logger, store)
 
-	// Peering starts after metrics but publishes availability stats to them.
-	var availability atomic.Pointer[peering.Availability]
-	metricsDone, stopMetrics, err := startMetrics(cfg, p, &availability, listen)
+	// Peering starts after metrics but publishes provider hint stats to them.
+	var providerHints atomic.Pointer[peering.ProviderHints]
+	metricsDone, stopMetrics, err := startMetrics(cfg, p, &providerHints, listen)
 	if err != nil {
 		return err
 	}
@@ -78,11 +78,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		defer func() { runErr = errors.Join(runErr, stopMetrics()) }()
 	}
 
-	peeringDone, peerAvailability, stopPeering, err := startPeering(ctx, cfg, signer, store, logger, listen)
+	peeringDone, peerHints, stopPeering, err := startPeering(ctx, cfg, signer, store, logger, listen)
 	if err != nil {
 		return err
 	}
-	availability.Store(peerAvailability)
+	providerHints.Store(peerHints)
 	if stopPeering != nil {
 		defer func() { runErr = errors.Join(runErr, stopPeering()) }()
 	}
@@ -168,7 +168,7 @@ func closeProxyListener(listener net.Listener) error {
 // startMetrics serves the metrics endpoint when cfg enables it, returning nil
 // results when disabled and otherwise its completion channel and a cleanup the
 // caller must defer to drain the server.
-func startMetrics(cfg config.Config, p *proxy.Proxy, availability *atomic.Pointer[peering.Availability], listen func(string, string) (net.Listener, error)) (chan struct{}, func() error, error) {
+func startMetrics(cfg config.Config, p *proxy.Proxy, providerHints *atomic.Pointer[peering.ProviderHints], listen func(string, string) (net.Listener, error)) (chan struct{}, func() error, error) {
 	if cfg.MetricsListen == "" {
 		return nil, nil, nil
 	}
@@ -176,7 +176,7 @@ func startMetrics(cfg config.Config, p *proxy.Proxy, availability *atomic.Pointe
 	if err != nil {
 		return nil, nil, errors.New("cannot listen on configured metrics address")
 	}
-	metricsServer := newMetricsServer(cfg, p, availability)
+	metricsServer := newMetricsServer(cfg, p, providerHints)
 	metricsDone := make(chan struct{})
 	var metricsErr error
 	go func() {
@@ -243,14 +243,14 @@ func cacheDiagnostic(prefix string, err error) error {
 
 // newMetricsServer serves metrics and local lifecycle probes independently of
 // the proxy's connection admission limit. Probes never contact upstream services.
-func newMetricsServer(cfg config.Config, p *proxy.Proxy, availability *atomic.Pointer[peering.Availability]) *http.Server {
+func newMetricsServer(cfg config.Config, p *proxy.Proxy, providerHints *atomic.Pointer[peering.ProviderHints]) *http.Server {
 	mux := http.NewServeMux()
 
 	proxyMetrics := p.MetricsHandler()
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		proxyMetrics.ServeHTTP(w, r)
-		if a := availability.Load(); a != nil {
-			writeAvailabilityMetrics(w, a.Stats())
+		if a := providerHints.Load(); a != nil {
+			writeProviderHintMetrics(w, a.Stats())
 		}
 	})
 

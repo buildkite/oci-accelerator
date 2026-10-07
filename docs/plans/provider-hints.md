@@ -1,11 +1,11 @@
-# Persistent node-ID cache availability hints
+# Persistent node-ID provider hints
 
 ## Start from main
 
 Implement this plan from a fresh `origin/main` checkout. Main already includes
 persistent node identities and discovery from
 [PR #29](https://github.com/buildkite/oci-accelerator/pull/29). It does not yet have
-cache availability notifications, an availability endpoint, or a hint directory.
+cache change notifications, an announce endpoint, or a hint directory.
 Do not merge or cherry-pick the address-based implementation from
 [PR #28](https://github.com/buildkite/oci-accelerator/pull/28). That PR is optional
 reference material, not a dependency or the target of this implementation.
@@ -22,12 +22,15 @@ git switch -c implement/node-id-cache-availability origin/main
 git restore --source=origin/plan/node-id-cache-availability -- docs/plans/cache-availability.md
 ```
 
+That branch names the plan `cache-availability.md`. It now lives at
+`docs/plans/provider-hints.md`.
+
 Include the plan in the implementation branch and keep it aligned as work proceeds.
 This plan does not authorize merging or deploying the resulting implementation.
 
 ## Outcome and boundaries
 
-When peering is enabled and a cache entry becomes available, originate a positive
+When peering is enabled and a cache entry becomes available, announce a positive
 hint that the local node holds that cache key. Other nodes retain the hint and
 relay it with limited gossip. Persist the bounded hint directory and forwarding
 state so ordinary restarts preserve useful knowledge.
@@ -40,7 +43,7 @@ fleet-trusted labels, not cryptographic identities.
 Do not add peer-assisted blob fetching, alter cache keys, or change per-request
 upstream GET authorization. Do not weaken TLS, cross-origin credential handling,
 peer-state permissions, or exclusive state ownership. Disabled peering must create
-no availability state, subscriptions, goroutines, or network activity.
+no provider hint state, subscriptions, goroutines, or network activity.
 
 Fleet-wide delivery is best effort. Partial peer books, failures, capacity loss,
 or limited forwarding can leave nodes uninformed. No anti-entropy, full inventory
@@ -48,16 +51,16 @@ exchange, restart resynchronization, or replay to newly discovered peers is incl
 
 ## Wire contract
 
-Serve `POST /v1/cache/availability` with JSON on the existing fleet-mTLS peer
+Serve `POST /v1/cache/announce` with JSON on the existing fleet-mTLS peer
 listener. This example shows node B relaying node A's hint to node C:
 
 ```json
 {
   "senderNodeId": "node00000002",
   "recipientNodeId": "node00000003",
-  "claims": [
+  "hints": [
     {
-      "ownerNodeId": "node00000001",
+      "providerNodeId": "node00000001",
       "key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       "seen": ["node00000001", "node00000002"]
     }
@@ -65,18 +68,18 @@ listener. This example shows node B relaying node A's hint to node C:
 }
 ```
 
-- `senderNodeId` identifies the immediate sender, not necessarily the owner.
+- `senderNodeId` identifies the immediate sender, not necessarily the provider.
 - `recipientNodeId` identifies the intended receiver. Validate it against the
-  local node ID before merging any claims. Return `409` without mutation when it
+  local node ID before merging any hints. Return `409` without mutation when it
   differs, including when an address has been reused by another node.
-- `ownerNodeId` identifies the node that held the key. Relays never replace it.
+- `providerNodeId` identifies the node that held the key. Relays never replace it.
 - `key` is the existing 64-character lowercase hexadecimal cache key.
 - `seen` is the sorted, unique set of node IDs known to have received this hint.
-  Require both the owner and the immediate sender to be present.
+  Require both the provider and the immediate sender to be present.
 
 Use discovery's case-sensitive 12-character `[A-Za-z0-9_-]` ID validation. Reject
 unknown, duplicate, missing, or incorrectly cased JSON fields, invalid types,
-trailing data, and malformed or oversized claims before modifying state. Reject
+trailing data, and malformed or oversized hints before modifying state. Reject
 a request whose sender is the local node ID. Follow the strict decoding approach
 in `internal/peering/exchange.go`, including its exact-field checks.
 
@@ -89,17 +92,17 @@ Do not follow HTTP redirects. No address-only compatibility protocol is required
 
 ## Hint identity and discovery ownership
 
-The index key is `(ownerNodeId, key)`. Store the accumulated seen set, FIFO position,
+The index key is `(providerNodeId, key)`. Store the accumulated seen set, FIFO position,
 and local forwarding state alongside that pair. These are local bookkeeping fields,
-not additions to the claim schema.
+not additions to the hint schema.
 
 On first receipt, add the receiver's own ID and create pending forwarding work.
 On duplicate receipt, union the seen sets without refreshing FIFO position,
 resetting attempt budgets, or restarting completed forwarding. Ignore incoming
-claims owned by the local node, whose cache inventory is authoritative.
+hints provided by the local node, whose cache inventory is authoritative.
 
-Unknown owner IDs can be stored and relayed within the same bounds. An owner lookup
-returns IDs, not addresses. Availability must never create or change discovery
+Unknown provider IDs can be stored and relayed within the same bounds. A provider lookup
+returns IDs, not addresses. Provider hints must never create or change discovery
 mappings. Route only through discovery's resolved address-to-ID map.
 
 Resolve current addresses when dispatching. Same-ID address moves preserve seen
@@ -122,12 +125,12 @@ after the pass is finished.
 
 Use one bounded background scheduler, independent of discovery's inbound cooldown.
 Merge inbound notices immediately and schedule forwarding after delay and jitter.
-Do not create a timer or goroutine per claim. Use roughly a one-second cadence with
+Do not create a timer or goroutine per hint. Use roughly a one-second cadence with
 plus or minus 20 percent jitter, including initial forwarding. Duplicates must not
 keep postponing an existing deadline.
 
 At dispatch time, recheck the merged seen set and current resolved book. Randomly
-choose eligible unseen IDs, reserve the remaining fanout slots, and batch claims
+choose eligible unseen IDs, reserve the remaining fanout slots, and batch hints
 for the same destination within the wire bounds. Prevent concurrent work for one
 hint from exceeding its remaining acknowledged-destination budget.
 
@@ -154,7 +157,7 @@ Add a sorted snapshot of committed, non-invalid keys and a lazy, capacity-one,
 coalesced change notification to `internal/cache.Store`. Subscribe before taking
 the first snapshot. Publishing an entry or removing/invalidating a visible key
 must notify without blocking cache operations. Aborted or failed fills must not
-announce availability. Define shutdown ownership so sends cannot race a closed
+announce provider hints. Define shutdown ownership so sends cannot race a closed
 notification channel. A never-closed notification channel with context cancellation
 is sufficient.
 
@@ -164,28 +167,28 @@ reannounce that key. Notifications are wakeups to rescan, not a durable event lo
 A removal and recommit entirely between snapshots can be coalesced away, which is
 acceptable for these best-effort hints.
 
-At startup, restore availability state first, then reconcile with the cache:
+At startup, restore provider hint state first, then reconcile with the cache:
 
-- Remove local-owner records for keys no longer present and cancel their pending
+- Remove local-provider records for keys no longer present and cancel their pending
   work. Do not send withdrawals.
 - Preserve seen and completed forwarding state for retained local keys. Do not
   reset them just because the process restarted.
-- Originate hints for current keys without a retained local record. With no
+- Announce hints for current keys without a retained local record. With no
   snapshot, this is the current committed inventory, subject to capacity bounds.
 - Establish the previous-inventory baseline from this snapshot.
 
-While running, newly present keys originate hints. Missing keys remove local-owner
+While running, newly present keys announce hints. Missing keys remove local-provider
 records and pending forwarding, without changing remote records elsewhere. A later
-observed recommit can originate a fresh local pass, but peers retaining the same
-owner/key pair merge it without restarting completed forwarding.
+observed recommit can announce a fresh local pass, but peers retaining the same
+provider/key pair merge it without restarting completed forwarding.
 
-Other nodes may continue relaying an evicted owner's hint indefinitely. There is
-no time-based pruning or wall-clock synchronization requirement for availability.
+Other nodes may continue relaying an evicted provider's hint indefinitely. There is
+no time-based pruning or wall-clock synchronization requirement for provider hints.
 
 ## Bounded directory and FIFO replacement
 
 Use one bounded index for local and remote hints, without a protected unbounded
-pool for local owners. Evict the oldest retained whole record when admission or
+pool for local hints. Evict the oldest retained whole record when admission or
 seen growth requires room. Duplicates and acknowledgements do not refresh its
 FIFO position. During a merge, make room using other records rather than discarding
 the record being updated halfway through the operation.
@@ -211,10 +214,10 @@ documented resource costs:
 | --- | --- |
 | Hint records | 200,000 |
 | Accounted index plus forwarding-state memory | 64 MiB |
-| Seen IDs per claim | `MaxPeers + 1`, currently 1,025 |
+| Seen IDs per hint | `MaxPeers + 1`, currently 1,025 |
 | Encoded request body | 512 KiB |
-| Claims per request | 512, also constrained by encoded size |
-| Concurrent outbound availability requests | 4 globally |
+| Hints per request | 512, also constrained by encoded size |
+| Concurrent outbound announcements | 4 globally |
 | Successful distinct destinations per hint pass | 2 |
 | Total request attempts per hint pass | 6, including successful sends |
 | Request deadline | 5 seconds |
@@ -236,17 +239,17 @@ silently omit records only from disk.
 
 ## Checkpoint persistence and restart behavior
 
-Use a separate availability snapshot in the existing peer-state directory under
+Use a separate provider hint snapshot in the existing peer-state directory under
 its existing process-exclusive lock. Extend the directory allowlist deliberately.
-Do not mix availability records into `peers.json` or weaken ownership, permission,
+Do not mix provider hint records into `peers.json` or weaken ownership, permission,
 symlink, or lock checks. Reuse the atomic replacement and sync pattern in
 `internal/peering/book_state.go` where appropriate, without making discovery
-responsible for availability semantics.
+responsible for provider hint semantics.
 
-Store the snapshot as strictly decoded, versioned JSON in `availability.json`,
-following the `peers.json` conventions. The disk format includes a format version, the existing local node ID, FIFO order,
-and retained records containing owner/key, seen, suppression, and pending/completed
-state. Pending state retains selected IDs, successful delivery count, and remaining
+Store the snapshot as strictly decoded, versioned JSON in `provider-hints.json`,
+following the `peers.json` conventions. The disk format includes a format
+version, the existing local node ID, FIFO order, and retained records containing
+provider/key, seen, suppression, and pending/completed state. Pending state retains selected IDs, successful delivery count, and remaining
 attempt budget. Persist enough state to keep a completed or exhausted pass from
 restarting and to prevent duplicate acknowledgements spending fanout twice. Disk
 format versions are not wire revisions, sessions, or announcement generations.
@@ -259,13 +262,13 @@ pending work with fresh jitter, but without resetting its remaining budget.
 
 Checkpoint dirty state in the background with coalescing, at most one writer and
 one bounded captured snapshot at a time. Do not perform filesystem I/O while
-holding the availability or discovery locks. Capture a consistent view, write a
+holding the provider hint or discovery locks. Capture a consistent view, write a
 private temporary file, sync it, rename it, and sync the parent directory. Track
 mutations during the write so an older checkpoint completing cannot mark newer
 state clean. Incomplete writes must leave a usable old snapshot and cleanable
 temporary files. Continuous mutations must not postpone checkpointing indefinitely.
 
-On graceful shutdown, stop accepting availability requests, cancel and join
+On graceful shutdown, stop accepting announcements, cancel and join
 outbound work, join active handlers, checkpoint the final state, then release
 the peer-state lock. Join the checkpoint writer before releasing that lock.
 Preserve existing cache/proxy shutdown ordering and report final write errors.
@@ -284,7 +287,7 @@ filesystem ownership, permissions, symlinks, or lock failures still fail startup
 rather than bypass the existing peer-state safety rules. Runtime checkpoint failures
 retain in-memory operation, remain dirty for rate-limited retry, and produce bounded
 diagnostics without logging credentials or entire hint inventories. Do not make
-successful cache serving depend on availability checkpoint success.
+successful cache serving depend on provider hint checkpoint success.
 
 ## Source ownership and implementation slices
 
@@ -309,16 +312,16 @@ slices.
 
 ### 1. Expose committed cache inventory changes
 
-Add `Keys()` and `Changes()` in a focused cache availability file. Keep changes
+Add `Keys()` and `Changes()` in a focused cache change notification file. Keep changes
 lazy when peering is disabled and notify at the source-of-truth mutation sites.
 Test commit, failed and aborted fill, invalidation, removal, coalescing, snapshot
 ordering, subscription-before-snapshot races, and closure. No networking yet.
 
 ### 2. Implement the bounded node-ID hint index and wire protocol
 
-Add the owner/key index, seen unions, FIFO accounting, forwarding-state ownership,
+Add the provider/key index, seen unions, FIFO accounting, forwarding-state ownership,
 strict codec, HTTP handler, and sender. Keep these unmounted until the integration
-slice. Provide advisory owner-ID lookup without adding a blob-fetch consumer.
+slice. Provide advisory provider-ID lookup without adding a blob-fetch consumer.
 Validate recipient mismatches and malformed batches without partial mutation.
 Test the handler and client with deterministic local fixtures.
 
@@ -326,13 +329,13 @@ Test the handler and client with deterministic local fixtures.
 
 Add the independent jittered scheduler, two-destination and attempt budgets,
 batching, acknowledgement handling, address resolution, and cancellation. Mount
-availability beside discovery under the existing authenticated listener, pass in
-the store, and integrate cleanup. Expose Prometheus metrics for the retained hint
+the announce handler beside discovery under the existing authenticated listener,
+pass in the store, and integrate cleanup. Expose Prometheus metrics for the retained hint
 record count, FIFO evictions, and acknowledged and failed sends on the existing
 metrics listener. Persisted state is not yet required in this slice, but keep
 pending/completed state explicit for the next one.
 
-### 4. Persist and restore bounded availability state
+### 4. Persist and restore bounded provider hint state
 
 Add checkpoint serialization, bounded loading, atomic replacement, startup
 reconciliation, dirty tracking, final shutdown flush, and a checkpoint failure
@@ -364,7 +367,7 @@ Use local registry/authentication/CDN and peer TLS fixtures, not live services.
 Assert stored IDs, returned cache bytes, authorization outcomes, request bodies,
 and upstream/peer request counts rather than relying on logs. Critical scenarios:
 
-- A five-node relay preserves the original owner and accumulates seen IDs.
+- A five-node relay preserves the original provider and accumulates seen IDs.
   All-book-seen suppresses pending work, while two successes stop a pass even
   with unseen peers remaining. Duplicates do not reopen completed work.
 - The partial-book example above deliberately misses D and E. There is no hidden
@@ -373,7 +376,7 @@ and upstream/peer request counts rather than relying on logs. Critical scenarios
   in-flight slots, lost acknowledgements, replacement attempts, and timeouts stay
   within budgets. Slow peers do not block unrelated work or discovery.
 - Same-ID address moves, different-ID address reuse, wrong recipients, and delayed
-  responses never misattribute receipt or mutate discovery. Unknown owners remain
+  responses never misattribute receipt or mutate discovery. Unknown providers remain
   advisory IDs. Test strict JSON and body/count bounds on both send and receive.
 - Cache eviction emits no withdrawal, idle time emits no refresh, recommit does
   not reset retained remote forwarding, and unrelated inventory changes do not
@@ -393,7 +396,7 @@ and upstream/peer request counts rather than relying on logs. Critical scenarios
 
 Update `docs/how-it-works.md`, `docs/deployment.md`, and `docs/testing.md` as needed.
 Explain the persisted state, resource limits, startup and failure behavior, stale
-hints, incomplete coverage, and lack of repair or content fetching. Availability
+hints, incomplete coverage, and lack of repair or content fetching. Provider hints
 requires nodes supporting this new protocol. Do not add compatibility with PR #28's
 address-based protocol. Keep protocol upgrades coordinated across the fleet.
 

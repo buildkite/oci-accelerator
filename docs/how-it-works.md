@@ -87,18 +87,20 @@ never share cached content, credentials, or authorization grants.
 See [peer discovery](deployment.md#peer-discovery) for configuration, trust, and
 retention details.
 
-### Cache availability hints are advisory gossip
+### Provider hints are advisory gossip
 
 With peering enabled, each instance announces which cache keys it holds. A cache
 key is the existing SHA-256 hash of an object's registry, repository, digest, and
 representation headers. A hint does not state those inputs, but a peer that can
-guess them can confirm a match. When
-an entry is committed, the instance originates a hint that its node ID holds that
-key. Peers retain hints in a bounded directory keyed by owner ID and cache key,
-and relay them with limited gossip.
+guess them can confirm a match. When an entry is committed, the instance
+announces a provider hint: its node ID holds that key. Peers retain hints in a
+bounded directory keyed by provider ID and cache key, and relay them with limited
+gossip. The name provider follows provider records in content-addressed systems
+such as IPFS, and hint follows its use in cooperative caching: advisory, possibly
+stale knowledge. It is unrelated to Cassandra's hinted handoff.
 
 Each hint carries a sorted `seen` set of node IDs known to have received it. A
-relay never replaces the owner. It adds itself to `seen`, then makes one
+relay never replaces the provider. It adds itself to `seen`, then makes one
 forwarding pass that aims for two acknowledged destinations in total, chosen at
 random from resolved peers missing from `seen`. A pass stops after two
 acknowledgements, six attempts, or when every resolved peer has the hint. A
@@ -111,11 +113,10 @@ withdrawal, hints never expire, and there is no repair, inventory exchange, or
 replay to newly discovered peers, so some nodes may never hear of an entry.
 Each instance checkpoints its hints and forwarding progress beside its address
 book, so an ordinary restart keeps what it knew without repeating finished
-passes. No
-instance fetches content from a peer, and hints never change cache keys or
-per-request upstream authorization. See
-[cache availability hints](deployment.md#cache-availability-hints) for the
-protocol, limits, and metrics.
+passes. No instance fetches content from a peer, and hints never change cache
+keys or per-request upstream authorization. See
+[provider hints](deployment.md#provider-hints) for the protocol, limits, and
+metrics.
 
 ### Play-by-play example
 
