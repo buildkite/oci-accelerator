@@ -1,10 +1,8 @@
 package proxy
 
 import (
-	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -362,31 +360,4 @@ func FuzzRedirectURL(f *testing.F) {
 			t.Fatalf("host = %q, want %q", u.Host, want.Host)
 		}
 	})
-}
-
-// routeDefaultPort makes the proxy reach server as https://example.com on the
-// default port, so requests carry an authority with no explicit port. The
-// httptest certificate is valid for example.com, so TLS verification stays on.
-// Call it before the first request.
-func routeDefaultPort(t *testing.T, p *Proxy, server *httptest.Server) {
-	t.Helper()
-	lookup, dial := p.lookupIP, p.dialIP
-	p.lookupIP = func(ctx context.Context, host string) ([]net.IPAddr, error) {
-		if host == "example.com" {
-			return []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}}, nil
-		}
-		return lookup(ctx, host)
-	}
-	p.dialIP = func(ctx context.Context, network, address string) (net.Conn, error) {
-		if address == "127.0.0.1:443" {
-			address = server.Listener.Addr().String()
-		}
-		return dial(ctx, network, address)
-	}
-	a, err := hostport.Parse("example.com", "443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.destinations[a.String()] = struct{}{}
-	p.transport.TLSClientConfig.RootCAs.AddCert(server.Certificate())
 }

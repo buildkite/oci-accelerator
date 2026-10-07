@@ -187,6 +187,74 @@ func TestInterceptForwardsRequestAndRelaysSensitiveResponse(t *testing.T) {
 	}
 }
 
+// The registry receives its canonical authority: without the default port,
+// and with any other port kept. Relative redirects the proxy follows inherit
+// it. The explicit-port case guards against stripping non-default ports.
+func TestInterceptUpstreamAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		defaultPort bool
+	}{
+		{"default port", true},
+		{"explicit port", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var want string
+			var requests atomic.Int32
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := requests.Add(1)
+				if r.Host != want || r.Header.Get("Authorization") != "Bearer secret" {
+					t.Errorf("request %d: Host = %q, want %q, Authorization = %q", n, r.Host, want, r.Header.Get("Authorization"))
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				if n == 1 {
+					w.Header().Set("Location", "/storage?X-Amz-SignedHeaders=host")
+					w.WriteHeader(http.StatusTemporaryRedirect)
+					return
+				}
+				if r.URL.RequestURI() != "/storage?X-Amz-SignedHeaders=host" {
+					t.Errorf("redirect target = %q", r.URL.RequestURI())
+				}
+				io.WriteString(w, "registry bytes")
+			}))
+			defer origin.Close()
+			p, _, client := interceptFixture(t, origin, nil, true)
+			// Only the proxy may follow the redirect, so a relayed 307 fails the test.
+			client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+			u, err := url.Parse(origin.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want = u.Host
+			if tc.defaultPort {
+				// Configure before the first request, like routeDefaultPort.
+				routeDefaultPort(t, p, origin)
+				a, err := hostport.Parse("example.com", "443")
+				if err != nil {
+					t.Fatal(err)
+				}
+				p.configured[a.String()] = struct{}{}
+				u.Host, want = "example.com", "example.com"
+			}
+			req, err := http.NewRequest(http.MethodGet, u.String()+testBlobPath, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer secret")
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || resp.StatusCode != http.StatusOK || string(body) != "registry bytes" || requests.Load() != 2 {
+				t.Fatalf("response = %d %q, %v, origin requests = %d", resp.StatusCode, body, err, requests.Load())
+			}
+		})
+	}
+}
+
 func TestRejectedRequestURLLogs(t *testing.T) {
 	for _, tc := range []struct {
 		name, registry, requestTarget, host, wantURL string
