@@ -708,6 +708,11 @@ manifest GETs.
 - Every hop must use verified HTTPS and pass destination checks.
 - Userinfo, fragments, loops, and implicit private, link-local, or loopback destinations are
   rejected. Add private storage destinations to `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`.
+- Hosts that could be read as a different endpoint are rejected: IPv6 addresses without
+  brackets and non-ASCII hostnames. Use brackets for IPv6 and punycode (`xn--`) for
+  internationalized names.
+- The redirect target's host and port are sent exactly as written, so presigned URLs that
+  sign the `Host` header stay valid.
 - Cross-origin redirects preserve only `Accept`, `Accept-Encoding`, and `User-Agent`, never
   credentials or cookies.
 - These restrictions do not apply to tunnel egress (see [limitations](#current-limitations)).

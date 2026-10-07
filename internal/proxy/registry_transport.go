@@ -2,11 +2,13 @@ package proxy
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
@@ -247,7 +249,7 @@ func redirectURL(base *url.URL, location string) (*url.URL, error) {
 	}
 	// Validate the authority but keep it as written. Presigned storage URLs can
 	// sign the Host header, so adding a default port would invalidate them.
-	if _, err := hostport.Parse(u.Host, "443"); err != nil {
+	if _, err := urlEndpoint(u); err != nil {
 		return nil, errRedirect
 	}
 	return u, nil
@@ -258,7 +260,7 @@ func redirectURL(base *url.URL, location string) (*url.URL, error) {
 // spellings of the same resource, such as escaping variants, get distinct keys
 // and are bounded by the redirect hop limit instead.
 func redirectKey(u *url.URL) string {
-	a, err := hostport.Parse(u.Host, "443")
+	a, err := urlEndpoint(u)
 	if err != nil {
 		// Defensive: redirectURL and the pinned registry authority are already valid.
 		return u.String()
@@ -266,8 +268,39 @@ func redirectKey(u *url.URL) string {
 	return u.Scheme + "://" + a.String() + u.RequestURI()
 }
 
+// sameOrigin reports whether a and b share a scheme and dialed endpoint. It
+// reports false for an ambiguous authority, so credentials are stripped.
 func sameOrigin(a, b *url.URL) bool {
-	x, ex := hostport.Parse(a.Host, "443")
-	y, ey := hostport.Parse(b.Host, "443")
+	x, ex := urlEndpoint(a)
+	y, ey := urlEndpoint(b)
 	return ex == nil && ey == nil && a.Scheme == b.Scheme && x == y
+}
+
+// urlEndpoint returns the canonical authority of a URL the caller has already
+// required to be https, refusing one that hostport reads differently from the
+// endpoint net/http dials. Comparing such an authority could keep credentials
+// for another host. For example, the unbracketed "2001:db8::1:443" parses as
+// one IPv6 address but dials [2001:db8::1]:443. A non-ASCII host such as
+// "ghcr.İo" lowercases to "ghcr.io" but net/http dials its punycode form.
+func urlEndpoint(u *url.URL) (hostport.HostPort, error) {
+	// Refusing non-ASCII stands in for net/http's IDNA conversion.
+	for i := 0; i < len(u.Host); i++ {
+		if u.Host[i] >= utf8.RuneSelf {
+			return hostport.HostPort{}, errRedirect
+		}
+	}
+	authority, err := hostport.Parse(u.Host, "443")
+	if err != nil {
+		return hostport.HostPort{}, errRedirect
+	}
+	// Mirror the transport's dial address: Hostname and Port, defaulting to 443.
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	dialed, err := hostport.Parse(net.JoinHostPort(u.Hostname(), port), "443")
+	if err != nil || dialed != authority {
+		return hostport.HostPort{}, errRedirect
+	}
+	return authority, nil
 }
