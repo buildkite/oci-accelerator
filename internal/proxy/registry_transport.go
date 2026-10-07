@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -141,7 +140,7 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	eligible := policy.eligible()
 	permitted := policy.cacheable()
 	current := req
-	seen := map[string]bool{req.URL.String(): true}
+	seen := map[string]bool{redirectKey(req.URL): true}
 
 	// Fast path: serve from a cached authorization grant with no upstream I/O.
 	// On a miss, attempt carries the in-flight entry for the upstream path below
@@ -191,12 +190,12 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 
 		// Resolve and validate Location. Refuse anything unsafe or already seen.
 		next, err := redirectURL(current.URL, resp.Header.Get("Location"))
-		if err != nil || seen[next.String()] {
+		if err != nil || seen[redirectKey(next)] {
 			attempt.abandon()
 			return nil, false, errRedirect
 		}
 
-		seen[next.String()] = true
+		seen[redirectKey(next)] = true
 		current = buildRedirectRequest(req.Context(), current, next)
 	}
 }
@@ -246,12 +245,25 @@ func redirectURL(base *url.URL, location string) (*url.URL, error) {
 	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Fragment != "" {
 		return nil, errRedirect
 	}
-	a, err := hostport.Parse(u.Host, "443")
-	if err != nil {
+	// Validate the authority but keep it as written. Presigned storage URLs can
+	// sign the Host header, so adding a default port would invalidate them.
+	if _, err := hostport.Parse(u.Host, "443"); err != nil {
 		return nil, errRedirect
 	}
-	u.Host = net.JoinHostPort(a.Host(), a.Port())
 	return u, nil
+}
+
+// redirectKey identifies a redirect target for loop detection, treating an
+// explicit default port and host case differences as the same target. Other
+// spellings of the same resource, such as escaping variants, get distinct keys
+// and are bounded by the redirect hop limit instead.
+func redirectKey(u *url.URL) string {
+	a, err := hostport.Parse(u.Host, "443")
+	if err != nil {
+		// Defensive: redirectURL and the pinned registry authority are already valid.
+		return u.String()
+	}
+	return u.Scheme + "://" + a.String() + u.RequestURI()
 }
 
 func sameOrigin(a, b *url.URL) bool {
