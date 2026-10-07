@@ -48,7 +48,10 @@ a cacheable `200 OK`, it returns that to Docker and caches it under the original
 request. Any other final response goes back to Docker unchanged. When a redirect
 leads to a different origin (scheme, host, and port), the accelerator sends only
 the `Accept`, `Accept-Encoding`, and `User-Agent` headers, so credentials never
-leave the upstream registry's origin.
+leave the upstream registry's origin. The accelerator sends each redirect
+target's host and port, in both the URL and the `Host` header, exactly as
+`Location` wrote them, so presigned storage URLs that sign the host, such as S3
+URLs, stay valid.
 
 The accelerator checks the address of every upstream connection it makes for an
 intercepted registry, including redirects. Public hosts need no configuration,

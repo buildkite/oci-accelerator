@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,8 +14,10 @@ import (
 )
 
 func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
-	// Pin the upstream to the registry's HTTPS authority.
-	upstream := &url.URL{Scheme: "https", Host: net.JoinHostPort(target.Host(), target.Port())}
+	// Pin the upstream to the registry's canonical HTTPS authority. String omits
+	// the default port, so the Host header and relative redirect targets never
+	// carry an explicit :443, which presigned URLs that sign Host may reject.
+	upstream := &url.URL{Scheme: "https", Host: target.String()}
 
 	// Reverse proxy to the registry, streaming responses through the caching transport.
 	rp := &httputil.ReverseProxy{

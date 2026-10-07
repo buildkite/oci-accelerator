@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
@@ -141,7 +142,7 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	eligible := policy.eligible()
 	permitted := policy.cacheable()
 	current := req
-	seen := map[string]bool{req.URL.String(): true}
+	seen := map[string]bool{redirectKey(req.URL): true}
 
 	// Fast path: serve from a cached authorization grant with no upstream I/O.
 	// On a miss, attempt carries the in-flight entry for the upstream path below
@@ -191,12 +192,12 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 
 		// Resolve and validate Location. Refuse anything unsafe or already seen.
 		next, err := redirectURL(current.URL, resp.Header.Get("Location"))
-		if err != nil || seen[next.String()] {
+		if err != nil || seen[redirectKey(next)] {
 			attempt.abandon()
 			return nil, false, errRedirect
 		}
 
-		seen[next.String()] = true
+		seen[redirectKey(next)] = true
 		current = buildRedirectRequest(req.Context(), current, next)
 	}
 }
@@ -246,16 +247,60 @@ func redirectURL(base *url.URL, location string) (*url.URL, error) {
 	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Fragment != "" {
 		return nil, errRedirect
 	}
-	a, err := hostport.Parse(u.Host, "443")
-	if err != nil {
+	// Validate the authority but keep it as written. Presigned storage URLs can
+	// sign the Host header, so adding a default port would invalidate them.
+	if _, err := urlEndpoint(u); err != nil {
 		return nil, errRedirect
 	}
-	u.Host = net.JoinHostPort(a.Host(), a.Port())
 	return u, nil
 }
 
+// redirectKey identifies a redirect target for loop detection, treating an
+// explicit default port and host case differences as the same target. Other
+// spellings of the same resource, such as escaping variants, get distinct keys
+// and are bounded by the redirect hop limit instead.
+func redirectKey(u *url.URL) string {
+	a, err := urlEndpoint(u)
+	if err != nil {
+		// Defensive: redirectURL and the pinned registry authority are already valid.
+		return u.String()
+	}
+	return u.Scheme + "://" + a.String() + u.RequestURI()
+}
+
+// sameOrigin reports whether a and b share a scheme and dialed endpoint. It
+// reports false for an ambiguous authority, so credentials are stripped.
 func sameOrigin(a, b *url.URL) bool {
-	x, ex := hostport.Parse(a.Host, "443")
-	y, ey := hostport.Parse(b.Host, "443")
+	x, ex := urlEndpoint(a)
+	y, ey := urlEndpoint(b)
 	return ex == nil && ey == nil && a.Scheme == b.Scheme && x == y
+}
+
+// urlEndpoint returns the canonical authority of a URL the caller has already
+// required to be https, refusing one that hostport reads differently from the
+// endpoint net/http dials. Comparing such an authority could keep credentials
+// for another host. For example, the unbracketed "2001:db8::1:443" parses as
+// one IPv6 address but dials [2001:db8::1]:443. A non-ASCII host such as
+// "ghcr.İo" lowercases to "ghcr.io" but net/http dials its punycode form.
+func urlEndpoint(u *url.URL) (hostport.HostPort, error) {
+	// Refusing non-ASCII stands in for net/http's IDNA conversion.
+	for i := 0; i < len(u.Host); i++ {
+		if u.Host[i] >= utf8.RuneSelf {
+			return hostport.HostPort{}, errRedirect
+		}
+	}
+	authority, err := hostport.Parse(u.Host, "443")
+	if err != nil {
+		return hostport.HostPort{}, errRedirect
+	}
+	// Mirror the transport's dial address: Hostname and Port, defaulting to 443.
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	dialed, err := hostport.Parse(net.JoinHostPort(u.Hostname(), port), "443")
+	if err != nil || dialed != authority {
+		return hostport.HostPort{}, errRedirect
+	}
+	return authority, nil
 }
