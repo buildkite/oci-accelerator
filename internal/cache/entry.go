@@ -8,7 +8,7 @@ type entry struct {
 	meta      Metadata      // identifies this generation by its key, size, and digest.
 	dir       string        // filesystem path holding this generation's body and meta files.
 	charge    int64         // byte count this entry contributes to the store's budget.
-	last      int64         // access time (UnixNano) ordering this entry in the LRU eviction list. In memory only (hits never write metadata).
+	last      int64         // logical access time in the live LRU order, seeded from commit-time rank at startup. In memory only.
 	pins      int           // active readers holding the body open. A detached entry survives until this reaches zero.
 	verified  bool          // set once the body's digest has been checked so readers can skip re-verification.
 	verifying chan struct{} // non-nil while one Get verifies the body, and concurrent Gets wait on it. Guarded by Store.mu.

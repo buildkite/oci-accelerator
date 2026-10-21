@@ -15,6 +15,7 @@ import (
 
 func TestBuildEvictionOrderBulkSortsReverseAndShuffledEntries(t *testing.T) {
 	s := &Store{entries: make(map[string]*entry)}
+	originalLast := make(map[string]int64)
 	// Deliberately mix recency, ties, and insertion order. Map traversal must not
 	// affect the bulk-built startup index.
 	for _, item := range []struct {
@@ -23,6 +24,7 @@ func TestBuildEvictionOrderBulkSortsReverseAndShuffledEntries(t *testing.T) {
 	}{{"f", 3}, {"b", 1}, {"e", 2}, {"a", 1}, {"d", 2}, {"c", 3}} {
 		meta := testMeta("bulk-"+item.name, "x")
 		s.entries[meta.Key] = &entry{meta: meta, last: item.last}
+		originalLast[meta.Key] = item.last
 	}
 
 	s.buildEvictionOrderLocked()
@@ -39,8 +41,9 @@ func TestBuildEvictionOrderBulkSortsReverseAndShuffledEntries(t *testing.T) {
 	}
 	for i := 1; i < len(got); i++ {
 		previous, current := got[i-1], got[i]
-		if previous.last > current.last || previous.last == current.last && previous.meta.Key > current.meta.Key {
-			t.Fatalf("order[%d:%d] = (%d, %q), (%d, %q)", i-1, i, previous.last, previous.meta.Key, current.last, current.meta.Key)
+		before, after := originalLast[previous.meta.Key], originalLast[current.meta.Key]
+		if before > after || before == after && previous.meta.Key > current.meta.Key {
+			t.Fatalf("order[%d:%d] = (%d, %q), (%d, %q)", i-1, i, before, previous.meta.Key, after, current.meta.Key)
 		}
 	}
 }

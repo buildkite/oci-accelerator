@@ -776,6 +776,8 @@ filling, and eviction.
 - Best-effort LRU eviction skips active readers and makes at most eight removal attempts per
   admission, separately from pending-cleanup retries. Objects needing more victims can keep
   bypassing, and competing traffic may consume reclaimed space, so admission is not guaranteed.
+- Hits and publications advance a store-local logical recency sequence, so equal or backwards
+  wall-clock times cannot move them behind earlier accesses. This access history is not persisted.
 
 ### Concurrent fills
 

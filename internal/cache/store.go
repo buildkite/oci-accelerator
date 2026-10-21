@@ -45,6 +45,7 @@ type Store struct {
 	removeAll                                       func(string) error                   // injectable os.RemoveAll for tests.
 	mkdirTemp                                       func(string, string) (string, error) // injectable os.MkdirTemp for tests.
 	evictionOrder                                   list.List                            // entries ordered by (last, key) for eviction victim selection.
+	recency                                         int64                                // latest assigned logical access time, never reset during this store's lifetime.
 	evictionAfterLast                               int64                                // resume after this (last, key) position even if its entry disappears or pins.
 	evictionAfter                                   string                               // paired with evictionAfterLast.
 	lock                                            *os.File                             // held OS file lock enforcing single-process ownership of dir.
