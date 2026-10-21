@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
 )
 
 // Reader streams one pinned, verified body. The pin keeps the entry's body and
@@ -203,7 +202,7 @@ func (s *Store) openReader(ctx context.Context, e *entry, needsVerification bool
 		return nil, ErrMiss
 	}
 	e.verified = true
-	s.setEntryLastLocked(e, time.Now().UnixNano())
+	s.setEntryLastLocked(e, s.nextRecencyLocked())
 	s.mu.Unlock()
 	return &Reader{store: s, entry: e, file: f, remaining: meta.Size}, nil
 }

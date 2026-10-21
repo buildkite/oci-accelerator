@@ -114,8 +114,20 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func
 func (s *Store) buildEvictionOrderLocked() {
 	s.evictionOrder.Init()
 	for _, e := range s.sortedEntriesLocked(int64(^uint64(0)>>1), false) {
+		// Startup eviction has finished using persisted commit times. Rank the
+		// survivors in that same order so future-dated metadata cannot prevent
+		// live accesses from advancing, even at the maximum disk timestamp.
+		e.last = s.nextRecencyLocked()
 		e.eviction = s.evictionOrder.PushBack(e)
 	}
+}
+
+// nextRecencyLocked assigns a strictly increasing, store-local logical time.
+// Neither clock rollback nor equal wall times can move a hit or publication
+// behind an earlier (last, key) position. Deletion never resets the sequence.
+func (s *Store) nextRecencyLocked() int64 {
+	s.recency++
+	return s.recency
 }
 
 // addEntryLocked records e in both the key lookup and the incrementally

@@ -240,7 +240,7 @@ func (f *Fill) publishLocked(dest string) error {
 		meta:     f.meta,
 		dir:      dest,
 		charge:   f.charge,
-		last:     time.Now().UnixNano(),
+		last:     f.store.nextRecencyLocked(),
 		verified: true, // Just hash-verified during Commit, so Readers can skip re-verification.
 	}
 	f.store.addEntryLocked(e)
