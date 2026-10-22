@@ -422,7 +422,7 @@ You can configure private registries explicitly.
 | `OCI_ACCELERATOR_PEER_ADVERTISE` | Empty | Required reachable host:port when peering is enabled |
 | `OCI_ACCELERATOR_PEER_SEEDS` | Empty | Optional comma-separated host:port bootstrap addresses |
 | `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled |
-| `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` | `1m` | Positive overall duration per cache-key fetch attempt, excluding slot wait. No unlimited value |
+| `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` | `1m` | Positive overall duration per cache-key fetch attempt, excluding scheduler queueing. No unlimited value |
 | `OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL` | `1m` | Positive poll delay after each attempt completes, with ±20% jitter |
 | `OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL` | `1h` | Positive full-scan interval from successful full-scan completion, with ±20% jitter |
 
@@ -1035,7 +1035,7 @@ A fetch checks that every page comes from the node ID the address book maps to t
 and requires full pages while more follow. Each validated page immediately adds that peer
 to each listed key's providers, without clearing earlier claims. There is no key-count fetch
 cutoff. `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` (default `1m`) bounds each fetch attempt,
-starting when it acquires the refresh slot. The existing five-second per-request timeout also applies.
+starting when its worker begins. The existing five-second per-request timeout also applies.
 Expiry reports an incomplete refresh and retains applied pages and validated progress. Full
 scans remain additive, not reconciliation. Neither a full scan nor an empty listing removes
 hints for keys that have disappeared. All peers share a FIFO of 200,000 distinct keys.

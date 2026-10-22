@@ -24,7 +24,7 @@ func TestProviderHintsRefreshAddsPeerHints(t *testing.T) {
 	a := newHintsTestNode(t, "a.test:1", nil)
 	a.learn(t, b)
 
-	if err := a.hints.Refresh(context.Background(), b.id); err != nil {
+	if err := a.hints.refresh(context.Background(), b.id, new(cache.KeyPosition)); err != nil {
 		t.Fatal(err)
 	}
 	for _, i := range []int{1, 2, 3} {
@@ -33,7 +33,7 @@ func TestProviderHintsRefreshAddsPeerHints(t *testing.T) {
 
 	// B evicted keys 1 and 2 and cached key 4.
 	b.setInventory(testInventory([]cacheKey{testCacheKey(3), testCacheKey(4)}))
-	if err := a.hints.Refresh(context.Background(), b.id); err != nil {
+	if err := a.hints.refresh(context.Background(), b.id, new(cache.KeyPosition)); err != nil {
 		t.Fatal(err)
 	}
 	assertHintProviders(t, a.hints, testCacheKey(1), b.id)
@@ -49,12 +49,12 @@ func TestProviderHintsKeepsOtherPeersHints(t *testing.T) {
 	a.learn(t, b)
 	a.learn(t, c)
 	for _, peer := range []*hintsTestNode{b, c} {
-		if err := a.hints.Refresh(context.Background(), peer.id); err != nil {
+		if err := a.hints.refresh(context.Background(), peer.id, new(cache.KeyPosition)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	b.setInventory(nil)
-	if err := a.hints.Refresh(context.Background(), b.id); err != nil {
+	if err := a.hints.refresh(context.Background(), b.id, new(cache.KeyPosition)); err != nil {
 		t.Fatal(err)
 	}
 	assertHintProviders(t, a.hints, testCacheKey(1), b.id)
@@ -70,7 +70,7 @@ func TestProviderHintsFiltersDepartedProvidersAndRetainsRejoinedClaims(t *testin
 	a := newHintsTestNode(t, "a.test:1", nil)
 	for _, peer := range []*hintsTestNode{b, c} {
 		a.learn(t, peer)
-		if err := a.hints.Refresh(context.Background(), peer.id); err != nil {
+		if err := a.hints.refresh(context.Background(), peer.id, new(cache.KeyPosition)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -92,14 +92,14 @@ func TestProviderHintsFailedRefreshKeepsPreviousAndAppliedHints(t *testing.T) {
 	b := newHintsTestNode(t, "b.test:1", testInventory(testCacheKeys(1, maxKeysPerPage+1)))
 	a := newHintsTestNode(t, "a.test:1", nil)
 	a.learn(t, b)
-	if err := a.hints.Refresh(context.Background(), b.id); err != nil {
+	if err := a.hints.refresh(context.Background(), b.id, new(cache.KeyPosition)); err != nil {
 		t.Fatal(err)
 	}
 
 	// The second page fails, but the fully validated first page remains.
 	b.setInventory(testInventory(testCacheKeys(100_000, maxKeysPerPage+1)))
 	b.failAfter.Store(b.requests.Load() + 1)
-	if err := a.hints.Refresh(context.Background(), b.id); err == nil {
+	if err := a.hints.refresh(context.Background(), b.id, new(cache.KeyPosition)); err == nil {
 		t.Fatal("refresh succeeded despite a failed page")
 	}
 	assertHintProviders(t, a.hints, testCacheKey(1), b.id)
@@ -129,7 +129,7 @@ func TestProviderHintsDeadlineSpansPagesAndRetainsProgress(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(encoded))}, nil
 		})}
 		start := time.Now()
-		if err := a.hints.Refresh(context.Background(), b.id); !errors.Is(err, context.DeadlineExceeded) {
+		if err := a.hints.refresh(context.Background(), b.id, new(cache.KeyPosition)); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("refresh = %v, want deadline", err)
 		}
 		if elapsed := time.Since(start); elapsed != time.Second || requests != 3 {
@@ -141,34 +141,6 @@ func TestProviderHintsDeadlineSpansPagesAndRetainsProgress(t *testing.T) {
 	})
 }
 
-func TestProviderHintsDeadlineStartsAfterWaitingForRefreshSlot(t *testing.T) {
-	a := newHintsTestNode(t, "a.test:1", nil)
-	b := newHintsTestNode(t, "b.test:1", nil)
-	a.learn(t, b)
-	synctest.Test(t, func(t *testing.T) {
-		a.hints.refreshing = make(chan struct{}, 1)
-		a.hints.refreshTimeout = time.Second
-		a.hints.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			deadline, ok := r.Context().Deadline()
-			if !ok || time.Until(deadline) != time.Second {
-				t.Errorf("fetch did not receive a fresh one-second deadline")
-			}
-			encoded, _ := encodeKeysPage(keysPage{node: b.hints.self, keys: []cacheKey{testCacheKey(1)}})
-			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(encoded))}, nil
-		})}
-		a.hints.refreshing <- struct{}{}
-		done := make(chan error, 1)
-		go func() { done <- a.hints.Refresh(context.Background(), b.id) }()
-		synctest.Wait()
-		time.Sleep(2 * time.Second)
-		<-a.hints.refreshing
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
-		assertHintProviders(t, a.hints, testCacheKey(1), b.id)
-	})
-}
-
 func TestProviderHintsRefreshRejectsReusedAddress(t *testing.T) {
 	b := newHintsTestNode(t, "b.test:1", testInventory(testCacheKeys(1, 1)))
 	c := newHintsTestNode(t, "c.test:1", testInventory(testCacheKeys(1, 1)))
@@ -177,7 +149,7 @@ func TestProviderHintsRefreshRejectsReusedAddress(t *testing.T) {
 	if _, err := a.book.merge(Message{Address: c.address, NodeID: b.id, Peers: map[string]string{}}, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.hints.Refresh(context.Background(), b.id); err == nil {
+	if err := a.hints.refresh(context.Background(), b.id, new(cache.KeyPosition)); err == nil {
 		t.Fatal("refresh credited another node's keys")
 	}
 	assertHintProviders(t, a.hints, testCacheKey(1))
@@ -194,74 +166,13 @@ func TestProviderHintsRefreshRejectsUnknownPeersBeforeSending(t *testing.T) {
 		return nil, errors.New("unexpected request")
 	})}
 	for name, peer := range map[string]string{"invalid ID": "short", "self": a.id, "unknown": testNodeID(9)} {
-		if err := a.hints.Refresh(context.Background(), peer); !errors.Is(err, errUnknownPeer) {
+		if err := a.hints.refresh(context.Background(), peer, new(cache.KeyPosition)); !errors.Is(err, errUnknownPeer) {
 			t.Errorf("%s: refresh = %v, want %v", name, err, errUnknownPeer)
 		}
 	}
 	if requests.Load() != 0 {
 		t.Fatalf("requests = %d", requests.Load())
 	}
-}
-
-func TestProviderHintsRefreshWaitsForCapacity(t *testing.T) {
-	b := newHintsTestNode(t, "b.test:1", testInventory(testCacheKeys(1, 1)))
-	c := newHintsTestNode(t, "c.test:1", testInventory(testCacheKeys(2, 1)))
-	a := newHintsTestNode(t, "a.test:1", nil)
-	a.hints.refreshing = make(chan struct{}, 1)
-	a.learn(t, b)
-	a.learn(t, c)
-	entered, release := make(chan struct{}), make(chan struct{})
-	defer func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	}()
-	b.setBlock(func() {
-		close(entered)
-		<-release
-	})
-
-	first := make(chan error, 1)
-	go func() { first <- a.hints.Refresh(context.Background(), b.id) }()
-	<-entered
-	// B's refresh holds the turn, so C's waits until its context ends.
-	parent, cancel := context.WithCancel(context.Background())
-	ctx := &doneWatchContext{Context: parent, watched: make(chan struct{})}
-	second := make(chan error, 1)
-	go func() { second <- a.hints.Refresh(ctx, c.id) }()
-	<-ctx.watched
-	cancel()
-	// Exactly ctx.Err(), so the refresh ended while waiting, not in a fetch.
-	if err := <-second; err != context.Canceled {
-		t.Fatalf("waiting refresh = %v, want %v", err, context.Canceled)
-	}
-	if c.requests.Load() != 0 {
-		t.Fatalf("waiting refresh sent %d requests", c.requests.Load())
-	}
-	close(release)
-	if err := <-first; err != nil {
-		t.Fatal(err)
-	}
-	assertHintProviders(t, a.hints, testCacheKey(1), b.id)
-	if err := a.hints.Refresh(context.Background(), c.id); err != nil {
-		t.Fatal(err)
-	}
-	assertHintProviders(t, a.hints, testCacheKey(2), c.id)
-}
-
-// doneWatchContext closes watched when Done is first called, which shows a
-// caller has started waiting on it.
-type doneWatchContext struct {
-	context.Context
-	once    sync.Once
-	watched chan struct{}
-}
-
-func (c *doneWatchContext) Done() <-chan struct{} {
-	c.once.Do(func() { close(c.watched) })
-	return c.Context.Done()
 }
 
 func TestProviderHintsRefreshReportsCancellation(t *testing.T) {
@@ -271,7 +182,7 @@ func TestProviderHintsRefreshReportsCancellation(t *testing.T) {
 	a.learn(t, b)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := a.hints.Refresh(ctx, b.id); !errors.Is(err, context.Canceled) {
+	if err := a.hints.refresh(ctx, b.id, new(cache.KeyPosition)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled refresh = %v, want %v", err, context.Canceled)
 	}
 	if b.requests.Load() != 0 {
@@ -281,7 +192,7 @@ func TestProviderHintsRefreshReportsCancellation(t *testing.T) {
 	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 	b.setBlock(cancel)
-	if err := a.hints.Refresh(ctx, b.id); !errors.Is(err, context.Canceled) {
+	if err := a.hints.refresh(ctx, b.id, new(cache.KeyPosition)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("refresh canceled during fetch = %v, want %v", err, context.Canceled)
 	}
 	assertHintProviders(t, a.hints, testCacheKey(1))
