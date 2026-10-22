@@ -442,7 +442,7 @@ func TestDiscoveryMTLSNodesConvergeAfterRelocation(t *testing.T) {
 		if n.book, err = OpenBook(dir, n.address); err != nil {
 			t.Fatal(err)
 		}
-		d := NewDiscovery(n.book, NewClient(clientTLS.Clone()), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		d := NewDiscovery(n.book, NewClient(clientTLS.Clone()), slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 		d.interval, d.maxBackoff = 10*time.Millisecond, 40*time.Millisecond
 		n.server.Config.Handler = d.Handler()
 		n.server.TLS = serverTLS.Clone()

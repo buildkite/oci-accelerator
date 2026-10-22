@@ -22,6 +22,7 @@ type Discovery struct {
 	wake       chan struct{}
 	interval   time.Duration
 	maxBackoff time.Duration
+	newPeers   func(ids []string)
 	mu         sync.Mutex // guards schedules and inbound merge versus outbound scheduling
 	known      map[string]*peerSchedule
 	pending    map[string]bool // bounded verification work, false while cooling down
@@ -33,9 +34,14 @@ type peerSchedule struct {
 	running  bool
 }
 
-func NewDiscovery(book *Book, client *http.Client, logger *slog.Logger) *Discovery {
+// NewDiscovery returns discovery for book. When newPeers is not nil, it
+// receives the sorted node IDs that each inbound or outbound exchange adds to
+// the book, even when that exchange then fails to sync the book. An ID that
+// leaves the book and returns is reported again. newPeers runs while
+// discovery holds its lock, so it must not block or call back into Discovery.
+func NewDiscovery(book *Book, client *http.Client, logger *slog.Logger, newPeers func(ids []string)) *Discovery {
 	return &Discovery{
-		book: book, client: client, logger: logger, wake: make(chan struct{}, 1),
+		book: book, client: client, logger: logger, newPeers: newPeers, wake: make(chan struct{}, 1),
 		interval: 30 * time.Second, maxBackoff: 5 * time.Minute,
 		known:   make(map[string]*peerSchedule),
 		pending: make(map[string]bool),
@@ -174,6 +180,10 @@ func (d *Discovery) receiveInbound(message Message) (Message, error) {
 // holding the scheduler or book locks or while serving an inbound exchange.
 func (d *Discovery) receive(message Message, destination string, before *bookView) (Message, error) {
 	result, err := d.book.merge(message, destination, before)
+	// A merge can publish new identities and still report a sync failure.
+	if len(result.Added) != 0 && d.newPeers != nil {
+		d.newPeers(result.Added)
+	}
 	if err != nil {
 		if errors.Is(err, errIdentityCollision) {
 			d.logger.Warn("peer identity collision", "peer", message.Address)

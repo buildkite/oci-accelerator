@@ -112,7 +112,7 @@ func cooldownDiscovery(t *testing.T, transport roundTripFunc) *Discovery {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { book.Close() })
-	return NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 }
 
 func cooldownRequest(d *Discovery, message Message) *httptest.ResponseRecorder {

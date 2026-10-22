@@ -27,10 +27,14 @@ type Book struct {
 	write    func(string, map[string]string) (bool, error)
 }
 
-// MergeResult reports capacity rejections and addresses needing direct contact.
+// MergeResult reports capacity rejections, addresses needing direct contact,
+// and the sorted node IDs the book did not hold before the merge. Added is
+// set even when the merge returns an error, if the new state was published
+// before a directory sync failed.
 type MergeResult struct {
 	Rejected int
 	Verify   []string
+	Added    []string
 }
 
 // bookView captures the bindings before a request leaves. Replacements invalidate
@@ -181,7 +185,12 @@ func (b *Book) merge(message Message, destination string, before *bookView) (res
 		next[address] = id
 		byID[id] = address
 	}
-	return result, b.persist(next)
+	previous := b.peers
+	err = b.persist(next)
+	// persist can publish next and still fail to sync the directory, so
+	// compare against whatever the book now holds.
+	result.Added = addedIDs(previous, b.peers)
+	return result, err
 }
 
 func (b *Book) observe() (Message, bookView) {
@@ -244,6 +253,22 @@ func sortedAddresses(set map[string]string) []string {
 	}
 	sort.Strings(addresses)
 	return addresses
+}
+
+// addedIDs returns the sorted node IDs in next that previous does not hold.
+func addedIDs(previous, next map[string]string) []string {
+	known := make(map[string]bool, len(previous))
+	for _, id := range previous {
+		known[id] = true
+	}
+	var added []string
+	for _, id := range next {
+		if id != "" && !known[id] {
+			added = append(added, id)
+		}
+	}
+	sort.Strings(added)
+	return added
 }
 
 func addressForID(peers map[string]string, id string) string {

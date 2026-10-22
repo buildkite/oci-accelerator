@@ -42,7 +42,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if err != nil {
 		return nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
-	discovery := peering.NewDiscovery(book, peering.NewClient(clientTLS), logger)
+	discovery := peering.NewDiscovery(book, peering.NewClient(clientTLS), logger, nil)
 	handler := discovery.Handler()
 	var handlerMu sync.Mutex
 	var handlers sync.WaitGroup
