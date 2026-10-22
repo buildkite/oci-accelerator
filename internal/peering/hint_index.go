@@ -56,6 +56,3 @@ func (x *hintIndex) providers(key cacheKey) []string {
 	slices.Sort(ids)
 	return ids
 }
-
-// len returns the number of distinct retained keys.
-func (x *hintIndex) len() int { return len(x.byKey) }

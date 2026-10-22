@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -349,8 +350,13 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := book.Merge(peering.Message{Address: unresponsive.Addr().String(), NodeID: "000000000002", Peers: map[string]string{}}); err != nil {
-					t.Fatal(err)
+				discovery := peering.NewDiscovery(book, &http.Client{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+				request := httptest.NewRequest(http.MethodPost, "/v1/peers/exchange", strings.NewReader(fmt.Sprintf(`{"address":%q,"nodeId":"000000000002","peers":{}}`, unresponsive.Addr().String())))
+				request.Header.Set("Content-Type", "application/json")
+				response := httptest.NewRecorder()
+				discovery.Handler().ServeHTTP(response, request)
+				if response.Code != http.StatusOK {
+					t.Fatalf("persist identified peer: status %d, body %s", response.Code, response.Body.String())
 				}
 				if err := book.Close(); err != nil {
 					t.Fatal(err)

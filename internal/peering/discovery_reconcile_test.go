@@ -65,7 +65,7 @@ func TestDiscoveryVerificationResponseDecidesConflictingClaim(t *testing.T) {
 					}
 					return nil, fmt.Errorf("unexpected request to %s", r.URL.Host)
 				})
-				if _, err := d.book.Merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}); err != nil {
+				if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}, "", nil); err != nil {
 					t.Fatal(err)
 				}
 				if response := cooldownRequest(d, Message{Address: "a.test:5", NodeID: id5, Peers: tc.claim}); response.Code != http.StatusOK {
@@ -125,7 +125,7 @@ func TestDiscoveryVerificationDedupesAndRespectsBackoffWithoutDelayingInbound(t 
 			return nil, fmt.Errorf("unexpected request to %s", r.URL.Host)
 		})
 		original := map[string]string{"a.test:5": id5, "x.test:1": id1}
-		if _, err := d.book.Merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}); err != nil {
+		if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}, "", nil); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -191,7 +191,7 @@ func TestDiscoveryVerificationsShareExchangeSlots(t *testing.T) {
 			return nil, context.DeadlineExceeded
 		})
 		known := map[string]string{"x1.test:1": testNodeID(1), "x2.test:1": testNodeID(2), "x3.test:1": testNodeID(3)}
-		if _, err := d.book.Merge(Message{Address: "a.test:5", NodeID: testNodeID(5), Peers: known}); err != nil {
+		if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: testNodeID(5), Peers: known}, "", nil); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -240,7 +240,7 @@ func TestDiscoveryVerificationBacklogDoesNotStarveRegularPeers(t *testing.T) {
 			}
 			return nil, context.DeadlineExceeded
 		})
-		if _, err := d.book.Merge(Message{Address: "regular.test:1", NodeID: testNodeID(1)}); err != nil {
+		if _, err := d.book.merge(Message{Address: "regular.test:1", NodeID: testNodeID(1)}, "", nil); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -285,7 +285,7 @@ func TestDiscoveryLateVerificationCannotUndoNewerInboundMove(t *testing.T) {
 			}
 			return nil, fmt.Errorf("unexpected request to %s", r.URL.Host)
 		})
-		if _, err := d.book.Merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}); err != nil {
+		if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}, "", nil); err != nil {
 			t.Fatal(err)
 		}
 		if response := cooldownRequest(d, Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"z.test:9": id1}}); response.Code != http.StatusOK {
@@ -328,7 +328,7 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 				}
 				return messageResponse(Message{Address: r.URL.Host, NodeID: id1}), nil
 			})
-			if _, err := d.book.Merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"z0.test:1": id1}}); err != nil {
+			if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"z0.test:1": id1}}, "", nil); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -374,7 +374,7 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 				return nil, context.DeadlineExceeded
 			})
 			original := map[string]string{"a.test:5": id5, "x.test:1": id1}
-			if _, err := d.book.Merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}); err != nil {
+			if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}, "", nil); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithCancel(context.Background())

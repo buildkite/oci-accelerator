@@ -57,7 +57,7 @@ func TestHintIndexMergeOverLimitKeepsLastAdmissions(t *testing.T) {
 
 func assertHintLen(t *testing.T, x *hintIndex, want int) {
 	t.Helper()
-	if got := x.len(); got != want {
+	if got := len(x.byKey); got != want {
 		t.Fatalf("len() = %d, want %d", got, want)
 	}
 }

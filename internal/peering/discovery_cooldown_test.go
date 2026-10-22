@@ -209,7 +209,7 @@ func TestDiscoveryCooldownStateOnlyTracksRetainedPeers(t *testing.T) {
 	for i := 1; i < MaxPeers; i++ {
 		peers[fmt.Sprintf("peer-%d.test:1", i)] = testNodeID(i)
 	}
-	if result, err := d.book.Merge(Message{Address: "peer-0.test:1", NodeID: testNodeID(0), Peers: peers}); err != nil || result.Rejected != 0 {
+	if result, err := d.book.merge(Message{Address: "peer-0.test:1", NodeID: testNodeID(0), Peers: peers}, "", nil); err != nil || result.Rejected != 0 {
 		t.Fatalf("filling Merge = %+v, %v", result, err)
 	}
 	for _, sender := range []Message{
