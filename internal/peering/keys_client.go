@@ -12,10 +12,12 @@ import (
 var errKeysFetch = errors.New("cache keys fetch failed")
 
 // fetchKeys delivers each validated page to apply in listing order. Earlier
-// pages remain applied on later failure. The caller bounds the complete fetch
-// with ctx. Every page must identify expected, so reused addresses never
-// attribute another node's keys to it. Redirects are never followed.
-func fetchKeys(ctx context.Context, client *http.Client, destination string, expected nodeID, apply func([]cacheKey)) error {
+// pages remain applied on later failure. after is both the starting cursor and
+// the last validated nonterminal cursor, retained even when the listing ends.
+// The caller bounds the fetch with ctx. Every page must identify expected, so
+// reused addresses never attribute another node's keys to it. Redirects are
+// never followed. An explicitly rejected cursor returns cache.ErrKeyCursor.
+func fetchKeys(ctx context.Context, client *http.Client, destination string, expected nodeID, after *cache.KeyPosition, apply func([]cacheKey)) error {
 	if client == nil || !validNodeID(expected.String()) {
 		return errKeysFetch
 	}
@@ -23,15 +25,17 @@ func fetchKeys(ctx context.Context, client *http.Client, destination string, exp
 	if err != nil {
 		return errKeysFetch
 	}
-	var after cache.KeyPosition
 	for {
-		page, err := fetchKeysPage(ctx, client, destination, after)
-		if err != nil || page.node != expected {
+		page, err := fetchKeysPage(ctx, client, destination, *after)
+		if err != nil {
+			return err
+		}
+		if page.node != expected {
 			return errKeysFetch
 		}
 		// Continuations must stay in one store lifetime and advance their
 		// logical positions. Individual keys may repeat after live accesses.
-		if after != (cache.KeyPosition{}) && page.next != (cache.KeyPosition{}) {
+		if *after != (cache.KeyPosition{}) && page.next != (cache.KeyPosition{}) {
 			if page.next.Incarnation != after.Incarnation || page.next.Last < after.Last || page.next.Last == after.Last && page.next.Key <= after.Key {
 				return errKeysFetch
 			}
@@ -43,7 +47,7 @@ func fetchKeys(ctx context.Context, client *http.Client, destination string, exp
 		if page.next == (cache.KeyPosition{}) {
 			return nil
 		}
-		after = page.next
+		*after = page.next
 	}
 }
 
@@ -71,6 +75,12 @@ func fetchKeysPage(ctx context.Context, client *http.Client, destination string,
 		return keysPage{}, errKeysFetch
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusBadRequest && after != (cache.KeyPosition{}) {
+		body, err := io.ReadAll(io.LimitReader(response.Body, 32))
+		if err == nil && string(body) == "invalid cursor\n" {
+			return keysPage{}, cache.ErrKeyCursor
+		}
+	}
 	if response.StatusCode != http.StatusOK || !jsonContentType(response.Header.Get("Content-Type")) {
 		return keysPage{}, errKeysFetch
 	}

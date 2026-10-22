@@ -2,6 +2,7 @@ package peering
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,7 +45,7 @@ func TestFetchKeysLiveStoreMovementAndRestart(t *testing.T) {
 	}))
 	defer server.Close()
 	var got []cacheKey
-	err = fetchKeys(context.Background(), server.Client(), testServerAddress(server), testParsedNodeID(t, 2), func(keys []cacheKey) {
+	err = fetchKeys(context.Background(), server.Client(), testServerAddress(server), testParsedNodeID(t, 2), new(cache.KeyPosition), func(keys []cacheKey) {
 		got = append(got, keys...)
 		if len(got) == maxKeysPerPage {
 			// Both an earlier key and the page boundary can reappear later.
@@ -217,7 +218,7 @@ func TestFetchKeysRejectsBadResponses(t *testing.T) {
 }
 
 func TestFetchKeysKeepsAppliedPageWhenCanceled(t *testing.T) {
-	inventory := testInventory(testCacheKeys(0, 2*maxKeysPerPage))
+	inventory := testInventory(testCacheKeys(0, 2*maxKeysPerPage+3))
 	handler := newKeysHandler(testParsedNodeID(t, 2), testKeyPages(inventory))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -228,7 +229,8 @@ func TestFetchKeysKeepsAppliedPageWhenCanceled(t *testing.T) {
 	}))
 	defer server.Close()
 	var applied []cacheKey
-	err := fetchKeys(ctx, server.Client(), testServerAddress(server), testParsedNodeID(t, 2), func(keys []cacheKey) {
+	var after cache.KeyPosition
+	err := fetchKeys(ctx, server.Client(), testServerAddress(server), testParsedNodeID(t, 2), &after, func(keys []cacheKey) {
 		applied = append(applied, keys...)
 		cancel()
 	})
@@ -237,6 +239,38 @@ func TestFetchKeysKeepsAppliedPageWhenCanceled(t *testing.T) {
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("requests = %d, want 1", requests.Load())
+	}
+	// Resume after the validated first page, rather than replaying it.
+	applied = nil
+	apply := func(keys []cacheKey) { applied = append(applied, keys...) }
+	if err := fetchKeys(context.Background(), server.Client(), testServerAddress(server), testParsedNodeID(t, 2), &after, apply); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(applied, testCacheKeys(maxKeysPerPage, maxKeysPerPage+3)) || requests.Load() != 3 {
+		t.Fatalf("resumed fetch = %d keys over %d total requests", len(applied), requests.Load())
+	}
+	// Completing a scan retains the last nonterminal checkpoint, so polling
+	// replays only the tail instead of the whole inventory.
+	applied = nil
+	if err := fetchKeys(context.Background(), server.Client(), testServerAddress(server), testParsedNodeID(t, 2), &after, apply); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(applied, testCacheKeys(2*maxKeysPerPage, 3)) || requests.Load() != 4 {
+		t.Fatalf("tail fetch = %d keys over %d total requests", len(applied), requests.Load())
+	}
+}
+
+func TestFetchKeysReportsInvalidCursorWithoutDiscardingProgress(t *testing.T) {
+	server := httptest.NewTLSServer(newKeysHandler(testParsedNodeID(t, 2), testKeyPages(nil)))
+	defer server.Close()
+	after := testKeyPosition(10, testCacheKey(9))
+	after.Incarnation = [16]byte{2}
+	want := after
+	err := fetchKeys(context.Background(), server.Client(), testServerAddress(server), testParsedNodeID(t, 2), &after, func([]cacheKey) {
+		t.Fatal("invalid cursor applied keys")
+	})
+	if !errors.Is(err, cache.ErrKeyCursor) || after != want {
+		t.Fatalf("invalid cursor fetch = %v, checkpoint = %v, want %v", err, after, want)
 	}
 }
 
@@ -282,6 +316,6 @@ func testServerAddress(server *httptest.Server) string {
 // page without retaining the complete fetch.
 func collectKeys(ctx context.Context, client *http.Client, address string, expected nodeID) ([]cacheKey, error) {
 	var keys []cacheKey
-	err := fetchKeys(ctx, client, address, expected, func(page []cacheKey) { keys = append(keys, page...) })
+	err := fetchKeys(ctx, client, address, expected, new(cache.KeyPosition), func(page []cacheKey) { keys = append(keys, page...) })
 	return keys, err
 }

@@ -110,7 +110,8 @@ func (p *ProviderHints) Refresh(ctx context.Context, peer string) error {
 	if address == "" {
 		return errUnknownPeer
 	}
-	err := fetchKeys(ctx, p.client, address, id, func(keys []cacheKey) {
+	var after cache.KeyPosition
+	err := fetchKeys(ctx, p.client, address, id, &after, func(keys []cacheKey) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.index.merge(id, keys)
