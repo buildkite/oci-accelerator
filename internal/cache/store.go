@@ -3,6 +3,7 @@ package cache
 import (
 	"container/list"
 	"context"
+	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -46,6 +47,7 @@ type Store struct {
 	mkdirTemp                                       func(string, string) (string, error) // injectable os.MkdirTemp for tests.
 	evictionOrder                                   list.List                            // entries ordered by (last, key) for eviction victim selection.
 	recency                                         int64                                // latest assigned logical access time, never reset during this store's lifetime.
+	incarnation                                     [16]byte                             // identifies this open store's key cursors, never persisted.
 	evictionAfterLast                               int64                                // resume after this (last, key) position even if its entry disappears or pins.
 	evictionAfter                                   string                               // paired with evictionAfterLast.
 	lock                                            *os.File                             // held OS file lock enforcing single-process ownership of dir.
@@ -90,6 +92,7 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 		removeAll:   os.RemoveAll,
 		mkdirTemp:   os.MkdirTemp,
 	}
+	rand.Read(s.incarnation[:])
 
 	// Wire the shutdown condition variable to the store mutex.
 	s.opsDone = sync.NewCond(&s.mu)
