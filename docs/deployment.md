@@ -887,56 +887,59 @@ The HTTPS `POST /v1/peers/exchange` request and response have the same schema:
 }
 ```
 
-The receiver trusts the sender's own `address` and `nodeId`. It atomically replaces the
-mapping at that address and removes any other address with that ID. Third-party mappings
-in `peers` are added when neither their address nor their ID conflicts with a stored mapping.
-Otherwise, the receiver leaves the stored mapping unchanged and queues an exchange to the
-claimed address. It uses the responder's actual ID and advertised address, even if they differ
-from the claim or contacted alias. A failed verification leaves the book unchanged. Late
-responses that could undo intervening updates are discarded. Each reply contains the receiver's
-own identity and all its known mappings. An empty book sends `"peers": {}`.
+Inbound senders and third-party mappings in `peers` introduce local candidates. They do not
+create or renew advertised membership. A successful outbound exchange to the responder's
+advertised address confirms its actual `nodeId`, atomically replacing the mapping at that
+address and removing any other address with that ID. Gossip never overrides a confirmed
+mapping. If a contacted alias answers with a different advertised address, that listener must
+be probed separately before admission. Failed verification leaves existing membership unchanged.
+Late responses that could undo intervening updates are discarded. Each reply contains the
+receiver's own identity and its unexpired confirmed members. An empty book sends `"peers": {}`.
 
 Exchanges start immediately, normally repeat every 30 seconds with ±20% jitter, and use
-exponential failure backoff capped at five minutes before jitter. A successfully merged
-inbound exchange defers the next outbound request to the sender's advertised address by the
-same jittered interval, without shortening an existing delay or clearing failure backoff.
-Third-party addresses learned from requests or responses remain eligible for immediate direct
-contact unless they already have a cooldown or backoff.
-Incoming requests are still answered during the cooldown, and requests already in flight can
-cross. Invalid messages and failed merges do not defer requests. Cooldowns are held only in
-memory and reset on restart.
+exponential failure backoff capped at five minutes before jitter. Inbound exchanges and gossip
+do not postpone probes, shorten backoff, or reset a candidate's retry budget. New candidates
+are eligible for immediate contact. Unverified candidates get three failed attempts followed
+by a five-minute cooldown, after which a new introduction can request another budget.
+Incoming requests are still answered during cooldown, and requests already in flight can
+cross. Candidate budgets, cooldowns, and retry timing are held only in memory and reset on restart.
 
-Inbound exchanges do not prove that the sender's advertised listener is reachable. Regular
-inbound exchanges can keep postponing outbound probes and their outage warnings. Node IDs
-are self-asserted within the existing fleet-wide trust model, not independently authenticated.
+Inbound exchanges do not prove that the sender's advertised listener is reachable. A returning
+peer can contact a live member to trigger a probe back, restoring membership once that probe
+succeeds. Node IDs are self-asserted within the existing fleet-wide trust model, not independently
+authenticated.
 
 Requests have a five-second deadline. Regular discovery and verification share four outbound
 exchange slots, with at most two used for verification-only addresses so regular discovery
 cannot be starved by conflicting gossip. Verification is asynchronous and does not delay inbound
 responses. Its queue deduplicates addresses and retains up to 1,024 pending or cooling-down probes. Excess claims
 are dropped with a `peer verification queue full` warning and can be submitted by later gossip.
-After an attempt, a verification-only address expires after its cooldown or backoff unless
-new gossip requests another attempt. Addresses already in the book keep their normal retries.
+Exhausted candidates release their queue slots after cooldown. Configured seeds keep their
+normal retries indefinitely, even when unverified.
 Each instance permits 32 accepted peer connections, including incomplete TLS handshakes. Incoming
 headers, bodies, writes, and idle connections also have five-second deadlines. JSON messages
 are limited to 512 KiB and 1,024 peer mappings. Unknown fields, duplicate JSON keys, invalid
 IDs, and contradictory spellings of the same canonical address are rejected.
 
-Each instance retains up to 1,024 canonical addresses, excluding its configured self-address.
-Unreachable entries do not expire merely because contact fails. At capacity, new unrelated
-addresses are rejected with a `peer address book full` warning, but identity replacements
-still work. Learning a node at a new address removes its previous address. Contacted aliases
-are replaced by the responder's advertised address. Losing a node's identity state gives it
-a new ID and does not automatically remove an unreachable old address.
+Each instance retains up to 1,024 confirmed members, excluding itself, and separately keeps up
+to 1,024 configured seed targets. Seeds do not consume membership slots, so a verified node
+can move away from its seed address even when membership is full.
+Confirmed members expire after 30 minutes without successful outbound contact. They disappear
+from advertisements and provider selection immediately at expiry, and discovery removes their
+durable mappings. At capacity, new unrelated members are rejected with a `peer address book full`
+warning, but verified identity replacements still work. Verifying a node at a new address removes
+its previous mapping. Losing a node's identity state gives it a new ID, and its unreachable old
+mapping expires normally.
 
-`peers.json` contains a versioned address-to-ID object with sorted keys and is atomically
-replaced after changes. Empty-string IDs represent unresolved local discovery candidates.
-You may read it to inspect known addresses, but do not edit live state. Reachability and retry
-timing are local observations, not persisted or accepted from another instance. Startup also
-merges configured seeds and retries retained addresses. Seeds are not advertised until their
-IDs are learned. Removing a seed from configuration does not remove it from the book.
-Resetting one book does not forget an address fleet-wide, because
-other peers can advertise it again.
+`peers.json` contains versioned membership and local last-success timestamps and is atomically
+replaced after changes. Persisted freshness prevents restarts from renewing dead membership.
+You may read it to inspect known addresses, but do not edit live state. Timestamps are local
+observations, never accepted from another instance. Startup also merges configured seeds.
+Configured seeds remain bootstrap targets after membership expires, but are not advertised
+until verified. Removing a seed from configuration removes its indefinite retry exemption.
+Maintain a reachable seed or another known live peer so separated groups can rediscover each
+other after a partition. Stale gossip can request bounded probing, but cannot restore membership
+without successful direct contact.
 
 On first peering-enabled startup, each instance generates a 12-character, case-sensitive
 base64url node ID from 72 cryptographically random bits and persists it in `node-id` in the
@@ -947,10 +950,14 @@ Direct claims that conflict with this instance's own ID or address fail the exch
 `peer identity collision`. Fix the advertised address or duplicated state rather than expecting
 automatic ID rotation. Two other nodes sharing one ID can repeatedly replace each other's records.
 
-Upgrade all peers together. The identity-aware schema is incompatible with address-only
-exchanges, with no fallback. Startup migrates version-1 `peers.json` lists to version-2 local
-candidates and learns their IDs through discovery. Keep a stopped-state backup if you need
-rollback, because older binaries cannot read the new state directory.
+Upgrade all peers together so every member enforces verified admission and expiry. The wire
+format remains identity-aware and is incompatible with address-only exchanges, with no fallback.
+Startup migrates older `peers.json` state to the freshness-aware format. Existing identified
+records receive a one-time 30-minute grace period, persisted during migration rather than renewed
+on each restart. Unidentified legacy addresses enter bounded candidate probing instead, and are
+removed from durable state when discovery starts. Configured seeds are read from configuration
+on each startup rather than persisted as unverified members. Keep a stopped-state backup if you
+need rollback, because older binaries cannot read the new state format.
 
 State files must be regular, process-owned, mode 0600 files. Startup takes an exclusive process
 lock, removes recognized abandoned staging files, and rejects corrupt state, unsafe files, or
