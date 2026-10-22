@@ -265,7 +265,7 @@ docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
   target architecture.
 - For a multi-platform OCI archive, use a Buildx builder with the `docker-container` driver and
   an OCI output instead of `--load`.
-- Buildkite validates both architectures and publishes successful current `main` builds to
+- Buildkite validates both architectures and, after manual approval, publishes successful current `main` builds to
   `buildkite/oci-accelerator:latest` and `buildkite/oci-accelerator:build-N`, where `N` is
   the Buildkite build number. Version bumps also publish a version tag.
 
@@ -280,7 +280,9 @@ alone, such as `0.1.0` to `v0.1.0`, publishes the prefixed tag without changing 
 
 After you merge the PR, the non-PR `main` build compares `VERSION` with its first parent.
 If the value changed, it publishes `buildkite/oci-accelerator:v0.1.1` for both `linux/amd64`
-and `linux/arm64`, after formatting, vet, build, tests, race tests, and the image check pass.
+and `linux/arm64`, after formatting, vet, build, tests, race tests, and the image check pass
+and you unblock the **Publish images to Docker Hub?** step in Buildkite. This approval is
+required for all image publication, including `latest` and `build-N` updates.
 Adding `VERSION` for the first time also triggers a release. Git tag builds do not publish.
 
 Successful release publication adds a success annotation to the Buildkite build with
