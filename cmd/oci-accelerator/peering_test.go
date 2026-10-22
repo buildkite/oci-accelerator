@@ -53,7 +53,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 		t.Fatal("enabled peering returned nil lifecycle values")
 	}
 	t.Cleanup(func() { _ = cleanup() })
-	_, clientTLS, err := signer.PeerTLSConfigs()
+	serverTLS, clientTLS, err := signer.PeerTLSConfigs()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,13 +61,34 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peerAddress, peerID := newTestListener(t).Addr().String(), "000000000001"
-	want := peering.Message{Address: "self.test:7443", NodeID: string(selfID), Peers: map[string]string{peerAddress: peerID}}
+	peer := httptest.NewUnstartedServer(nil)
+	peerAddress, peerID := peer.Listener.Addr().String(), "000000000001"
+	peer.Config.Handler = peering.NewHandler(func(peering.Message) (peering.Message, error) {
+		return peering.Message{Address: peerAddress, NodeID: peerID, Peers: map[string]string{}}, nil
+	})
+	peer.TLS = serverTLS
+	peer.StartTLS()
+	t.Cleanup(peer.Close)
+	want := peering.Message{Address: "self.test:7443", NodeID: string(selfID), Peers: map[string]string{}}
 	client := peering.NewClient(clientTLS)
 	defer client.CloseIdleConnections()
 	got, err := peering.Exchange(context.Background(), client, listener.Addr().String(), peering.Message{Address: peerAddress, NodeID: peerID, Peers: map[string]string{}})
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("authenticated exchange = %#v, %v, want %#v", got, err, want)
+	}
+	// Only the successful reverse probe admits the inbound sender. Its
+	// verified membership must then survive shutdown and reopening.
+	want.Peers[peerAddress] = peerID
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		got, err = peering.Exchange(context.Background(), client, listener.Addr().String(), peering.Message{Address: peerAddress, NodeID: peerID, Peers: map[string]string{}})
+		if err == nil && reflect.DeepEqual(got, want) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("verified membership = %#v, %v, want %#v", got, err, want)
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	post := func(client *http.Client, address string) error {
@@ -200,8 +221,8 @@ func TestPeersRefreshCacheKeysWhenDiscoveredAndAfterRestart(t *testing.T) {
 
 	addressB, _ := start("b", nil, &listingsB, 100*time.Millisecond)
 	_, stopA := start("a", []string{addressB}, &listingsA, 100*time.Millisecond)
-	// A learns B from its own exchange, and B learns A from that inbound
-	// exchange. Each then fetches the other's listing.
+	// A verifies B through its own exchange. B probes A back before
+	// admitting it. Each then fetches the other's listing.
 	waitFor("A to fetch B's listing", func() bool { return listingsB.Load() >= 1 })
 	waitFor("B to fetch A's listing", func() bool { return listingsA.Load() >= 1 })
 	waitFor("A to catch up from B periodically", func() bool { return listingsB.Load() >= 2 })
@@ -349,21 +370,53 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 			// Persist an identified peer, not just a seed, so startup queues an
 			// inventory refresh as well as discovery. Neither may delay readiness.
 			if identified {
+				signer := openPeerTestCA(t, filepath.Join(root, "ca"))
+				serverTLS, clientTLS, err := signer.PeerTLSConfigs()
+				if err != nil {
+					t.Fatal(err)
+				}
+				address := unresponsive.Addr().(*net.TCPAddr)
+				fixture := httptest.NewUnstartedServer(peering.NewHandler(func(peering.Message) (peering.Message, error) {
+					return peering.Message{Address: address.String(), NodeID: "000000000002", Peers: map[string]string{}}, nil
+				}))
+				fixture.Listener.Close()
+				fixture.Listener = unresponsive
+				fixture.TLS = serverTLS
+				fixture.StartTLS()
+				t.Cleanup(fixture.Close)
 				book, err := peering.OpenBook(state, peerListener.Addr().String())
 				if err != nil {
 					t.Fatal(err)
 				}
-				discovery := peering.NewDiscovery(book, &http.Client{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
-				request := httptest.NewRequest(http.MethodPost, "/v1/peers/exchange", strings.NewReader(fmt.Sprintf(`{"address":%q,"nodeId":"000000000002","peers":{}}`, unresponsive.Addr().String())))
-				request.Header.Set("Content-Type", "application/json")
-				response := httptest.NewRecorder()
-				discovery.Handler().ServeHTTP(response, request)
-				if response.Code != http.StatusOK {
-					t.Fatalf("persist identified peer: status %d, body %s", response.Code, response.Body.String())
+				t.Cleanup(func() { book.Close() })
+				if _, err := book.AddSeeds([]string{address.String()}); err != nil {
+					t.Fatal(err)
 				}
+				discovery := peering.NewDiscovery(book, peering.NewClient(clientTLS), slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				go func() { defer close(done); discovery.Run(ctx) }()
+				stop := func() { cancel(); <-done }
+				t.Cleanup(stop)
+				deadline := time.Now().Add(3 * time.Second)
+				for book.Snapshot().Peers[address.String()] != "000000000002" {
+					if time.Now().After(deadline) {
+						t.Fatal("fixture peer was not verified")
+					}
+					time.Sleep(time.Millisecond)
+				}
+				stop()
 				if err := book.Close(); err != nil {
 					t.Fatal(err)
 				}
+				// Reuse the verified address without serving it, preserving an
+				// unreachable confirmed member for the readiness scenario.
+				fixture.Close()
+				unresponsive, err = net.ListenTCP("tcp", address)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { unresponsive.Close() })
 			}
 			path := filepath.Join(root, "proxy.env")
 			contents := fmt.Sprintf("OCI_ACCELERATOR_LISTEN=%s\nOCI_ACCELERATOR_METRICS_LISTEN=%s\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_PEER_LISTEN=%s\nOCI_ACCELERATOR_PEER_ADVERTISE=%s\nOCI_ACCELERATOR_PEER_SEEDS=%s\nOCI_ACCELERATOR_PEER_STATE_DIR=%s\nOCI_ACCELERATOR_SHUTDOWN_TIMEOUT=100ms\n", proxyListener.Addr(), metricsListener.Addr(), filepath.Join(root, "ca"), filepath.Join(root, "cache"), peerListener.Addr(), peerListener.Addr(), unresponsive.Addr(), state)
@@ -422,6 +475,12 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 				t.Fatal(err)
 			}
 			defer book.Close()
+			if !identified && len(book.Addresses()) != 0 {
+				t.Fatal("reopening without configuration retained an unverified seed")
+			}
+			if _, err := book.AddSeeds([]string{unresponsive.Addr().String()}); err != nil {
+				t.Fatal(err)
+			}
 			if got := book.Addresses(); !reflect.DeepEqual(got, []string{unresponsive.Addr().String()}) {
 				t.Fatalf("persisted addresses after outage = %v", got)
 			}

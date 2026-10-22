@@ -93,7 +93,7 @@ func TestProviderHintsFiltersDepartedProvidersAndRetainsRejoinedClaims(t *testin
 		}
 	}
 	// Another node takes B's address, removing B's ID from the book.
-	if _, err := a.book.merge(Message{Address: b.address, NodeID: testNodeID(9), Peers: map[string]string{}}, "", nil); err != nil {
+	if _, err := a.book.merge(Message{Address: b.address, NodeID: testNodeID(9), Peers: map[string]string{}}, b.address, nil); err != nil {
 		t.Fatal(err)
 	}
 	assertHintProviders(t, a.hints, testCacheKey(1), c.id)
@@ -164,7 +164,7 @@ func TestProviderHintsRefreshRejectsReusedAddress(t *testing.T) {
 	c := newHintsTestNode(t, "c.test:1", testInventory(testCacheKeys(1, 1)))
 	a := newHintsTestNode(t, "a.test:1", nil)
 	// The book still maps C's address to B, as after C took over B's address.
-	if _, err := a.book.merge(Message{Address: c.address, NodeID: b.id, Peers: map[string]string{}}, "", nil); err != nil {
+	if _, err := a.book.merge(Message{Address: c.address, NodeID: b.id, Peers: map[string]string{}}, c.address, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.hints.refresh(context.Background(), b.id, new(cache.KeyPosition)); err == nil {
@@ -285,7 +285,7 @@ func newHintsTestNode(t *testing.T, advertise string, inventory []string) *hints
 // learn records peer's address and ID and delivers discovery's notification.
 func (n *hintsTestNode) learn(t *testing.T, peer *hintsTestNode) {
 	t.Helper()
-	result, err := n.book.merge(Message{Address: peer.address, NodeID: peer.id, Peers: map[string]string{}}, "", nil)
+	result, err := n.book.merge(Message{Address: peer.address, NodeID: peer.id, Peers: map[string]string{}}, peer.address, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

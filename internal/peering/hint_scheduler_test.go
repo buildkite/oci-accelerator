@@ -296,7 +296,8 @@ func TestProviderHintsRunRestartsAfterConsecutiveStalledAttempts(t *testing.T) {
 func TestProviderHintsRunBoundsConcurrencyAndJoinsOnCancellation(t *testing.T) {
 	a := newHintsTestNode(t, "a.test:1", nil)
 	for i := 1; i <= 6; i++ {
-		result, err := a.book.merge(Message{Address: fmt.Sprintf("peer%d.test:1", i), NodeID: testNodeID(i), Peers: map[string]string{}}, "", nil)
+		address := fmt.Sprintf("peer%d.test:1", i)
+		result, err := a.book.merge(Message{Address: address, NodeID: testNodeID(i), Peers: map[string]string{}}, address, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -414,7 +415,7 @@ func TestProviderHintsRunRescansRejoiningIdentity(t *testing.T) {
 				// snapshot. Deliver the resulting discovery additions together.
 				var added []string
 				for _, id := range []string{testNodeID(999), b.id} {
-					result, err := a.book.merge(Message{Address: b.address, NodeID: id, Peers: map[string]string{}}, "", nil)
+					result, err := a.book.merge(Message{Address: b.address, NodeID: id, Peers: map[string]string{}}, b.address, nil)
 					if err != nil {
 						t.Fatal(err)
 					}

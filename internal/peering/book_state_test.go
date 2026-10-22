@@ -20,17 +20,20 @@ func TestOpenBookValidatesSelfBeforeFilesystem(t *testing.T) {
 
 func TestOpenBookRejectsInvalidState(t *testing.T) {
 	tests := map[string]string{
-		"corrupt":           `{`,
-		"version":           `{"version":3,"peers":{}}`,
-		"unknown field":     `{"version":2,"peers":{},"extra":1}`,
-		"invalid peer":      `{"version":2,"peers":{"bad":"000000000001"}}`,
-		"invalid node ID":   `{"version":2,"peers":{"a.test:1":"short"}}`,
-		"null node ID":      `{"version":2,"peers":{"a.test:1":null}}`,
-		"duplicate address": `{"version":2,"peers":{"a.test:1":"000000000001","a.test:1":"000000000002"}}`,
-		"duplicate node ID": `{"version":2,"peers":{"a.test:1":"000000000001","b.test:1":"000000000001"}}`,
-		"v1 invalid peer":   `{"version":1,"peers":["bad"]}`,
-		"v1 duplicate":      `{"version":1,"peers":["a.test:1","a.test:1"]}`,
-		"oversized":         strings.Repeat(" ", bookStateMax+1),
+		"corrupt":              `{`,
+		"version":              `{"version":4,"peers":{}}`,
+		"v3 missing timestamp": `{"version":3,"peers":{"a.test:1":{"node_id":"000000000001"}}}`,
+		"v3 duplicate address": `{"version":3,"peers":{"a.test:1":{"node_id":""},"a.test:1":{"node_id":""}}}`,
+		"v3 unknown field":     `{"version":3,"peers":{"a.test:1":{"other":""}}}`,
+		"unknown field":        `{"version":2,"peers":{},"extra":1}`,
+		"invalid peer":         `{"version":2,"peers":{"bad":"000000000001"}}`,
+		"invalid node ID":      `{"version":2,"peers":{"a.test:1":"short"}}`,
+		"null node ID":         `{"version":2,"peers":{"a.test:1":null}}`,
+		"duplicate address":    `{"version":2,"peers":{"a.test:1":"000000000001","a.test:1":"000000000002"}}`,
+		"duplicate node ID":    `{"version":2,"peers":{"a.test:1":"000000000001","b.test:1":"000000000001"}}`,
+		"v1 invalid peer":      `{"version":1,"peers":["bad"]}`,
+		"v1 duplicate":         `{"version":1,"peers":["a.test:1","a.test:1"]}`,
+		"oversized":            strings.Repeat(" ", bookStateMax+1),
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -61,8 +64,8 @@ func TestOpenBookMigratesVersion1AddressesToCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if got := b.Addresses(); !reflect.DeepEqual(got, []string{"a.test:1", "b.test:2"}) {
-		t.Fatalf("Addresses = %v", got)
+	if got, err := loadBookState(dir); err != nil || !reflect.DeepEqual(got, map[string]string{"a.test:1": "", "b.test:2": ""}) {
+		t.Fatalf("migrated candidates = %v, %v", got, err)
 	}
 	if got := b.Snapshot().Peers; len(got) != 0 {
 		t.Fatalf("version 1 addresses exported with identities: %v", got)
@@ -117,7 +120,7 @@ func TestReplaceBookStateRenameFailureCleansStage(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, bookStateName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	published, err := writeBookState(dir, map[string]string{"peer.test:1": testNodeID(1)})
+	published, err := writeBookState(dir, map[string]bookRecord{"peer.test:1": {NodeID: testNodeID(1)}})
 	if err == nil || published {
 		t.Fatalf("rename over directory: published=%t, error=%v", published, err)
 	}

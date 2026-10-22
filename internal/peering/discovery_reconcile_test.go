@@ -62,12 +62,14 @@ func TestDiscoveryVerificationResponseDecidesConflictingClaim(t *testing.T) {
 						}
 					case "x.test:1":
 						return messageResponse(Message{Address: "x.test:1", NodeID: id1}), nil
+					case "y.test:7":
+						return messageResponse(Message{Address: "y.test:7", NodeID: id3}), nil
+					case "a.test:5":
+						return messageResponse(Message{Address: "a.test:5", NodeID: id5}), nil
 					}
 					return nil, fmt.Errorf("unexpected request to %s", r.URL.Host)
 				})
-				if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}, "", nil); err != nil {
-					t.Fatal(err)
-				}
+				confirmTestPeers(t, d.book, original)
 				if response := cooldownRequest(d, Message{Address: "a.test:5", NodeID: id5, Peers: tc.claim}); response.Code != http.StatusOK {
 					t.Fatalf("gossip status = %d", response.Code)
 				}
@@ -82,8 +84,8 @@ func TestDiscoveryVerificationResponseDecidesConflictingClaim(t *testing.T) {
 				if got := d.book.Snapshot().Peers; !reflect.DeepEqual(got, original) {
 					t.Fatalf("book changed before probe answered: %v", got)
 				}
-				if log.count(tc.probe) != 1 || log.count("a.test:5") != 0 {
-					t.Fatalf("requests = %v, want one probe and no request to the cooling sender", log.all())
+				if log.count(tc.probe) != 1 || log.count("a.test:5") != 1 {
+					t.Fatalf("requests = %v, want one probe and one regular sender exchange", log.all())
 				}
 				if tc.reply == nil {
 					cancel()
@@ -125,9 +127,7 @@ func TestDiscoveryVerificationDedupesAndRespectsBackoffWithoutDelayingInbound(t 
 			return nil, fmt.Errorf("unexpected request to %s", r.URL.Host)
 		})
 		original := map[string]string{"a.test:5": id5, "x.test:1": id1}
-		if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}, "", nil); err != nil {
-			t.Fatal(err)
-		}
+		confirmTestPeers(t, d.book, original)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		go d.Run(ctx)
@@ -191,9 +191,8 @@ func TestDiscoveryVerificationsShareExchangeSlots(t *testing.T) {
 			return nil, context.DeadlineExceeded
 		})
 		known := map[string]string{"x1.test:1": testNodeID(1), "x2.test:1": testNodeID(2), "x3.test:1": testNodeID(3)}
-		if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: testNodeID(5), Peers: known}, "", nil); err != nil {
-			t.Fatal(err)
-		}
+		known["a.test:5"] = testNodeID(5)
+		confirmTestPeers(t, d.book, known)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		go d.Run(ctx)
@@ -240,7 +239,7 @@ func TestDiscoveryVerificationBacklogDoesNotStarveRegularPeers(t *testing.T) {
 			}
 			return nil, context.DeadlineExceeded
 		})
-		if _, err := d.book.merge(Message{Address: "regular.test:1", NodeID: testNodeID(1)}, "", nil); err != nil {
+		if _, err := d.book.merge(Message{Address: "regular.test:1", NodeID: testNodeID(1)}, "regular.test:1", nil); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -265,7 +264,7 @@ func TestDiscoveryVerificationBacklogDoesNotStarveRegularPeers(t *testing.T) {
 	})
 }
 
-func TestDiscoveryLateVerificationCannotUndoNewerInboundMove(t *testing.T) {
+func TestDiscoveryInboundMoveRequiresVerification(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		id1, id5 := testNodeID(1), testNodeID(5)
 		var log requestLog
@@ -282,12 +281,13 @@ func TestDiscoveryLateVerificationCannotUndoNewerInboundMove(t *testing.T) {
 				return messageResponse(Message{Address: "z.test:9", NodeID: id1}), nil
 			case "x.test:1":
 				return messageResponse(Message{Address: "x.test:1", NodeID: id1}), nil
+			case "w.test:4":
+				return messageResponse(Message{Address: "w.test:4", NodeID: id1}), nil
 			}
 			return nil, fmt.Errorf("unexpected request to %s", r.URL.Host)
 		})
-		if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}, "", nil); err != nil {
-			t.Fatal(err)
-		}
+		original := map[string]string{"a.test:5": id5, "x.test:1": id1}
+		confirmTestPeers(t, d.book, original)
 		if response := cooldownRequest(d, Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"z.test:9": id1}}); response.Code != http.StatusOK {
 			t.Fatalf("gossip status = %d", response.Code)
 		}
@@ -302,15 +302,19 @@ func TestDiscoveryLateVerificationCannotUndoNewerInboundMove(t *testing.T) {
 			t.Fatalf("inbound move status = %d", response.Code)
 		}
 		want := map[string]string{"a.test:5": id5, "w.test:4": id1}
+		if got := d.book.Snapshot().Peers; !reflect.DeepEqual(got, original) {
+			t.Fatalf("unverified inbound move changed membership: %v", got)
+		}
+		synctest.Wait()
 		if got := d.book.Snapshot().Peers; !reflect.DeepEqual(got, want) {
-			t.Fatalf("book after inbound move = %v, want %v", got, want)
+			t.Fatalf("verified move = %v, want %v", got, want)
 		}
 		close(release)
 		synctest.Wait()
 		if got := d.book.Snapshot().Peers; !reflect.DeepEqual(got, want) {
 			t.Fatalf("late probe response changed book to %v, want %v", got, want)
 		}
-		if log.count("z.test:9") != 1 || log.count("w.test:4") != 0 {
+		if log.count("z.test:9") != 1 || log.count("w.test:4") != 1 {
 			t.Fatalf("requests = %v", log.all())
 		}
 	})
@@ -328,9 +332,7 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 				}
 				return messageResponse(Message{Address: r.URL.Host, NodeID: id1}), nil
 			})
-			if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"z0.test:1": id1}}, "", nil); err != nil {
-				t.Fatal(err)
-			}
+			confirmTestPeers(t, d.book, map[string]string{"a.test:5": id5, "z0.test:1": id1})
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			go d.Run(ctx)
@@ -352,7 +354,7 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 			}
 			// Every completed probe's cooldown has expired and scheduled
 			// exchanges have run, so only retained peers keep schedules.
-			time.Sleep(time.Minute)
+			time.Sleep(6 * time.Minute)
 			synctest.Wait()
 			d.mu.Lock()
 			defer d.mu.Unlock()
@@ -374,9 +376,7 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 				return nil, context.DeadlineExceeded
 			})
 			original := map[string]string{"a.test:5": id5, "x.test:1": id1}
-			if _, err := d.book.merge(Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id1}}, "", nil); err != nil {
-				t.Fatal(err)
-			}
+			confirmTestPeers(t, d.book, original)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			go d.Run(ctx)
@@ -407,8 +407,9 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 				t.Fatalf("pending = %d, known = %d, want %d and %d", len(d.pending), len(d.known), MaxPeers, MaxPeers+len(original))
 			}
 			d.mu.Unlock()
-			// A single batch of failed hints must not reserve the queue forever.
-			time.Sleep(time.Minute)
+			// Exhaust the three-attempt budget and let the five-minute
+			// cooldown expire, releasing the queue without fresh gossip.
+			time.Sleep(8 * time.Minute)
 			synctest.Wait()
 			d.mu.Lock()
 			pending, known := len(d.pending), len(d.known)
@@ -420,7 +421,7 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 				t.Fatalf("later gossip status = %d", response.Code)
 			}
 			synctest.Wait()
-			if log.count("late-0.test:1") != 1 || log.count("dead-0.test:1") != 1 {
+			if log.count("late-0.test:1") != 1 || log.count("dead-0.test:1") != 3 {
 				t.Fatalf("later claim was starved or failed hint retried without gossip: %v", log.all())
 			}
 		})

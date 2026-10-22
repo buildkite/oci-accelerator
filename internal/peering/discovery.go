@@ -11,10 +11,14 @@ import (
 	"time"
 )
 
-const exchangeConcurrency = 4
+const (
+	exchangeConcurrency = 4
+	candidateAttempts   = 3
+	candidateCooldown   = 5 * time.Minute
+)
 
-// Discovery exchanges a durable address book with peers. Run owns outbound
-// scheduling, while Handler admits authenticated inbound exchanges.
+// Discovery verifies peer membership and exchanges a durable address book.
+// Run owns outbound scheduling, while Handler accepts inbound candidates.
 type Discovery struct {
 	book       *Book
 	client     *http.Client
@@ -25,7 +29,7 @@ type Discovery struct {
 	newPeers   func(ids []string)
 	mu         sync.Mutex // guards schedules and inbound merge versus outbound scheduling
 	known      map[string]*peerSchedule
-	pending    map[string]bool // bounded verification work, false while cooling down
+	pending    map[string]bool // bounded candidate work, false during cooldown
 }
 
 type peerSchedule struct {
@@ -35,25 +39,29 @@ type peerSchedule struct {
 }
 
 // NewDiscovery returns discovery for book. When newPeers is not nil, it
-// receives the sorted node IDs that each inbound or outbound exchange adds to
+// receives the sorted node IDs that each verified outbound exchange adds to
 // the book, even when that exchange then fails to sync the book. An ID that
 // leaves the book and returns is reported again. newPeers runs while
 // discovery holds its lock, so it must not block or call back into Discovery.
 func NewDiscovery(book *Book, client *http.Client, logger *slog.Logger, newPeers func(ids []string)) *Discovery {
-	return &Discovery{
+	d := &Discovery{
 		book: book, client: client, logger: logger, newPeers: newPeers, wake: make(chan struct{}, 1),
 		interval: 30 * time.Second, maxBackoff: 5 * time.Minute,
 		known:   make(map[string]*peerSchedule),
 		pending: make(map[string]bool),
 	}
+	for _, address := range book.candidates() {
+		d.pending[address] = true
+		d.known[address] = &peerSchedule{}
+	}
+	return d
 }
 
 func (d *Discovery) Handler() http.Handler { return NewHandler(d.receiveInbound) }
 
-// Run exchanges with known peers unless a recent inbound exchange deferred them,
-// then retries each independently.
-// Cancellation joins all requests before returning. Unreachable peers remain
-// in the address book and never prevent the proxy from serving.
+// Run probes candidates and renews confirmed membership through outbound contact.
+// Cancellation joins all requests before returning. Unreachable learned peers
+// expire, while configured seeds remain retryable bootstrap targets.
 func (d *Discovery) Run(ctx context.Context) {
 	type result struct {
 		address      string
@@ -73,6 +81,9 @@ func (d *Discovery) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		d.mu.Lock()
 		now := time.Now()
+		if err := d.book.expire(now); err != nil {
+			d.logger.Error("peer membership expiry persistence failed")
+		}
 		snapshot, before := d.book.observe()
 		wait := d.interval
 		addresses := d.destinations(before, now)
@@ -132,13 +143,6 @@ func (d *Discovery) Run(ctx context.Context) {
 			if result.err == nil && ctx.Err() == nil {
 				_, result.err = d.receive(result.message, result.address, &result.before)
 			}
-			if result.err != nil {
-				// Failed hints retain backoff but release their queue slots after
-				// it expires. Only fresh gossip requests another verification.
-				if _, pending := d.pending[result.address]; pending {
-					d.pending[result.address] = false
-				}
-			}
 			if result.err != nil && !errors.Is(result.err, errStaleObservation) {
 				if entry.failures == 0 {
 					d.logger.Warn("peer exchange unavailable", "peer", result.address)
@@ -153,27 +157,29 @@ func (d *Discovery) Run(ctx context.Context) {
 				entry.failures = 0
 			}
 			d.deferExchange(entry, entry.failures)
+			if result.verification {
+				_, view := d.book.observe()
+				_, retained := view.peers[result.address]
+				if retained {
+					delete(d.pending, result.address)
+				} else if result.err == nil || entry.failures >= candidateAttempts {
+					// Successful alias responses also cool down. They introduce
+					// the advertised listener as a separate candidate, not proof
+					// that the listener can be reached.
+					d.pending[result.address] = false
+					entry.next = time.Now().Add(candidateCooldown)
+				}
+			}
 			d.mu.Unlock()
 		}
 	}
 }
 
 func (d *Discovery) receiveInbound(message Message) (Message, error) {
-	// Do not let Run schedule a newly merged sender before its cooldown is set.
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	response, err := d.receive(message, "", nil)
-	if err == nil && response.Peers[message.Address] == message.NodeID {
-		entry := d.known[message.Address]
-		if entry == nil {
-			entry = &peerSchedule{}
-			d.known[message.Address] = entry
-		}
-		// Inbound contact is not evidence that the advertised listener is reachable.
-		// Preserve failure backoff and only track senders retained in the book.
-		d.deferExchange(entry, 0)
-	}
-	return response, err
+	// Inbound contact neither proves listener reachability nor postpones probes.
+	return d.receive(message, "", nil)
 }
 
 // receive requires mu. Network verification is queued, never performed while
@@ -194,17 +200,20 @@ func (d *Discovery) receive(message Message, destination string, before *bookVie
 	}
 	response, view := d.book.observe()
 	d.prune(view, time.Now())
-	for _, address := range []string{destination, message.Address} {
-		if _, exists := d.pending[address]; exists {
-			d.pending[address] = false
-		}
-	}
 	if result.Rejected != 0 {
 		d.logger.Warn("peer address book full", "rejected", result.Rejected, "limit", MaxPeers)
 	}
 	dropped := 0
 	for _, address := range result.Verify {
-		if _, exists := d.pending[address]; !exists && len(d.pending) == MaxPeers {
+		if _, retained := view.peers[address]; retained {
+			// Existing members and seeds already have independent schedules.
+			continue
+		}
+		if _, exists := d.pending[address]; exists {
+			// Gossip cannot renew a retry budget or bypass its cooldown.
+			continue
+		}
+		if len(d.pending) == MaxPeers {
 			dropped++
 			continue
 		}
@@ -224,8 +233,8 @@ func (d *Discovery) receive(message Message, destination string, before *bookVie
 }
 
 // destinations requires mu. Pending verifications share scheduling and backoff
-// with regular discovery. Completed probes retain a cooldown until expiry so
-// repeated stale gossip cannot create a tight loop. Removed peers are pruned
+// with regular discovery. Exhausted candidates retain a cooldown until expiry
+// so repeated stale gossip cannot create a tight loop. Removed peers are pruned
 // only after their in-flight requests have returned.
 func (d *Discovery) destinations(view bookView, now time.Time) []string {
 	d.prune(view, now)
@@ -260,7 +269,7 @@ func (d *Discovery) prune(view bookView, now time.Time) {
 	}
 }
 
-// deferExchange requires mu. Neither direction may shorten an existing delay.
+// deferExchange requires mu. A completed attempt may not shorten an existing delay.
 func (d *Discovery) deferExchange(entry *peerSchedule, failures int) {
 	delay := retryDelay(d.interval, d.maxBackoff, failures)
 	// +/-20% jitter avoids synchronized full-list exchanges after startup.

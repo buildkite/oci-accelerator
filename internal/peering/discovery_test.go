@@ -133,7 +133,11 @@ func TestDiscoveryRetriesFailureAndResetsAfterRecovery(t *testing.T) {
 		if failing.Load() {
 			return nil, context.DeadlineExceeded
 		}
-		body, _ := json.Marshal(Message{Address: "peer.test:2", NodeID: testNodeID(2), Peers: map[string]string{"learned.test:3": testNodeID(3)}})
+		message := Message{Address: "peer.test:2", NodeID: testNodeID(2), Peers: map[string]string{"learned.test:3": testNodeID(3)}}
+		if r.URL.Host == "learned.test:3" {
+			message = Message{Address: "learned.test:3", NodeID: testNodeID(3), Peers: map[string]string{}}
+		}
+		body, _ := json.Marshal(message)
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(body))}, nil
 	})
 	d := NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
@@ -300,27 +304,31 @@ func TestDiscoveryReportsNewPeers(t *testing.T) {
 	eventually(t, 3*time.Second, func() bool { return len(snapshot()) == 1 })
 	cancel()
 	<-done
-	if got, want := snapshot(), [][]string{{testNodeID(2), testNodeID(3)}}; !reflect.DeepEqual(got, want) {
+	if got, want := snapshot(), [][]string{{testNodeID(2)}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("outbound reported %v, want %v", got, want)
 	}
 
-	// A new sender is reported, and peers it repeats are not.
+	// Inbound senders and gossip are not reported until directly verified.
 	inbound := Message{Address: "d.test:1", NodeID: testNodeID(4), Peers: map[string]string{"c.test:1": testNodeID(3)}}
 	for range 2 {
 		if code := cooldownRequest(d, inbound).Code; code != http.StatusOK {
 			t.Fatalf("inbound status = %d", code)
 		}
 	}
-	if got, want := snapshot(), [][]string{{testNodeID(2), testNodeID(3)}, {testNodeID(4)}}; !reflect.DeepEqual(got, want) {
+	if got, want := snapshot(), [][]string{{testNodeID(2)}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("reported %v, want %v", got, want)
 	}
 
 	// The book publishes the new ID before its directory sync fails.
-	d.book.write = func(dir string, peers map[string]string) (bool, error) {
+	d.book.write = func(dir string, peers map[string]bookRecord) (bool, error) {
 		return replaceBookState(dir, peers, func(string) error { return syscall.EIO })
 	}
-	if code := cooldownRequest(d, Message{Address: "e.test:1", NodeID: testNodeID(5)}).Code; code == http.StatusOK {
-		t.Fatal("inbound exchange succeeded despite a failed sync")
+	_, view := d.book.observe()
+	d.mu.Lock()
+	_, err := d.receive(Message{Address: "e.test:1", NodeID: testNodeID(5)}, "e.test:1", &view)
+	d.mu.Unlock()
+	if err == nil {
+		t.Fatal("outbound exchange succeeded despite a failed sync")
 	}
 	if got := snapshot(); !reflect.DeepEqual(got[len(got)-1], []string{testNodeID(5)}) {
 		t.Fatalf("published identity not reported: %v", got)

@@ -68,22 +68,29 @@ independently trusted node identities.
 
 Each instance persists a random 12-character node ID across restarts and address
 changes. Instances exchange their advertised address, node ID, and known
-address-to-ID mappings. They trust a sender's own mapping, replacing its old
-address when it moves. Third-party claims that conflict with a stored address
-or ID are verified by contacting the claimed address before replacement. The
-responder's actual ID and advertised address win, not the gossip or contacted
-alias. Failed verification leaves the book unchanged, and late responses cannot
-undo intervening binding changes. For example, if A knows B and B knows C,
-A learns C through B and then contacts C itself.
-An inbound exchange that merges successfully postpones the next outbound request
-to its sender by the normal jittered interval, avoiding an immediate reverse
-exchange. It does not shorten existing backoff or defer contact with third-party
-addresses learned through that exchange. Requests already in flight can cross.
-The address book survives restarts and retains unreachable peers unless their
-mapping is replaced, with a limit of 1,024 addresses per instance. Seeds without
-known IDs stay local discovery candidates. Verification shares discovery's four
-outbound slots and has a bounded, deduplicated queue. Retries use backoff, and
-peer outages do not affect proxy readiness or image pulls.
+address-to-ID mappings. Gossip and inbound senders introduce local candidates,
+not confirmed members. A candidate becomes a member only after a successful
+outbound exchange with its advertised listener. For example, if A knows B and
+B knows C, A learns C through B but does not advertise C until it contacts C
+itself. An alias response introduces the advertised address for a separate probe.
+Verified responders replace conflicting mappings, and late responses cannot undo
+intervening binding changes. Inbound exchanges do not postpone outbound probes.
+
+Confirmed membership expires after 30 minutes without successful outbound
+contact. The last successful contact is persisted, so restarts do not renew
+membership. Gossip and inbound contact do not extend it. Expired peers disappear
+from advertisements and provider selection, and leave the durable address book.
+A returning peer can contact a live member, which probes it back before restoring
+membership. Keep a reachable seed or another live peer as a route back after a
+partition.
+
+The durable book holds up to 1,024 members. Up to 1,024 configured seeds are kept
+separately as retryable bootstrap targets even after their membership expires.
+Unverified candidates share a bounded, deduplicated queue and get three failed
+attempts followed by a five-minute cooldown. Later gossip can request a new budget
+after cooldown, but cannot reset an active budget or bypass backoff. Verification
+shares discovery's four outbound slots, with at most two used by candidates.
+Peer outages do not affect proxy readiness or image pulls.
 
 Each instance also lists the hashed keys of its committed cache entries to
 authenticated peers. Startup and newly discovered node IDs trigger immediate

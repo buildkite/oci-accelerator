@@ -16,8 +16,9 @@ go vet ./...
 
 Peer discovery uses local TLS and filesystem fixtures in the standard suite.
 They cover same-CA authentication, rejection of non-peer certificates, three-node
-convergence and direct contact with learned peers, inbound exchange cooldowns,
-retry recovery and fairness, restart retention, capacity limits, failed persistence,
+convergence and verified admission of learned peers, inbound traffic without probe deferral,
+bounded candidate retries and cooldowns, expiry and rejoining, seed recovery, persisted
+freshness and migration, retry recovery and fairness, capacity limits, failed persistence,
 bounded connections, and shutdown. Cache key listing tests cover live LRU-to-MRU paging,
 hits between pages, cursor eviction and restart rejection, strict decoding, node ID checks
 against reused addresses, page-by-page progress under failure and deadlines, the distinct-key
