@@ -40,10 +40,15 @@ steps:
     command: "bash .buildkite/image.sh check"
     timeout_in_minutes: 20
 
+  - block: ":docker: Publish images to Docker Hub?"
+    key: approve-publish
+    if: 'build.branch == "main" && build.tag == null && build.pull_request.id == null'
+    depends_on: [checks, tests, race, image]
+
   - label: ":docker: Publish release, build, and latest tags to Docker Hub"
     key: publish
     if: 'build.branch == "main" && build.tag == null && build.pull_request.id == null'
-    depends_on: [checks, tests, race, image]
+    depends_on: [checks, tests, race, image, approve-publish]
     command: "bash .buildkite/image.sh publish"
     timeout_in_minutes: 20
     concurrency: 1
