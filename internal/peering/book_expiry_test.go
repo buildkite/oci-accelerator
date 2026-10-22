@@ -197,6 +197,114 @@ func TestBookExpiryPersistenceFailures(t *testing.T) {
 	}
 }
 
+func TestBookRenewalCheckpointsAndConservativeRestart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := bookTestDir(t)
+		peer := Message{Address: "peer.test:1", NodeID: testNodeID(1)}
+		b := openReconcileBook(t, dir, map[string]string{peer.Address: peer.NodeID})
+		writes := 0
+		b.write = func(dir string, records map[string]bookRecord) (bool, error) {
+			writes++
+			return writeBookState(dir, records)
+		}
+		renew := func() {
+			t.Helper()
+			if _, err := b.merge(peer, peer.Address, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for range 14 {
+			time.Sleep(30 * time.Second)
+			renew()
+		}
+		time.Sleep(29 * time.Second)
+		renew()
+		if writes != 0 {
+			t.Fatalf("renewals below checkpoint threshold wrote %d times", writes)
+		}
+		time.Sleep(time.Second)
+		renew()
+		if writes != 1 {
+			t.Fatalf("renewal at 7m30s wrote %d times, want 1", writes)
+		}
+		checkpoint := time.Now()
+		time.Sleep(time.Minute)
+		renew()
+		if writes != 1 {
+			t.Fatal("renewal immediately after checkpoint wrote again")
+		}
+		records, err := loadBookRecords(dir)
+		if err != nil || !records[peer.Address].LastSuccess.Equal(checkpoint) {
+			t.Fatalf("saved checkpoint = %v, %v", records, err)
+		}
+		time.Sleep(29 * time.Minute)
+		// Live freshness includes the unsaved renewal one minute later.
+		assertBookPeers(t, b, map[string]string{peer.Address: peer.NodeID})
+		if err := b.Close(); err != nil {
+			t.Fatal(err)
+		}
+		b, err = OpenBook(dir, "self.test:1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer b.Close()
+		assertBookPeers(t, b, nil)
+	})
+}
+
+func TestBookMembershipChangeCheckpointsRecentRenewals(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := bookTestDir(t)
+		b := openReconcileBook(t, dir, map[string]string{"peer.test:1": testNodeID(1)})
+		time.Sleep(time.Minute)
+		renewed := time.Now()
+		if _, err := b.merge(Message{Address: "peer.test:1", NodeID: testNodeID(1)}, "peer.test:1", nil); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Minute)
+		if _, err := b.merge(Message{Address: "new.test:1", NodeID: testNodeID(2)}, "new.test:1", nil); err != nil {
+			t.Fatal(err)
+		}
+		records, err := loadBookRecords(dir)
+		if err != nil || len(records) != 2 || records["new.test:1"].NodeID != testNodeID(2) ||
+			!records["peer.test:1"].LastSuccess.Equal(renewed) {
+			t.Fatalf("membership change did not save current freshness: %v, %v", records, err)
+		}
+	})
+}
+
+func TestBookRenewalCheckpointRetriesPersistenceFailures(t *testing.T) {
+	for _, published := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before rename", true: "directory sync"}[published], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				b := openReconcileBook(t, bookTestDir(t), map[string]string{"peer.test:1": testNodeID(1)})
+				time.Sleep(7*time.Minute + 30*time.Second)
+				writes := 0
+				b.write = func(dir string, records map[string]bookRecord) (bool, error) {
+					writes++
+					if writes == 1 {
+						if published {
+							return replaceBookState(dir, records, func(string) error { return syscall.EIO })
+						}
+						return false, syscall.ENOSPC
+					}
+					return writeBookState(dir, records)
+				}
+				peer := Message{Address: "peer.test:1", NodeID: testNodeID(1)}
+				if _, err := b.merge(peer, peer.Address, nil); err == nil {
+					t.Fatal("failed checkpoint acknowledged")
+				}
+				if _, err := b.merge(peer, peer.Address, nil); err != nil || writes != 2 {
+					t.Fatalf("checkpoint retry: writes=%d error=%v", writes, err)
+				}
+				if _, err := b.merge(peer, peer.Address, nil); err != nil || writes != 2 {
+					t.Fatalf("checkpoint did not resume coalescing: writes=%d error=%v", writes, err)
+				}
+			})
+		})
+	}
+}
+
 func TestBookFailedRefreshDoesNotExtendLifetime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := bookTestDir(t)

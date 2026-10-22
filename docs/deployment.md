@@ -931,14 +931,27 @@ its previous mapping. Losing a node's identity state gives it a new ID, and its 
 mapping expires normally.
 
 `peers.json` contains versioned membership and local last-success timestamps and is atomically
-replaced after changes. Persisted freshness prevents restarts from renewing dead membership.
+replaced immediately when membership changes. Successful renewals update exact freshness in
+memory, but trigger a replacement only when a member's timestamp has advanced at least 7 minutes
+30 seconds beyond its saved checkpoint. Each replacement saves all current timestamps, so peers
+can share a checkpoint write. This is not a global limit on write frequency. Startup also rewrites
+the file to migrate or clean loaded state.
+Persisted freshness prevents restarts from renewing dead membership. With successful persistence,
+the saved timestamp trails the latest accepted success by less than 7 minutes 30 seconds, so a
+restart can expire membership that much earlier, never later, than its in-memory lifetime.
 You may read it to inspect known addresses, but do not edit live state. Timestamps are local
-observations, never accepted from another instance. Startup also merges configured seeds.
+observations, never accepted from another instance. Startup loads configured seeds into a separate
+in-memory retry set.
 Configured seeds remain bootstrap targets after membership expires, but are not advertised
 until verified. Removing a seed from configuration removes its indefinite retry exemption.
 Maintain a reachable seed or another known live peer so separated groups can rediscover each
 other after a partition. Stale gossip can request bounded probing, but cannot restore membership
 without successful direct contact.
+
+Saved timestamps use wall-clock time when loaded after a restart. Moving the clock backwards can
+retain restored membership longer, while moving it forwards can expire restored members early or
+all at once. Expired members require direct verification before admission again. Fresh timestamps
+recorded in the current process use Go's monotonic clock for elapsed-time comparisons.
 
 On first peering-enabled startup, each instance generates a 12-character, case-sensitive
 base64url node ID from 72 cryptographically random bits and persists it in `node-id` in the

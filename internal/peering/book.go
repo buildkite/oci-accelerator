@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const membershipTTL = 30 * time.Minute
+const (
+	membershipTTL     = 30 * time.Minute
+	renewalCheckpoint = membershipTTL / 4
+)
 
 var (
 	errBook              = errors.New("peer address book error")
@@ -24,7 +27,8 @@ type Book struct {
 	self     string
 	nodeID   string
 	records  map[string]bookRecord
-	seeds    map[string]bool // configured in this process, not inherited from disk
+	saved    map[string]bookRecord // last published checkpoint, possibly awaiting directory sync
+	seeds    map[string]bool       // configured in this process, not inherited from disk
 	lock     bookLock
 	unsynced bool
 	revision uint64 // advances when a recorded mapping is replaced or removed
@@ -79,6 +83,7 @@ func OpenBook(dir, self string) (*Book, error) {
 		_ = lock.close()
 		return nil, errBook
 	}
+	b.saved = b.records
 	return b, nil
 }
 
@@ -203,13 +208,24 @@ func (b *Book) snapshot() Message {
 	return Message{Address: b.self, NodeID: b.nodeID, Peers: peers}
 }
 
-// persist requires mu. Retain state published by rename even when syncing the
-// directory fails, and retry that sync before acknowledging another exchange.
+// persist requires mu. Membership changes persist immediately, while renewals
+// retain exact live freshness and checkpoint only after renewalCheckpoint.
+// A restart can lose recent freshness but cannot extend it. Retain state published
+// by rename even when directory sync fails, and retry before acknowledging contact.
 func (b *Book) persist(next map[string]bookRecord) error {
 	if b.lock.file == nil {
 		return errBook
 	}
-	if maps.Equal(next, b.records) && !b.unsynced {
+	changed := b.unsynced || len(next) != len(b.saved)
+	for address, record := range next {
+		saved, exists := b.saved[address]
+		if !exists || record.NodeID != saved.NodeID || record.LastSuccess.Sub(saved.LastSuccess) >= renewalCheckpoint {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		b.records = next
 		return nil
 	}
 	published, err := b.write(b.dir, next)
@@ -222,6 +238,7 @@ func (b *Book) persist(next map[string]bookRecord) error {
 			}
 		}
 		b.records = next
+		b.saved = next
 		b.unsynced = err != nil
 	}
 	if err != nil {
