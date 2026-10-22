@@ -44,7 +44,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	listener := newTestListener(t)
 	state := filepath.Join(root, "peer")
-	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state}, ShutdownTimeout: 100 * time.Millisecond}
+	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state, HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: 100 * time.Millisecond}
 	done, cleanup, err := startPeering(context.Background(), cfg, signer, noCacheKeys, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestPeerServesCacheKeysToAuthenticatedPeers(t *testing.T) {
 	listener := newTestListener(t)
 	state := filepath.Join(root, "peer")
 	keys := []string{strings.Repeat("0a", 32), strings.Repeat("0b", 32)}
-	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state}, ShutdownTimeout: 100 * time.Millisecond}
+	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state, HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: 100 * time.Millisecond}
 	_, cleanup, err := startPeering(context.Background(), cfg, signer, func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error) {
 		return keys, cache.KeyPosition{}, nil
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
@@ -175,7 +175,7 @@ func TestPeersRefreshCacheKeysWhenDiscoveredAndAfterRestart(t *testing.T) {
 	start := func(name string, seeds []string, listings *atomic.Int32) (string, func() error) {
 		t.Helper()
 		listener := newTestListener(t)
-		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: listener.Addr().String(), Seeds: seeds, StateDir: filepath.Join(root, name), HintRefreshTimeout: time.Minute}, ShutdownTimeout: time.Second}
+		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: listener.Addr().String(), Seeds: seeds, StateDir: filepath.Join(root, name), HintRefreshTimeout: time.Minute, HintRefreshInterval: 100 * time.Millisecond, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: time.Second}
 		inventory := func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error) {
 			listings.Add(1)
 			return nil, cache.KeyPosition{}, nil
@@ -204,6 +204,8 @@ func TestPeersRefreshCacheKeysWhenDiscoveredAndAfterRestart(t *testing.T) {
 	// exchange. Each then fetches the other's listing.
 	waitFor("A to fetch B's listing", func() bool { return listingsB.Load() >= 1 })
 	waitFor("B to fetch A's listing", func() bool { return listingsA.Load() >= 1 })
+	waitFor("A to catch up from B periodically", func() bool { return listingsB.Load() >= 2 })
+	waitFor("B to catch up from A periodically", func() bool { return listingsA.Load() >= 2 })
 
 	// After a restart A has no hints, so it fetches from B, which its book
 	// already knows, without any new discovery.
@@ -246,7 +248,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		socket := newTestListener(t)
 		failure := make(chan struct{})
 		listener := &faultListener{Listener: socket, accepting: make(chan struct{}), fail: failure, acceptErr: errors.New("private address")}
-		cfg := config.Config{Peer: config.Peer{Listen: socket.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: time.Second}
+		cfg := config.Config{Peer: config.Peer{Listen: socket.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state"), HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: time.Second}
 		done, cleanup, err := startPeering(context.Background(), cfg, signer, noCacheKeys, slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
@@ -271,7 +273,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		root := t.TempDir()
 		signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 		listener := newTestListener(t)
-		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state")}, ShutdownTimeout: 10 * time.Millisecond}
+		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state"), HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: 10 * time.Millisecond}
 		_, cleanup, err := startPeering(context.Background(), cfg, signer, noCacheKeys, slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)

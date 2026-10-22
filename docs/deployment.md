@@ -343,7 +343,9 @@ dotenv file are rejected.
 An unset variable retains the file value or default. A present empty variable is an explicit
 value. It disables `OCI_ACCELERATOR_METRICS_LISTEN` and clears
 `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`. Empty `OCI_ACCELERATOR_PEER_LISTEN` disables peering,
-provided the other peer settings are also empty. An empty `OCI_ACCELERATOR_PEER_SEEDS` is
+provided `OCI_ACCELERATOR_PEER_ADVERTISE`, `OCI_ACCELERATOR_PEER_SEEDS`, and
+`OCI_ACCELERATOR_PEER_STATE_DIR` are also empty. Peer hint timings still accept overrides
+and use their defaults when peering is disabled. An empty `OCI_ACCELERATOR_PEER_SEEDS` is
 valid even when peering is enabled. Other empty values fail validation, including required
 registries and paths. `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`
 are comma-separated authority lists. Entries are whitespace-trimmed, the
@@ -420,7 +422,9 @@ You can configure private registries explicitly.
 | `OCI_ACCELERATOR_PEER_ADVERTISE` | Empty | Required reachable host:port when peering is enabled |
 | `OCI_ACCELERATOR_PEER_SEEDS` | Empty | Optional comma-separated host:port bootstrap addresses |
 | `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled |
-| `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` | `1m` | Positive overall cache-key refresh duration, excluding queue wait. No unlimited value |
+| `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` | `1m` | Positive overall duration per cache-key fetch attempt, excluding slot wait. No unlimited value |
+| `OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL` | `1m` | Positive poll delay after each attempt completes, with ±20% jitter |
+| `OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL` | `1h` | Positive full-scan interval from successful full-scan completion, with ±20% jitter |
 
 **Registries and state**
 
@@ -828,6 +832,9 @@ OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:7443
 OCI_ACCELERATOR_PEER_ADVERTISE=accelerator-a.example:7443
 OCI_ACCELERATOR_PEER_SEEDS=accelerator-b.example:7443,accelerator-c.example:7443
 OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
+OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT=1m
+OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL=1m
+OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL=1h
 ```
 
 - `PEER_LISTEN` binds a separate TLS port. Keep the proxy and metrics listeners separate.
@@ -844,7 +851,8 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 - For Docker or Compose, explicitly publish the chosen peer port and persist peer state on a
   writable volume. The default container configuration leaves peering disabled.
 - Run `oci-accelerator --env-file FILE --check` to validate without opening listeners or state.
-  To disable peering, clear all four peer settings. The existing address book remains on disk.
+  To disable peering, clear the listener, advertised address, seeds, and state directory settings.
+  You can leave the positive hint timings configured. The existing address book remains on disk.
 
 ### Peer trust
 
@@ -974,7 +982,8 @@ When more keys follow, the page is full and `next` is an opaque, versioned, URL-
 identifying its final key's logical recency position and the open cache's random incarnation.
 Request the following page with `GET /v1/cache/keys?after=<next>`. An empty `next` ends the listing,
 including when the final page is full. A cursor from before a cache restart is rejected with
-`400`. The client reports an incomplete refresh rather than silently restarting.
+`400`. An explicit invalid-cursor response ends the attempt and clears the client's checkpoint
+so its next poll starts a fresh scan.
 
 The listing excludes in-progress, failed, and invalidated fills and entries claimed for removal.
 It grants no access, and a subsequent pull can still miss. Pages walk the cache's existing access
@@ -997,28 +1006,44 @@ your instance has cached that object. This matches the fleet trust model in
 Each instance fetches peers' listings to keep advisory hints about which peer holds which key:
 
 - At startup, it fetches the listing of every peer its address book identifies, because hints
-  live only in memory.
-- While running, it fetches a peer's listing once when discovery adds that node ID to the book.
+  and scan progress live only in memory. These full scans are eligible immediately.
+- While running, a peer becomes eligible for an immediate full scan when discovery adds that
+  node ID to the book.
   This includes a seed whose ID resolves and a new ID at a reused address, but not a known ID
   that moves to another address. An ID that leaves the book and returns is fetched again.
-- Fetches run in the background, one at a time with no retry. They do not block startup,
-  readiness, or discovery on network requests. Shutdown cancels and joins the worker.
+- Fetches run in the background, with four concurrent fetches total and at most one per peer.
+  They do not block startup, readiness, or discovery on network requests. Shutdown cancels
+  and joins the workers.
   A failure logs `peer cache keys refresh failed` with the peer's `node_id` and keeps
-  earlier hints and successfully applied pages. Up to 1,024 peers can wait.
-  Further peers log `peer cache keys refresh queue full` and are not fetched.
+  earlier hints, successfully applied pages, and validated progress for the next poll.
+- After each attempt completes, whether successful or not, the next poll waits
+  `OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL` (default `1m`) with ±20% jitter.
+
+Each peer retains its last validated nonterminal cursor in memory. Incremental polls resume
+from that cursor, replaying the terminal tail so recent hits and publications can be found.
+The terminal page does not advance the checkpoint. A one-page inventory has no checkpoint
+and is fetched from the start on every poll. Partial failures retain validated progress,
+but an explicit invalid-cursor response clears it and schedules a fresh scan on the next poll.
+
+When `OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL` (default `1h`) has elapsed since a
+successful full scan completed, with ±20% jitter, the next attempt starts from the beginning instead of doing
+incremental work. An interrupted full scan resumes from its validated progress on later polls
+until it completes. Its interval is measured from successful completion, not from scan start
+or from a failed attempt.
 
 A fetch checks that every page comes from the node ID the address book maps to that address
 and requires full pages while more follow. Each validated page immediately adds that peer
 to each listed key's providers, without clearing earlier claims. There is no key-count fetch
-cutoff. `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` bounds the complete fetch, starting when
-it acquires the refresh slot. The existing five-second per-request timeout also applies.
-Expiry reports an incomplete refresh and retains applied pages. An empty listing does not
-remove hints. All peers share a FIFO of 200,000
-distinct keys. Repeated claims, additional providers, and lookups never move a retained key.
+cutoff. `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` (default `1m`) bounds each fetch attempt,
+starting when it acquires the refresh slot. The existing five-second per-request timeout also applies.
+Expiry reports an incomplete refresh and retains applied pages and validated progress. Full
+scans remain additive, not reconciliation. Neither a full scan nor an empty listing removes
+hints for keys that have disappeared. All peers share a FIFO of 200,000 distinct keys.
+Repeated claims, additional providers, and lookups never move a retained key.
 Eviction removes a whole key and all of its providers, so one large peer can displace others.
 Provider counts do not consume key slots, so this is not a byte-memory bound. Lookups exclude
 IDs absent from your current address book, but their retained claims become visible if they
-rejoin. Hints are not refreshed periodically, can be stale, grant no access, and are not used
+rejoin. Hints can still be stale despite periodic refresh, grant no access, and are not used
 to serve pulls.
 
 ## Monitoring
@@ -1200,8 +1225,7 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 - Redirect restrictions protect proxy-originated fetches only. They do not constrain the broader
   egress available through opaque CONNECT tunnels, so deployment network controls remain essential.
 - No shared or distributed cache storage, peer-to-peer content delivery, or background prefetch.
-  Peer cache key hints are fetched only at startup and when discovery adds a peer, and are not
-  used to serve pulls.
+  Periodically refreshed peer cache key hints are advisory and are not used to serve pulls.
 - No Kubernetes manifests, and no automated container runtime acceptance in CI.
 - Fault tests exercise process termination and private tmpfs exhaustion, not power loss or
   faulty-device certification. See the [testing guide](testing.md).

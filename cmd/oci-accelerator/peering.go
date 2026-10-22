@@ -21,8 +21,8 @@ import (
 // startPeering owns the peer listener, discovery loop, cache key hint refresh
 // loop and address book until its cleanup is called. The listener also serves
 // live LRU-to-MRU inventory pages of the local cache to authenticated peers. Hints
-// fetch every known peer's listing at startup and a peer's listing whenever
-// discovery adds its node ID to the book. Disabled peering creates no state or
+// catch up from every known peer periodically, starting immediately at startup
+// and when discovery adds its node ID. Disabled peering creates no state or
 // network activity.
 func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, inventory func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error), logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, func() error, error) {
 	if cfg.Peer.Listen == "" {
@@ -48,8 +48,8 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		return nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
 	client := peering.NewClient(clientTLS)
-	hints := peering.NewProviderHints(book, client, inventory, cfg.Peer.HintRefreshTimeout, logger)
-	discovery := peering.NewDiscovery(book, client, logger, hints.QueueRefresh)
+	hints := peering.NewProviderHints(book, client, inventory, cfg.Peer.HintRefreshTimeout, cfg.Peer.HintRefreshInterval, cfg.Peer.HintFullRefreshInterval, logger)
+	discovery := peering.NewDiscovery(book, client, logger, hints.PeersAdded)
 	handler := peering.PeerHandler(discovery.Handler(), hints.Handler())
 	var handlerMu sync.Mutex
 	var handlers sync.WaitGroup

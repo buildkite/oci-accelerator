@@ -13,7 +13,7 @@ func TestValidateLimitsRequirePositiveValues(t *testing.T) {
 }
 
 func TestDurationBounds(t *testing.T) {
-	for _, field := range []string{"DIAL_TIMEOUT", "TLS_HANDSHAKE_TIMEOUT", "RESPONSE_HEADER_TIMEOUT", "IDLE_TIMEOUT", "SHUTDOWN_TIMEOUT", "CACHE_FILL_TIMEOUT", "PEER_HINT_REFRESH_TIMEOUT"} {
+	for _, field := range []string{"DIAL_TIMEOUT", "TLS_HANDSHAKE_TIMEOUT", "RESPONSE_HEADER_TIMEOUT", "IDLE_TIMEOUT", "SHUTDOWN_TIMEOUT", "CACHE_FILL_TIMEOUT", "PEER_HINT_REFRESH_TIMEOUT", "PEER_HINT_REFRESH_INTERVAL", "PEER_HINT_FULL_REFRESH_INTERVAL"} {
 		for _, value := range []string{"0s", "-1ns"} {
 			t.Run(field+"="+value, func(t *testing.T) {
 				values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", field: value}

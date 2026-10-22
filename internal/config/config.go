@@ -25,6 +25,8 @@ const (
 	DefaultCacheAnonymousAuthorizationTTL       = 15 * time.Minute
 	DefaultCacheMaxAuthorizationEntries         = 10000
 	DefaultPeerHintRefreshTimeout               = time.Minute
+	DefaultPeerHintRefreshInterval              = time.Minute
+	DefaultPeerHintFullRefreshInterval          = time.Hour
 )
 
 // Config is the validated result of [Load]. Directory paths are absolute, with
@@ -63,11 +65,13 @@ type Cache struct {
 // Peer holds peer discovery configuration. An empty Listen
 // disables peer service.
 type Peer struct {
-	Listen             string
-	Advertise          string
-	Seeds              []string
-	StateDir           string
-	HintRefreshTimeout time.Duration
+	Listen                  string
+	Advertise               string
+	Seeds                   []string
+	StateDir                string
+	HintRefreshTimeout      time.Duration
+	HintRefreshInterval     time.Duration
+	HintFullRefreshInterval time.Duration
 }
 
 type rawConfig struct {
@@ -127,7 +131,11 @@ func defaults() rawConfig {
 			AnonymousAuthorizationTTL: DefaultCacheAnonymousAuthorizationTTL,
 			MaxAuthorizationEntries:   DefaultCacheMaxAuthorizationEntries,
 		},
-		Peer:                  Peer{HintRefreshTimeout: DefaultPeerHintRefreshTimeout},
+		Peer: Peer{
+			HintRefreshTimeout:      DefaultPeerHintRefreshTimeout,
+			HintRefreshInterval:     DefaultPeerHintRefreshInterval,
+			HintFullRefreshInterval: DefaultPeerHintFullRefreshInterval,
+		},
 		DialTimeout:           10 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
