@@ -10,13 +10,12 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
 )
 
-func TestDiscoveryInboundDefersOnlySender(t *testing.T) {
+func TestDiscoveryInboundQueuesVerificationWithoutPostponingProbes(t *testing.T) {
 	for _, alreadyKnown := range []bool{false, true} {
 		name := "new sender"
 		if alreadyKnown {
@@ -59,29 +58,24 @@ func TestDiscoveryInboundDefersOnlySender(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 					t.Fatal(err)
 				}
-				want := Message{Address: "b.test:2", NodeID: d.book.Snapshot().NodeID, Peers: map[string]string{"a.test:1": testNodeID(1), "c.test:3": testNodeID(3)}}
+				want := Message{Address: "b.test:2", NodeID: d.book.Snapshot().NodeID, Peers: map[string]string{}}
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("response = %+v, want %+v", got, want)
 				}
 				synctest.Wait()
-				if count("a.test:1") != before || count("c.test:3") != 1 {
+				if count("a.test:1") != 1 || count("c.test:3") != 1 {
 					t.Fatalf("requests after inbound: sender=%d third-party=%d", count("a.test:1"), count("c.test:3"))
 				}
-				// Refresh before the first cooldown expires. At t=63 even its
-				// longest jitter has expired, but the refreshed minimum has not.
-				time.Sleep(20 * time.Second)
+				// Repeated inbound contact must not defer either peer's next
+				// attempt. Both second attempts are due by t=56 at the latest.
+				time.Sleep(3 * time.Second)
 				if response := cooldownRequest(d, Message{Address: "a.test:1", NodeID: testNodeID(1)}); response.Code != http.StatusOK {
 					t.Fatalf("refresh status = %d", response.Code)
 				}
-				time.Sleep(23 * time.Second)
+				time.Sleep(34 * time.Second)
 				synctest.Wait()
-				if count("a.test:1") != before {
-					t.Fatalf("sender contacted during cooldown: %d", count("a.test:1"))
-				}
-				time.Sleep(14 * time.Second)
-				synctest.Wait()
-				if count("a.test:1") != before+1 {
-					t.Fatalf("sender not contacted once after expiry: %d", count("a.test:1"))
+				if count("a.test:1") < 2 || count("c.test:3") != 2 {
+					t.Fatalf("inbound postponed probes: sender=%d third-party=%d", count("a.test:1"), count("c.test:3"))
 				}
 			})
 		})
@@ -106,10 +100,6 @@ func TestDiscoveryRejectedInboundDoesNotDeferSender(t *testing.T) {
 		invalid := Message{Address: "a.test:1", NodeID: testNodeID(1), Peers: map[string]string{"invalid": testNodeID(3)}}
 		if response := cooldownRequest(d, invalid); response.Code != http.StatusBadRequest {
 			t.Fatalf("invalid exchange status = %d", response.Code)
-		}
-		d.book.write = func(string, map[string]string) (bool, error) { return false, syscall.ENOSPC }
-		if response := cooldownRequest(d, Message{Address: "a.test:1", NodeID: testNodeID(1), Peers: map[string]string{"c.test:3": testNodeID(3)}}); response.Code != http.StatusInternalServerError {
-			t.Fatalf("failed merge status = %d", response.Code)
 		}
 		time.Sleep(17 * time.Second)
 		synctest.Wait()
@@ -179,17 +169,8 @@ func TestDiscoveryInboundDuringOutboundExchange(t *testing.T) {
 			t.Fatalf("inbound status = %d", response.Code)
 		}
 		synctest.Wait()
-		d.mu.Lock()
-		inboundNext := d.known["a.test:1"].next
-		d.mu.Unlock()
 		close(release)
 		synctest.Wait()
-		d.mu.Lock()
-		next := d.known["a.test:1"].next
-		d.mu.Unlock()
-		if next.Before(inboundNext) {
-			t.Fatal("outbound completion shortened inbound cooldown")
-		}
 		time.Sleep(23 * time.Second)
 		synctest.Wait()
 		if calls.Load() != 1 {
@@ -203,15 +184,14 @@ func TestDiscoveryInboundDuringOutboundExchange(t *testing.T) {
 	})
 }
 
-func TestDiscoveryCooldownStateOnlyTracksRetainedPeers(t *testing.T) {
+func TestDiscoveryDoesNotProbeSelfAndBoundsCandidates(t *testing.T) {
 	d := cooldownDiscovery(t, nil)
 	peers := make(map[string]string, MaxPeers-1)
 	for i := 1; i < MaxPeers; i++ {
 		peers[fmt.Sprintf("peer-%d.test:1", i)] = testNodeID(i)
 	}
-	if result, err := d.book.merge(Message{Address: "peer-0.test:1", NodeID: testNodeID(0), Peers: peers}, "", nil); err != nil || result.Rejected != 0 {
-		t.Fatalf("filling Merge = %+v, %v", result, err)
-	}
+	peers["peer-0.test:1"] = testNodeID(0)
+	confirmTestPeers(t, d.book, peers)
 	for _, sender := range []Message{
 		{Address: "b.test:2", NodeID: d.book.Snapshot().NodeID},
 		{Address: "overflow.test:1", NodeID: testNodeID(MaxPeers)},
@@ -220,8 +200,8 @@ func TestDiscoveryCooldownStateOnlyTracksRetainedPeers(t *testing.T) {
 			t.Fatalf("inbound status = %d", response.Code)
 		}
 	}
-	if len(d.known) != 0 {
-		t.Fatalf("tracked self or rejected sender: %v", d.known)
+	if len(d.known) != 1 || d.known["overflow.test:1"] == nil {
+		t.Fatalf("expected only unverified sender to be queued: %v", d.known)
 	}
 }
 

@@ -41,7 +41,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		return nil, nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())
 	}
 	if rejected != 0 {
-		logger.Warn("peer address book full", "rejected", rejected, "limit", peering.MaxPeers)
+		logger.Warn("peer seed targets full", "rejected", rejected, "limit", peering.MaxPeers)
 	}
 	listener, err := listen("tcp", cfg.Peer.Listen)
 	if err != nil {

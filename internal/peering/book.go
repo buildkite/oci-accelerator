@@ -5,7 +5,10 @@ import (
 	"maps"
 	"sort"
 	"sync"
+	"time"
 )
+
+const membershipTTL = 30 * time.Minute
 
 var (
 	errBook              = errors.New("peer address book error")
@@ -13,18 +16,19 @@ var (
 	errStaleObservation  = errors.New("peer book changed during exchange")
 )
 
-// Book is a durable, process-exclusive address-to-identity mapping. Empty IDs
-// are local discovery candidates, never advertised to other nodes.
+// Book is a durable, process-exclusive membership mapping. Configured seeds
+// are separate retry targets and never consume confirmed membership slots.
 type Book struct {
 	mu       sync.Mutex
 	dir      string
 	self     string
 	nodeID   string
-	peers    map[string]string
+	records  map[string]bookRecord
+	seeds    map[string]bool // configured in this process, not inherited from disk
 	lock     bookLock
 	unsynced bool
 	revision uint64 // advances when a recorded mapping is replaced or removed
-	write    func(string, map[string]string) (bool, error)
+	write    func(string, map[string]bookRecord) (bool, error)
 }
 
 // MergeResult reports capacity rejections, addresses needing direct contact,
@@ -54,7 +58,7 @@ func OpenBook(dir, self string) (*Book, error) {
 	if err != nil {
 		return nil, errBook
 	}
-	peers, err := loadBookState(dir)
+	records, err := loadBookRecords(dir)
 	if err != nil {
 		_ = lock.close()
 		return nil, errBook
@@ -64,14 +68,14 @@ func OpenBook(dir, self string) (*Book, error) {
 		_ = lock.close()
 		return nil, errBook
 	}
-	b := &Book{dir: dir, self: canonicalSelf, nodeID: nodeID, peers: make(map[string]string, len(peers)), lock: lock, write: writeBookState}
-	for address, id := range peers {
-		if address != canonicalSelf && id != nodeID {
-			b.peers[address] = id
+	b := &Book{dir: dir, self: canonicalSelf, nodeID: nodeID, records: make(map[string]bookRecord, len(records)), seeds: make(map[string]bool), lock: lock, write: writeBookState}
+	for address, record := range records {
+		if address != canonicalSelf && record.NodeID != nodeID {
+			b.records[address] = record
 		}
 	}
 	// Also migrate legacy candidates and durably remove records for self.
-	if _, err := b.write(dir, b.peers); err != nil {
+	if _, err := b.write(dir, b.records); err != nil {
 		_ = lock.close()
 		return nil, errBook
 	}
@@ -85,14 +89,15 @@ func (b *Book) Snapshot() Message {
 	return b.snapshot()
 }
 
-// Addresses includes unresolved seeds and legacy addresses for local discovery.
+// Addresses includes live members and unresolved retry addresses.
 func (b *Book) Addresses() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return sortedAddresses(b.peers)
+	return sortedAddresses(b.bindings(time.Now()))
 }
 
-// AddSeeds retains distinct canonical addresses without inventing identities.
+// AddSeeds retains up to MaxPeers configured retry addresses independently of
+// membership capacity. Configuration, not the durable book, owns these targets.
 func (b *Book) AddSeeds(addresses []string) (int, error) {
 	seeds := make(map[string]string, len(addresses))
 	for _, address := range addresses {
@@ -104,23 +109,25 @@ func (b *Book) AddSeeds(addresses []string) (int, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	next := maps.Clone(b.peers)
+	if b.lock.file == nil {
+		return 0, errBook
+	}
 	rejected := 0
 	for _, address := range sortedAddresses(seeds) {
-		if _, exists := next[address]; exists || address == b.self {
+		if address == b.self || b.seeds[address] {
 			continue
 		}
-		if len(next) == MaxPeers {
+		if len(b.seeds) == MaxPeers {
 			rejected++
 			continue
 		}
-		next[address] = ""
+		b.seeds[address] = true
 	}
-	return rejected, b.persist(next)
+	return rejected, b.persist(b.records)
 }
 
-// merge trusts the sender's mapping but leaves conflicting third-party claims
-// unchanged until discovery contacts their addresses directly.
+// merge confirms a sender only after outbound contact at its advertised listener.
+// Inbound senders and gossip introduce addresses requiring direct verification.
 func (b *Book) merge(message Message, destination string, before *bookView) (result MergeResult, err error) {
 	message, err = canonicalMessage(message)
 	if err != nil {
@@ -134,102 +141,136 @@ func (b *Book) merge(message Message, destination string, before *bookView) (res
 	if (message.Address == b.self || message.NodeID == b.nodeID) && (message.Address != b.self || message.NodeID != b.nodeID) {
 		return result, errIdentityCollision
 	}
-	if before != nil && (before.revision != b.revision ||
-		before.peers[destination] != b.peers[destination] ||
-		before.peers[message.Address] != b.peers[message.Address] ||
-		addressForID(before.peers, message.NodeID) != addressForID(b.peers, message.NodeID)) {
+	now := time.Now()
+	current := b.bindings(now)
+	if destination != "" && before != nil && (before.revision != b.revision ||
+		before.peers[destination] != current[destination] ||
+		before.peers[message.Address] != current[message.Address] ||
+		addressForID(before.peers, message.NodeID) != addressForID(current, message.NodeID)) {
 		return result, errStaleObservation
 	}
 
-	next := maps.Clone(b.peers)
+	next := maps.Clone(b.records)
 	if destination != "" && destination != message.Address {
 		delete(next, destination)
 	}
-	if message.Address != b.self {
-		for address, id := range next {
-			if id == message.NodeID {
+	if message.Address != b.self && destination == message.Address {
+		for address, record := range next {
+			if record.NodeID == message.NodeID {
 				delete(next, address)
 			}
 		}
 		if _, exists := next[message.Address]; !exists && len(next) == MaxPeers {
 			result.Rejected++
 		} else {
-			next[message.Address] = message.NodeID
+			next[message.Address] = bookRecord{NodeID: message.NodeID, LastSuccess: now}
 		}
-	}
-	byID := make(map[string]string, len(next))
-	for address, id := range next {
-		if id != "" {
-			byID[id] = address
-		}
+	} else if message.Address != b.self && (current[message.Address] != message.NodeID || destination != "") {
+		result.Verify = append(result.Verify, message.Address)
 	}
 	for _, address := range sortedAddresses(message.Peers) {
 		id := message.Peers[address]
 		if address == b.self || address == message.Address || address == destination {
 			continue
 		}
-		old := next[address]
-		other := byID[id]
-		if old != "" && old != id || other != "" && other != address || id == b.nodeID || id == message.NodeID {
+		record := next[address]
+		if record.NodeID != id || !record.LastSuccess.Add(membershipTTL).After(now) {
 			result.Verify = append(result.Verify, address)
-			continue
 		}
-		if _, exists := next[address]; !exists && len(next) == MaxPeers {
-			result.Rejected++
-			continue
-		}
-		next[address] = id
-		byID[id] = address
 	}
-	previous := b.peers
+	sort.Strings(result.Verify)
 	err = b.persist(next)
 	// persist can publish next and still fail to sync the directory, so
 	// compare against whatever the book now holds.
-	result.Added = addedIDs(previous, b.peers)
+	result.Added = addedIDs(current, b.bindings(now))
 	return result, err
 }
 
 func (b *Book) observe() (Message, bookView) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.snapshot(), bookView{peers: maps.Clone(b.peers), revision: b.revision}
+	return b.snapshot(), bookView{peers: b.bindings(time.Now()), revision: b.revision}
 }
 
 func (b *Book) snapshot() Message {
-	peers := make(map[string]string, len(b.peers))
-	for address, id := range b.peers {
+	peers := b.bindings(time.Now())
+	for address, id := range peers {
 		if id != "" {
-			peers[address] = id
+			continue
 		}
+		delete(peers, address)
 	}
 	return Message{Address: b.self, NodeID: b.nodeID, Peers: peers}
 }
 
 // persist requires mu. Retain state published by rename even when syncing the
 // directory fails, and retry that sync before acknowledging another exchange.
-func (b *Book) persist(next map[string]string) error {
+func (b *Book) persist(next map[string]bookRecord) error {
 	if b.lock.file == nil {
 		return errBook
 	}
-	if maps.Equal(next, b.peers) && !b.unsynced {
+	if maps.Equal(next, b.records) && !b.unsynced {
 		return nil
 	}
 	published, err := b.write(b.dir, next)
 	if published {
-		for address, id := range b.peers {
-			newID, exists := next[address]
-			if !exists || id != "" && id != newID {
+		for address, record := range b.records {
+			newRecord, exists := next[address]
+			if !exists || record.NodeID != "" && record.NodeID != newRecord.NodeID {
 				b.revision++
 				break
 			}
 		}
-		b.peers = next
+		b.records = next
 		b.unsynced = err != nil
 	}
 	if err != nil {
 		return errBook
 	}
 	return nil
+}
+
+// expire durably removes old members and migrated candidates. Seeds remain in
+// the separate configured retry set.
+func (b *Book) expire(now time.Time) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	next := maps.Clone(b.records)
+	for address, record := range next {
+		if record.NodeID == "" || !record.LastSuccess.Add(membershipTTL).After(now) {
+			delete(next, address)
+		}
+	}
+	return b.persist(next)
+}
+
+// candidates returns unidentified legacy addresses for bounded local probing.
+// Discovery captures them before expiry removes them from durable state.
+func (b *Book) candidates() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var addresses []string
+	for address, record := range b.records {
+		if record.NodeID == "" && !b.seeds[address] {
+			addresses = append(addresses, address)
+		}
+	}
+	sort.Strings(addresses)
+	return addresses
+}
+
+// bindings derives scheduler state without exposing expired identities.
+func (b *Book) bindings(now time.Time) map[string]string {
+	peers := make(map[string]string, len(b.records)+len(b.seeds))
+	for address := range b.seeds {
+		peers[address] = ""
+	}
+	for address, record := range b.records {
+		if record.NodeID != "" && record.LastSuccess.Add(membershipTTL).After(now) {
+			peers[address] = record.NodeID
+		}
+	}
+	return peers
 }
 
 // Close releases the address book's process lock.

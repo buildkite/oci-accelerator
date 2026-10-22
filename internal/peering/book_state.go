@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 const (
@@ -17,8 +18,13 @@ const (
 )
 
 type bookState struct {
-	Version int               `json:"version"`
-	Peers   map[string]string `json:"peers"`
+	Version int                   `json:"version"`
+	Peers   map[string]bookRecord `json:"peers"`
+}
+
+type bookRecord struct {
+	NodeID      string    `json:"node_id"`
+	LastSuccess time.Time `json:"last_success"`
 }
 
 type bookLock struct{ file *os.File }
@@ -140,7 +146,7 @@ func validateRegular(path string) error {
 	return nil
 }
 
-func loadBookState(dir string) (map[string]string, error) {
+func loadBookRecords(dir string) (map[string]bookRecord, error) {
 	path := filepath.Join(dir, bookStateName)
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -167,6 +173,7 @@ func loadBookState(dir string) (map[string]string, error) {
 		return nil, errBook
 	}
 	peers := make(map[string]string)
+	records := make(map[string]bookRecord)
 	switch state.Version {
 	case 1:
 		var addresses []string
@@ -183,6 +190,24 @@ func loadBookState(dir string) (map[string]string, error) {
 		keys := json.NewDecoder(bytes.NewReader(state.Peers))
 		if checkObjectKeys(keys, nil, func(string) error { return checkString(keys) }) != nil || json.Unmarshal(state.Peers, &peers) != nil {
 			return nil, errBook
+		}
+	case 3:
+		keys := json.NewDecoder(bytes.NewReader(state.Peers))
+		if checkObjectKeys(keys, nil, func(string) error {
+			return checkObjectKeys(keys, nil, func(string) error { return checkString(keys) })
+		}) != nil {
+			return nil, errBook
+		}
+		decoder := json.NewDecoder(bytes.NewReader(state.Peers))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&records) != nil || records == nil {
+			return nil, errBook
+		}
+		for address, record := range records {
+			if record.NodeID != "" && record.LastSuccess.IsZero() {
+				return nil, errBook
+			}
+			peers[address] = record.NodeID
 		}
 	default:
 		return nil, errBook
@@ -201,17 +226,28 @@ func loadBookState(dir string) (map[string]string, error) {
 		}
 		ids[id] = true
 	}
-	return peers, nil
+	if state.Version < 3 {
+		// Persisted by OpenBook before use, so restarts cannot renew this grace.
+		now := time.Now()
+		for address, id := range peers {
+			record := bookRecord{NodeID: id}
+			if id != "" {
+				record.LastSuccess = now
+			}
+			records[address] = record
+		}
+	}
+	return records, nil
 }
 
 // writeBookState reports whether rename published a replacement, separately
 // from its durability. Callers must retain published state even on sync failure.
-func writeBookState(dir string, peers map[string]string) (bool, error) {
+func writeBookState(dir string, peers map[string]bookRecord) (bool, error) {
 	return replaceBookState(dir, peers, syncBookDir)
 }
 
-func replaceBookState(dir string, peers map[string]string, syncDir func(string) error) (bool, error) {
-	raw, err := json.Marshal(bookState{Version: 2, Peers: peers})
+func replaceBookState(dir string, peers map[string]bookRecord, syncDir func(string) error) (bool, error) {
+	raw, err := json.Marshal(bookState{Version: 3, Peers: peers})
 	if err != nil || len(raw) > bookStateMax {
 		return false, errBook
 	}

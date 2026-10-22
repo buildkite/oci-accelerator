@@ -105,6 +105,28 @@ func bookTestDir(t *testing.T) string {
 	return filepath.Join(parent, "book")
 }
 
+// confirmTestPeers models successful outbound contact with each fixture member.
+func confirmTestPeers(t *testing.T, book *Book, peers map[string]string) {
+	t.Helper()
+	for _, address := range sortedAddresses(peers) {
+		if _, err := book.merge(Message{Address: address, NodeID: peers[address]}, address, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func loadBookState(dir string) (map[string]string, error) {
+	records, err := loadBookRecords(dir)
+	if err != nil {
+		return nil, err
+	}
+	peers := make(map[string]string, len(records))
+	for address, record := range records {
+		peers[address] = record.NodeID
+	}
+	return peers, nil
+}
+
 func cooldownDiscovery(t *testing.T, transport roundTripFunc) *Discovery {
 	t.Helper()
 	book, err := OpenBook(bookTestDir(t), "b.test:2")
