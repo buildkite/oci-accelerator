@@ -14,7 +14,7 @@ import (
 // configuration values.
 var ErrInvalid = errors.New("invalid configuration")
 
-// Defaults applied when the configuration omits a cache setting.
+// Defaults applied when the configuration omits a cache or peer setting.
 const (
 	DefaultCacheMaxBytes                  int64 = 32 << 30
 	DefaultCacheMaxFills                        = 16
@@ -24,6 +24,7 @@ const (
 	DefaultCacheAuthorizationTTL                = 30 * time.Second
 	DefaultCacheAnonymousAuthorizationTTL       = 15 * time.Minute
 	DefaultCacheMaxAuthorizationEntries         = 10000
+	DefaultPeerHintRefreshTimeout               = time.Minute
 )
 
 // Config is the validated result of [Load]. Directory paths are absolute, with
@@ -62,10 +63,11 @@ type Cache struct {
 // Peer holds peer discovery configuration. An empty Listen
 // disables peer service.
 type Peer struct {
-	Listen    string
-	Advertise string
-	Seeds     []string
-	StateDir  string
+	Listen             string
+	Advertise          string
+	Seeds              []string
+	StateDir           string
+	HintRefreshTimeout time.Duration
 }
 
 type rawConfig struct {
@@ -125,6 +127,7 @@ func defaults() rawConfig {
 			AnonymousAuthorizationTTL: DefaultCacheAnonymousAuthorizationTTL,
 			MaxAuthorizationEntries:   DefaultCacheMaxAuthorizationEntries,
 		},
+		Peer:                  Peer{HintRefreshTimeout: DefaultPeerHintRefreshTimeout},
 		DialTimeout:           10 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,

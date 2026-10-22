@@ -420,6 +420,7 @@ You can configure private registries explicitly.
 | `OCI_ACCELERATOR_PEER_ADVERTISE` | Empty | Required reachable host:port when peering is enabled |
 | `OCI_ACCELERATOR_PEER_SEEDS` | Empty | Optional comma-separated host:port bootstrap addresses |
 | `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled |
+| `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` | `1m` | Positive overall cache-key refresh duration, excluding queue wait. No unlimited value |
 
 **Registries and state**
 
@@ -812,8 +813,9 @@ docker compose up -d
 
 ## Peer discovery
 
-Peering exchanges addresses and node IDs only. It does not share cache keys, cached content, registry
-credentials, or authorization grants. Image pulls and readiness do not depend on reachable peers.
+Peering exchanges addresses and node IDs, and each instance lists its cache keys to authenticated
+peers. It does not share cached content, registry credentials, or authorization grants. Image pulls
+and readiness do not depend on reachable peers.
 
 Provision the same `ca.crt` and `ca.key` into each instance's private CA directory through your
 trusted deployment system. Use separate local state directories or volumes for each instance,
@@ -951,6 +953,73 @@ the replaced state and retries persistence before acknowledging another exchange
 A peer-listener failure stops the process rather than leaving an
 enabled service silently unavailable. Outage and recovery logs include the peer address but no
 raw network errors or credentials.
+
+### Cache key listing
+
+The peer listener also serves the instance's committed cache keys at HTTPS `GET /v1/cache/keys`.
+A page holds up to 4,096 keys, least recently used first and most recently used last:
+
+```json
+{
+  "nodeId": "K8r2_vN5xQpL",
+  "keys": [
+    "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+    "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+  ],
+  "next": ""
+}
+```
+
+When more keys follow, the page is full and `next` is an opaque, versioned, URL-safe cursor
+identifying its final key's logical recency position and the open cache's random incarnation.
+Request the following page with `GET /v1/cache/keys?after=<next>`. An empty `next` ends the listing,
+including when the final page is full. A cursor from before a cache restart is rejected with
+`400`. The client reports an incomplete refresh rather than silently restarting.
+
+The listing excludes in-progress, failed, and invalidated fills and entries claimed for removal.
+It grants no access, and a subsequent pull can still miss. Pages walk the cache's existing access
+order without copying or sorting the whole index. An unchanged page boundary resumes directly
+after its entry. If that entry moved or disappeared, the next request scans past its old logical
+position. No server-side listing session is retained.
+
+Pages are live, not a snapshot. Hits and newly committed fills move to the most recent end.
+A key already listed can appear again on a later page after a hit, but keys must be unique
+within each page. Later pages can include new publications or omit evicted entries. Logical
+positions never move backwards within an open cache, even if the wall clock does.
+The request must have no body or other query parameters. Invalid cursors fail with `400`.
+An inventory with invalid or duplicate keys fails with `500`. Responses are capped at 512 KiB.
+
+Cache keys are SHA-256 hashes of each entry's registry, repository, digest, object kind, `Accept`
+values, and `Content-Type`. An authenticated peer that can guess those inputs can confirm whether
+your instance has cached that object. This matches the fleet trust model in
+[peer trust](#peer-trust).
+
+Each instance fetches peers' listings to keep advisory hints about which peer holds which key:
+
+- At startup, it fetches the listing of every peer its address book identifies, because hints
+  live only in memory.
+- While running, it fetches a peer's listing once when discovery adds that node ID to the book.
+  This includes a seed whose ID resolves and a new ID at a reused address, but not a known ID
+  that moves to another address. An ID that leaves the book and returns is fetched again.
+- Fetches run in the background, one at a time with no retry. They do not block startup,
+  readiness, or discovery on network requests. Shutdown cancels and joins the worker.
+  A failure logs `peer cache keys refresh failed` with the peer's `node_id` and keeps
+  earlier hints and successfully applied pages. Up to 1,024 peers can wait.
+  Further peers log `peer cache keys refresh queue full` and are not fetched.
+
+A fetch checks that every page comes from the node ID the address book maps to that address
+and requires full pages while more follow. Each validated page immediately adds that peer
+to each listed key's providers, without clearing earlier claims. There is no key-count fetch
+cutoff. `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` bounds the complete fetch, starting when
+it acquires the refresh slot. The existing five-second per-request timeout also applies.
+Expiry reports an incomplete refresh and retains applied pages. An empty listing does not
+remove hints. All peers share a FIFO of 200,000
+distinct keys. Repeated claims, additional providers, and lookups never move a retained key.
+Eviction removes a whole key and all of its providers, so one large peer can displace others.
+Provider counts do not consume key slots, so this is not a byte-memory bound. Lookups exclude
+IDs absent from your current address book, but their retained claims become visible if they
+rejoin. Hints are not refreshed periodically, can be stale, grant no access, and are not used
+to serve pulls.
 
 ## Monitoring
 
@@ -1104,6 +1173,7 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 | Abandoned fills          | Removed at startup                                                  |
 | Metrics counters         | Reset                                                               |
 | Known peers              | Retained in `OCI_ACCELERATOR_PEER_STATE_DIR` when peering is enabled |
+| Peer cache key hints     | Memory only, fetched again from every known peer at startup         |
 | Peer reachability and leaf keys | Re-established, not persisted                                |
 
 ## Troubleshooting
@@ -1129,8 +1199,9 @@ plus metrics cleanup, in your container stop grace period. Filesystem stalls can
 
 - Redirect restrictions protect proxy-originated fetches only. They do not constrain the broader
   egress available through opaque CONNECT tunnels, so deployment network controls remain essential.
-- No shared or distributed cache storage, cache-key exchange, or background prefetch.
-  Peer discovery shares addresses and node IDs only.
+- No shared or distributed cache storage, peer-to-peer content delivery, or background prefetch.
+  Peer cache key hints are fetched only at startup and when discovery adds a peer, and are not
+  used to serve pulls.
 - No Kubernetes manifests, and no automated container runtime acceptance in CI.
 - Fault tests exercise process termination and private tmpfs exhaustion, not power loss or
   faulty-device certification. See the [testing guide](testing.md).

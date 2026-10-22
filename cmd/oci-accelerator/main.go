@@ -74,7 +74,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		defer func() { runErr = errors.Join(runErr, stopMetrics()) }()
 	}
 
-	peeringDone, stopPeering, err := startPeering(ctx, cfg, signer, logger, listen)
+	peeringDone, stopPeering, err := startPeering(ctx, cfg, signer, store.KeyPage, logger, listen)
 	if err != nil {
 		return err
 	}

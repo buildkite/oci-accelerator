@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -44,7 +48,7 @@ func TestDiscoveryThreeNodesConvergeAndContactLearnedPeers(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { n.book.Close() })
-		n.discovery = NewDiscovery(n.book, NewClient(clientTLS.Clone()), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		n.discovery = NewDiscovery(n.book, NewClient(clientTLS.Clone()), slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 		n.discovery.interval = 10 * time.Millisecond
 		n.discovery.maxBackoff = 40 * time.Millisecond
 		handler := n.discovery.Handler()
@@ -132,7 +136,7 @@ func TestDiscoveryRetriesFailureAndResetsAfterRecovery(t *testing.T) {
 		body, _ := json.Marshal(Message{Address: "peer.test:2", NodeID: testNodeID(2), Peers: map[string]string{"learned.test:3": testNodeID(3)}})
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(body))}, nil
 	})
-	d := NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	d.interval, d.maxBackoff = 5*time.Millisecond, 20*time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -187,7 +191,7 @@ func TestDiscoveryLimitsConcurrencyAndCancellationJoinsRequests(t *testing.T) {
 		<-r.Context().Done()
 		return nil, r.Context().Err()
 	})
-	d := NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { d.Run(ctx); close(done) }()
@@ -241,7 +245,7 @@ func TestDiscoveryAttemptsUntriedPeersBeforeRetryingDuePeers(t *testing.T) {
 		}
 		return nil, context.DeadlineExceeded
 	})
-	d := NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := NewDiscovery(book, &http.Client{Transport: transport}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	// Every completed request is due again by the next scheduling pass. A
 	// lexical-first scheduler would repeatedly retry early addresses instead
 	// of giving untried peers their first connection attempt.
@@ -264,5 +268,61 @@ func TestDiscoveryAttemptsUntriedPeersBeforeRetryingDuePeers(t *testing.T) {
 		if i == 3 {
 			close(release)
 		}
+	}
+}
+
+func TestDiscoveryReportsNewPeers(t *testing.T) {
+	response := fmt.Sprintf(`{"address":"seed.test:1","nodeId":%q,"peers":{"c.test:1":%q}}`, testNodeID(2), testNodeID(3))
+	d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "seed.test:1" {
+			return nil, context.DeadlineExceeded
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(response))}, nil
+	})
+	var mu sync.Mutex
+	var reported [][]string
+	d.newPeers = func(ids []string) {
+		mu.Lock()
+		defer mu.Unlock()
+		reported = append(reported, ids)
+	}
+	snapshot := func() [][]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(reported)
+	}
+	if _, err := d.book.AddSeeds([]string{"seed.test:1"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); d.Run(ctx) }()
+	eventually(t, 3*time.Second, func() bool { return len(snapshot()) == 1 })
+	cancel()
+	<-done
+	if got, want := snapshot(), [][]string{{testNodeID(2), testNodeID(3)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("outbound reported %v, want %v", got, want)
+	}
+
+	// A new sender is reported, and peers it repeats are not.
+	inbound := Message{Address: "d.test:1", NodeID: testNodeID(4), Peers: map[string]string{"c.test:1": testNodeID(3)}}
+	for range 2 {
+		if code := cooldownRequest(d, inbound).Code; code != http.StatusOK {
+			t.Fatalf("inbound status = %d", code)
+		}
+	}
+	if got, want := snapshot(), [][]string{{testNodeID(2), testNodeID(3)}, {testNodeID(4)}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("reported %v, want %v", got, want)
+	}
+
+	// The book publishes the new ID before its directory sync fails.
+	d.book.write = func(dir string, peers map[string]string) (bool, error) {
+		return replaceBookState(dir, peers, func(string) error { return syscall.EIO })
+	}
+	if code := cooldownRequest(d, Message{Address: "e.test:1", NodeID: testNodeID(5)}).Code; code == http.StatusOK {
+		t.Fatal("inbound exchange succeeded despite a failed sync")
+	}
+	if got := snapshot(); !reflect.DeepEqual(got[len(got)-1], []string{testNodeID(5)}) {
+		t.Fatalf("published identity not reported: %v", got)
 	}
 }
