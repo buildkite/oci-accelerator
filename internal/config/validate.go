@@ -62,6 +62,7 @@ func validate(raw rawConfig) (Config, error) {
 		{"IDLE_TIMEOUT", raw.IdleTimeout},
 		{"SHUTDOWN_TIMEOUT", raw.ShutdownTimeout},
 		{"CACHE_FILL_TIMEOUT", raw.Cache.FillTimeout},
+		{"PEER_HINT_REFRESH_TIMEOUT", raw.Peer.HintRefreshTimeout},
 	} {
 		if timeout.value <= 0 {
 			return Config{}, invalid("must be positive", timeout.setting)
@@ -136,7 +137,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 		if len(raw.Seeds) != 0 {
 			return Peer{}, invalid("must be empty when peer service is disabled", "PEER_SEEDS", "PEER_LISTEN")
 		}
-		return Peer{}, nil
+		return Peer{HintRefreshTimeout: raw.HintRefreshTimeout}, nil
 	}
 	listen, reason := canonicalBindAddress(raw.Listen, false)
 	if reason != "" {
@@ -190,7 +191,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 	if len(seeds) > peering.MaxPeers {
 		return Peer{}, invalid("must contain at most 1024 unique addresses", "PEER_SEEDS")
 	}
-	return Peer{Listen: listen, Advertise: advertise, Seeds: seeds, StateDir: stateDir}, nil
+	return Peer{Listen: listen, Advertise: advertise, Seeds: seeds, StateDir: stateDir, HintRefreshTimeout: raw.HintRefreshTimeout}, nil
 }
 
 func pathsOverlap(a, b string) bool {

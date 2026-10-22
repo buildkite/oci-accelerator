@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestPeerConfiguration(t *testing.T) {
@@ -14,6 +15,7 @@ func TestPeerConfiguration(t *testing.T) {
 		"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache",
 		"PEER_LISTEN": "[::1]:0443", "PEER_ADVERTISE": "PEER.example.:443",
 		"PEER_SEEDS": "peer.example.:443,[2001:0DB8::1]:443,[2001:db8::1]:443,seed.example:0443", "PEER_STATE_DIR": "./peer",
+		"PEER_HINT_REFRESH_TIMEOUT": "17s",
 	}
 	c, err := load("", environmentLookup(values))
 	if err != nil {
@@ -22,6 +24,7 @@ func TestPeerConfiguration(t *testing.T) {
 	assertEqual(t, "Peer.Listen", c.Peer.Listen, "[::1]:443")
 	assertEqual(t, "Peer.Advertise", c.Peer.Advertise, "peer.example:443")
 	assertEqual(t, "Peer.StateDir", c.Peer.StateDir, state)
+	assertEqual(t, "Peer.HintRefreshTimeout", c.Peer.HintRefreshTimeout, 17*time.Second)
 	if want := []string{"[2001:db8::1]:443", "seed.example:443"}; !reflect.DeepEqual(c.Peer.Seeds, want) {
 		t.Errorf("Peer.Seeds = %v, want %v", c.Peer.Seeds, want)
 	}

@@ -20,6 +20,7 @@ func TestLoadDefaults(t *testing.T) {
 	assertEqual(t, "Listen", c.Listen, "127.0.0.1:3128")
 	assertEqual(t, "CADir", c.CADir, filepath.Join(root, "ca"))
 	assertEqual(t, "Cache", c.Cache, wantCache)
+	assertEqual(t, "Peer.HintRefreshTimeout", c.Peer.HintRefreshTimeout, time.Minute)
 	assertEqual(t, "DialTimeout", c.DialTimeout, 10*time.Second)
 	assertEqual(t, "TLSHandshakeTimeout", c.TLSHandshakeTimeout, 10*time.Second)
 	assertEqual(t, "ResponseHeaderTimeout", c.ResponseHeaderTimeout, 30*time.Second)
