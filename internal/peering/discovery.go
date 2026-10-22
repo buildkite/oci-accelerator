@@ -150,7 +150,7 @@ func (d *Discovery) Run(ctx context.Context) {
 				if entry.failures < 10 {
 					entry.failures++
 				}
-			} else {
+			} else if result.err == nil {
 				if entry.failures != 0 {
 					d.logger.Info("peer exchange recovered", "peer", result.address)
 				}

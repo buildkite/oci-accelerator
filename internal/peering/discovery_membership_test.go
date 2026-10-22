@@ -1,16 +1,101 @@
 package peering
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 )
+
+func TestDiscoveryStaleResultPreservesFailures(t *testing.T) {
+	for _, member := range []bool{false, true} {
+		t.Run(map[bool]string{false: "candidate", true: "member"}[member], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var calls atomic.Int32
+				release := make(chan struct{})
+				peer := Message{Address: "peer.test:1", NodeID: testNodeID(1)}
+				d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
+					if r.URL.Host != peer.Address {
+						return nil, context.DeadlineExceeded
+					}
+					if calls.Add(1) == 3 {
+						select {
+						case <-release:
+							return messageResponse(peer), nil
+						case <-r.Context().Done():
+							return nil, r.Context().Err()
+						}
+					}
+					return nil, context.DeadlineExceeded
+				})
+				var logs bytes.Buffer
+				d.logger = slog.New(slog.NewTextHandler(&logs, nil))
+				if member {
+					if _, err := d.book.merge(peer, peer.Address, nil); err != nil {
+						t.Fatal(err)
+					}
+				} else if response := cooldownRequest(d, peer); response.Code != http.StatusOK {
+					t.Fatalf("introduction status = %d", response.Code)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				go d.Run(ctx)
+				synctest.Wait()
+				for range 109 {
+					if calls.Load() == 3 {
+						break
+					}
+					time.Sleep(time.Second)
+					synctest.Wait()
+				}
+				if calls.Load() != 3 {
+					t.Fatal("third exchange did not start")
+				}
+				// A replacement during the request invalidates its observation.
+				for _, id := range []string{testNodeID(2), testNodeID(3)} {
+					if _, err := d.book.merge(Message{Address: "other.test:1", NodeID: id}, "other.test:1", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				close(release)
+				synctest.Wait()
+				if strings.Contains(logs.String(), "peer exchange recovered") {
+					t.Fatal("stale response reported recovery")
+				}
+				time.Sleep(47 * time.Second)
+				synctest.Wait()
+				if calls.Load() != 3 {
+					t.Fatal("stale response reset failure backoff")
+				}
+				time.Sleep(26 * time.Second)
+				synctest.Wait()
+				if calls.Load() != 4 {
+					t.Fatalf("attempts = %d, want next real failure", calls.Load())
+				}
+				if !member {
+					for range 120 {
+						time.Sleep(time.Second)
+						if response := cooldownRequest(d, peer); response.Code != http.StatusOK {
+							t.Fatalf("reintroduction status = %d", response.Code)
+						}
+						synctest.Wait()
+					}
+					if calls.Load() != 4 {
+						t.Fatal("stale response replenished candidate retry budget")
+					}
+				}
+			})
+		})
+	}
+}
 
 func TestDiscoveryCandidateBudgetSurvivesRepeatedGossip(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
