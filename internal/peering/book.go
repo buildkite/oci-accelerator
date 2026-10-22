@@ -119,12 +119,8 @@ func (b *Book) AddSeeds(addresses []string) (int, error) {
 	return rejected, b.persist(next)
 }
 
-// Merge trusts the sender's mapping but leaves conflicting third-party claims
+// merge trusts the sender's mapping but leaves conflicting third-party claims
 // unchanged until discovery contacts their addresses directly.
-func (b *Book) Merge(message Message) (MergeResult, error) {
-	return b.merge(message, "", nil)
-}
-
 func (b *Book) merge(message Message, destination string, before *bookView) (result MergeResult, err error) {
 	message, err = canonicalMessage(message)
 	if err != nil {

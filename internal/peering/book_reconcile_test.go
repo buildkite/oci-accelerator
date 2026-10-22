@@ -19,7 +19,7 @@ func TestBookMergeSenderIdentityReplacesStaleBinding(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := bookTestDir(t)
 			b := openReconcileBook(t, dir, map[string]string{"old.test:1": testNodeID(1)})
-			if result, err := b.Merge(message); err != nil || result.Rejected != 0 || len(result.Verify) != 0 {
+			if result, err := b.merge(message, "", nil); err != nil || result.Rejected != 0 || len(result.Verify) != 0 {
 				t.Fatalf("Merge = %+v, %v", result, err)
 			}
 			want := map[string]string{message.Address: message.NodeID}
@@ -33,10 +33,10 @@ func TestBookMergeSenderIdentityReplacesStaleBinding(t *testing.T) {
 
 func TestBookMergeThirdPartyConflictsRequireVerification(t *testing.T) {
 	b := openReconcileBook(t, bookTestDir(t), map[string]string{"a.test:1": testNodeID(1), "b.test:1": testNodeID(2)})
-	result, err := b.Merge(Message{Address: "sender.test:1", NodeID: testNodeID(9), Peers: map[string]string{
+	result, err := b.merge(Message{Address: "sender.test:1", NodeID: testNodeID(9), Peers: map[string]string{
 		"a.test:1": testNodeID(3), // address conflict
 		"c.test:1": testNodeID(2), // identity conflict
-	}})
+	}}, "", nil)
 	if err != nil || result.Rejected != 0 || !reflect.DeepEqual(result.Verify, []string{"a.test:1", "c.test:1"}) {
 		t.Fatalf("Merge = %+v, %v", result, err)
 	}
@@ -45,9 +45,9 @@ func TestBookMergeThirdPartyConflictsRequireVerification(t *testing.T) {
 
 func TestBookGossipCannotAssignOneIDToTwoNewAddresses(t *testing.T) {
 	b := openReconcileBook(t, bookTestDir(t), nil)
-	result, err := b.Merge(Message{Address: "sender.test:1", NodeID: testNodeID(9), Peers: map[string]string{
+	result, err := b.merge(Message{Address: "sender.test:1", NodeID: testNodeID(9), Peers: map[string]string{
 		"a.test:1": testNodeID(1), "b.test:1": testNodeID(1),
-	}})
+	}}, "", nil)
 	if err != nil || !reflect.DeepEqual(result.Verify, []string{"b.test:1"}) {
 		t.Fatalf("Merge = %+v, %v", result, err)
 	}
@@ -72,13 +72,13 @@ func TestBookReplacementsSucceedAtCapacity(t *testing.T) {
 	for i := 1; i < MaxPeers; i++ {
 		peers[fmt.Sprintf("p%04d.test:1", i)] = testNodeID(i)
 	}
-	if result, err := b.Merge(Message{Address: "p0000.test:1", NodeID: testNodeID(0), Peers: peers}); err != nil || result.Rejected != 0 {
+	if result, err := b.merge(Message{Address: "p0000.test:1", NodeID: testNodeID(0), Peers: peers}, "", nil); err != nil || result.Rejected != 0 {
 		t.Fatalf("filling Merge = %+v, %v", result, err)
 	}
-	if result, err := b.Merge(Message{Address: "p0000.test:1", NodeID: testNodeID(MaxPeers)}); err != nil || result.Rejected != 0 {
+	if result, err := b.merge(Message{Address: "p0000.test:1", NodeID: testNodeID(MaxPeers)}, "", nil); err != nil || result.Rejected != 0 {
 		t.Fatalf("same-address replacement = %+v, %v", result, err)
 	}
-	if result, err := b.Merge(Message{Address: "moved.test:1", NodeID: testNodeID(1)}); err != nil || result.Rejected != 0 {
+	if result, err := b.merge(Message{Address: "moved.test:1", NodeID: testNodeID(1)}, "", nil); err != nil || result.Rejected != 0 {
 		t.Fatalf("identity move = %+v, %v", result, err)
 	}
 	_, view := b.observe()
@@ -105,7 +105,7 @@ func TestBookSelfCollisions(t *testing.T) {
 		{Address: "self.test:1", NodeID: testNodeID(2)},
 		{Address: "other.test:1", NodeID: self, Peers: map[string]string{"new.test:1": testNodeID(3)}},
 	} {
-		if _, err := b.Merge(message); !errors.Is(err, errIdentityCollision) {
+		if _, err := b.merge(message, "", nil); !errors.Is(err, errIdentityCollision) {
 			t.Fatalf("Merge(%+v) error = %v, want identity collision", message, err)
 		}
 	}
@@ -115,7 +115,7 @@ func TestBookSelfCollisions(t *testing.T) {
 	}
 	assertBookPeers(t, b, map[string]string{"peer.test:1": testNodeID(1)})
 
-	result, err := b.Merge(Message{Address: "sender.test:1", NodeID: testNodeID(4), Peers: map[string]string{"elsewhere.test:1": self}})
+	result, err := b.merge(Message{Address: "sender.test:1", NodeID: testNodeID(4), Peers: map[string]string{"elsewhere.test:1": self}}, "", nil)
 	if err != nil || !reflect.DeepEqual(result.Verify, []string{"elsewhere.test:1"}) {
 		t.Fatalf("gossip of own identity = %+v, %v", result, err)
 	}
@@ -143,7 +143,7 @@ func TestBookLateResponseCannotRollBack(t *testing.T) {
 			b := openReconcileBook(t, bookTestDir(t), map[string]string{"a.test:1": testNodeID(1)})
 			_, view := b.observe()
 			for _, message := range tc.newer {
-				if _, err := b.Merge(message); err != nil {
+				if _, err := b.merge(message, "", nil); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -158,7 +158,7 @@ func TestBookLateResponseCannotRollBack(t *testing.T) {
 func TestBookUnrelatedAdditionsKeepProbeCurrent(t *testing.T) {
 	b := openReconcileBook(t, bookTestDir(t), map[string]string{"a.test:1": testNodeID(1)})
 	_, view := b.observe()
-	if _, err := b.Merge(Message{Address: "u.test:1", NodeID: testNodeID(5)}); err != nil {
+	if _, err := b.merge(Message{Address: "u.test:1", NodeID: testNodeID(5)}, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.AddSeeds([]string{"seed.test:1"}); err != nil {
@@ -216,7 +216,7 @@ func TestBookReplacementDirectorySyncFailureRetainsAndRetries(t *testing.T) {
 		})
 	}
 	message := Message{Address: "new.test:1", NodeID: testNodeID(1)}
-	if _, err := b.Merge(message); err == nil {
+	if _, err := b.merge(message, "", nil); err == nil {
 		t.Fatal("acknowledged a replacement whose directory sync failed")
 	}
 	want := map[string]string{"new.test:1": testNodeID(1)}
@@ -228,7 +228,7 @@ func TestBookReplacementDirectorySyncFailureRetainsAndRetries(t *testing.T) {
 	if _, err := b.merge(Message{Address: "old.test:1", NodeID: testNodeID(1)}, "old.test:1", &view); !errors.Is(err, errStaleObservation) {
 		t.Fatalf("pre-replacement response error = %v, want stale observation", err)
 	}
-	if _, err := b.Merge(message); err != nil || syncCalls != 2 {
+	if _, err := b.merge(message, "", nil); err != nil || syncCalls != 2 {
 		t.Fatalf("identical exchange did not retry persistence: calls=%d, error=%v", syncCalls, err)
 	}
 	assertBookPeers(t, b, want)
@@ -244,11 +244,11 @@ func BenchmarkBookMergeFull(b *testing.B) {
 	for i := range MaxPeers - 1 {
 		message.Peers[fmt.Sprintf("peer-%04d.test:1", i)] = testNodeID(i)
 	}
-	if _, err := book.Merge(message); err != nil {
+	if _, err := book.merge(message, "", nil); err != nil {
 		b.Fatal(err)
 	}
 	for b.Loop() {
-		if _, err := book.Merge(message); err != nil {
+		if _, err := book.merge(message, "", nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -264,7 +264,7 @@ func openReconcileBook(t *testing.T, dir string, peers map[string]string) *Book 
 	}
 	t.Cleanup(func() { b.Close() })
 	for address, id := range peers {
-		if _, err := b.Merge(Message{Address: address, NodeID: id}); err != nil {
+		if _, err := b.merge(Message{Address: address, NodeID: id}, "", nil); err != nil {
 			t.Fatal(err)
 		}
 	}
