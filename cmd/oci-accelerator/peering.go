@@ -36,6 +36,8 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if err != nil {
 		return nil, nil, errors.New("peer state startup failed")
 	}
+	// Load seeds before NewDiscovery captures non-seed legacy candidates.
+	// Construct discovery before Run expires those candidates from the book.
 	rejected, err := book.AddSeeds(cfg.Peer.Seeds)
 	if err != nil {
 		return nil, nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())

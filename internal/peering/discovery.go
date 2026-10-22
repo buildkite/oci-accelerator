@@ -78,11 +78,18 @@ func (d *Discovery) Run(ctx context.Context) {
 	defer timer.Stop()
 	active := 0
 	verifying := 0
+	expiryFailed := false
 	for ctx.Err() == nil {
 		d.mu.Lock()
 		now := time.Now()
 		if err := d.book.expire(now); err != nil {
-			d.logger.Error("peer membership expiry persistence failed")
+			if !expiryFailed {
+				d.logger.Error("peer membership expiry persistence failed")
+			}
+			expiryFailed = true
+		} else if expiryFailed {
+			d.logger.Info("peer membership expiry persistence recovered")
+			expiryFailed = false
 		}
 		snapshot, before := d.book.observe()
 		wait := d.interval

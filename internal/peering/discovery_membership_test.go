@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -224,10 +225,72 @@ func TestDiscoveryKeepsRetryingConfiguredSeedAfterExpiry(t *testing.T) {
 	})
 }
 
+func TestDiscoveryExpiryPersistenceLogsFailureEpisodes(t *testing.T) {
+	for _, published := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before rename", true: "directory sync"}[published], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := cooldownDiscovery(t, func(*http.Request) (*http.Response, error) {
+					return nil, context.DeadlineExceeded
+				})
+				peer := Message{Address: "peer.test:1", NodeID: testNodeID(1)}
+				if _, err := d.book.merge(peer, peer.Address, nil); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(30 * time.Minute)
+				var failing atomic.Bool
+				failing.Store(true)
+				var writes atomic.Int32
+				d.book.write = func(dir string, records map[string]bookRecord) (bool, error) {
+					writes.Add(1)
+					if failing.Load() {
+						if published {
+							return replaceBookState(dir, records, func(string) error { return syscall.EIO })
+						}
+						return false, syscall.ENOSPC
+					}
+					return writeBookState(dir, records)
+				}
+				var logs bytes.Buffer
+				d.logger = slog.New(slog.NewTextHandler(&logs, nil))
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				go d.Run(ctx)
+				synctest.Wait()
+				for range 3 {
+					time.Sleep(31 * time.Second)
+					synctest.Wait()
+				}
+				if got := strings.Count(logs.String(), "peer membership expiry persistence failed"); got != 1 || writes.Load() < 4 {
+					t.Fatalf("failure episode: error logs=%d writes=%d", got, writes.Load())
+				}
+				assertBookPeers(t, d.book, nil)
+				failing.Store(false)
+				time.Sleep(62 * time.Second)
+				synctest.Wait()
+				if got := strings.Count(logs.String(), "peer membership expiry persistence recovered"); got != 1 {
+					t.Fatalf("recovery logs = %d, want 1", got)
+				}
+				if records, err := loadBookRecords(d.book.dir); err != nil || len(records) != 0 {
+					t.Fatalf("recovery did not remove expired state: %v, %v", records, err)
+				}
+				if _, err := d.book.merge(peer, peer.Address, nil); err != nil {
+					t.Fatal(err)
+				}
+				failing.Store(true)
+				time.Sleep(31 * time.Minute)
+				synctest.Wait()
+				if got := strings.Count(logs.String(), "peer membership expiry persistence failed"); got != 2 {
+					t.Fatalf("second failure episode: error logs=%d, want 2", got)
+				}
+			})
+		})
+	}
+}
+
 func TestDiscoveryMigratesUnidentifiedAddressesAsBoundedCandidates(t *testing.T) {
 	for _, raw := range []string{
-		`{"version":1,"peers":["legacy.test:1"]}`,
-		`{"version":2,"peers":{"legacy.test:1":""}}`,
+		`{"version":1,"peers":["legacy.test:1","seed.test:1"]}`,
+		`{"version":2,"peers":{"legacy.test:1":"","seed.test:1":""}}`,
 	} {
 		t.Run(raw, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -244,19 +307,29 @@ func TestDiscoveryMigratesUnidentifiedAddressesAsBoundedCandidates(t *testing.T)
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { book.Close() })
-				var calls atomic.Int32
+				if _, err := book.AddSeeds([]string{"seed.test:1", "SEED.TEST.:1"}); err != nil {
+					t.Fatal(err)
+				}
+				var calls requestLog
 				client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-					calls.Add(1)
+					calls.add(r.URL.Host)
 					return nil, context.DeadlineExceeded
 				})}
 				d = NewDiscovery(book, client, d.logger, nil)
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				go d.Run(ctx)
-				time.Sleep(5 * time.Minute)
 				synctest.Wait()
-				if calls.Load() != 3 || len(book.Snapshot().Peers) != 0 {
-					t.Fatalf("legacy candidate: attempts=%d members=%v", calls.Load(), book.Snapshot().Peers)
+				if calls.count("seed.test:1") != 1 || calls.count("legacy.test:1") != 1 {
+					t.Fatalf("initial seed and candidate requests = %v", calls.all())
+				}
+				if records, err := loadBookRecords(dir); err != nil || len(records) != 0 {
+					t.Fatalf("legacy candidates remain on disk: %v, %v", records, err)
+				}
+				time.Sleep(10 * time.Minute)
+				synctest.Wait()
+				if calls.count("legacy.test:1") != 3 || calls.count("seed.test:1") <= 3 || len(book.Snapshot().Peers) != 0 {
+					t.Fatalf("seed and candidate attempts=%v members=%v", calls.all(), book.Snapshot().Peers)
 				}
 			})
 		})

@@ -89,7 +89,7 @@ partition.
 
 The durable book holds up to 1,024 members. Up to 1,024 configured seeds are kept
 separately as retryable bootstrap targets even after their membership expires.
-Unverified candidates share a bounded, deduplicated queue and get three failed
+Unverified non-seed candidates share a bounded, deduplicated queue and get three failed
 attempts followed by a five-minute cooldown. Later gossip can request a new budget
 after cooldown, but cannot reset an active budget or bypass backoff. Verification
 shares discovery's four outbound slots, with at most two used by candidates.
