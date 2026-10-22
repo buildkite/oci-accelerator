@@ -11,20 +11,12 @@ import (
 
 const nodeIDName = "node-id"
 
-// loadNodeID requires the book lock. Identity is independent of the address and
-// certificates, and must be durable before the peer listener starts.
+// loadNodeID requires the book lock and returns an empty ID for missing state.
+// Identity is independent of the address and certificates.
 func loadNodeID(dir string) (string, error) {
 	path := filepath.Join(dir, nodeIDName)
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		var random [9]byte
-		if _, err := rand.Read(random[:]); err != nil {
-			return "", err
-		}
-		id := base64.RawURLEncoding.EncodeToString(random[:])
-		if _, err := replaceState(dir, nodeIDName, []byte(id), syncBookDir); err != nil {
-			return "", err
-		}
-		return id, nil
+		return "", nil
 	}
 	if err := validateRegular(path); err != nil {
 		return "", err
@@ -39,6 +31,14 @@ func loadNodeID(dir string) (string, error) {
 		return "", errBook
 	}
 	return string(raw), nil
+}
+
+func newNodeID() (string, error) {
+	var random [9]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(random[:]), nil
 }
 
 func validNodeID(id string) bool {

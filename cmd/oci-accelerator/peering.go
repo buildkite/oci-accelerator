@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
@@ -32,10 +33,14 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if err != nil {
 		return nil, nil, errors.New("peer TLS startup failed")
 	}
-	book, err := peering.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
+	client := peering.NewClient(clientTLS)
+	book, err := peering.OpenBook(ctx, cfg.Peer.StateDir, cfg.Peer.Advertise, cfg.Peer.Seeds, client)
 	if err != nil {
-		return nil, nil, errors.New("peer state startup failed")
+		client.CloseIdleConnections()
+		return nil, nil, fmt.Errorf("peer state startup failed: %w", err)
 	}
+	// Bootstrap may leave idle connections even if startup fails before discovery.
+	defer client.CloseIdleConnections()
 	// Load seeds before NewDiscovery captures non-seed legacy candidates.
 	// Construct discovery before Run expires those candidates from the book.
 	rejected, err := book.AddSeeds(cfg.Peer.Seeds)
@@ -49,7 +54,6 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if err != nil {
 		return nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
-	client := peering.NewClient(clientTLS)
 	hints := peering.NewProviderHints(book, client, inventory, cfg.Peer.HintRefreshTimeout, cfg.Peer.HintRefreshInterval, cfg.Peer.HintFullRefreshInterval, logger)
 	discovery := peering.NewDiscovery(book, client, logger, hints.PeersAdded)
 	handler := peering.PeerHandler(discovery.Handler(), hints.Handler())

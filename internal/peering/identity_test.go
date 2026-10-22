@@ -1,6 +1,7 @@
 package peering
 
 import (
+	"context"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 
 func TestNodeIDPersistsAcrossRestartAndAddressChange(t *testing.T) {
 	dir := bookTestDir(t)
-	b, err := OpenBook(dir, "first.test:1")
+	b, err := OpenBook(context.Background(), dir, "first.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +22,7 @@ func TestNodeIDPersistsAcrossRestartAndAddressChange(t *testing.T) {
 		t.Fatalf("node ID = %q, decoded = %x, error = %v", id, raw, err)
 	}
 	b.Close()
-	b, err = OpenBook(dir, "second.test:2")
+	b, err = OpenBook(context.Background(), dir, "second.test:2", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +30,7 @@ func TestNodeIDPersistsAcrossRestartAndAddressChange(t *testing.T) {
 	if b.nodeID != id {
 		t.Fatalf("node ID changed from %q to %q", id, b.nodeID)
 	}
-	other, err := OpenBook(bookTestDir(t), "first.test:1")
+	other, err := OpenBook(context.Background(), bookTestDir(t), "first.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,7 @@ func TestNodeIDRejectsCorruptOrUnsafeStateWithoutReplacement(t *testing.T) {
 			if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if b, err := OpenBook(dir, "self.test:1"); err == nil {
+			if b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil); err == nil {
 				b.Close()
 				t.Fatal("accepted invalid ID")
 			}
@@ -62,7 +63,7 @@ func TestNodeIDRejectsCorruptOrUnsafeStateWithoutReplacement(t *testing.T) {
 			if err := os.WriteFile(path, []byte("aB3_dE6-gH9j"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			b, err := OpenBook(dir, "self.test:1")
+			b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -70,7 +71,7 @@ func TestNodeIDRejectsCorruptOrUnsafeStateWithoutReplacement(t *testing.T) {
 			if err := os.Chmod(path, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if b, err := OpenBook(dir, "self.test:1"); err == nil {
+			if b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil); err == nil {
 				b.Close()
 				t.Fatal("accepted unsafe ID permissions")
 			}
@@ -89,7 +90,7 @@ func TestNodeIDRetainsPublishedIdentityAfterSyncFailure(t *testing.T) {
 		t.Fatalf("published = %t, error = %v", published, err)
 	}
 	lock.close()
-	b, err := OpenBook(dir, "self.test:1")
+	b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

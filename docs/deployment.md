@@ -822,7 +822,8 @@ docker compose up -d
 
 Peering exchanges addresses and node IDs, and each instance lists its cache keys to authenticated
 peers. It does not share cached content, registry credentials, or authorization grants. Image pulls
-and readiness do not depend on reachable peers.
+do not depend on reachable peers. Startup checks for node ID collisions before readiness, with a
+five-second overall network budget. Unreachable peers do not prevent startup after that budget.
 
 Provision the same `ca.crt` and `ca.key` into each instance's private CA directory through your
 trusted deployment system. Use separate local state directories or volumes for each instance,
@@ -874,6 +875,11 @@ Peer connections ignore proxy environment variables, never follow redirects, and
 CA downloaded from the destination. None of this changes registry authorization or proxy egress.
 
 ### Discovery and retention
+
+The HTTPS `GET /v1/peers` endpoint returns a read-only address-book snapshot under the same
+mutual TLS authentication as exchanges. It accepts no joining identity and does not modify the
+receiver's mappings. Its response has the exchange schema below, including the responder's own
+identity. Queries and methods other than GET are rejected.
 
 The HTTPS `POST /v1/peers/exchange` request and response have the same schema:
 
@@ -964,13 +970,33 @@ all at once. Expired members require direct verification before admission again.
 recorded in the current process use Go's monotonic clock for elapsed-time comparisons.
 
 On first peering-enabled startup, each instance generates a 12-character, case-sensitive
-base64url node ID from 72 cryptographically random bits and persists it in `node-id` in the
-peer state directory. Restarts and advertised-address changes preserve that ID. Give each
-instance its own persistent peer state volume. Do not clone this state into another instance,
-because doing so duplicates its identity. The ID is not a secret or authentication credential.
-Direct claims that conflict with this instance's own ID or address fail the exchange and log
-`peer identity collision`. Fix the advertised address or duplicated state rather than expecting
-automatic ID rotation. Two other nodes sharing one ID can repeatedly replace each other's records.
+base64url node ID from 72 cryptographically random bits. Before persisting it in `node-id` in
+the peer state directory or advertising it, startup requests a read-only `GET /v1/peers`
+snapshot over mutual TLS from retained peers and configured seeds, with up to four requests
+at once. The first successful snapshot and any retained mappings supply the known IDs.
+A fresh candidate matching any known ID is regenerated before persistence.
+
+Restarts and advertised-address changes preserve an existing `node-id`. Startup directly
+checks the original retained peers and seeds, plus any other address the snapshot associates
+with that ID, using the same read-only endpoint.
+Addresses already associated with the local ID are tried before unrelated destinations.
+A responder's own claim of the same ID at a different advertised address confirms a collision and fails
+startup before readiness, without changing the identity or address-book mappings. The diagnostic
+names the persisted ID and conflicting advertised address. An alias responding with this
+instance's configured advertised address is not evidence of a collision.
+
+Snapshot lookup and direct verification share one five-second network budget. Unreachable
+addresses, unsupported snapshot endpoints, invalid responses, and exhausted time are inconclusive
+and do not prevent startup. A stale gossip record alone never fails startup. These checks are
+best-effort, not a fleet-wide uniqueness guarantee. Concurrent joins, partitions, incomplete
+books, and older peers can hide a collision.
+
+Give each instance its own persistent peer state volume. Do not clone this state into another
+instance, because doing so duplicates its identity. The ID is not a secret or authentication
+credential. Persisted IDs are never automatically rotated. After startup, direct claims that
+conflict with this instance's own ID or address still fail the exchange and log
+`peer identity collision`. Fix the advertised address or duplicated state. Two other nodes
+sharing one ID can repeatedly replace each other's records. There is no ongoing collision recovery.
 
 Upgrade all peers together so every member enforces verified admission and expiry. The wire
 format remains identity-aware and is incompatible with address-only exchanges, with no fallback.

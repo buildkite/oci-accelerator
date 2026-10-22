@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -90,18 +91,34 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+	response, err := client.Get("https://" + listener.Addr().String() + "/v1/peers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot peering.Message
+	decodeErr := json.NewDecoder(response.Body).Decode(&snapshot)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || decodeErr != nil || !reflect.DeepEqual(snapshot, want) {
+		t.Fatalf("authenticated snapshot = %d, %#v, %v", response.StatusCode, snapshot, decodeErr)
+	}
 
 	post := func(client *http.Client, address string) error {
 		defer client.CloseIdleConnections()
-		req, err := http.NewRequest(http.MethodPost, "https://"+listener.Addr().String()+"/v1/peers/exchange", strings.NewReader(fmt.Sprintf(`{"address":%q,"nodeId":"000000000002","peers":{}}`, address)))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := client.Do(req)
-		if err == nil {
-			resp.Body.Close()
-			return fmt.Errorf("request unexpectedly reached HTTP with status %d", resp.StatusCode)
+		for _, method := range []string{http.MethodPost, http.MethodGet} {
+			path := "/v1/peers/exchange"
+			if method == http.MethodGet {
+				path = "/v1/peers"
+			}
+			req, err := http.NewRequest(method, "https://"+listener.Addr().String()+path, strings.NewReader(fmt.Sprintf(`{"address":%q,"nodeId":"000000000002","peers":{}}`, address)))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := client.Do(req)
+			if err == nil {
+				resp.Body.Close()
+				return fmt.Errorf("request unexpectedly reached HTTP with status %d", resp.StatusCode)
+			}
 		}
 		return nil
 	}
@@ -129,7 +146,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 		t.Fatal("serve completion channel remains open after cleanup")
 	}
 	assertListenerClosed(t, listener)
-	book, err := peering.OpenBook(state, cfg.Peer.Advertise)
+	book, err := peering.OpenBook(context.Background(), state, cfg.Peer.Advertise, nil, nil)
 	if err != nil {
 		t.Fatalf("state lock not released: %v", err)
 	}
@@ -247,7 +264,7 @@ func TestStartPeeringFailuresReleaseState(t *testing.T) {
 	if err == nil || err.Error() != "cannot listen on configured peer address" {
 		t.Fatalf("bind error = %v", err)
 	}
-	book, err := peering.OpenBook(base.Peer.StateDir, base.Peer.Advertise)
+	book, err := peering.OpenBook(context.Background(), base.Peer.StateDir, base.Peer.Advertise, nil, nil)
 	if err != nil {
 		t.Fatalf("bind failure retained state lock: %v", err)
 	}
@@ -258,8 +275,56 @@ func TestStartPeeringFailuresReleaseState(t *testing.T) {
 	if err := os.WriteFile(bad.Peer.StateDir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := startPeering(context.Background(), bad, signer, noCacheKeys, slog.Default(), net.Listen); err == nil || err.Error() != "peer state startup failed" {
+	if _, _, err := startPeering(context.Background(), bad, signer, noCacheKeys, slog.Default(), net.Listen); err == nil || err.Error() != "peer state startup failed: peer address book error" {
 		t.Fatalf("state error = %v", err)
+	}
+}
+
+func TestRunRejectsClonedPeerIdentityBeforeReadiness(t *testing.T) {
+	root := t.TempDir()
+	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
+	seed := newTestListener(t)
+	seedState := filepath.Join(root, "seed")
+	seedCfg := config.Config{Peer: config.Peer{Listen: seed.Addr().String(), Advertise: seed.Addr().String(), StateDir: seedState, HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: time.Second}
+	_, cleanup, err := startPeering(context.Background(), seedCfg, signer, noCacheKeys, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(seed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	id, err := os.ReadFile(filepath.Join(seedState, "node-id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloneState := filepath.Join(root, "clone")
+	if err := os.Mkdir(cloneState, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cloneState, "node-id"), id, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proxyListener, metricsListener, peerListener := newTestListener(t), newTestListener(t), newTestListener(t)
+	path := filepath.Join(root, "proxy.env")
+	contents := fmt.Sprintf("OCI_ACCELERATOR_LISTEN=%s\nOCI_ACCELERATOR_METRICS_LISTEN=%s\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_PEER_LISTEN=%s\nOCI_ACCELERATOR_PEER_ADVERTISE=%s\nOCI_ACCELERATOR_PEER_SEEDS=%s\nOCI_ACCELERATOR_PEER_STATE_DIR=%s\n", proxyListener.Addr(), metricsListener.Addr(), filepath.Join(root, "ca"), filepath.Join(root, "cache"), peerListener.Addr(), peerListener.Addr(), seed.Addr(), cloneState)
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	err = run(context.Background(), []string{"--env-file", path}, io.Discard, &logs, listenForTest(proxyListener, metricsListener, peerListener))
+	if err == nil || !strings.Contains(err.Error(), "persisted peer node ID "+string(id)+" conflicts with "+seed.Addr().String()) {
+		t.Fatalf("cloned identity startup = %v", err)
+	}
+	if strings.Contains(logs.String(), "proxy ready") {
+		t.Fatal("announced readiness with a confirmed clone")
+	}
+	assertListenerClosed(t, proxyListener)
+	assertListenerClosed(t, metricsListener)
+	book, err := peering.OpenBook(context.Background(), cloneState, peerListener.Addr().String(), nil, nil)
+	if err != nil {
+		t.Fatalf("startup failure retained state lock: %v", err)
+	}
+	defer book.Close()
+	if book.Snapshot().NodeID != string(id) {
+		t.Fatal("startup failure rotated persisted identity")
 	}
 }
 
@@ -284,7 +349,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		if err := cleanup(); err == nil || err.Error() != "peer listener stopped unexpectedly" {
 			t.Fatalf("cleanup error = %v", err)
 		}
-		book, err := peering.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
+		book, err := peering.OpenBook(context.Background(), cfg.Peer.StateDir, cfg.Peer.Advertise, nil, nil)
 		if err != nil {
 			t.Fatalf("serve failure retained state lock: %v", err)
 		}
@@ -317,7 +382,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		if _, err := conn.Read(make([]byte, 1)); err == nil {
 			t.Fatal("stalled TLS connection remained open")
 		}
-		book, err := peering.OpenBook(cfg.Peer.StateDir, cfg.Peer.Advertise)
+		book, err := peering.OpenBook(context.Background(), cfg.Peer.StateDir, cfg.Peer.Advertise, nil, nil)
 		if err != nil {
 			t.Fatalf("cleanup retained state lock: %v", err)
 		}
@@ -368,7 +433,8 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 			unresponsive := newTestListener(t)
 			state := filepath.Join(root, "peers")
 			// Persist an identified peer, not just a seed, so startup queues an
-			// inventory refresh as well as discovery. Neither may delay readiness.
+			// inventory refresh as well as discovery. Only the bounded identity
+			// bootstrap may delay readiness, not the background workers.
 			if identified {
 				signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 				serverTLS, clientTLS, err := signer.PeerTLSConfigs()
@@ -384,7 +450,7 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 				fixture.TLS = serverTLS
 				fixture.StartTLS()
 				t.Cleanup(fixture.Close)
-				book, err := peering.OpenBook(state, peerListener.Addr().String())
+				book, err := peering.OpenBook(context.Background(), state, peerListener.Addr().String(), nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -433,7 +499,7 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 			t.Cleanup(func() { cancel(); <-done })
 			client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
 			defer client.CloseIdleConnections()
-			deadline := time.Now().Add(3 * time.Second)
+			deadline := time.Now().Add(7 * time.Second)
 			for {
 				response, err := client.Get("http://" + metricsListener.Addr().String() + "/readyz")
 				if err == nil {
@@ -470,7 +536,7 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 			}
 			assertListenerClosed(t, proxyListener)
 			assertListenerClosed(t, metricsListener)
-			book, err := peering.OpenBook(state, peerListener.Addr().String())
+			book, err := peering.OpenBook(context.Background(), state, peerListener.Addr().String(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

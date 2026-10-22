@@ -2,6 +2,7 @@ package peering
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -129,7 +130,7 @@ func loadBookState(dir string) (map[string]string, error) {
 
 func cooldownDiscovery(t *testing.T, transport roundTripFunc) *Discovery {
 	t.Helper()
-	book, err := OpenBook(bookTestDir(t), "b.test:2")
+	book, err := OpenBook(context.Background(), bookTestDir(t), "b.test:2", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

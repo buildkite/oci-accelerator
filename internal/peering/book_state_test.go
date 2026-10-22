@@ -1,6 +1,7 @@
 package peering
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,7 +11,7 @@ import (
 
 func TestOpenBookValidatesSelfBeforeFilesystem(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "created")
-	if _, err := OpenBook(dir, "invalid"); err == nil {
+	if _, err := OpenBook(context.Background(), dir, "invalid", nil, nil); err == nil {
 		t.Fatal("OpenBook succeeded")
 	}
 	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
@@ -44,7 +45,7 @@ func TestOpenBookRejectsInvalidState(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := OpenBook(dir, "self.test:1"); err == nil {
+			if _, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil); err == nil {
 				t.Fatal("OpenBook succeeded")
 			}
 		})
@@ -59,7 +60,7 @@ func TestOpenBookMigratesVersion1AddressesToCandidates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":1,"peers":["a.test:1","b.test:2"]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	b, err := OpenBook(dir, "self.test:1")
+	b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +90,7 @@ func TestOpenBookRejectsUnsafeAndUnknownFiles(t *testing.T) {
 			if err := setup(dir); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := OpenBook(dir, "self.test:1"); err == nil {
+			if _, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil); err == nil {
 				t.Fatal("OpenBook succeeded")
 			}
 		})
@@ -105,7 +106,7 @@ func TestOpenBookCleansInterruptedStage(t *testing.T) {
 	if err := os.WriteFile(stage, []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	b, err := OpenBook(dir, "self.test:1")
+	b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

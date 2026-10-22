@@ -57,7 +57,17 @@ func NewDiscovery(book *Book, client *http.Client, logger *slog.Logger, newPeers
 	return d
 }
 
-func (d *Discovery) Handler() http.Handler { return NewHandler(d.receiveInbound) }
+func (d *Discovery) Handler() http.Handler {
+	exchange := NewHandler(d.receiveInbound)
+	snapshot := snapshotHandler(d.book)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == snapshotPath {
+			snapshot.ServeHTTP(w, r)
+			return
+		}
+		exchange.ServeHTTP(w, r)
+	})
+}
 
 // Run probes candidates and renews confirmed membership through outbound contact.
 // Cancellation joins all requests before returning. Unreachable learned peers

@@ -50,6 +50,10 @@ func Exchange(ctx context.Context, client *http.Client, destination string, mess
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 
+	return readPeerMessage(client, request)
+}
+
+func readPeerMessage(client *http.Client, request *http.Request) (Message, error) {
 	redirectSafe := *client
 	redirectSafe.CheckRedirect = rejectRedirect
 	response, err := redirectSafe.Do(request)

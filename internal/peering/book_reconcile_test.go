@@ -1,6 +1,7 @@
 package peering
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -245,7 +246,7 @@ func TestBookReplacementDirectorySyncFailureRetainsAndRetries(t *testing.T) {
 }
 
 func BenchmarkBookMergeFull(b *testing.B) {
-	book, err := OpenBook(filepath.Join(b.TempDir(), "book"), "self.test:1")
+	book, err := OpenBook(context.Background(), filepath.Join(b.TempDir(), "book"), "self.test:1", nil, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -273,7 +274,7 @@ func BenchmarkBookMergeFull(b *testing.B) {
 // directly by its own address so that no gossip conflict rules apply.
 func openReconcileBook(t *testing.T, dir string, peers map[string]string) *Book {
 	t.Helper()
-	b, err := OpenBook(dir, "self.test:1")
+	b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

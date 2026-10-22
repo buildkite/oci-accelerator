@@ -257,7 +257,7 @@ type hintsTestNode struct {
 
 func newHintsTestNode(t *testing.T, advertise string, inventory []string) *hintsTestNode {
 	t.Helper()
-	book, err := OpenBook(bookTestDir(t), advertise)
+	book, err := OpenBook(context.Background(), bookTestDir(t), advertise, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

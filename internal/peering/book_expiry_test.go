@@ -1,6 +1,7 @@
 package peering
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"os"
@@ -120,7 +121,7 @@ func TestBookExpiryRefreshReopenAndSeeds(t *testing.T) {
 		if err := b.Close(); err != nil {
 			t.Fatal(err)
 		}
-		b, err := OpenBook(dir, "self.test:1")
+		b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -163,7 +164,7 @@ func TestBookMigrationGraceCannotRenewOnRestart(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(raw), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				b, err := OpenBook(dir, "self.test:1")
+				b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -171,7 +172,7 @@ func TestBookMigrationGraceCannotRenewOnRestart(t *testing.T) {
 				if err := b.Close(); err != nil {
 					t.Fatal(err)
 				}
-				b, err = OpenBook(dir, "self.test:1")
+				b, err = OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -273,7 +274,7 @@ func TestBookRenewalCheckpointsAndConservativeRestart(t *testing.T) {
 		if err := b.Close(); err != nil {
 			t.Fatal(err)
 		}
-		b, err = OpenBook(dir, "self.test:1")
+		b, err = OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -347,7 +348,7 @@ func TestBookFailedRefreshDoesNotExtendLifetime(t *testing.T) {
 		if err := b.Close(); err != nil {
 			t.Fatal(err)
 		}
-		b, err := OpenBook(dir, "self.test:1")
+		b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -302,7 +302,7 @@ func TestDiscoveryMigratesUnidentifiedAddressesAsBoundedCandidates(t *testing.T)
 				if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(raw), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				book, err := OpenBook(dir, "b.test:2")
+				book, err := OpenBook(context.Background(), dir, "b.test:2", nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -67,7 +67,20 @@ the shared signing key, authentication establishes fleet membership rather than
 independently trusted node identities.
 
 Each instance persists a random 12-character node ID across restarts and address
-changes. Instances exchange their advertised address, node ID, and known
+changes. Before readiness, startup makes a best-effort collision check using
+mutual TLS `GET /v1/peers` read-only snapshots. A fresh ID matching a retained ID
+or an ID in the first successful snapshot is regenerated before persistence or
+advertisement. A persisted ID is never rotated. Startup probes the original
+retained peers and seeds, plus gossip addresses claiming that ID, prioritizing
+addresses already associated with the local ID. Only a responder's own claim
+of the same ID at a different advertised address rejects startup, without
+changing the identity or book mappings. Stale gossip and aliases responding with
+this instance's advertised address do not reject startup. Snapshot lookup and
+probes share one five-second total network budget. Inconclusive checks allow
+startup, so concurrent joins and partitions can still hide collisions. There is
+no ongoing collision recovery.
+
+Instances exchange their advertised address, node ID, and known
 address-to-ID mappings. Gossip and inbound senders introduce local candidates,
 not confirmed members. A candidate becomes a member only after a successful
 outbound exchange with its advertised listener. For example, if A knows B and
@@ -93,7 +106,8 @@ Unverified non-seed candidates share a bounded, deduplicated queue and get three
 attempts followed by a five-minute cooldown. Later gossip can request a new budget
 after cooldown, but cannot reset an active budget or bypass backoff. Verification
 shares discovery's four outbound slots, with at most two used by candidates.
-Peer outages do not affect proxy readiness or image pulls.
+Peer outages do not prevent readiness after the bounded startup check or affect
+image pulls once serving.
 
 Each instance also lists the hashed keys of its committed cache entries to
 authenticated peers. Startup and newly discovered node IDs trigger immediate

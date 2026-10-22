@@ -43,7 +43,7 @@ func TestDiscoveryThreeNodesConvergeAndContactLearnedPeers(t *testing.T) {
 		n := &node{counts: make(map[string]int)}
 		listener := httptest.NewUnstartedServer(nil)
 		address := listener.Listener.Addr().String()
-		n.book, err = OpenBook(bookTestDir(t), address)
+		n.book, err = OpenBook(context.Background(), bookTestDir(t), address, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func TestDiscoveryThreeNodesConvergeAndContactLearnedPeers(t *testing.T) {
 }
 
 func TestDiscoveryRetriesFailureAndResetsAfterRecovery(t *testing.T) {
-	book, err := OpenBook(bookTestDir(t), "self.test:1")
+	book, err := OpenBook(context.Background(), bookTestDir(t), "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestRetryDelayExponentialCap(t *testing.T) {
 }
 
 func TestDiscoveryLimitsConcurrencyAndCancellationJoinsRequests(t *testing.T) {
-	book, err := OpenBook(bookTestDir(t), "self.test:1")
+	book, err := OpenBook(context.Background(), bookTestDir(t), "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestDiscoveryLimitsConcurrencyAndCancellationJoinsRequests(t *testing.T) {
 }
 
 func TestDiscoveryAttemptsUntriedPeersBeforeRetryingDuePeers(t *testing.T) {
-	book, err := OpenBook(bookTestDir(t), "self.test:1")
+	book, err := OpenBook(context.Background(), bookTestDir(t), "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
