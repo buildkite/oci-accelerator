@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	keysPath = "/v1/cache/keys"
+	keysPath        = "/v1/cache/keys"
+	keysErrorHeader = "OCI-Accelerator-Error"
 	// maxKeysPerPage keeps a full page well within maxKeysPageBytes. It is
 	// part of the wire contract, because clients require every page but the
 	// last to hold exactly this many keys.

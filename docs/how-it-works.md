@@ -95,16 +95,22 @@ Peer outages do not affect proxy readiness or image pulls.
 Each instance also lists the hashed keys of its committed cache entries to
 authenticated peers. Startup and newly discovered node IDs trigger immediate
 full scans. Background fetches run up to four at a time, at most one per peer.
-Each attempt has a one-minute default timeout. After an attempt completes, the
-next poll waits one minute by default with ±20% jitter.
+Each attempt has a one-minute default timeout starting inside its worker. After
+an attempt completes, the next poll waits one minute by default with ±20% jitter.
+This nominal delay excludes fetch duration and capacity queueing, so it provides
+no wall-clock freshness guarantee.
 
 Each peer has a memory-only checkpoint at its last validated nonterminal cursor.
 Polls resume there and replay the terminal tail to find recent activity. One-page
 inventories have no checkpoint and are read from the start each time. Validated
-pages and progress survive partial failures. An explicit invalid-cursor response
-clears progress so the next poll starts a fresh scan. Hourly full scans replace
-incremental work and resume from validated progress if interrupted. The full-scan
-interval starts when a full scan successfully completes, not when it starts.
+pages and progress survive partial failures, except that three consecutive failed
+attempts without cursor progress cause the next normally delayed poll to start a
+fresh scan. Progress or success clears the failure count. An explicit invalid-cursor
+response clears the checkpoint immediately but also waits for the next normally
+delayed poll. There is no absolute scan-age reset. Full scans, hourly by default
+with ±20% jitter, replace incremental work and resume from validated progress if
+interrupted, subject to the same recovery rules. The full-scan interval starts
+when a full scan successfully completes, not when it starts.
 
 The keys remain advisory, additive hints about which peer holds which object.
 Neither a full scan nor an empty listing removes stale claims. Hints grant no

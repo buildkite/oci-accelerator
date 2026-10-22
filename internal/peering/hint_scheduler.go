@@ -18,6 +18,7 @@ const hintRefreshConcurrency = 4
 type hintSchedule struct {
 	next, fullAt time.Time
 	after        cache.KeyPosition
+	stalled      int
 	scanning     bool
 	running      bool
 	reset        bool
@@ -90,6 +91,7 @@ func (p *ProviderHints) Run(ctx context.Context) {
 			}
 			if entry.reset || !entry.scanning && !entry.fullAt.After(now) {
 				entry.after = cache.KeyPosition{}
+				entry.stalled = 0
 				entry.scanning = true
 				entry.reset = false
 			}
@@ -117,11 +119,18 @@ func (p *ProviderHints) Run(ctx context.Context) {
 				// earlier fetch has released the peer's active slot.
 				continue
 			}
+			if result.err == nil || result.after != entry.after {
+				entry.stalled = 0
+			} else {
+				entry.stalled++
+			}
 			entry.after = result.after
-			if errors.Is(result.err, cache.ErrKeyCursor) {
-				// The peer explicitly rejected our checkpoint. Start a fresh
-				// full scan on the next turn, never a tight reset/retry loop.
+			rejected := errors.Is(result.err, cache.ErrKeyCursor)
+			if rejected || entry.stalled >= 3 {
+				// Rejected or repeatedly stalled checkpoints need a fresh scan.
+				// Keep the normal poll delay, never a tight reset/retry loop.
 				entry.after = cache.KeyPosition{}
+				entry.stalled = 0
 				entry.scanning = true
 			} else if result.err == nil && entry.scanning {
 				entry.scanning = false
@@ -129,7 +138,11 @@ func (p *ProviderHints) Run(ctx context.Context) {
 			}
 			entry.next = time.Now().Add(hintJitter(p.refreshInterval))
 			if result.err != nil && ctx.Err() == nil && !errors.Is(result.err, errUnknownPeer) {
-				p.logger.Warn("peer cache keys refresh failed", "node_id", result.id)
+				if rejected {
+					p.logger.Debug("peer cache keys checkpoint rejected", "node_id", result.id)
+				} else {
+					p.logger.Warn("peer cache keys refresh failed", "node_id", result.id)
+				}
 			}
 		}
 	}
@@ -165,9 +178,11 @@ func (p *ProviderHints) PeersAdded(ids []string) {
 	}
 }
 
-// hintJitter spreads periodic work by +/-20%. Clamp before multiplying to
-// avoid overflowing large configured durations, and keep short ones positive.
+// hintJitter spreads periodic work by +/-20%, clipping the upper bound to the
+// largest duration. Integer arithmetic keeps even extreme intervals positive.
 func hintJitter(interval time.Duration) time.Duration {
-	base := min(interval, time.Duration(1<<63-1)/6*5)
-	return max(time.Nanosecond, time.Duration(float64(base)*(0.8+rand.Float64()*0.4)))
+	spread := interval / 5
+	low := interval - spread
+	high := interval + min(spread, time.Duration(1<<63-1)-interval)
+	return low + time.Duration(rand.Int64N(int64(high-low)+1))
 }

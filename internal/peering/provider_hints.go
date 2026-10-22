@@ -25,9 +25,8 @@ type ProviderHints struct {
 	inventory           func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error)
 	logger              *slog.Logger
 	self                nodeID
-	refreshing          chan struct{} // holds a token while a fetch runs
 	wake                chan struct{} // signals Run to check membership
-	refreshTimeout      time.Duration // bounds a fetch after it acquires the refresh slot
+	refreshTimeout      time.Duration // bounds each scheduled fetch
 	refreshInterval     time.Duration
 	fullRefreshInterval time.Duration
 
@@ -39,10 +38,13 @@ type ProviderHints struct {
 }
 
 // NewProviderHints returns hints for the local node in book. inventory serves
-// live LRU-to-MRU cache pages, such as cache.Store.KeyPage. All durations must
-// be positive. Run immediately fetches each peer known at construction and
-// each identity subsequently reported by PeersAdded.
+// live LRU-to-MRU cache pages, such as cache.Store.KeyPage. It panics if any
+// duration is nonpositive. Run immediately fetches each peer known at
+// construction and each identity subsequently reported by PeersAdded.
 func NewProviderHints(book *Book, client *http.Client, inventory func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error), refreshTimeout, refreshInterval, fullRefreshInterval time.Duration, logger *slog.Logger) *ProviderHints {
+	if refreshTimeout <= 0 || refreshInterval <= 0 || fullRefreshInterval <= 0 {
+		panic("peer hint durations must be positive")
+	}
 	snapshot := book.Snapshot()
 	// OpenBook has already validated the local node ID.
 	self, _ := parseNodeID(snapshot.NodeID)
@@ -52,7 +54,6 @@ func NewProviderHints(book *Book, client *http.Client, inventory func(cache.KeyP
 		inventory:           inventory,
 		logger:              logger,
 		self:                self,
-		refreshing:          make(chan struct{}, hintRefreshConcurrency),
 		wake:                make(chan struct{}, 1),
 		refreshTimeout:      refreshTimeout,
 		refreshInterval:     refreshInterval,
@@ -81,20 +82,9 @@ func PeerHandler(discovery, keys http.Handler) http.Handler {
 	})
 }
 
-// Refresh fetches the cache keys of the peer with node ID peer, at its
-// current address in the book, and adds that peer to each key's providers.
-// Each validated page applies immediately, surviving later failure. Invalid
-// IDs, the local node, and peers without a known address are rejected.
-// Refresh starts a full scan. At most four fetches run at once. Waiting ends
-// with ctx, and refreshTimeout bounds the fetch only after acquiring the slot.
-// All peers share one distinct-key bound, so a large inventory can displace
-// other peers' hints.
-func (p *ProviderHints) Refresh(ctx context.Context, peer string) error {
-	var after cache.KeyPosition
-	return p.refresh(ctx, peer, &after)
-}
-
-// refresh resumes a traversal at after and preserves validated progress.
+// refresh fetches the peer's inventory from after, retaining validated progress
+// and applied hints on failure. Run owns concurrency and refreshTimeout bounds
+// each attempt. Unknown IDs, the local node, and unknown addresses are rejected.
 func (p *ProviderHints) refresh(ctx context.Context, peer string, after *cache.KeyPosition) error {
 	id, ok := parseNodeID(peer)
 	if !ok || id == p.self {
@@ -103,12 +93,6 @@ func (p *ProviderHints) refresh(ctx context.Context, peer string, after *cache.K
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	select {
-	case p.refreshing <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	defer func() { <-p.refreshing }()
 	ctx, cancel := context.WithTimeout(ctx, p.refreshTimeout)
 	defer cancel()
 	address := addressForID(p.book.Snapshot().Peers, peer)

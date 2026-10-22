@@ -42,6 +42,9 @@ func TestKeysHandlerRejectsPreviousStoreIncarnation(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("previous incarnation = %d, want 400", response.Code)
 	}
+	if got := response.Header().Get("OCI-Accelerator-Error"); got != "invalid_cursor" {
+		t.Fatalf("cursor error code = %q, want invalid_cursor", got)
+	}
 }
 
 func TestKeysHandlerFailsClosedOnInvalidInventory(t *testing.T) {
@@ -90,6 +93,9 @@ func TestKeysHandlerRejectsInvalidRequestsBeforeInventory(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want %d", name, response.Code, http.StatusBadRequest)
+		}
+		if got := response.Header().Get("OCI-Accelerator-Error"); got != "" {
+			t.Errorf("%s: unexpected cursor error code %q", name, got)
 		}
 	}
 	if calls != 0 {
