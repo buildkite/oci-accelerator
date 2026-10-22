@@ -40,6 +40,36 @@ func TestBookInboundCannotConfirmReplaceOrRefresh(t *testing.T) {
 	})
 }
 
+func TestBookRenewsUnchangedMemberAcrossExpiry(t *testing.T) {
+	for _, seed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "member", true: "configured seed"}[seed], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				peer := Message{Address: "peer.test:1", NodeID: testNodeID(1)}
+				b := openReconcileBook(t, bookTestDir(t), map[string]string{peer.Address: peer.NodeID})
+				if seed {
+					if _, err := b.AddSeeds([]string{peer.Address}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				time.Sleep(29*time.Minute + 59*time.Second)
+				_, before := b.observe()
+				time.Sleep(2 * time.Second)
+				assertBookPeers(t, b, nil)
+				if _, err := b.merge(peer, peer.Address, &before); err != nil {
+					t.Fatalf("unchanged member renewal rejected: %v", err)
+				}
+				if err := b.expire(time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(29*time.Minute + 59*time.Second)
+				assertBookPeers(t, b, map[string]string{peer.Address: peer.NodeID})
+				time.Sleep(time.Second)
+				assertBookPeers(t, b, nil)
+			})
+		})
+	}
+}
+
 func TestBookAliasAndGossipCannotRefreshMembership(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := openReconcileBook(t, bookTestDir(t), map[string]string{"real.test:1": testNodeID(1), "alias.test:1": testNodeID(2)})

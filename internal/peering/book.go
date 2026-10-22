@@ -50,6 +50,7 @@ type MergeResult struct {
 type bookView struct {
 	peers    map[string]string
 	revision uint64
+	observed time.Time
 }
 
 // OpenBook opens the address book in dir for self.
@@ -148,11 +149,16 @@ func (b *Book) merge(message Message, destination string, before *bookView) (res
 	}
 	now := time.Now()
 	current := b.bindings(now)
-	if destination != "" && before != nil && (before.revision != b.revision ||
-		before.peers[destination] != current[destination] ||
-		before.peers[message.Address] != current[message.Address] ||
-		addressForID(before.peers, message.NodeID) != addressForID(current, message.NodeID)) {
-		return result, errStaleObservation
+	if before != nil {
+		// Compare at the observation time so elapsed TTL alone cannot discard
+		// a renewal. Actual removals and replacements still invalidate it.
+		bindings := b.bindings(before.observed)
+		if before.revision != b.revision ||
+			before.peers[destination] != bindings[destination] ||
+			before.peers[message.Address] != bindings[message.Address] ||
+			addressForID(before.peers, message.NodeID) != addressForID(bindings, message.NodeID) {
+			return result, errStaleObservation
+		}
 	}
 
 	next := maps.Clone(b.records)
@@ -194,7 +200,8 @@ func (b *Book) merge(message Message, destination string, before *bookView) (res
 func (b *Book) observe() (Message, bookView) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.snapshot(), bookView{peers: b.bindings(time.Now()), revision: b.revision}
+	now := time.Now()
+	return b.snapshot(), bookView{peers: b.bindings(now), revision: b.revision, observed: now}
 }
 
 func (b *Book) snapshot() Message {

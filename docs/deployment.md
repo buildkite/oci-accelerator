@@ -894,6 +894,9 @@ mapping. If a contacted alias answers with a different advertised address, that 
 be probed separately before admission. Failed verification leaves existing membership unchanged.
 Late responses that could undo intervening updates are discarded. Each reply contains the
 receiver's own identity and its unexpired confirmed members. An empty book sends `"peers": {}`.
+Crossing the membership expiry time during an outbound request does not invalidate its response
+if the recorded bindings remain unchanged. Actual removal or replacement still invalidates the
+earlier observation.
 
 Exchanges start immediately, normally repeat every 30 seconds with ±20% jitter, and use
 exponential failure backoff capped at five minutes before jitter. Inbound exchanges and gossip
