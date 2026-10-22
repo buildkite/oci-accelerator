@@ -86,11 +86,23 @@ outbound slots and has a bounded, deduplicated queue. Retries use backoff, and
 peer outages do not affect proxy readiness or image pulls.
 
 Each instance also lists the hashed keys of its committed cache entries to
-authenticated peers. At startup an instance fetches the list of every peer in
-its address book, and it fetches a peer's list when discovery adds that peer's
-node ID to the book. It keeps the keys in memory as advisory hints about which
-peer holds which object. A hint is not access to the object, and pulls do not
-use hints.
+authenticated peers. Startup and newly discovered node IDs trigger immediate
+full scans. Background fetches run up to four at a time, at most one per peer.
+Each attempt has a one-minute default timeout. After an attempt completes, the
+next poll waits one minute by default with ±20% jitter.
+
+Each peer has a memory-only checkpoint at its last validated nonterminal cursor.
+Polls resume there and replay the terminal tail to find recent activity. One-page
+inventories have no checkpoint and are read from the start each time. Validated
+pages and progress survive partial failures. An explicit invalid-cursor response
+clears progress so the next poll starts a fresh scan. Hourly full scans replace
+incremental work and resume from validated progress if interrupted. The full-scan
+interval starts when a full scan successfully completes, not when it starts.
+
+The keys remain advisory, additive hints about which peer holds which object.
+Neither a full scan nor an empty listing removes stale claims. Hints grant no
+access, and pulls do not use them. See the [configuration reference](deployment.md#configuration)
+for poll, full-scan, and attempt timeout settings.
 
 Peer destinations are unrestricted, unlike intercepted-registry egress. The
 protocol never shares cached content, credentials, or authorization grants.

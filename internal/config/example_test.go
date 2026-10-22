@@ -15,8 +15,8 @@ func TestEnvironmentExampleContainsEverySetting(t *testing.T) {
 	}
 	raw := defaults()
 	settings := environmentSettings(&raw)
-	if len(settings) != 27 {
-		t.Fatalf("environment settings = %d, want 27", len(settings))
+	if len(settings) != 29 {
+		t.Fatalf("environment settings = %d, want 29", len(settings))
 	}
 	for _, setting := range settings {
 		name := "OCI_ACCELERATOR_" + setting.name
@@ -46,8 +46,17 @@ func TestContainerExampleMatchesImageDefaults(t *testing.T) {
 			t.Errorf(".env.container-example %s = %q, want image default %q", name, example[name], value)
 		}
 	}
-	if len(example) != len(image)+1 || example[environmentPrefix+"REGISTRIES"] == "" {
-		t.Errorf(".env.container-example = %v, want REGISTRIES plus the image defaults", example)
+	for name, value := range map[string]string{
+		"PEER_HINT_REFRESH_TIMEOUT":       "1m",
+		"PEER_HINT_REFRESH_INTERVAL":      "1m",
+		"PEER_HINT_FULL_REFRESH_INTERVAL": "1h",
+	} {
+		if example[environmentPrefix+name] != value {
+			t.Errorf(".env.container-example %s = %q, want %q", name, example[environmentPrefix+name], value)
+		}
+	}
+	if len(example) != len(image)+4 || example[environmentPrefix+"REGISTRIES"] == "" {
+		t.Errorf(".env.container-example = %v, want REGISTRIES, image defaults, and peer hint timings", example)
 	}
 	if _, err := load(path, func(string) (string, bool) { return "", false }); err != nil {
 		t.Errorf(".env.container-example does not validate: %v", err)

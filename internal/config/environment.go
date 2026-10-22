@@ -27,6 +27,8 @@ func environmentSettings(raw *rawConfig) []environmentSetting {
 		{"PEER_SEEDS", &raw.Peer.Seeds},
 		{"PEER_STATE_DIR", &raw.Peer.StateDir},
 		{"PEER_HINT_REFRESH_TIMEOUT", &raw.Peer.HintRefreshTimeout},
+		{"PEER_HINT_REFRESH_INTERVAL", &raw.Peer.HintRefreshInterval},
+		{"PEER_HINT_FULL_REFRESH_INTERVAL", &raw.Peer.HintFullRefreshInterval},
 		{"CACHE_MAX_BYTES", &raw.Cache.MaxBytes},
 		{"CACHE_MAX_FILLS", &raw.Cache.MaxFills},
 		{"CACHE_MAX_ENTRIES", &raw.Cache.MaxEntries},

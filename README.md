@@ -24,7 +24,9 @@ upstream registry again.
 - **Optional peer discovery.** Instances sharing a CA can discover and remember
   each other over a separate mutually authenticated TLS port. Peering exchanges
   addresses and persistent node IDs, and each instance lists its cache keys to
-  authenticated peers. It never shares cached content. See [peer discovery](docs/deployment.md#peer-discovery).
+  authenticated peers. Background polls maintain memory-only provider hints, with
+  a default one-minute delay and hourly full scans. Hints do not serve pulls, and
+  peering never shares cached content. See [peer discovery](docs/deployment.md#peer-discovery).
 
 See [how it works](docs/how-it-works.md) for the request flow, authorization,
 and cache storage in detail.

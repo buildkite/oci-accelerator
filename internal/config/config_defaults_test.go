@@ -21,6 +21,8 @@ func TestLoadDefaults(t *testing.T) {
 	assertEqual(t, "CADir", c.CADir, filepath.Join(root, "ca"))
 	assertEqual(t, "Cache", c.Cache, wantCache)
 	assertEqual(t, "Peer.HintRefreshTimeout", c.Peer.HintRefreshTimeout, time.Minute)
+	assertEqual(t, "Peer.HintRefreshInterval", c.Peer.HintRefreshInterval, time.Minute)
+	assertEqual(t, "Peer.HintFullRefreshInterval", c.Peer.HintFullRefreshInterval, time.Hour)
 	assertEqual(t, "DialTimeout", c.DialTimeout, 10*time.Second)
 	assertEqual(t, "TLSHandshakeTimeout", c.TLSHandshakeTimeout, 10*time.Second)
 	assertEqual(t, "ResponseHeaderTimeout", c.ResponseHeaderTimeout, 30*time.Second)
@@ -41,6 +43,7 @@ func TestLoadAllSettingOverrides(t *testing.T) {
 		"REGISTRIES": "ghcr.io", "REDIRECT_ALLOWLIST": "cdn.example:8443", "CA_DIR": "ca2", "CACHE_DIR": "cache2",
 		"CACHE_MAX_BYTES": "4294967297", "CACHE_MAX_FILLS": "3", "CACHE_MAX_ENTRIES": "47", "CACHE_FILL_TIMEOUT": "7m",
 		"CACHE_FILL_WAIT_TIMEOUT": "250ms", "CACHE_AUTHORIZATION_TTL": "9s", "CACHE_ANONYMOUS_AUTHORIZATION_TTL": "13m", "CACHE_MAX_AUTHORIZATION_ENTRIES": "59",
+		"PEER_HINT_REFRESH_TIMEOUT": "17s", "PEER_HINT_REFRESH_INTERVAL": "23s", "PEER_HINT_FULL_REFRESH_INTERVAL": "2h",
 		"DIAL_TIMEOUT": "2s", "TLS_HANDSHAKE_TIMEOUT": "3s", "RESPONSE_HEADER_TIMEOUT": "4s", "IDLE_TIMEOUT": "5s", "SHUTDOWN_TIMEOUT": "6s", "MAX_CONNECTIONS": "17", "MAX_LEAF_CERTIFICATES": "19",
 	}))
 	if err != nil {
@@ -50,6 +53,9 @@ func TestLoadAllSettingOverrides(t *testing.T) {
 	assertEqual(t, "MetricsListen", c.MetricsListen, "0.0.0.0:9091")
 	assertEqual(t, "CADir", c.CADir, filepath.Join(root, "ca2"))
 	assertEqual(t, "Cache", c.Cache, Cache{Dir: filepath.Join(root, "cache2"), MaxBytes: 4294967297, MaxFills: 3, MaxEntries: 47, FillTimeout: 7 * time.Minute, FillWaitTimeout: 250 * time.Millisecond, AuthorizationTTL: 9 * time.Second, AnonymousAuthorizationTTL: 13 * time.Minute, MaxAuthorizationEntries: 59})
+	assertEqual(t, "Peer.HintRefreshTimeout", c.Peer.HintRefreshTimeout, 17*time.Second)
+	assertEqual(t, "Peer.HintRefreshInterval", c.Peer.HintRefreshInterval, 23*time.Second)
+	assertEqual(t, "Peer.HintFullRefreshInterval", c.Peer.HintFullRefreshInterval, 2*time.Hour)
 	assertEqual(t, "DialTimeout", c.DialTimeout, 2*time.Second)
 	assertEqual(t, "TLS", c.TLSHandshakeTimeout, 3*time.Second)
 	assertEqual(t, "Response", c.ResponseHeaderTimeout, 4*time.Second)

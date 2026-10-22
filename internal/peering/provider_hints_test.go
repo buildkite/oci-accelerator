@@ -203,10 +203,11 @@ func TestProviderHintsRefreshRejectsUnknownPeersBeforeSending(t *testing.T) {
 	}
 }
 
-func TestProviderHintsRefreshesRunOneAtATime(t *testing.T) {
+func TestProviderHintsRefreshWaitsForCapacity(t *testing.T) {
 	b := newHintsTestNode(t, "b.test:1", testInventory(testCacheKeys(1, 1)))
 	c := newHintsTestNode(t, "c.test:1", testInventory(testCacheKeys(2, 1)))
 	a := newHintsTestNode(t, "a.test:1", nil)
+	a.hints.refreshing = make(chan struct{}, 1)
 	a.learn(t, b)
 	a.learn(t, c)
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -336,7 +337,7 @@ func newHintsTestNode(t *testing.T, advertise string, inventory []string) *hints
 	server := httptest.NewUnstartedServer(nil)
 	server.StartTLS()
 	t.Cleanup(server.Close)
-	n.hints = NewProviderHints(book, server.Client(), n.currentInventory, time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	n.hints = NewProviderHints(book, server.Client(), n.currentInventory, time.Minute, time.Minute, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	keys := n.hints.Handler()
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if block := n.block.Load(); block != nil {
@@ -352,12 +353,14 @@ func newHintsTestNode(t *testing.T, advertise string, inventory []string) *hints
 	return n
 }
 
-// learn records peer's address and ID in n's book.
+// learn records peer's address and ID and delivers discovery's notification.
 func (n *hintsTestNode) learn(t *testing.T, peer *hintsTestNode) {
 	t.Helper()
-	if _, err := n.book.merge(Message{Address: peer.address, NodeID: peer.id, Peers: map[string]string{}}, "", nil); err != nil {
+	result, err := n.book.merge(Message{Address: peer.address, NodeID: peer.id, Peers: map[string]string{}}, "", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	n.hints.PeersAdded(result.Added)
 }
 
 func (n *hintsTestNode) setBlock(block func()) { n.block.Store(&block) }

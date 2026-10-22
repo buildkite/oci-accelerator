@@ -15,6 +15,8 @@ func TestLoadRejectsInvalidEnvironmentValuesSafely(t *testing.T) {
 		{"CACHE_MAX_FILLS", "+5", "without a sign"}, {"CACHE_MAX_FILLS", "-0", "without a sign"}, {"MAX_LEAF_CERTIFICATES", "-1", "without a sign"}, {"CACHE_MAX_FILLS", "00", "without a sign"}, {"CACHE_MAX_FILLS", "", "without a sign"},
 		{"MAX_CONNECTIONS", "0", "must be positive"}, {"DIAL_TIMEOUT", "secret-value", "duration string"}, {"CACHE_FILL_TIMEOUT", "0s", "must be positive"}, {"CACHE_FILL_WAIT_TIMEOUT", "-1s", "non-negative"}, {"CACHE_AUTHORIZATION_TTL", "-1s", "non-negative"}, {"CACHE_ANONYMOUS_AUTHORIZATION_TTL", "-1s", "non-negative"},
 		{"PEER_HINT_REFRESH_TIMEOUT", "secret-value", "duration string"},
+		{"PEER_HINT_REFRESH_INTERVAL", "secret-value", "duration string"},
+		{"PEER_HINT_FULL_REFRESH_INTERVAL", "secret-value", "duration string"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.field+"="+tt.value, func(t *testing.T) {
