@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -335,7 +336,7 @@ func newHintsTestNode(t *testing.T, advertise string, inventory []string) *hints
 	server := httptest.NewUnstartedServer(nil)
 	server.StartTLS()
 	t.Cleanup(server.Close)
-	n.hints = NewProviderHints(book, server.Client(), n.currentInventory, time.Minute)
+	n.hints = NewProviderHints(book, server.Client(), n.currentInventory, time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	keys := n.hints.Handler()
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if block := n.block.Load(); block != nil {

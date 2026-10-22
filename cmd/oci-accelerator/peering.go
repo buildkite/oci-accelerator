@@ -13,13 +13,18 @@ import (
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
+	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/config"
 	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
-// startPeering owns the peer listener, discovery loop and address book until its
-// cleanup is called. Disabled peering creates no state or network activity.
-func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, func() error, error) {
+// startPeering owns the peer listener, discovery loop, cache key hint refresh
+// loop and address book until its cleanup is called. The listener also serves
+// live LRU-to-MRU inventory pages of the local cache to authenticated peers. Hints
+// fetch every known peer's listing at startup and a peer's listing whenever
+// discovery adds its node ID to the book. Disabled peering creates no state or
+// network activity.
+func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, inventory func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error), logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, func() error, error) {
 	if cfg.Peer.Listen == "" {
 		return nil, nil, nil
 	}
@@ -42,8 +47,10 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if err != nil {
 		return nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
-	discovery := peering.NewDiscovery(book, peering.NewClient(clientTLS), logger, nil)
-	handler := discovery.Handler()
+	client := peering.NewClient(clientTLS)
+	hints := peering.NewProviderHints(book, client, inventory, cfg.Peer.HintRefreshTimeout, logger)
+	discovery := peering.NewDiscovery(book, client, logger, hints.QueueRefresh)
+	handler := peering.PeerHandler(discovery.Handler(), hints.Handler())
 	var handlerMu sync.Mutex
 	var handlers sync.WaitGroup
 	stopping := false
@@ -83,6 +90,11 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		discovery.Run(discoveryCtx)
 		close(discoveryDone)
 	}()
+	hintsDone := make(chan struct{})
+	go func() {
+		hints.Run(discoveryCtx)
+		close(hintsDone)
+	}()
 	cleanup := func() error {
 		cancel()
 		handlerMu.Lock()
@@ -97,6 +109,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		}
 		<-serveDone
 		<-discoveryDone
+		<-hintsDone
 		// Closing sockets cannot preempt a filesystem operation. Join handlers
 		// before releasing the state lock even if the drain deadline expired.
 		handlers.Wait()

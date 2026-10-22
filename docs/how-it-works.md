@@ -85,10 +85,18 @@ known IDs stay local discovery candidates. Verification shares discovery's four
 outbound slots and has a bounded, deduplicated queue. Retries use backoff, and
 peer outages do not affect proxy readiness or image pulls.
 
+Each instance also lists the hashed keys of its committed cache entries to
+authenticated peers. At startup an instance fetches the list of every peer in
+its address book, and it fetches a peer's list when discovery adds that peer's
+node ID to the book. It keeps the keys in memory as advisory hints about which
+peer holds which object. A hint is not access to the object, and pulls do not
+use hints.
+
 Peer destinations are unrestricted, unlike intercepted-registry egress. The
-protocol never shares cache keys, content, credentials, or authorization grants.
+protocol never shares cached content, credentials, or authorization grants.
 See [peer discovery](deployment.md#peer-discovery) for configuration, trust, and
-retention details.
+retention details, and [cache key listing](deployment.md#cache-key-listing) for
+the listing protocol.
 
 ### Play-by-play example
 

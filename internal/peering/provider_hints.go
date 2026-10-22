@@ -3,8 +3,10 @@ package peering
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"slices"
+	"sort"
 	"sync"
 	"time"
 
@@ -16,35 +18,54 @@ var errUnknownPeer = errors.New("unknown peer")
 // ProviderHints serves the local cache key inventory to peers and keeps
 // advisory hints about the keys each peer holds. A hint says a peer listed a
 // key when it was last refreshed, not that it still holds the key, and it
-// grants no access. Hints live only in memory and refreshes are explicit.
+// grants no access. Hints live only in memory, so Run refreshes every peer
+// known at construction and then each peer queued by QueueRefresh.
 type ProviderHints struct {
 	book           *Book
 	client         *http.Client
 	inventory      func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error)
+	logger         *slog.Logger
 	self           nodeID
 	refreshing     chan struct{} // holds a token while a Refresh runs
+	wake           chan struct{} // signals Run that the queue has work
 	refreshTimeout time.Duration // bounds a fetch after it acquires the refresh slot
 
 	mu    sync.Mutex // guards index
 	index *hintIndex
+
+	// queueMu is separate from mu so queueing never waits for index updates.
+	queueMu sync.Mutex
+	queue   []string        // node IDs awaiting a refresh, oldest first
+	queued  map[string]bool // the IDs in queue
 }
 
-// NewProviderHints returns hints for the local node in book. inventory serves
-// live LRU-to-MRU cache pages, such as cache.Store.KeyPage.
+// NewProviderHints returns hints for the local node in book, with a refresh
+// queued for every peer the book already identifies. inventory serves live
+// LRU-to-MRU cache pages, such as cache.Store.KeyPage.
 // refreshTimeout must be positive.
-func NewProviderHints(book *Book, client *http.Client, inventory func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error), refreshTimeout time.Duration) *ProviderHints {
+func NewProviderHints(book *Book, client *http.Client, inventory func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error), refreshTimeout time.Duration, logger *slog.Logger) *ProviderHints {
 	snapshot := book.Snapshot()
 	// OpenBook has already validated the local node ID.
 	self, _ := parseNodeID(snapshot.NodeID)
-	return &ProviderHints{
+	p := &ProviderHints{
 		book:           book,
 		client:         client,
 		inventory:      inventory,
+		logger:         logger,
 		self:           self,
 		refreshing:     make(chan struct{}, 1),
+		wake:           make(chan struct{}, 1),
 		refreshTimeout: refreshTimeout,
 		index:          newHintIndex(maxHintRecords),
+		queued:         make(map[string]bool),
 	}
+	ids := make([]string, 0, len(snapshot.Peers))
+	for _, id := range snapshot.Peers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	p.QueueRefresh(ids)
+	return p
 }
 
 // Handler serves the local inventory at GET /v1/cache/keys.
