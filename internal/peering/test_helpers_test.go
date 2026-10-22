@@ -2,6 +2,7 @@ package peering
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +27,32 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 // testNodeID returns a valid node ID that is distinct for each i.
 func testNodeID(i int) string { return fmt.Sprintf("%012d", i) }
+
+// testParsedNodeID returns testNodeID(i) in parsed form.
+func testParsedNodeID(t *testing.T, i int) nodeID {
+	t.Helper()
+	id, ok := parseNodeID(testNodeID(i))
+	if !ok {
+		t.Fatalf("invalid test node ID %q", testNodeID(i))
+	}
+	return id
+}
+
+// testCacheKey returns a distinct cache key for i that sorts by i.
+func testCacheKey(i int) cacheKey {
+	var key cacheKey
+	binary.BigEndian.PutUint64(key[:8], uint64(i))
+	return key
+}
+
+// testCacheKeys returns n ascending keys starting at testCacheKey(first).
+func testCacheKeys(first, n int) []cacheKey {
+	keys := make([]cacheKey, n)
+	for i := range keys {
+		keys[i] = testCacheKey(first + i)
+	}
+	return keys
+}
 
 func bookTestDir(t *testing.T) string {
 	t.Helper()
