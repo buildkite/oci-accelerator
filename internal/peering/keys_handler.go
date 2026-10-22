@@ -20,6 +20,7 @@ func newKeysHandler(self nodeID, inventory func(cache.KeyPosition, int) ([]strin
 		}
 		keys, next, err := inventory(after, maxKeysPerPage)
 		if errors.Is(err, cache.ErrKeyCursor) {
+			w.Header().Set(keysErrorHeader, "invalid_cursor")
 			http.Error(w, "invalid cursor", http.StatusBadRequest)
 			return
 		}

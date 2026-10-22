@@ -136,7 +136,7 @@ func TestProviderHintsRunResumesFailuresAndRecoversFromPeerRestart(t *testing.T)
 		a.hints.refreshInterval = 10 * time.Second
 		a.hints.fullRefreshInterval = time.Hour
 		var logs bytes.Buffer
-		a.hints.logger = slog.New(slog.NewTextHandler(&logs, nil))
+		a.hints.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 		var inventoryMu sync.Mutex
 		generation := byte(1)
 		inventory := testInventory(testCacheKeys(0, 2*maxKeysPerPage+3))
@@ -172,21 +172,7 @@ func TestProviderHintsRunResumesFailuresAndRecoversFromPeerRestart(t *testing.T)
 		synctest.Wait()
 		assertHintProviders(t, a.hints, testCacheKey(maxKeysPerPage-1), b.id)
 		assertHintProviders(t, a.hints, testCacheKey(maxKeysPerPage))
-		// Stop at the next completed attempt, regardless of its jittered
-		// deadline, without advancing far enough to run a second poll.
-		nextPoll := func() {
-			t.Helper()
-			before := len(requests.snapshot())
-			for range 13 {
-				time.Sleep(time.Second)
-				synctest.Wait()
-				if len(requests.snapshot()) > before {
-					return
-				}
-			}
-			t.Fatal("no poll within the jittered interval")
-		}
-		nextPoll()
+		nextHintPoll(t, &requests)
 		starts := requests.snapshot()
 		if len(starts) != 4 || starts[2].Last != maxKeysPerPage {
 			t.Fatalf("resumed requests = %v", starts)
@@ -197,13 +183,13 @@ func TestProviderHintsRunResumesFailuresAndRecoversFromPeerRestart(t *testing.T)
 		inventory = testInventory(testCacheKeys(100_000, 2*maxKeysPerPage+3))
 		inventoryMu.Unlock()
 		before := len(requests.snapshot())
-		nextPoll()
+		nextHintPoll(t, &requests)
 		starts = requests.snapshot()
 		if len(starts) != before+1 || starts[before].Last == 0 {
 			t.Fatalf("restart rejection requests = %v", starts[before:])
 		}
 		assertHintProviders(t, a.hints, testCacheKey(100_000))
-		nextPoll()
+		nextHintPoll(t, &requests)
 		starts = requests.snapshot()
 		if starts[before+1] != (cache.KeyPosition{}) {
 			t.Fatal("rejected cursor was not reset")
@@ -212,10 +198,99 @@ func TestProviderHintsRunResumesFailuresAndRecoversFromPeerRestart(t *testing.T)
 		assertHintProviders(t, a.hints, testCacheKey(100_000+2*maxKeysPerPage+2), b.id)
 		assertHintProviders(t, a.hints, testCacheKey(0), b.id)
 		stop()
-		if strings.Count(logs.String(), "peer cache keys refresh failed") != 2 || !strings.Contains(logs.String(), b.id) {
+		if strings.Count(logs.String(), "level=WARN") != 1 || strings.Count(logs.String(), "level=DEBUG") != 1 || !strings.Contains(logs.String(), b.id) {
 			t.Fatalf("failure log = %q", logs.String())
 		}
 	})
+}
+
+func TestProviderHintsRunRestartsAfterConsecutiveStalledAttempts(t *testing.T) {
+	for _, recovery := range []string{"progress", "success"} {
+		t.Run(recovery, func(t *testing.T) {
+			size := maxKeysPerPage + 1
+			if recovery == "progress" {
+				size += maxKeysPerPage
+			}
+			keys := testCacheKeys(0, size)
+			b := newHintsTestNode(t, "b.test:1", testInventory(keys))
+			a := newHintsTestNode(t, "a.test:1", nil)
+			a.learn(t, b)
+			synctest.Test(t, func(t *testing.T) {
+				a.hints.wake = make(chan struct{}, 1)
+				a.hints.refreshInterval = 10 * time.Second
+				if recovery == "progress" {
+					// A slow but progressing scan must outlive this interval.
+					a.hints.fullRefreshInterval = time.Second
+				}
+				var requests hintRequestLog
+				var failAt int64 = maxKeysPerPage
+				handler := b.hints.Handler()
+				a.hints.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					r.RequestURI = r.URL.RequestURI()
+					after, _ := parseKeysRequest(r)
+					requests.record(after)
+					response := httptest.NewRecorder()
+					if failAt != 0 && after.Last >= failAt {
+						http.Error(response, "unavailable", http.StatusServiceUnavailable)
+					} else {
+						handler.ServeHTTP(response, r)
+					}
+					return response.Result(), nil
+				})}
+				stop := runHints(t, a.hints)
+				defer stop()
+				synctest.Wait()
+				if got := requests.snapshot(); len(got) != 2 || got[0] != (cache.KeyPosition{}) || got[1].Last != maxKeysPerPage {
+					t.Fatalf("initial requests = %v", got)
+				}
+				poll := func(want ...int64) {
+					t.Helper()
+					before := len(requests.snapshot())
+					nextHintPoll(t, &requests)
+					got := requests.snapshot()[before:]
+					if len(got) != len(want) {
+						t.Fatalf("poll requests = %v, want positions %v", got, want)
+					}
+					for i := range want {
+						if got[i].Last != want[i] {
+							t.Fatalf("poll requests = %v, want positions %v", got, want)
+						}
+					}
+				}
+				// The first failed attempt advanced. Only the next two are stalled.
+				poll(maxKeysPerPage)
+				poll(maxKeysPerPage)
+				checkpoint := int64(maxKeysPerPage)
+				if recovery == "progress" {
+					failAt = 2 * maxKeysPerPage
+					poll(maxKeysPerPage, 2*maxKeysPerPage)
+					checkpoint = 2 * maxKeysPerPage
+				} else {
+					failAt = 0
+					poll(maxKeysPerPage)
+				}
+				// Progress, even with an error, or success resets the failure count.
+				failAt = checkpoint
+				poll(checkpoint)
+				poll(checkpoint)
+				poll(checkpoint)
+				// A new cold key is invisible to tail polls but found by recovery.
+				keys[0] = testCacheKey(100_000)
+				b.setInventory(testInventory(keys))
+				assertHintProviders(t, a.hints, keys[0])
+				if recovery == "progress" {
+					poll(0, maxKeysPerPage, 2*maxKeysPerPage)
+				} else {
+					poll(0, maxKeysPerPage)
+				}
+				assertHintProviders(t, a.hints, keys[0], b.id)
+				failAt = 0
+				poll(checkpoint)
+				assertHintProviders(t, a.hints, testCacheKey(size-1), b.id)
+				stop()
+			})
+		})
+	}
 }
 
 func TestProviderHintsRunBoundsConcurrencyAndJoinsOnCancellation(t *testing.T) {
@@ -380,6 +455,24 @@ func TestProviderHintsRunStopsWhenIdle(t *testing.T) {
 	}
 }
 
+func TestHintJitterStaysWithinDurationBounds(t *testing.T) {
+	const largest = time.Duration(1<<63 - 1)
+	for interval, bounds := range map[time.Duration][2]time.Duration{
+		time.Nanosecond:  {time.Nanosecond, time.Nanosecond},
+		10 * time.Second: {8 * time.Second, 12 * time.Second},
+		// The lower bound is ceil(0.8 * MaxInt64), not 0.8 of a clamped base.
+		largest: {7_378_697_629_483_820_646, largest},
+	} {
+		t.Run(interval.String(), func(t *testing.T) {
+			for range 100 {
+				if got := hintJitter(interval); got < bounds[0] || got > bounds[1] {
+					t.Fatalf("jitter(%v) = %v, want [%v, %v]", interval, got, bounds[0], bounds[1])
+				}
+			}
+		})
+	}
+}
+
 // runHints runs hints until the returned stop function or test cleanup
 // cancels and joins it.
 func runHints(t *testing.T, hints *ProviderHints) func() {
@@ -393,6 +486,21 @@ func runHints(t *testing.T, hints *ProviderHints) func() {
 	}
 	t.Cleanup(stop)
 	return stop
+}
+
+// nextHintPoll stops at the next completed attempt with a ten-second interval,
+// regardless of jitter, without advancing far enough to run a second poll.
+func nextHintPoll(t *testing.T, requests *hintRequestLog) {
+	t.Helper()
+	before := len(requests.snapshot())
+	for range 13 {
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if len(requests.snapshot()) > before {
+			return
+		}
+	}
+	t.Fatal("no poll within the jittered interval")
 }
 
 // hintRequestLog captures observable request positions across polling turns.

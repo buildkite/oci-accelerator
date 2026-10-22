@@ -46,21 +46,16 @@ func TestContainerExampleMatchesImageDefaults(t *testing.T) {
 			t.Errorf(".env.container-example %s = %q, want image default %q", name, example[name], value)
 		}
 	}
-	for name, value := range map[string]string{
-		"PEER_HINT_REFRESH_TIMEOUT":       "1m",
-		"PEER_HINT_REFRESH_INTERVAL":      "1m",
-		"PEER_HINT_FULL_REFRESH_INTERVAL": "1h",
-	} {
-		if example[environmentPrefix+name] != value {
-			t.Errorf(".env.container-example %s = %q, want %q", name, example[environmentPrefix+name], value)
-		}
+	if len(example) != len(image)+1 || example[environmentPrefix+"REGISTRIES"] == "" {
+		t.Errorf(".env.container-example = %v, want only REGISTRIES and image defaults", example)
 	}
-	if len(example) != len(image)+4 || example[environmentPrefix+"REGISTRIES"] == "" {
-		t.Errorf(".env.container-example = %v, want REGISTRIES, image defaults, and peer hint timings", example)
+	c, err := load(path, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf(".env.container-example does not validate: %v", err)
 	}
-	if _, err := load(path, func(string) (string, bool) { return "", false }); err != nil {
-		t.Errorf(".env.container-example does not validate: %v", err)
-	}
+	assertEqual(t, "Peer.HintRefreshTimeout", c.Peer.HintRefreshTimeout, DefaultPeerHintRefreshTimeout)
+	assertEqual(t, "Peer.HintRefreshInterval", c.Peer.HintRefreshInterval, DefaultPeerHintRefreshInterval)
+	assertEqual(t, "Peer.HintFullRefreshInterval", c.Peer.HintFullRefreshInterval, DefaultPeerHintFullRefreshInterval)
 	image[environmentPrefix+"REGISTRIES"] = "example.com"
 	if _, err := load("", func(name string) (string, bool) { value, ok := image[name]; return value, ok }); err != nil {
 		t.Errorf("image defaults with only REGISTRIES do not validate: %v", err)

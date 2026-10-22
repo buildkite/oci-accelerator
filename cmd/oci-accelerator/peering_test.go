@@ -172,10 +172,10 @@ func TestPeersRefreshCacheKeysWhenDiscoveredAndAfterRestart(t *testing.T) {
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var listingsA, listingsB atomic.Int32
-	start := func(name string, seeds []string, listings *atomic.Int32) (string, func() error) {
+	start := func(name string, seeds []string, listings *atomic.Int32, interval time.Duration) (string, func() error) {
 		t.Helper()
 		listener := newTestListener(t)
-		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: listener.Addr().String(), Seeds: seeds, StateDir: filepath.Join(root, name), HintRefreshTimeout: time.Minute, HintRefreshInterval: 100 * time.Millisecond, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: time.Second}
+		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: listener.Addr().String(), Seeds: seeds, StateDir: filepath.Join(root, name), HintRefreshTimeout: time.Minute, HintRefreshInterval: interval, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: time.Second}
 		inventory := func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error) {
 			listings.Add(1)
 			return nil, cache.KeyPosition{}, nil
@@ -198,8 +198,8 @@ func TestPeersRefreshCacheKeysWhenDiscoveredAndAfterRestart(t *testing.T) {
 		}
 	}
 
-	addressB, _ := start("b", nil, &listingsB)
-	_, stopA := start("a", []string{addressB}, &listingsA)
+	addressB, _ := start("b", nil, &listingsB, 100*time.Millisecond)
+	_, stopA := start("a", []string{addressB}, &listingsA, 100*time.Millisecond)
 	// A learns B from its own exchange, and B learns A from that inbound
 	// exchange. Each then fetches the other's listing.
 	waitFor("A to fetch B's listing", func() bool { return listingsB.Load() >= 1 })
@@ -213,7 +213,8 @@ func TestPeersRefreshCacheKeysWhenDiscoveredAndAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := listingsB.Load()
-	start("a", nil, &listingsA)
+	// A periodic fetch cannot satisfy this five-second startup assertion.
+	start("a", nil, &listingsA, time.Hour)
 	waitFor("restarted A to fetch B's listing", func() bool { return listingsB.Load() > before })
 }
 

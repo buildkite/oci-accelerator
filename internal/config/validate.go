@@ -63,11 +63,20 @@ func validate(raw rawConfig) (Config, error) {
 		{"SHUTDOWN_TIMEOUT", raw.ShutdownTimeout},
 		{"CACHE_FILL_TIMEOUT", raw.Cache.FillTimeout},
 		{"PEER_HINT_REFRESH_TIMEOUT", raw.Peer.HintRefreshTimeout},
-		{"PEER_HINT_REFRESH_INTERVAL", raw.Peer.HintRefreshInterval},
-		{"PEER_HINT_FULL_REFRESH_INTERVAL", raw.Peer.HintFullRefreshInterval},
 	} {
 		if timeout.value <= 0 {
 			return Config{}, invalid("must be positive", timeout.setting)
+		}
+	}
+	for _, interval := range []struct {
+		setting string
+		value   time.Duration
+	}{
+		{"PEER_HINT_REFRESH_INTERVAL", raw.Peer.HintRefreshInterval},
+		{"PEER_HINT_FULL_REFRESH_INTERVAL", raw.Peer.HintFullRefreshInterval},
+	} {
+		if interval.value < time.Second {
+			return Config{}, invalid("must be at least 1s", interval.setting)
 		}
 	}
 	for _, timeout := range []struct {

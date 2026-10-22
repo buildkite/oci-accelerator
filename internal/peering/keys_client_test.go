@@ -261,16 +261,37 @@ func TestFetchKeysKeepsAppliedPageWhenCanceled(t *testing.T) {
 }
 
 func TestFetchKeysReportsInvalidCursorWithoutDiscardingProgress(t *testing.T) {
-	server := httptest.NewTLSServer(newKeysHandler(testParsedNodeID(t, 2), testKeyPages(nil)))
-	defer server.Close()
-	after := testKeyPosition(10, testCacheKey(9))
-	after.Incarnation = [16]byte{2}
-	want := after
-	err := fetchKeys(context.Background(), server.Client(), testServerAddress(server), testParsedNodeID(t, 2), &after, func([]cacheKey) {
-		t.Fatal("invalid cursor applied keys")
-	})
-	if !errors.Is(err, cache.ErrKeyCursor) || after != want {
-		t.Fatalf("invalid cursor fetch = %v, checkpoint = %v, want %v", err, after, want)
+	checkpoint := testKeyPosition(10, testCacheKey(9))
+	tests := map[string]struct {
+		status int
+		code   string
+		body   string
+		after  cache.KeyPosition
+		want   error
+	}{
+		"structured with rewritten body": {http.StatusBadRequest, "invalid_cursor", "request rejected", checkpoint, cache.ErrKeyCursor},
+		"legacy body":                    {http.StatusBadRequest, "", "invalid cursor\n", checkpoint, cache.ErrKeyCursor},
+		"generic bad request":            {http.StatusBadRequest, "", "invalid request\n", checkpoint, errKeysFetch},
+		"unknown error code":             {http.StatusBadRequest, "other", "request rejected", checkpoint, errKeysFetch},
+		"no checkpoint":                  {http.StatusBadRequest, "invalid_cursor", "invalid cursor\n", cache.KeyPosition{}, errKeysFetch},
+		"wrong status":                   {http.StatusInternalServerError, "invalid_cursor", "invalid cursor\n", checkpoint, errKeysFetch},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("OCI-Accelerator-Error", test.code)
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+			after := test.after
+			err := fetchKeys(context.Background(), server.Client(), testServerAddress(server), testParsedNodeID(t, 2), &after, func([]cacheKey) {
+				t.Fatal("failed request applied keys")
+			})
+			if !errors.Is(err, test.want) || after != test.after {
+				t.Fatalf("fetch = %v, checkpoint = %v, want %v with checkpoint %v", err, after, test.want, test.after)
+			}
+		})
 	}
 }
 

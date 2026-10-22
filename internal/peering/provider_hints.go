@@ -38,10 +38,13 @@ type ProviderHints struct {
 }
 
 // NewProviderHints returns hints for the local node in book. inventory serves
-// live LRU-to-MRU cache pages, such as cache.Store.KeyPage. All durations must
-// be positive. Run immediately fetches each peer known at construction and
-// each identity subsequently reported by PeersAdded.
+// live LRU-to-MRU cache pages, such as cache.Store.KeyPage. It panics if any
+// duration is nonpositive. Run immediately fetches each peer known at
+// construction and each identity subsequently reported by PeersAdded.
 func NewProviderHints(book *Book, client *http.Client, inventory func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error), refreshTimeout, refreshInterval, fullRefreshInterval time.Duration, logger *slog.Logger) *ProviderHints {
+	if refreshTimeout <= 0 || refreshInterval <= 0 || fullRefreshInterval <= 0 {
+		panic("peer hint durations must be positive")
+	}
 	snapshot := book.Snapshot()
 	// OpenBook has already validated the local node ID.
 	self, _ := parseNodeID(snapshot.NodeID)

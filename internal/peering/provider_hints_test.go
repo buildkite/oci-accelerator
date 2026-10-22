@@ -19,6 +19,24 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/cache"
 )
 
+func TestNewProviderHintsRejectsNonpositiveDurations(t *testing.T) {
+	a := newHintsTestNode(t, "a.test:1", nil)
+	for name, index := range map[string]int{"timeout": 0, "refresh": 1, "full refresh": 2} {
+		for _, value := range []time.Duration{0, -time.Nanosecond} {
+			t.Run(name+"="+value.String(), func(t *testing.T) {
+				durations := [3]time.Duration{time.Minute, time.Minute, time.Hour}
+				durations[index] = value
+				defer func() {
+					if recover() == nil {
+						t.Fatal("constructor accepted a nonpositive duration")
+					}
+				}()
+				NewProviderHints(a.book, a.hints.client, nil, durations[0], durations[1], durations[2], a.hints.logger)
+			})
+		}
+	}
+}
+
 func TestProviderHintsRefreshAddsPeerHints(t *testing.T) {
 	b := newHintsTestNode(t, "b.test:1", testInventory(testCacheKeys(1, 3)))
 	a := newHintsTestNode(t, "a.test:1", nil)

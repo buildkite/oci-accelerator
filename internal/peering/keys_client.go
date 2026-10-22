@@ -76,6 +76,10 @@ func fetchKeysPage(ctx context.Context, client *http.Client, destination string,
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusBadRequest && after != (cache.KeyPosition{}) {
+		if response.Header.Get(keysErrorHeader) == "invalid_cursor" {
+			return keysPage{}, cache.ErrKeyCursor
+		}
+		// Older peers identify cursor rejection only in the response body.
 		body, err := io.ReadAll(io.LimitReader(response.Body, 32))
 		if err == nil && string(body) == "invalid cursor\n" {
 			return keysPage{}, cache.ErrKeyCursor
