@@ -14,14 +14,22 @@ const maxHintRecords = 200_000
 // not consume key slots, so the limit is not a byte-memory bound. The caller
 // serializes access and rejects claims from the local node.
 type hintIndex struct {
-	limit int
-	fifo  list.List // cacheKey, oldest admission first
-	byKey map[cacheKey][]nodeID
+	limit    int
+	fifo     list.List // cacheKey, oldest admission first
+	byKey    map[cacheKey][]providerClaim
+	revision uint64
+}
+
+// A revision changes even when a listing repeats an existing claim, so a
+// concurrent fetch failure cannot erase a more recent inventory observation.
+type providerClaim struct {
+	id       nodeID
+	revision uint64
 }
 
 // newHintIndex retains at most limit distinct keys. The limit must be positive.
 func newHintIndex(limit int) *hintIndex {
-	return &hintIndex{limit: limit, byKey: make(map[cacheKey][]nodeID)}
+	return &hintIndex{limit: limit, byKey: make(map[cacheKey][]providerClaim)}
 }
 
 // merge adds provider's claims without clearing earlier ones. New keys enter
@@ -37,9 +45,14 @@ func (x *hintIndex) merge(provider nodeID, keys []cacheKey) {
 			}
 			x.fifo.PushBack(key)
 		}
-		if !slices.Contains(providers, provider) {
-			x.byKey[key] = append(providers, provider)
+		x.revision++
+		claim := providerClaim{id: provider, revision: x.revision}
+		if i := slices.IndexFunc(providers, func(p providerClaim) bool { return p.id == provider }); i >= 0 {
+			providers[i] = claim
+		} else {
+			providers = append(providers, claim)
 		}
+		x.byKey[key] = providers
 	}
 }
 
@@ -51,8 +64,17 @@ func (x *hintIndex) providers(key cacheKey) []string {
 	}
 	ids := make([]string, len(providers))
 	for i, provider := range providers {
-		ids[i] = provider.String()
+		ids[i] = provider.id.String()
 	}
 	slices.Sort(ids)
 	return ids
+}
+
+// forget removes only the observation that failed. Empty records retain their
+// FIFO position until eviction or another claim, avoiding a scan of the FIFO.
+func (x *hintIndex) forget(key cacheKey, claim providerClaim) {
+	providers := x.byKey[key]
+	if i := slices.Index(providers, claim); i >= 0 {
+		x.byKey[key] = slices.Delete(providers, i, i+1)
+	}
 }
