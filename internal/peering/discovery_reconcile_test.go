@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -61,7 +63,8 @@ func TestDiscoveryVerificationResponseDecidesConflictingClaim(t *testing.T) {
 							return nil, r.Context().Err()
 						}
 					case "x.test:1":
-						return messageResponse(Message{Address: "x.test:1", NodeID: id1}), nil
+						// Identity relocation is attempted only after the old address fails.
+						return nil, context.DeadlineExceeded
 					case "y.test:7":
 						return messageResponse(Message{Address: "y.test:7", NodeID: id3}), nil
 					case "a.test:5":
@@ -105,6 +108,441 @@ func TestDiscoveryVerificationResponseDecidesConflictingClaim(t *testing.T) {
 	}
 }
 
+func TestDiscoveryGossipRetainsWorkingAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		current Message
+		want    string
+		probes  int
+	}{
+		{"same identity", Message{Address: "x.test:1", NodeID: testNodeID(1)}, "x.test:1", 0},
+		{"unreachable", Message{}, "z.test:9", 1},
+		{"different identity", Message{Address: "x.test:1", NodeID: testNodeID(2)}, "z.test:9", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var log requestLog
+				d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
+					log.add(r.URL.Host)
+					switch r.URL.Host {
+					case "x.test:1":
+						if tc.current.NodeID == "" {
+							return nil, context.DeadlineExceeded
+						}
+						return messageResponse(tc.current), nil
+					case "z.test:9":
+						return messageResponse(Message{Address: "z.test:9", NodeID: testNodeID(1)}), nil
+					case "a.test:5":
+						return messageResponse(Message{Address: "a.test:5", NodeID: testNodeID(5)}), nil
+					}
+					return nil, fmt.Errorf("unexpected request to %s", r.URL.Host)
+				})
+				confirmTestPeers(t, d.book, map[string]string{"a.test:5": testNodeID(5), "x.test:1": testNodeID(1)})
+				gossip := Message{Address: "a.test:5", NodeID: testNodeID(5), Peers: map[string]string{"z.test:9": testNodeID(1)}}
+				if response := cooldownRequest(d, gossip); response.Code != http.StatusOK {
+					t.Fatalf("gossip status = %d", response.Code)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				go d.Run(ctx)
+				synctest.Wait()
+				want := map[string]string{"a.test:5": testNodeID(5), tc.want: testNodeID(1)}
+				if tc.current.NodeID == testNodeID(2) {
+					want["x.test:1"] = testNodeID(2)
+				}
+				if got := d.book.Snapshot().Peers; !reflect.DeepEqual(got, want) {
+					t.Fatalf("book = %v, want %v", got, want)
+				}
+				if log.count("x.test:1") != 1 || log.count("z.test:9") != tc.probes {
+					t.Fatalf("requests = %v, want one current-address check and %d new-address probes", log.all(), tc.probes)
+				}
+				// Repeated gossip does not bypass the claimed address's cooldown.
+				for range 3 {
+					if response := cooldownRequest(d, gossip); response.Code != http.StatusOK {
+						t.Fatalf("repeated gossip status = %d", response.Code)
+					}
+				}
+				time.Sleep(23 * time.Second)
+				synctest.Wait()
+				if log.count("x.test:1") != 1 || log.count("z.test:9") != tc.probes {
+					t.Fatalf("gossip bypassed cooldown: %v", log.all())
+				}
+				if tc.want == "x.test:1" {
+					// Once the cooldown expires, fresh gossip still cannot displace A.
+					time.Sleep(14 * time.Second)
+					synctest.Wait()
+					if log.count("z.test:9") != 0 || !reflect.DeepEqual(d.book.Snapshot().Peers, want) {
+						t.Fatalf("repeated gossip displaced working address: requests=%v book=%v", log.all(), d.book.Snapshot().Peers)
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestDiscoverySuppressedCandidatePreservesFailureCooldown(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		pendingCheck bool
+		lateFailure  bool
+	}{
+		{"after current check", false, false},
+		{"before current check", true, false},
+		{"before candidate failure", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var log requestLog
+				release := make(chan struct{})
+				if !tc.pendingCheck {
+					close(release)
+				}
+				releaseCandidate := make(chan struct{})
+				if !tc.lateFailure {
+					close(releaseCandidate)
+				}
+				d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
+					log.add(r.URL.Host)
+					if r.URL.Host == "x.test:1" {
+						select {
+						case <-release:
+							return messageResponse(Message{Address: "x.test:1", NodeID: testNodeID(1)}), nil
+						case <-r.Context().Done():
+							return nil, r.Context().Err()
+						}
+					}
+					select {
+					case <-releaseCandidate:
+						return nil, context.DeadlineExceeded
+					case <-r.Context().Done():
+						return nil, r.Context().Err()
+					}
+				})
+				confirmTestPeers(t, d.book, map[string]string{"x.test:1": testNodeID(1)})
+				gossip := Message{Address: d.book.self, NodeID: d.book.nodeID, Peers: map[string]string{"z.test:9": testNodeID(2)}}
+				if response := cooldownRequest(d, gossip); response.Code != http.StatusOK {
+					t.Fatalf("initial gossip status = %d", response.Code)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				go d.Run(ctx)
+				synctest.Wait()
+				if log.count("z.test:9") != 1 {
+					t.Fatalf("initial candidate attempts = %d, want 1", log.count("z.test:9"))
+				}
+				// A conflicting claim suppresses B, but must not erase B's failure history.
+				gossip.Peers["z.test:9"] = testNodeID(1)
+				if response := cooldownRequest(d, gossip); response.Code != http.StatusOK {
+					t.Fatalf("conflicting gossip status = %d", response.Code)
+				}
+				if tc.pendingCheck {
+					close(release)
+				}
+				synctest.Wait()
+				if tc.lateFailure {
+					close(releaseCandidate)
+					synctest.Wait()
+				}
+				time.Sleep(37 * time.Second)
+				synctest.Wait()
+				// Changing the claim again cannot obtain a fresh retry budget before cooldown.
+				gossip.Peers["z.test:9"] = testNodeID(2)
+				for range 3 {
+					if response := cooldownRequest(d, gossip); response.Code != http.StatusOK {
+						t.Fatalf("reintroduced gossip status = %d", response.Code)
+					}
+					time.Sleep(37 * time.Second)
+					synctest.Wait()
+					if log.count("z.test:9") != 1 || d.book.Snapshot().Peers["x.test:1"] != testNodeID(1) {
+						t.Fatalf("suppression reset failed candidate: requests=%v book=%v", log.all(), d.book.Snapshot().Peers)
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestDiscoveryCandidateCannotReplaceRecoveredMember(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var log requestLog
+		d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
+			log.add(r.URL.Host)
+			switch r.URL.Host {
+			case "x.test:1":
+				if log.count(r.URL.Host) == 1 {
+					return nil, context.DeadlineExceeded
+				}
+			case "z.test:9":
+				select {
+				case <-time.After(2 * time.Second):
+				case <-r.Context().Done():
+					return nil, r.Context().Err()
+				}
+			default:
+				return nil, context.DeadlineExceeded
+			}
+			return messageResponse(Message{Address: r.URL.Host, NodeID: testNodeID(1)}), nil
+		})
+		d.client.Timeout = 5 * time.Second
+		confirmTestPeers(t, d.book, map[string]string{"x.test:1": testNodeID(1)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.Run(ctx)
+		synctest.Wait()
+		d.mu.Lock()
+		retry := d.known["x.test:1"].next
+		d.mu.Unlock()
+		// B starts before A's retry and answers after A has recovered, all
+		// within the production request deadline.
+		time.Sleep(time.Until(retry) - time.Second)
+		if response := cooldownRequest(d, Message{Address: d.book.self, NodeID: d.book.nodeID, Peers: map[string]string{"z.test:9": testNodeID(1)}}); response.Code != http.StatusOK {
+			t.Fatalf("gossip status = %d", response.Code)
+		}
+		synctest.Wait()
+		time.Sleep(3 * time.Second)
+		synctest.Wait()
+		want := map[string]string{"x.test:1": testNodeID(1)}
+		if !reflect.DeepEqual(d.book.Snapshot().Peers, want) || log.count("x.test:1") != 2 || log.count("z.test:9") != 1 {
+			t.Fatalf("candidate displaced recovered member: book=%v requests=%v", d.book.Snapshot().Peers, log.all())
+		}
+	})
+}
+
+func TestDiscoveryUnidentifiedCandidateDoesNotShareSeedIdentity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := bookTestDir(t)
+		book, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := book.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":1,"peers":["legacy.test:1"]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		book, err = OpenBook(context.Background(), dir, "self.test:1", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { book.Close() })
+		if _, err := book.AddSeeds([]string{"seed.test:1"}); err != nil {
+			t.Fatal(err)
+		}
+		var log requestLog
+		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			log.add(r.URL.Host)
+			switch r.URL.Host {
+			case "seed.test:1":
+				return messageResponse(Message{Address: "listener.test:1", NodeID: testNodeID(1)}), nil
+			case "legacy.test:1":
+				return messageResponse(Message{Address: "legacy.test:1", NodeID: testNodeID(2)}), nil
+			}
+			return nil, context.DeadlineExceeded
+		})}
+		d := NewDiscovery(book, client, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.Run(ctx)
+		synctest.Wait()
+		want := map[string]string{"legacy.test:1": testNodeID(2)}
+		if !reflect.DeepEqual(book.Snapshot().Peers, want) || log.count("legacy.test:1") != 1 {
+			t.Fatalf("unidentified candidate lost: book=%v requests=%v", book.Snapshot().Peers, log.all())
+		}
+	})
+}
+
+func TestDiscoveryConflictingGossipDoesNotBlockRetainedPeers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var log requestLog
+		peers := map[string]string{"x.test:1": testNodeID(1), "y.test:2": testNodeID(2)}
+		d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
+			log.add(r.URL.Host)
+			if id := peers[r.URL.Host]; id != "" {
+				return messageResponse(Message{Address: r.URL.Host, NodeID: id}), nil
+			}
+			return nil, context.DeadlineExceeded
+		})
+		confirmTestPeers(t, d.book, peers)
+		confirmTestPeers(t, d.book, map[string]string{"a.test:5": testNodeID(5)})
+		swapped := map[string]string{"x.test:1": testNodeID(2), "y.test:2": testNodeID(1)}
+		if response := cooldownRequest(d, Message{Address: "a.test:5", NodeID: testNodeID(5), Peers: swapped}); response.Code != http.StatusOK {
+			t.Fatalf("gossip status = %d", response.Code)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.Run(ctx)
+		time.Sleep(37 * time.Second)
+		synctest.Wait()
+		want := map[string]string{"a.test:5": testNodeID(5), "x.test:1": testNodeID(1), "y.test:2": testNodeID(2)}
+		if !reflect.DeepEqual(d.book.Snapshot().Peers, want) || log.count("x.test:1") != 2 || log.count("y.test:2") != 2 {
+			t.Fatalf("cyclic gossip blocked discovery: book=%v requests=%v", d.book.Snapshot().Peers, log.all())
+		}
+	})
+}
+
+func TestDiscoveryGossipRechecksSupersededIdentity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var log requestLog
+		var mu sync.Mutex
+		id := testNodeID(1)
+		d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
+			log.add(r.URL.Host)
+			if r.URL.Host != "x.test:1" && r.URL.Host != "z.test:9" {
+				return nil, context.DeadlineExceeded
+			}
+			mu.Lock()
+			currentID := id
+			mu.Unlock()
+			return messageResponse(Message{Address: r.URL.Host, NodeID: currentID}), nil
+		})
+		confirmTestPeers(t, d.book, map[string]string{"x.test:1": testNodeID(1)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.Run(ctx)
+		synctest.Wait()
+		mu.Lock()
+		id = testNodeID(2)
+		mu.Unlock()
+		// Another verified observation replaces the binding during cooldown.
+		confirmTestPeers(t, d.book, map[string]string{"x.test:1": testNodeID(2)})
+		if response := cooldownRequest(d, Message{Address: "a.test:5", NodeID: testNodeID(5), Peers: map[string]string{"z.test:9": testNodeID(2)}}); response.Code != http.StatusOK {
+			t.Fatalf("inbound status = %d", response.Code)
+		}
+		synctest.Wait()
+		if log.count("x.test:1") != 1 || log.count("z.test:9") != 0 {
+			t.Fatalf("superseded confirmation bypassed cooldown: %v", log.all())
+		}
+		time.Sleep(37 * time.Second)
+		synctest.Wait()
+		if log.count("x.test:1") != 2 || log.count("z.test:9") != 0 || d.book.Snapshot().Peers["x.test:1"] != testNodeID(2) {
+			t.Fatalf("new identity was not checked before replacement: book=%v requests=%v", d.book.Snapshot().Peers, log.all())
+		}
+	})
+}
+
+func TestDiscoveryGossipAliasesShareCurrentCheck(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		name := "multiple aliases"
+		if full {
+			name = "inbound alias at membership capacity"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var log requestLog
+				release := make(chan struct{})
+				d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
+					log.add(r.URL.Host)
+					if r.URL.Host != "x.test:1" {
+						return nil, context.DeadlineExceeded
+					}
+					select {
+					case <-release:
+						return messageResponse(Message{Address: "x.test:1", NodeID: testNodeID(1)}), nil
+					case <-r.Context().Done():
+						return nil, r.Context().Err()
+					}
+				})
+				peers := map[string]string{"x.test:1": testNodeID(1)}
+				if full {
+					for i := 2; i < MaxPeers; i++ {
+						peers[fmt.Sprintf("filler-%d.test:1", i)] = testNodeID(i)
+					}
+				}
+				peers["a.test:5"] = testNodeID(MaxPeers)
+				confirmTestPeers(t, d.book, peers)
+				aliases := make(map[string]string)
+				for i := range 8 {
+					aliases[fmt.Sprintf("alias-%d.test:9", i)] = testNodeID(1)
+				}
+				gossip := Message{Address: "a.test:5", NodeID: testNodeID(MaxPeers), Peers: aliases}
+				if response := cooldownRequest(d, gossip); response.Code != http.StatusOK {
+					t.Fatalf("alias gossip status = %d", response.Code)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				go d.Run(ctx)
+				synctest.Wait()
+				if full {
+					// Inbound aliases remain candidates while the current member
+					// is being checked, even when membership is full.
+					if response := cooldownRequest(d, Message{Address: "alias-0.test:9", NodeID: testNodeID(1)}); response.Code != http.StatusOK {
+						t.Fatalf("inbound alias status = %d", response.Code)
+					}
+				}
+				close(release)
+				synctest.Wait()
+				if response := cooldownRequest(d, gossip); response.Code != http.StatusOK {
+					t.Fatalf("repeated gossip status = %d", response.Code)
+				}
+				time.Sleep(23 * time.Second)
+				synctest.Wait()
+				if log.count("x.test:1") != 1 || d.book.Snapshot().Peers["x.test:1"] != testNodeID(1) {
+					t.Fatalf("aliases did not share one check: book=%v requests=%v", d.book.Snapshot().Peers, log.all())
+				}
+				for address := range aliases {
+					if log.count(address) != 0 {
+						t.Fatalf("working address displaced by %s: requests=%v", address, log.all())
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestDiscoveryCurrentAddressCheckInterrupted(t *testing.T) {
+	for _, cancelCheck := range []bool{false, true} {
+		name := "newer verified move"
+		if cancelCheck {
+			name = "cancellation"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var log requestLog
+				release := make(chan struct{})
+				d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
+					log.add(r.URL.Host)
+					if r.URL.Host != "x.test:1" {
+						id := testNodeID(5)
+						if r.URL.Host == "w.test:4" {
+							id = testNodeID(1)
+						}
+						return messageResponse(Message{Address: r.URL.Host, NodeID: id}), nil
+					}
+					select {
+					case <-release:
+						return messageResponse(Message{Address: "x.test:1", NodeID: testNodeID(1)}), nil
+					case <-r.Context().Done():
+						return nil, r.Context().Err()
+					}
+				})
+				confirmTestPeers(t, d.book, map[string]string{"a.test:5": testNodeID(5), "x.test:1": testNodeID(1)})
+				if response := cooldownRequest(d, Message{Address: "a.test:5", NodeID: testNodeID(5), Peers: map[string]string{"z.test:9": testNodeID(1)}}); response.Code != http.StatusOK {
+					t.Fatalf("inbound status = %d", response.Code)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				done := make(chan struct{})
+				go func() { d.Run(ctx); close(done) }()
+				synctest.Wait()
+				want := map[string]string{"a.test:5": testNodeID(5), "x.test:1": testNodeID(1)}
+				if cancelCheck {
+					cancel()
+					<-done
+				} else {
+					confirmTestPeers(t, d.book, map[string]string{"w.test:4": testNodeID(1)})
+					want = map[string]string{"a.test:5": testNodeID(5), "w.test:4": testNodeID(1)}
+					close(release)
+					synctest.Wait()
+				}
+				if !reflect.DeepEqual(d.book.Snapshot().Peers, want) || log.count("x.test:1") != 1 || log.count("z.test:9") != 0 {
+					t.Fatalf("interrupted check: book=%v requests=%v, want book=%v and no new-address probe", d.book.Snapshot().Peers, log.all(), want)
+				}
+			})
+		})
+	}
+}
+
 func TestDiscoveryVerificationDedupesAndRespectsBackoffWithoutDelayingInbound(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		id1, id5, id9 := testNodeID(1), testNodeID(5), testNodeID(9)
@@ -120,7 +558,7 @@ func TestDiscoveryVerificationDedupesAndRespectsBackoffWithoutDelayingInbound(t 
 				}
 				return nil, context.DeadlineExceeded
 			case "x.test:1":
-				return messageResponse(Message{Address: "x.test:1", NodeID: id1}), nil
+				return nil, context.DeadlineExceeded
 			case "a.test:5":
 				return messageResponse(Message{Address: "a.test:5", NodeID: id5}), nil
 			}
@@ -135,8 +573,8 @@ func TestDiscoveryVerificationDedupesAndRespectsBackoffWithoutDelayingInbound(t 
 		if log.count("x.test:1") != 1 || log.count("a.test:5") != 1 {
 			t.Fatalf("initial requests = %v", log.all())
 		}
-		// x was exchanged at t=0, so its address conflict waits for x's
-		// cooldown. z is unknown, so its identity conflict is probed now.
+		// x failed at t=0, so its address conflict waits for x's backoff.
+		// z shares that failed check instead of probing x again.
 		gossip := Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{"x.test:1": id9, "z.test:9": id1}}
 		check := func(when string, x, z int) {
 			t.Helper()
@@ -239,16 +677,14 @@ func TestDiscoveryVerificationBacklogDoesNotStarveRegularPeers(t *testing.T) {
 			}
 			return nil, context.DeadlineExceeded
 		})
-		if _, err := d.book.merge(Message{Address: "regular.test:1", NodeID: testNodeID(1)}, "regular.test:1", nil); err != nil {
-			t.Fatal(err)
-		}
+		confirmTestPeers(t, d.book, map[string]string{"regular.test:1": testNodeID(1), "old.test:7": testNodeID(7)})
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		go d.Run(ctx)
 		synctest.Wait()
 		claims := make(map[string]string)
 		for i := range 64 {
-			claims[fmt.Sprintf("unreachable-%02d.test:1", i)] = testNodeID(1)
+			claims[fmt.Sprintf("unreachable-%02d.test:1", i)] = testNodeID(7)
 		}
 		if response := cooldownRequest(d, Message{Address: "sender.test:5", NodeID: testNodeID(5), Peers: claims}); response.Code != http.StatusOK {
 			t.Fatalf("gossip status = %d", response.Code)
@@ -280,7 +716,7 @@ func TestDiscoveryInboundMoveRequiresVerification(t *testing.T) {
 				}
 				return messageResponse(Message{Address: "z.test:9", NodeID: id1}), nil
 			case "x.test:1":
-				return messageResponse(Message{Address: "x.test:1", NodeID: id1}), nil
+				return nil, context.DeadlineExceeded
 			case "w.test:4":
 				return messageResponse(Message{Address: "w.test:4", NodeID: id1}), nil
 			}
@@ -325,10 +761,19 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 	t.Run("relocated schedules are pruned", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			var log requestLog
+			var mu sync.Mutex
+			liveAddress := "z0.test:1"
 			d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
 				log.add(r.URL.Host)
 				if r.URL.Host == "a.test:5" {
 					return messageResponse(Message{Address: "a.test:5", NodeID: id5}), nil
+				}
+				// Each new claim relocates an identity whose old address is gone.
+				mu.Lock()
+				live := r.URL.Host == liveAddress
+				mu.Unlock()
+				if !live {
+					return nil, context.DeadlineExceeded
 				}
 				return messageResponse(Message{Address: r.URL.Host, NodeID: id1}), nil
 			})
@@ -339,6 +784,11 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 			const rounds = 8
 			for i := 1; i <= rounds; i++ {
 				address := fmt.Sprintf("z%d.test:1", i)
+				mu.Lock()
+				liveAddress = address
+				mu.Unlock()
+				// Let the previous address's successful outbound cooldown expire.
+				time.Sleep(37 * time.Second)
 				if response := cooldownRequest(d, Message{Address: "a.test:5", NodeID: id5, Peers: map[string]string{address: id1}}); response.Code != http.StatusOK {
 					t.Fatalf("gossip status = %d", response.Code)
 				}
@@ -346,7 +796,6 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 				if log.count(address) != 1 {
 					t.Fatalf("round %d requests = %v", i, log.all())
 				}
-				time.Sleep(time.Second)
 			}
 			want := map[string]string{"a.test:5": id5, fmt.Sprintf("z%d.test:1", rounds): id1}
 			if got := d.book.Snapshot().Peers; !reflect.DeepEqual(got, want) {

@@ -908,11 +908,25 @@ Crossing the membership expiry time during an outbound request does not invalida
 if the recorded bindings remain unchanged. Actual removal or replacement still invalidates the
 earlier observation.
 
+If a candidate claims a new address B for an ID confirmed at A, verification shares A's
+normal scheduled outbound check and its cooldown and backoff, without a separate probe of A.
+A recent successfully merged outbound confirmation of the expected ID suppresses B until
+A's outbound cooldown expires. A recent failure permits probing B, subject to B's own retry
+timing. If B has already failed, suppressing it retains at least a five-minute cooldown
+before a new introduction can obtain a fresh retry budget.
+Unknown or stale observations and successful observations superseded by a binding
+change require A's normal check first. Conflicting candidates share that check, without
+chained verification workers. All retained peers and configured seeds keep their normal
+independent schedules, even when gossip contains cyclic identity conflicts.
+Candidate responses are checked again before admission, so B cannot replace A if A
+recovers while B's request is in flight. Unidentified migrated candidates do not share
+an identity with unresolved seeds.
+
 Exchanges start immediately, normally repeat every 30 seconds with ±20% jitter, and use
 exponential failure backoff capped at five minutes before jitter. Inbound exchanges and gossip
-do not postpone probes, shorten backoff, or reset a candidate's retry budget. New candidates
-are eligible for immediate contact. Unverified non-seed candidates get three failed attempts followed
-by a five-minute cooldown, after which a new introduction can request another budget.
+do not postpone probes, shorten backoff, or reset a candidate's retry budget. Other new
+candidates are eligible for immediate contact. Unverified non-seed candidates get three failed attempts
+followed by a five-minute cooldown, after which a new introduction can request another budget.
 Incoming requests are still answered during cooldown, and requests already in flight can
 cross. Candidate budgets, cooldowns, and retry timing are held only in memory and reset on restart.
 
