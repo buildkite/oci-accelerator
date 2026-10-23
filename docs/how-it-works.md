@@ -89,6 +89,15 @@ itself. An alias response introduces the advertised address for a separate probe
 Verified responders replace conflicting mappings, and late responses cannot undo
 intervening binding changes. Inbound exchanges do not postpone outbound probes.
 
+If a candidate claims a new address B for an ID confirmed at A, verification
+shares A's normal outbound check and its cooldown and backoff, not a separate
+probe of A. A recent successfully merged confirmation of the expected ID
+suppresses B until A's outbound cooldown expires. A recent failure permits
+probing B subject to B's retry timing. Unknown or stale observations and
+superseded successful observations require A's normal check first. Conflicting
+candidates share that check without chained verification workers. Retained peers
+and configured seeds keep their normal independent discovery schedules.
+
 Confirmed membership expires after 30 minutes without successful outbound
 contact. Successful contact updates live freshness immediately. Renewal timestamps
 are checkpointed when they advance 7 minutes 30 seconds beyond the saved value,

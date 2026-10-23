@@ -33,9 +33,11 @@ type Discovery struct {
 }
 
 type peerSchedule struct {
-	next     time.Time
-	failures int
-	running  bool
+	next        time.Time
+	failures    int
+	running     bool
+	claimedID   string // identity in the latest candidate introduction
+	confirmedID string // identity from the last successfully verified outbound exchange
 }
 
 // NewDiscovery returns discovery for book. When newPeers is not nil, it
@@ -114,6 +116,10 @@ func (d *Discovery) Run(ctx context.Context) {
 				continue
 			}
 			if !entry.next.After(now) && active < exchangeConcurrency {
+				// Members and seeds keep independent discovery schedules.
+				if verification && d.pending[address] && d.preferCurrent(address, entry.claimedID, before, now) {
+					continue
+				}
 				entry.running = true
 				active++
 				if verification {
@@ -149,8 +155,32 @@ func (d *Discovery) Run(ctx context.Context) {
 			d.mu.Lock()
 			entry := d.known[result.address]
 			entry.running = false
+			var merged Message
 			if result.err == nil && ctx.Err() == nil {
-				_, result.err = d.receive(result.message, result.address, &result.before)
+				_, current := d.book.observe()
+				if result.verification && d.preferCurrent(result.address, result.message.NodeID, current, time.Now()) {
+					// A member may have recovered while this candidate was in flight.
+					result.err = errStaleObservation
+				} else {
+					merged, result.err = d.receive(result.message, result.address, &result.before)
+				}
+			}
+			entry.confirmedID = ""
+			if result.err == nil && ctx.Err() == nil && result.message.Address == result.address && merged.Peers[result.address] == result.message.NodeID {
+				entry.confirmedID = result.message.NodeID
+				// One successful check settles all gossip aliases for this ID.
+				for address, pending := range d.pending {
+					if pending && d.known[address].claimedID == result.message.NodeID {
+						d.pending[address] = false
+						if merged.Peers[address] == "" {
+							d.deferExchange(d.known[address], 0)
+							// Forget failed candidates only after a full cooldown.
+							if next := time.Now().Add(candidateCooldown); d.known[address].failures != 0 && next.After(d.known[address].next) {
+								d.known[address].next = next
+							}
+						}
+					}
+				}
 			}
 			if result.err != nil && !errors.Is(result.err, errStaleObservation) {
 				if entry.failures == 0 {
@@ -171,10 +201,11 @@ func (d *Discovery) Run(ctx context.Context) {
 				_, retained := view.peers[result.address]
 				if retained {
 					delete(d.pending, result.address)
-				} else if result.err == nil || entry.failures >= candidateAttempts {
+				} else if !d.pending[result.address] || result.err == nil || entry.failures >= candidateAttempts {
 					// Successful alias responses also cool down. They introduce
 					// the advertised listener as a separate candidate, not proof
 					// that the listener can be reached.
+					// Suppressed in-flight candidates retain the same cooldown.
 					d.pending[result.address] = false
 					entry.next = time.Now().Add(candidateCooldown)
 				}
@@ -182,6 +213,39 @@ func (d *Discovery) Run(ctx context.Context) {
 			d.mu.Unlock()
 		}
 	}
+}
+
+// preferCurrent requires mu and a due hint or candidate response. All aliases
+// share the current address's in-flight exchange and outbound cooldown, rather
+// than probing it separately. Only a recent failed check permits an alias.
+func (d *Discovery) preferCurrent(address, id string, view bookView, now time.Time) bool {
+	if id == "" {
+		// Migrated candidates and unresolved seeds do not share an identity.
+		return false
+	}
+	hint := d.known[address]
+	current := addressForID(view.peers, id)
+	if current == "" || current == address {
+		return false
+	}
+	entry := d.known[current]
+	if entry.running || !entry.next.After(now) {
+		return true
+	}
+	if entry.failures != 0 {
+		return false
+	}
+	if entry.confirmedID == id {
+		if _, pending := d.pending[address]; pending {
+			d.pending[address] = false
+			d.deferExchange(hint, 0)
+			// Suppression must not replenish a failed candidate's retry budget.
+			if next := now.Add(candidateCooldown); hint.failures != 0 && next.After(hint.next) {
+				hint.next = next
+			}
+		}
+	}
+	return true
 }
 
 func (d *Discovery) receiveInbound(message Message) (Message, error) {
@@ -218,8 +282,14 @@ func (d *Discovery) receive(message Message, destination string, before *bookVie
 			// Existing members and seeds already have independent schedules.
 			continue
 		}
+		// Requests and responses are canonicalized at the wire boundary.
+		id := message.Peers[address]
+		if address == message.Address {
+			id = message.NodeID
+		}
 		if _, exists := d.pending[address]; exists {
 			// Gossip cannot renew a retry budget or bypass its cooldown.
+			d.known[address].claimedID = id
 			continue
 		}
 		if len(d.pending) == MaxPeers {
@@ -230,6 +300,7 @@ func (d *Discovery) receive(message Message, destination string, before *bookVie
 		if d.known[address] == nil {
 			d.known[address] = &peerSchedule{}
 		}
+		d.known[address].claimedID = id
 	}
 	if dropped != 0 {
 		d.logger.Warn("peer verification queue full", "rejected", dropped, "limit", MaxPeers)
