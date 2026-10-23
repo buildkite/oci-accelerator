@@ -896,18 +896,24 @@ mapping. If a contacted alias answers with a different advertised address, that 
 be probed separately before admission. Failed verification leaves existing membership unchanged.
 Late responses that could undo intervening updates are discarded. Each reply contains the
 receiver's own identity and its unexpired confirmed members. An empty book sends `"peers": {}`.
+Crossing the membership expiry time during an outbound request does not invalidate its response
+if the recorded bindings remain unchanged. Actual removal or replacement still invalidates the
+earlier observation.
 
 Exchanges start immediately, normally repeat every 30 seconds with ±20% jitter, and use
 exponential failure backoff capped at five minutes before jitter. Inbound exchanges and gossip
 do not postpone probes, shorten backoff, or reset a candidate's retry budget. New candidates
-are eligible for immediate contact. Unverified candidates get three failed attempts followed
+are eligible for immediate contact. Unverified non-seed candidates get three failed attempts followed
 by a five-minute cooldown, after which a new introduction can request another budget.
 Incoming requests are still answered during cooldown, and requests already in flight can
 cross. Candidate budgets, cooldowns, and retry timing are held only in memory and reset on restart.
 
 Inbound exchanges do not prove that the sender's advertised listener is reachable. A returning
 peer can contact a live member to trigger a probe back, restoring membership once that probe
-succeeds. Node IDs are self-asserted within the existing fleet-wide trust model, not independently
+succeeds. If another instance cannot reach your advertised listener, for example because of NAT,
+firewall rules, or routing, it cannot admit or advertise your node. You can still initiate exchanges
+to that instance and learn its members. Outbound connectivity alone does not make your node a member.
+Node IDs are self-asserted within the existing fleet-wide trust model, not independently
 authenticated.
 
 Requests have a five-second deadline. Regular discovery and verification share four outbound
@@ -923,8 +929,10 @@ are limited to 512 KiB and 1,024 peer mappings. Unknown fields, duplicate JSON k
 IDs, and contradictory spellings of the same canonical address are rejected.
 
 Each instance retains up to 1,024 confirmed members, excluding itself, and separately keeps up
-to 1,024 configured seed targets. Seeds do not consume membership slots, so a verified node
-can move away from its seed address even when membership is full.
+to 1,024 configured seed targets. Unverified seed targets do not consume membership slots.
+Moving a verified node to a new address replaces its previous membership entry, even at capacity.
+If its previous address is a configured seed, that address remains a separate retry target without
+using an extra membership slot. New unrelated members still require a free slot.
 Confirmed members expire after 30 minutes without successful outbound contact. They disappear
 from advertisements and provider selection immediately at expiry, and discovery removes their
 durable mappings. At capacity, new unrelated members are rejected with a `peer address book full`
@@ -933,14 +941,27 @@ its previous mapping. Losing a node's identity state gives it a new ID, and its 
 mapping expires normally.
 
 `peers.json` contains versioned membership and local last-success timestamps and is atomically
-replaced after changes. Persisted freshness prevents restarts from renewing dead membership.
+replaced immediately when membership changes. Successful renewals update exact freshness in
+memory, but trigger a replacement only when a member's timestamp has advanced at least 7 minutes
+30 seconds beyond its saved checkpoint. Each replacement saves all current timestamps, so peers
+can share a checkpoint write. This is not a global limit on write frequency. Startup also rewrites
+the file to migrate or clean loaded state.
+Persisted freshness prevents restarts from renewing dead membership. With successful persistence,
+the saved timestamp trails the latest accepted success by less than 7 minutes 30 seconds, so a
+restart can expire membership that much earlier, never later, than its in-memory lifetime.
 You may read it to inspect known addresses, but do not edit live state. Timestamps are local
-observations, never accepted from another instance. Startup also merges configured seeds.
+observations, never accepted from another instance. Startup loads configured seeds into a separate
+in-memory retry set.
 Configured seeds remain bootstrap targets after membership expires, but are not advertised
 until verified. Removing a seed from configuration removes its indefinite retry exemption.
 Maintain a reachable seed or another known live peer so separated groups can rediscover each
 other after a partition. Stale gossip can request bounded probing, but cannot restore membership
 without successful direct contact.
+
+Saved timestamps use wall-clock time when loaded after a restart. Moving the clock backwards can
+retain restored membership longer, while moving it forwards can expire restored members early or
+all at once. Expired members require direct verification before admission again. Fresh timestamps
+recorded in the current process use Go's monotonic clock for elapsed-time comparisons.
 
 On first peering-enabled startup, each instance generates a 12-character, case-sensitive
 base64url node ID from 72 cryptographically random bits and persists it in `node-id` in the
@@ -966,6 +987,9 @@ unknown files without replacing the book. Bind or state startup failures prevent
 Runtime persistence failures fail the exchange and log `peer address book update failed` while
 the proxy continues serving. If replacement succeeded but directory sync failed, the book retains
 the replaced state and retries persistence before acknowledging another exchange.
+Expiry persistence failures log `peer membership expiry persistence failed` once per failure
+episode. Discovery keeps retrying and logs `peer membership expiry persistence recovered` once
+when expiry persistence succeeds again. Expired members stay hidden even while persistence fails.
 A peer-listener failure stops the process rather than leaving an
 enabled service silently unavailable. Outage and recovery logs include the peer address but no
 raw network errors or credentials.

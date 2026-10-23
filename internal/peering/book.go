@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const membershipTTL = 30 * time.Minute
+const (
+	membershipTTL     = 30 * time.Minute
+	renewalCheckpoint = membershipTTL / 4
+)
 
 var (
 	errBook              = errors.New("peer address book error")
@@ -24,7 +27,8 @@ type Book struct {
 	self     string
 	nodeID   string
 	records  map[string]bookRecord
-	seeds    map[string]bool // configured in this process, not inherited from disk
+	saved    map[string]bookRecord // last published checkpoint, possibly awaiting directory sync
+	seeds    map[string]bool       // configured in this process, not inherited from disk
 	lock     bookLock
 	unsynced bool
 	revision uint64 // advances when a recorded mapping is replaced or removed
@@ -46,6 +50,7 @@ type MergeResult struct {
 type bookView struct {
 	peers    map[string]string
 	revision uint64
+	observed time.Time
 }
 
 // OpenBook opens the address book in dir for self.
@@ -79,6 +84,7 @@ func OpenBook(dir, self string) (*Book, error) {
 		_ = lock.close()
 		return nil, errBook
 	}
+	b.saved = b.records
 	return b, nil
 }
 
@@ -143,11 +149,16 @@ func (b *Book) merge(message Message, destination string, before *bookView) (res
 	}
 	now := time.Now()
 	current := b.bindings(now)
-	if destination != "" && before != nil && (before.revision != b.revision ||
-		before.peers[destination] != current[destination] ||
-		before.peers[message.Address] != current[message.Address] ||
-		addressForID(before.peers, message.NodeID) != addressForID(current, message.NodeID)) {
-		return result, errStaleObservation
+	if before != nil {
+		// Compare at the observation time so elapsed TTL alone cannot discard
+		// a renewal. Actual removals and replacements still invalidate it.
+		bindings := b.bindings(before.observed)
+		if before.revision != b.revision ||
+			before.peers[destination] != bindings[destination] ||
+			before.peers[message.Address] != bindings[message.Address] ||
+			addressForID(before.peers, message.NodeID) != addressForID(bindings, message.NodeID) {
+			return result, errStaleObservation
+		}
 	}
 
 	next := maps.Clone(b.records)
@@ -189,7 +200,8 @@ func (b *Book) merge(message Message, destination string, before *bookView) (res
 func (b *Book) observe() (Message, bookView) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.snapshot(), bookView{peers: b.bindings(time.Now()), revision: b.revision}
+	now := time.Now()
+	return b.snapshot(), bookView{peers: b.bindings(now), revision: b.revision, observed: now}
 }
 
 func (b *Book) snapshot() Message {
@@ -203,13 +215,24 @@ func (b *Book) snapshot() Message {
 	return Message{Address: b.self, NodeID: b.nodeID, Peers: peers}
 }
 
-// persist requires mu. Retain state published by rename even when syncing the
-// directory fails, and retry that sync before acknowledging another exchange.
+// persist requires mu. Membership changes persist immediately, while renewals
+// retain exact live freshness and checkpoint only after renewalCheckpoint.
+// A restart can lose recent freshness but cannot extend it. Retain state published
+// by rename even when directory sync fails, and retry before acknowledging contact.
 func (b *Book) persist(next map[string]bookRecord) error {
 	if b.lock.file == nil {
 		return errBook
 	}
-	if maps.Equal(next, b.records) && !b.unsynced {
+	changed := b.unsynced || len(next) != len(b.saved)
+	for address, record := range next {
+		saved, exists := b.saved[address]
+		if !exists || record.NodeID != saved.NodeID || record.LastSuccess.Sub(saved.LastSuccess) >= renewalCheckpoint {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		b.records = next
 		return nil
 	}
 	published, err := b.write(b.dir, next)
@@ -222,6 +245,7 @@ func (b *Book) persist(next map[string]bookRecord) error {
 			}
 		}
 		b.records = next
+		b.saved = next
 		b.unsynced = err != nil
 	}
 	if err != nil {

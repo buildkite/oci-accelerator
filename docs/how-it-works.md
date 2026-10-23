@@ -77,16 +77,19 @@ Verified responders replace conflicting mappings, and late responses cannot undo
 intervening binding changes. Inbound exchanges do not postpone outbound probes.
 
 Confirmed membership expires after 30 minutes without successful outbound
-contact. The last successful contact is persisted, so restarts do not renew
-membership. Gossip and inbound contact do not extend it. Expired peers disappear
-from advertisements and provider selection, and leave the durable address book.
+contact. Successful contact updates live freshness immediately. Renewal timestamps
+are checkpointed when they advance 7 minutes 30 seconds beyond the saved value,
+and membership changes save all current timestamps immediately. Restarts can lose
+recent freshness but do not renew membership. Gossip and inbound contact do not
+extend it. Expired peers disappear from advertisements and provider selection,
+and leave the durable address book.
 A returning peer can contact a live member, which probes it back before restoring
 membership. Keep a reachable seed or another live peer as a route back after a
 partition.
 
 The durable book holds up to 1,024 members. Up to 1,024 configured seeds are kept
 separately as retryable bootstrap targets even after their membership expires.
-Unverified candidates share a bounded, deduplicated queue and get three failed
+Unverified non-seed candidates share a bounded, deduplicated queue and get three failed
 attempts followed by a five-minute cooldown. Later gossip can request a new budget
 after cooldown, but cannot reset an active budget or bypass backoff. Verification
 shares discovery's four outbound slots, with at most two used by candidates.
