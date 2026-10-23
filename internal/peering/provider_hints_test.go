@@ -225,16 +225,20 @@ func TestProviderHintsProvidersRejectsInvalidKeys(t *testing.T) {
 	}
 }
 
-func TestPeerHandlerRoutesCacheKeys(t *testing.T) {
+func TestPeerHandlerRoutesCacheKeysAndEntries(t *testing.T) {
 	var routed []string
 	handler := PeerHandler(
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { routed = append(routed, "discovery") }),
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { routed = append(routed, "keys") }),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { routed = append(routed, "entries") }),
 	)
-	for _, target := range []string{keysPath, keysPath + "?after=x", "/v1/peers", "/v1/cache/keys/", "/"} {
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		for _, target := range []string{keysPath, keysPath + "?after=x", entryPath, entryPath + "?x=y", "/v1/peers", "/v1/cache/keys/", "/v1/cache/entry/", "/"} {
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, target, nil))
+		}
 	}
-	want := []string{"keys", "keys", "discovery", "discovery", "discovery"}
+	want := []string{"keys", "keys", "entries", "entries", "discovery", "discovery", "discovery", "discovery"}
+	want = append(want, want...)
 	if !reflect.DeepEqual(routed, want) {
 		t.Fatalf("routed = %v, want %v", routed, want)
 	}

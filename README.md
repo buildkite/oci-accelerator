@@ -21,14 +21,16 @@ upstream registry again.
   each upstream registry are signed on demand.
 - **Bounded, self-maintaining storage.** Disk use is capped, least-recently-used
   entries are evicted, and objects that don't fit pass through uncached.
-- **Optional peer discovery.** Instances sharing a CA can discover and remember
+- **Optional peer caching.** Instances sharing a CA can discover and remember
   each other over a separate mutually authenticated TLS port. Peering exchanges
   addresses and persistent node IDs, and each instance lists its cache keys to
   authenticated peers. Background polls maintain memory-only provider hints, with
   a default one-minute delay after each attempt and completion-relative hourly
   full scans, both with ±20% jitter. Fetch duration and capacity queueing add to
-  the poll delay, so there is no wall-clock freshness guarantee. Hints do not
-  serve pulls, and peering never shares cached content.
+  the poll delay, so there is no wall-clock freshness guarantee. On an authorized
+  eligible full blob or manifest miss, the proxy tries one randomly chosen live
+  hinted provider before using the origin body. Ranges use origin or local cache.
+  Registry credentials and authorization grants are never shared.
   See [peer discovery](docs/deployment.md#peer-discovery).
 
 See [how it works](docs/how-it-works.md) for the request flow, authorization,

@@ -22,7 +22,7 @@ var errEntryFetch = errors.New("peer entry fetch failed")
 
 // FetchEntry opens a matching peer entry without forwarding credentials or
 // following redirects. Supply a dedicated fleet mTLS transfer client with
-// Timeout zero and a bounded ctx. The caller must close the returned body and
+// a bounded ctx or client Timeout. The caller must close the returned body and
 // read through EOF to verify its exact length and SHA-256 digest before use.
 func FetchEntry(ctx context.Context, client *http.Client, destination, expectedNode string, meta cache.Metadata) (io.ReadCloser, error) {
 	if client == nil || !validNodeID(expectedNode) || !validEntryMetadata(meta) {
@@ -127,6 +127,11 @@ func (b *entryBody) Read(p []byte) (int, error) {
 		err = b.ctx.Err()
 	}
 	b.err = err
+	// Do not complete the advertised body on a failed final read. Streaming
+	// callers may write n bytes before checking err, hiding the failure.
+	if b.remaining == 0 && err != nil && err != io.EOF {
+		return 0, err
+	}
 	return n, err
 }
 

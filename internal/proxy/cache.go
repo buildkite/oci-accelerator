@@ -70,6 +70,22 @@ func (t registryTransport) resolveResponse(req *http.Request, resp *http.Respons
 		if errors.As(err, &admission) {
 			stats.admission = admission.Reason.String()
 		}
+	}
+
+	// Hints change only the body source, never origin approval or headers.
+	// Admit the fill first so concurrent requests can coalesce while peer
+	// headers arrive. Even an object that cannot be stored can use peer bytes.
+	ranged, _ := req.Context().Value(rangeRequestKey{}).(bool)
+	if t.fetchPeer != nil && !ranged {
+		if body, err := t.fetchPeer(req.Context(), meta); err == nil {
+			resp.Body.Close()
+			resp.Body = &countedBody{ReadCloser: body, stats: stats, peer: true}
+			stats.peer = "hit"
+		} else {
+			stats.peer = "unavailable"
+		}
+	}
+	if fill == nil {
 		return resp, false, nil
 	}
 

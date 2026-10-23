@@ -19,25 +19,31 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
+type peerService struct {
+	done  <-chan struct{}
+	close func() error
+	fetch func(context.Context, cache.Metadata) (io.ReadCloser, error)
+}
+
 // startPeering owns the peer listener, discovery loop, cache key hint refresh
-// loop and address book until its cleanup is called. The listener also serves
-// live LRU-to-MRU inventory pages of the local cache to authenticated peers. Hints
+// loop and address book until its cleanup is called. The listener serves live
+// LRU-to-MRU inventory pages and committed entries to authenticated peers. Hints
 // catch up from every known peer periodically, starting immediately at startup
 // and when discovery adds its node ID. Disabled peering creates no state or
 // network activity.
-func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, inventory func(cache.KeyPosition, int) ([]string, cache.KeyPosition, error), logger *slog.Logger, listen func(string, string) (net.Listener, error)) (<-chan struct{}, func() error, error) {
+func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, store *cache.Store, logger *slog.Logger, listen func(string, string) (net.Listener, error)) (*peerService, error) {
 	if cfg.Peer.Listen == "" {
-		return nil, nil, nil
+		return nil, nil
 	}
 	serverTLS, clientTLS, err := signer.PeerTLSConfigs()
 	if err != nil {
-		return nil, nil, errors.New("peer TLS startup failed")
+		return nil, errors.New("peer TLS startup failed")
 	}
 	client := peering.NewClient(clientTLS)
 	book, err := peering.OpenBook(ctx, cfg.Peer.StateDir, cfg.Peer.Advertise, cfg.Peer.Seeds, client)
 	if err != nil {
 		client.CloseIdleConnections()
-		return nil, nil, fmt.Errorf("peer state startup failed: %w", err)
+		return nil, fmt.Errorf("peer state startup failed: %w", err)
 	}
 	// Bootstrap may leave idle connections even if startup fails before discovery.
 	defer client.CloseIdleConnections()
@@ -45,18 +51,21 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	// Construct discovery before Run expires those candidates from the book.
 	rejected, err := book.AddSeeds(cfg.Peer.Seeds)
 	if err != nil {
-		return nil, nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())
+		return nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())
 	}
 	if rejected != 0 {
 		logger.Warn("peer seed targets full", "rejected", rejected, "limit", peering.MaxPeers)
 	}
 	listener, err := listen("tcp", cfg.Peer.Listen)
 	if err != nil {
-		return nil, nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
+		return nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
-	hints := peering.NewProviderHints(book, client, inventory, cfg.Peer.HintRefreshTimeout, cfg.Peer.HintRefreshInterval, cfg.Peer.HintFullRefreshInterval, logger)
+	transferClient := peering.NewClient(clientTLS)
+	transferClient.Timeout = cfg.Cache.FillTimeout
+	hints := peering.NewProviderHints(book, client, store.KeyPage, cfg.Peer.HintRefreshTimeout, cfg.Peer.HintRefreshInterval, cfg.Peer.HintFullRefreshInterval, logger)
 	discovery := peering.NewDiscovery(book, client, logger, hints.PeersAdded)
-	handler := peering.PeerHandler(discovery.Handler(), hints.Handler())
+	entries := peering.NewEntryHandler(book.Snapshot().NodeID, store, cfg.Cache.FillTimeout)
+	handler := peering.PeerHandler(discovery.Handler(), hints.Handler(), entries)
 	var handlerMu sync.Mutex
 	var handlers sync.WaitGroup
 	stopping := false
@@ -102,6 +111,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		close(hintsDone)
 	}()
 	cleanup := func() error {
+		defer transferClient.CloseIdleConnections()
 		cancel()
 		handlerMu.Lock()
 		stopping = true
@@ -122,5 +132,11 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		return errors.Join(cleanupErr, serveErr, book.Close())
 	}
 	logger.Info("peer service ready", "listen", listener.Addr().String(), "advertise", cfg.Peer.Advertise, "node_id", book.Snapshot().NodeID, "known_peers", len(book.Addresses()))
-	return serveDone, cleanup, nil
+	return &peerService{
+		done:  serveDone,
+		close: cleanup,
+		fetch: func(ctx context.Context, meta cache.Metadata) (io.ReadCloser, error) {
+			return hints.Fetch(ctx, transferClient, meta)
+		},
+	}, nil
 }

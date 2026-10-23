@@ -24,8 +24,10 @@ type metrics struct {
 	waits                          map[string]uint64
 	fallback                       map[string]uint64
 	rejects                        map[string]uint64
+	peers                          map[string]uint64
 	upstream                       uint64
 	upstreamBytes, downstreamBytes uint64
+	peerBytes                      uint64
 	servedBytes, servedEntries     map[string]uint64
 	durations                      [len(requestDurationBounds) + 1]uint64
 	durationSum                    float64
@@ -41,6 +43,7 @@ func newMetrics() *metrics {
 		waits:         map[string]uint64{},
 		fallback:      map[string]uint64{},
 		rejects:       map[string]uint64{},
+		peers:         map[string]uint64{},
 		servedBytes:   map[string]uint64{"cache": 0, "origin": 0},
 		servedEntries: map[string]uint64{"cache": 0, "origin": 0},
 	}
@@ -52,6 +55,8 @@ type requestStats struct {
 	admission      string
 	reject         string
 	upstreamBytes  int64
+	peer           string
+	peerBytes      int64
 	// immutable marks the original request as a full immutable-object GET,
 	// decided before hop-by-hop stripping so a bypassed Range or conditional
 	// request that becomes a plain GET upstream stays out of served-source metrics.
@@ -106,11 +111,13 @@ func (p *Proxy) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeMap("oci_accelerator_waits_total", "outcome", m.waits)
 	writeMap("oci_accelerator_fallbacks_total", "outcome", m.fallback)
 	writeMap("oci_accelerator_cache_rejections_total", "reason", m.rejects)
+	writeMap("oci_accelerator_peer_fetches_total", "outcome", m.peers)
 
 	// Emit upstream/downstream traffic counters and live activity gauges.
 	b.WriteString("# HELP oci_accelerator_upstream_get_attempts_total GET connection-acquisition attempts, including transport retries and DNS/dial/TLS failures before sending.\n")
 	writeScalar("upstream_get_attempts_total", "counter", m.upstream)
 	writeScalar("upstream_body_bytes_total", "counter", m.upstreamBytes)
+	writeScalar("peer_body_bytes_total", "counter", m.peerBytes)
 	writeScalar("downstream_bytes_total", "counter", m.downstreamBytes)
 	b.WriteString("# HELP oci_accelerator_served_bytes_total Immutable-object 200 response body bytes written downstream, including interrupted transfers, by body source.\n")
 	writeMap("oci_accelerator_served_bytes_total", "source", m.servedBytes)
@@ -170,8 +177,10 @@ func (m *metrics) snapshot() metricsSnapshot {
 		waits:           maps.Clone(m.waits),
 		fallback:        maps.Clone(m.fallback),
 		rejects:         maps.Clone(m.rejects),
+		peers:           maps.Clone(m.peers),
 		upstream:        m.upstream,
 		upstreamBytes:   m.upstreamBytes,
+		peerBytes:       m.peerBytes,
 		downstreamBytes: m.downstreamBytes,
 		servedBytes:     maps.Clone(m.servedBytes),
 		servedEntries:   maps.Clone(m.servedEntries),
@@ -184,7 +193,9 @@ func (m *metrics) snapshot() metricsSnapshot {
 
 type metricsSnapshot struct {
 	requests, statuses, cache, fills, waits, fallback, rejects map[string]uint64
+	peers                                                      map[string]uint64
 	upstream, upstreamBytes, downstreamBytes                   uint64
+	peerBytes                                                  uint64
 	servedBytes, servedEntries                                 map[string]uint64
 	durations                                                  [len(requestDurationBounds) + 1]uint64
 	durationSum                                                float64
@@ -232,7 +243,11 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 	if s.reject != "" {
 		m.rejects[s.reject]++
 	}
+	if s.peer != "" {
+		m.peers[s.peer]++
+	}
 	m.upstreamBytes += uint64(s.upstreamBytes)
+	m.peerBytes += uint64(s.peerBytes)
 	m.downstreamBytes += uint64(downstream)
 	// Scope by request shape and status, not storage admission, so uncached
 	// origin responses still count. Grant hits record "hit".
@@ -240,6 +255,8 @@ func (m *metrics) finish(s *requestStats, outcome string, status int, d time.Dur
 		source := "origin"
 		if s.cache == "hit" || s.cache == "wait_hit" {
 			source = "cache"
+		} else if s.peer == "hit" {
+			source = "peer"
 		}
 		m.servedBytes[source] += uint64(downstream)
 		if outcome == "complete" {

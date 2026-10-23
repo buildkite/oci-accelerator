@@ -23,14 +23,25 @@ bounded connections, and shutdown. Cache key listing tests cover live LRU-to-MRU
 hits between pages, cursor eviction and restart rejection, strict decoding, node ID checks
 against reused addresses, page-by-page progress under failure and deadlines, the distinct-key
 FIFO, and background fetches from known peers at startup and from newly discovered peers.
+Peer entry tests cover committed bytes over fleet mutual TLS, strict metadata and
+response framing, identity checks, streamed length and digest verification, stale-hint
+removal, live-provider selection, transfer limits, deadlines, and reader cleanup.
+Proxy tests cover origin approval for peer-sourced full blobs and manifests, origin
+response headers, subsequent local hits, coalesced peer fills, pre-acceptance origin
+fallback without another GET, no-store bypass, delivery when storage admission fails,
+truncation without publication or origin retry, cancellation, shutdown, and source metrics.
+Production-service fixtures cover entry transfers after discovery, periodic inventory
+refresh, and restart. Ranged requests remain origin/local, not peer-sourced.
 Run those checks alone with:
 
 ```sh
-go test -race ./internal/ca ./internal/cache ./internal/peering ./internal/config ./cmd/oci-accelerator
+go test -race ./internal/ca ./internal/cache ./internal/peering ./internal/proxy ./internal/config ./cmd/oci-accelerator
 ```
 
 These tests do not require Docker or external peers. Peer persistence failure
 tests include injected errors and abandoned-file recovery, not power-loss testing.
+Peer coverage uses local HTTP/TLS clients and production-service fixtures, not a
+multi-node Docker acceptance suite.
 
 Platform notes:
 

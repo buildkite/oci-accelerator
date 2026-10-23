@@ -10,11 +10,16 @@ import (
 type countedBody struct {
 	io.ReadCloser
 	stats *requestStats
+	peer  bool
 }
 
 func (b *countedBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
-	b.stats.upstreamBytes += int64(n)
+	if b.peer {
+		b.stats.peerBytes += int64(n)
+	} else {
+		b.stats.upstreamBytes += int64(n)
+	}
 	return n, err
 }
 

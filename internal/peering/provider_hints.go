@@ -72,15 +72,18 @@ func NewProviderHints(book *Book, client *http.Client, inventory func(cache.KeyP
 // Handler serves the local inventory at GET /v1/cache/keys.
 func (p *ProviderHints) Handler() http.Handler { return newKeysHandler(p.self, p.inventory) }
 
-// PeerHandler routes cache key requests to keys and every other request to
-// discovery, which rejects unknown paths.
-func PeerHandler(discovery, keys http.Handler) http.Handler {
+// PeerHandler routes inventory and entry requests to their cache handlers and
+// every other request to discovery, which rejects unknown paths.
+func PeerHandler(discovery, keys, entries http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == keysPath {
+		switch r.URL.Path {
+		case keysPath:
 			keys.ServeHTTP(w, r)
-			return
+		case entryPath:
+			entries.ServeHTTP(w, r)
+		default:
+			discovery.ServeHTTP(w, r)
 		}
-		discovery.ServeHTTP(w, r)
 	})
 }
 
