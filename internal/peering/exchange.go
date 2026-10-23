@@ -9,7 +9,10 @@ import (
 	"net/http"
 )
 
-const maxMessageBytes = 512 << 10
+const (
+	peersPath       = "/v1/peers"
+	maxMessageBytes = 512 << 10
+)
 
 var errExchange = errors.New("peer exchange failed")
 
@@ -18,29 +21,42 @@ var errExchange = errors.New("peer exchange failed")
 // accepting two spellings of one field.
 var messageFields = map[string]bool{"address": true, "nodeId": true, "peers": true}
 
-// NewHandler returns the peer exchange protocol handler.
-func NewHandler(exchange func(Message) (Message, error)) http.Handler {
+// NewHandler serves read-only GET snapshots and POST exchanges at /v1/peers.
+func NewHandler(snapshot func() Message, exchange func(Message) (Message, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.RequestURI != "/v1/peers/exchange" || !jsonContentType(r.Header.Get("Content-Type")) {
+		if r.RequestURI != peersPath {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
-		encoded, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMessageBytes))
-		if err != nil {
+		var response Message
+		switch r.Method {
+		case http.MethodGet:
+			response = snapshot()
+		case http.MethodPost:
+			if !jsonContentType(r.Header.Get("Content-Type")) {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			encoded, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMessageBytes))
+			if err != nil {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			request, err := decodeMessage(encoded)
+			if err != nil {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			response, err = exchange(request)
+			if err != nil {
+				http.Error(w, "exchange failed", http.StatusInternalServerError)
+				return
+			}
+		default:
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
-		request, err := decodeMessage(encoded)
-		if err != nil {
-			http.Error(w, "invalid request", http.StatusBadRequest)
-			return
-		}
-		response, err := exchange(request)
-		if err != nil {
-			http.Error(w, "exchange failed", http.StatusInternalServerError)
-			return
-		}
-		encoded, err = encodeMessage(response)
+		encoded, err := encodeMessage(response)
 		if err != nil {
 			http.Error(w, "exchange failed", http.StatusInternalServerError)
 			return

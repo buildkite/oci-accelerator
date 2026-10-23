@@ -1,6 +1,7 @@
 package peering
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 
 func TestBookMergePersistsOnlyCanonicalSender(t *testing.T) {
 	dir := bookTestDir(t)
-	b, err := OpenBook(dir, "SELF.TEST.:443")
+	b, err := OpenBook(context.Background(), dir, "SELF.TEST.:443", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +29,7 @@ func TestBookMergePersistsOnlyCanonicalSender(t *testing.T) {
 	if err := b.Close(); err != nil {
 		t.Fatal(err)
 	}
-	b, err = OpenBook(dir, "self.test:443")
+	b, err = OpenBook(context.Background(), dir, "self.test:443", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +40,7 @@ func TestBookMergePersistsOnlyCanonicalSender(t *testing.T) {
 }
 
 func TestBookMergeReportsAddedIDs(t *testing.T) {
-	b, err := OpenBook(bookTestDir(t), "self.test:1")
+	b, err := OpenBook(context.Background(), bookTestDir(t), "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +79,7 @@ func TestBookMergeReportsAddedIDs(t *testing.T) {
 
 func TestBookReopenWithNewSelfAddress(t *testing.T) {
 	dir := bookTestDir(t)
-	b, err := OpenBook(dir, "old-self.test:1")
+	b, err := OpenBook(context.Background(), dir, "old-self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestBookReopenWithNewSelfAddress(t *testing.T) {
 	if err := b.Close(); err != nil {
 		t.Fatal(err)
 	}
-	b, err = OpenBook(dir, "new-self.test:1")
+	b, err = OpenBook(context.Background(), dir, "new-self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +105,7 @@ func TestBookReopenWithNewSelfAddress(t *testing.T) {
 }
 
 func TestBookConcurrentMergesUnion(t *testing.T) {
-	b, err := OpenBook(bookTestDir(t), "self.test:1")
+	b, err := OpenBook(context.Background(), bookTestDir(t), "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +128,7 @@ func TestBookConcurrentMergesUnion(t *testing.T) {
 }
 
 func TestBookCapPreservesExistingAndCountsUniqueRejected(t *testing.T) {
-	b, err := OpenBook(bookTestDir(t), "self.test:1")
+	b, err := OpenBook(context.Background(), bookTestDir(t), "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +161,7 @@ func TestBookCapPreservesExistingAndCountsUniqueRejected(t *testing.T) {
 }
 
 func TestBookInvalidMessageDoesNotMutate(t *testing.T) {
-	b, err := OpenBook(bookTestDir(t), "self.test:1")
+	b, err := OpenBook(context.Background(), bookTestDir(t), "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +176,7 @@ func TestBookInvalidMessageDoesNotMutate(t *testing.T) {
 
 func TestBookFailedPersistencePreservesMemoryAndFile(t *testing.T) {
 	dir := bookTestDir(t)
-	b, err := OpenBook(dir, "self.test:1")
+	b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +200,7 @@ func TestBookFailedPersistencePreservesMemoryAndFile(t *testing.T) {
 
 func TestBookDirectorySyncFailureRetainsPublishedPeersAndRetries(t *testing.T) {
 	dir := bookTestDir(t)
-	b, err := OpenBook(dir, "self.test:1")
+	b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,11 +238,11 @@ func TestBookDirectorySyncFailureRetainsPublishedPeersAndRetries(t *testing.T) {
 
 func TestBookClosePreventsMergeAndReleasesLock(t *testing.T) {
 	dir := bookTestDir(t)
-	b, err := OpenBook(dir, "self.test:1")
+	b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenBook(dir, "self.test:1"); err == nil {
+	if _, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil); err == nil {
 		t.Fatal("second OpenBook succeeded")
 	}
 	if err := b.Close(); err != nil {
@@ -250,7 +251,7 @@ func TestBookClosePreventsMergeAndReleasesLock(t *testing.T) {
 	if _, err := b.merge(Message{Address: "peer.test:1", NodeID: testNodeID(1)}, "", nil); err == nil {
 		t.Fatal("Merge after Close succeeded")
 	}
-	reopened, err := OpenBook(dir, "self.test:1")
+	reopened, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

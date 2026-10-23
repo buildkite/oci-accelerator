@@ -440,7 +440,7 @@ func TestDiscoveryMTLSNodesConvergeAfterRelocation(t *testing.T) {
 	start := func(dir string) *mtlsNode {
 		n := &mtlsNode{dir: dir, server: httptest.NewUnstartedServer(nil)}
 		n.address = n.server.Listener.Addr().String()
-		if n.book, err = OpenBook(dir, n.address); err != nil {
+		if n.book, err = OpenBook(context.Background(), dir, n.address, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		d := NewDiscovery(n.book, NewClient(clientTLS.Clone()), slog.New(slog.NewTextHandler(io.Discard, nil)), nil)

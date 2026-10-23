@@ -1,8 +1,10 @@
 package peering
 
 import (
+	"context"
 	"errors"
 	"maps"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -53,8 +55,11 @@ type bookView struct {
 	observed time.Time
 }
 
-// OpenBook opens the address book in dir for self.
-func OpenBook(dir, self string) (*Book, error) {
+// OpenBook opens the address book in dir for self. With a non-nil client it
+// checks identity against peers and seeds before publishing local state, using
+// at most five seconds for network requests. Seeds are retained by AddSeeds.
+// A nil client opens local state without a network check.
+func OpenBook(ctx context.Context, dir, self string, seeds []string, client *http.Client) (*Book, error) {
 	canonicalSelf, err := CanonicalAddress(self)
 	if err != nil {
 		return nil, errBook
@@ -72,6 +77,32 @@ func OpenBook(dir, self string) (*Book, error) {
 	if err != nil {
 		_ = lock.close()
 		return nil, errBook
+	}
+	fresh := nodeID == ""
+	if fresh {
+		nodeID, err = newNodeID()
+	}
+	if err == nil && client != nil {
+		// Include retained claims before filtering self records or expiring
+		// membership. Bootstrap probes never confirm or renew membership.
+		peers := make(map[string]string, len(records))
+		for address, record := range records {
+			peers[address] = record.NodeID
+		}
+		nodeID, err = bootstrapNodeID(ctx, client, canonicalSelf, nodeID, fresh, peers, seeds)
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		_ = lock.close()
+		return nil, err
+	}
+	if fresh {
+		if _, err := replaceState(dir, nodeIDName, []byte(nodeID), syncBookDir); err != nil {
+			_ = lock.close()
+			return nil, errBook
+		}
 	}
 	b := &Book{dir: dir, self: canonicalSelf, nodeID: nodeID, records: make(map[string]bookRecord, len(records)), seeds: make(map[string]bool), lock: lock, write: writeBookState}
 	for address, record := range records {

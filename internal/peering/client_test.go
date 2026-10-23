@@ -15,7 +15,7 @@ import (
 
 func TestExchangeTwoNodes(t *testing.T) {
 	var received Message
-	server := httptest.NewTLSServer(NewHandler(func(message Message) (Message, error) {
+	server := httptest.NewTLSServer(NewHandler(nil, func(message Message) (Message, error) {
 		received = message
 		return Message{Address: "NODE-B.TEST:9443", NodeID: testIDB, Peers: map[string]string{"NODE-C.TEST:443": testIDC, "node-a.test:8443": testIDA}}, nil
 	}))
