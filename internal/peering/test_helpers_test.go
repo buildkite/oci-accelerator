@@ -143,7 +143,7 @@ func cooldownRequest(d *Discovery, message Message) *httptest.ResponseRecorder {
 		message.Peers = map[string]string{}
 	}
 	body, _ := json.Marshal(message)
-	request := httptest.NewRequest(http.MethodPost, "/v1/peers/exchange", bytes.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/v1/peers", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	d.Handler().ServeHTTP(response, request)

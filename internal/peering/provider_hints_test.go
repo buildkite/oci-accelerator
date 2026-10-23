@@ -231,7 +231,7 @@ func TestPeerHandlerRoutesCacheKeys(t *testing.T) {
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { routed = append(routed, "discovery") }),
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { routed = append(routed, "keys") }),
 	)
-	for _, target := range []string{keysPath, keysPath + "?after=x", "/v1/peers/exchange", "/v1/cache/keys/", "/"} {
+	for _, target := range []string{keysPath, keysPath + "?after=x", "/v1/peers", "/v1/cache/keys/", "/"} {
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
 	}
 	want := []string{"keys", "keys", "discovery", "discovery", "discovery"}

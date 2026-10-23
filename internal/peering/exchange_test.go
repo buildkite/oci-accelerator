@@ -12,7 +12,7 @@ import (
 
 func TestHandlerValidatesAndCanonicalizes(t *testing.T) {
 	var called atomic.Int32
-	handler := NewHandler(func(message Message) (Message, error) {
+	handler := NewHandler(nil, func(message Message) (Message, error) {
 		called.Add(1)
 		want := Message{Address: "node-a.test:443", NodeID: testIDA, Peers: map[string]string{"[2001:db8::1]:8443": testIDC}}
 		if !reflect.DeepEqual(message, want) {
@@ -35,7 +35,7 @@ func TestHandlerValidatesAndCanonicalizes(t *testing.T) {
 }
 
 func TestHandlerEncodesEmptyPeersAsObject(t *testing.T) {
-	handler := NewHandler(func(Message) (Message, error) {
+	handler := NewHandler(nil, func(Message) (Message, error) {
 		return Message{Address: "node-b.test:443", NodeID: testIDB}, nil
 	})
 	recorder := serveExchange(handler, `{"address":"node-a.test:443","nodeId":"`+testIDA+`","peers":{}}`)
@@ -46,7 +46,7 @@ func TestHandlerEncodesEmptyPeersAsObject(t *testing.T) {
 
 func TestHandlerRejectsMalformedAndOversizedRequestsBeforeCallback(t *testing.T) {
 	var called atomic.Int32
-	handler := NewHandler(func(message Message) (Message, error) {
+	handler := NewHandler(nil, func(message Message) (Message, error) {
 		called.Add(1)
 		return message, nil
 	})
@@ -56,6 +56,7 @@ func TestHandlerRejectsMalformedAndOversizedRequestsBeforeCallback(t *testing.T)
 	}
 	id := `"nodeId":"` + testIDA + `"`
 	tests := map[string]string{
+		"empty body":             "",
 		"unknown field":          `{"address":"peer.test:443",` + id + `,"peers":{},"extra":true}`,
 		"case-variant field":     `{"address":"peer.test:443",` + id + `,"peers":{},"Address":"other.test:443"}`,
 		"trailing JSON":          `{"address":"peer.test:443",` + id + `,"peers":{}} {}`,
@@ -88,7 +89,7 @@ func TestHandlerRejectsMalformedAndOversizedRequestsBeforeCallback(t *testing.T)
 
 func TestHandlerAcceptsContradictoryClaimAboutSender(t *testing.T) {
 	var received Message
-	handler := NewHandler(func(message Message) (Message, error) {
+	handler := NewHandler(nil, func(message Message) (Message, error) {
 		received = message
 		return Message{Address: "node-b.test:443", NodeID: testIDB}, nil
 	})
@@ -109,16 +110,21 @@ func TestHandlerRejectsInvalidResponses(t *testing.T) {
 		"conflicting alias": {Address: "node-b.test:443", NodeID: testIDB, Peers: map[string]string{"c.test:1": testIDC, "C.TEST:1": testIDA}},
 	}
 	for name, response := range tests {
-		handler := NewHandler(func(Message) (Message, error) { return response, nil })
-		recorder := serveExchange(handler, `{"address":"peer.test:443","nodeId":"`+testIDA+`","peers":{}}`)
-		if recorder.Code != http.StatusInternalServerError {
-			t.Errorf("%s: status = %d", name, recorder.Code)
+		handler := NewHandler(func() Message { return response }, func(Message) (Message, error) { return response, nil })
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			request := httptest.NewRequest(method, "/v1/peers", strings.NewReader(`{"address":"peer.test:443","nodeId":"`+testIDA+`","peers":{}}`))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusInternalServerError {
+				t.Errorf("%s %s: status = %d", method, name, recorder.Code)
+			}
 		}
 	}
 }
 
 func serveExchange(handler http.Handler, body string) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(http.MethodPost, "/v1/peers/exchange", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/v1/peers", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json; charset=utf-8")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)

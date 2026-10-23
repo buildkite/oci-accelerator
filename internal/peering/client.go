@@ -43,7 +43,7 @@ func Exchange(ctx context.Context, client *http.Client, destination string, mess
 	if err != nil {
 		return Message{}, errExchange
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+destination+"/v1/peers/exchange", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+destination+peersPath, bytes.NewReader(body))
 	if err != nil {
 		return Message{}, errExchange
 	}

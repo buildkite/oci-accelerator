@@ -876,12 +876,14 @@ CA downloaded from the destination. None of this changes registry authorization 
 
 ### Discovery and retention
 
-The HTTPS `GET /v1/peers` endpoint returns a read-only address-book snapshot under the same
-mutual TLS authentication as exchanges. It accepts no joining identity and does not modify the
-receiver's mappings. Its response has the exchange schema below, including the responder's own
-identity. Queries and methods other than GET are rejected.
+The HTTPS `/v1/peers` resource supports GET and POST under the same mutual TLS authentication:
 
-The HTTPS `POST /v1/peers/exchange` request and response have the same schema:
+- `GET /v1/peers` returns a read-only address-book snapshot. It accepts no joining identity and
+  does not modify the receiver's mappings. Its response includes the responder's own identity.
+- `POST /v1/peers` exchanges identities and peer mappings.
+
+Only the exact `/v1/peers` path is accepted. Queries and methods other than GET and POST are
+rejected. The GET response and POST request and response have the same schema:
 
 ```json
 {

@@ -64,8 +64,11 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	}
 	peer := httptest.NewUnstartedServer(nil)
 	peerAddress, peerID := peer.Listener.Addr().String(), "000000000001"
-	peer.Config.Handler = peering.NewHandler(func(peering.Message) (peering.Message, error) {
-		return peering.Message{Address: peerAddress, NodeID: peerID, Peers: map[string]string{}}, nil
+	peerSnapshot := func() peering.Message {
+		return peering.Message{Address: peerAddress, NodeID: peerID, Peers: map[string]string{}}
+	}
+	peer.Config.Handler = peering.NewHandler(peerSnapshot, func(peering.Message) (peering.Message, error) {
+		return peerSnapshot(), nil
 	})
 	peer.TLS = serverTLS
 	peer.StartTLS()
@@ -105,11 +108,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	post := func(client *http.Client, address string) error {
 		defer client.CloseIdleConnections()
 		for _, method := range []string{http.MethodPost, http.MethodGet} {
-			path := "/v1/peers/exchange"
-			if method == http.MethodGet {
-				path = "/v1/peers"
-			}
-			req, err := http.NewRequest(method, "https://"+listener.Addr().String()+path, strings.NewReader(fmt.Sprintf(`{"address":%q,"nodeId":"000000000002","peers":{}}`, address)))
+			req, err := http.NewRequest(method, "https://"+listener.Addr().String()+"/v1/peers", strings.NewReader(fmt.Sprintf(`{"address":%q,"nodeId":"000000000002","peers":{}}`, address)))
 			if err != nil {
 				return err
 			}
@@ -442,8 +441,11 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 					t.Fatal(err)
 				}
 				address := unresponsive.Addr().(*net.TCPAddr)
-				fixture := httptest.NewUnstartedServer(peering.NewHandler(func(peering.Message) (peering.Message, error) {
-					return peering.Message{Address: address.String(), NodeID: "000000000002", Peers: map[string]string{}}, nil
+				snapshot := func() peering.Message {
+					return peering.Message{Address: address.String(), NodeID: "000000000002", Peers: map[string]string{}}
+				}
+				fixture := httptest.NewUnstartedServer(peering.NewHandler(snapshot, func(peering.Message) (peering.Message, error) {
+					return snapshot(), nil
 				}))
 				fixture.Listener.Close()
 				fixture.Listener = unresponsive
@@ -514,7 +516,7 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 				time.Sleep(time.Millisecond)
 			}
 			for _, listener := range []*net.TCPListener{proxyListener, metricsListener} {
-				response, err := client.Post("http://"+listener.Addr().String()+"/v1/peers/exchange", "application/json", strings.NewReader(`{"address":"bad.test:1","nodeId":"000000000001","peers":{}}`))
+				response, err := client.Post("http://"+listener.Addr().String()+"/v1/peers", "application/json", strings.NewReader(`{"address":"bad.test:1","nodeId":"000000000001","peers":{}}`))
 				if err != nil {
 					t.Fatal(err)
 				}

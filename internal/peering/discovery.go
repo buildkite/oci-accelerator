@@ -58,15 +58,7 @@ func NewDiscovery(book *Book, client *http.Client, logger *slog.Logger, newPeers
 }
 
 func (d *Discovery) Handler() http.Handler {
-	exchange := NewHandler(d.receiveInbound)
-	snapshot := snapshotHandler(d.book)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == snapshotPath {
-			snapshot.ServeHTTP(w, r)
-			return
-		}
-		exchange.ServeHTTP(w, r)
-	})
+	return NewHandler(d.book.Snapshot, d.receiveInbound)
 }
 
 // Run probes candidates and renews confirmed membership through outbound contact.

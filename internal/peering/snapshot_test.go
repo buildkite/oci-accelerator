@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -21,7 +22,9 @@ func TestDiscoverySnapshotIsReadOnlyAndExcludesCandidates(t *testing.T) {
 	}
 	handler := NewDiscovery(book, nil, nil, nil).Handler()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/peers", nil))
+	// A GET never processes an exchange message, even when given one.
+	body := `{"address":"joining.test:4","nodeId":"` + testNodeID(4) + `","peers":{}}`
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/peers", strings.NewReader(body)))
 	var got Message
 	err = json.Unmarshal(response.Body.Bytes(), &got)
 	want := Message{Address: "self.test:1", NodeID: book.Snapshot().NodeID, Peers: map[string]string{"known.test:2": testNodeID(2)}}
@@ -30,9 +33,14 @@ func TestDiscoverySnapshotIsReadOnlyAndExcludesCandidates(t *testing.T) {
 	}
 	for _, request := range []*http.Request{
 		httptest.NewRequest(http.MethodGet, "/v1/peers?extra=1", nil),
+		httptest.NewRequest(http.MethodGet, "/v1/peers/", nil),
+		httptest.NewRequest(http.MethodGet, "/v1/peers/exchange", nil),
+		httptest.NewRequest(http.MethodPost, "/v1/peers/exchange", strings.NewReader(body)),
+		httptest.NewRequest(http.MethodPost, "/v1/peers?extra=1", strings.NewReader(body)),
 		httptest.NewRequest(http.MethodPost, "/v1/peers", nil),
 		httptest.NewRequest(http.MethodHead, "/v1/peers", nil),
 	} {
+		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusBadRequest {
