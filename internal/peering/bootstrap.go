@@ -37,11 +37,14 @@ func bootstrapNodeID(ctx context.Context, client *http.Client, self, id string, 
 	for address, peerID := range destinations {
 		verify[address] = peerID
 	}
-	snapshot, found := probeSnapshots(ctx, client, identityFirst(destinations, id), func(Message) bool { return true })
-	if found {
+	snapshots := probeSnapshots(ctx, client, identityFirst(destinations, id), func(Message) bool { return true })
+	for _, snapshot := range snapshots {
 		if !fresh && snapshot.NodeID == id && snapshot.Address != self {
 			return "", fmt.Errorf("persisted peer node ID %s conflicts with %s: %w", id, snapshot.Address, errIdentityCollision)
 		}
+	}
+	if len(snapshots) > 0 {
+		snapshot := snapshots[0]
 		for address, peerID := range snapshot.Peers {
 			known[peerID] = true
 			if peerID == id && address != self && address != snapshot.Address {
@@ -60,11 +63,11 @@ func bootstrapNodeID(ctx context.Context, client *http.Client, self, id string, 
 		}
 		return id, nil
 	}
-	conflict, confirmed := probeSnapshots(ctx, client, identityFirst(verify, id), func(message Message) bool {
+	conflicts := probeSnapshots(ctx, client, identityFirst(verify, id), func(message Message) bool {
 		return message.NodeID == id && message.Address != self
 	})
-	if confirmed {
-		return "", fmt.Errorf("persisted peer node ID %s conflicts with %s: %w", id, conflict.Address, errIdentityCollision)
+	if len(conflicts) > 0 {
+		return "", fmt.Errorf("persisted peer node ID %s conflicts with %s: %w", id, conflicts[0].Address, errIdentityCollision)
 	}
 	return id, nil
 }
@@ -79,9 +82,10 @@ func identityFirst(peers map[string]string, id string) []string {
 	return addresses
 }
 
-// probeSnapshots uses a bounded worker pool and joins every request before
-// returning. A slow address cannot block a healthy one in another slot.
-func probeSnapshots(ctx context.Context, client *http.Client, addresses []string, accept func(Message) bool) (Message, bool) {
+// probeSnapshots cancels on the first accepted snapshot, then collects all
+// completed snapshots and joins every request. A slow address cannot block
+// a healthy one in another slot, and cancellation never discards evidence.
+func probeSnapshots(ctx context.Context, client *http.Client, addresses []string, accept func(Message) bool) []Message {
 	ctx, cancel := context.WithCancel(ctx)
 	jobs := make(chan string, len(addresses))
 	for _, address := range addresses {
@@ -107,10 +111,12 @@ func probeSnapshots(ctx context.Context, client *http.Client, addresses []string
 			results <- Message{}
 		})
 	}
+	var snapshots []Message
 	for range workers {
 		if message := <-results; message.NodeID != "" {
-			return message, true
+			snapshots = append(snapshots, message)
+			cancel()
 		}
 	}
-	return Message{}, false
+	return snapshots
 }

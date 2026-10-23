@@ -142,6 +142,46 @@ func TestOpenBookVerifiesPersistedIDCollisions(t *testing.T) {
 	}
 }
 
+func TestOpenBookRejectsCompletedFirstRoundCollision(t *testing.T) {
+	dir := bookTestDir(t)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, nodeIDName), []byte(testNodeID(1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cloneDecoded := make(chan struct{})
+	var cloneCalls atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "clone.test:2" {
+			if cloneCalls.Add(1) != 1 {
+				return nil, errExchange
+			}
+			response := bootstrapResponse(Message{Address: "clone.test:2", NodeID: testNodeID(1), Peers: map[string]string{}})
+			response.Body = &bootstrapCloseOnCancellation{ReadCloser: response.Body, decoded: cloneDecoded, ctx: r.Context()}
+			return response, nil
+		}
+		select {
+		case <-cloneDecoded:
+			return bootstrapResponse(Message{Address: "seed.test:3", NodeID: testNodeID(2), Peers: map[string]string{}}), nil
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	})}
+	book, err := OpenBook(context.Background(), dir, "self.test:1", []string{"seed.test:3", "clone.test:2"}, client)
+	if book != nil {
+		defer book.Close()
+	}
+	if !errors.Is(err, errIdentityCollision) || book != nil {
+		t.Errorf("startup accepted completed clone response: book returned = %t, error = %v", book != nil, err)
+	}
+	id, err := os.ReadFile(filepath.Join(dir, nodeIDName))
+	if err != nil || string(id) != testNodeID(1) {
+		t.Fatalf("persisted identity changed: %q, %v", id, err)
+	}
+}
+
 func TestOpenBookPrioritizesKnownCollisionAddresses(t *testing.T) {
 	for _, localClaim := range []bool{false, true} {
 		t.Run(map[bool]string{false: "gossip", true: "persisted"}[localClaim], func(t *testing.T) {
@@ -233,4 +273,18 @@ func TestOpenBookBootstrapBudgetAndCancellation(t *testing.T) {
 func bootstrapResponse(message Message) *http.Response {
 	raw, _ := json.Marshal(message)
 	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(raw))}
+}
+
+type bootstrapCloseOnCancellation struct {
+	io.ReadCloser
+	decoded chan struct{}
+	ctx     context.Context
+}
+
+func (b *bootstrapCloseOnCancellation) Close() error {
+	// readPeerMessage decodes before its deferred Close. Hold that valid
+	// response until the unrelated snapshot wins and cancels the first round.
+	close(b.decoded)
+	<-b.ctx.Done()
+	return b.ReadCloser.Close()
 }
