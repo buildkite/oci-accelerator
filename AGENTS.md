@@ -14,23 +14,29 @@
 - Try to break each implementation slice into logical, incremental,
   self-contained subslices. Each subslice should have a clear outcome and
   its own validation.
+- A small, coherent change may be a single subslice. Split larger changes where
+  each part can be understood and validated independently.
 - Complete and validate one subslice before moving to the next. Each subslice
   must be an independent commit. Do not bundle multiple subslices into one commit.
 
 ## Independent review
 
 - At the end of every implementation subslice, use two fresh, read-only review
-  subagents that did not implement it. Both must review the same source, tests,
-  and code-diff snapshot. This two-review gate does not apply to routine editorial
+  subagents that did not implement it. Both must review the same production-code
+  snapshot. This two-review gate does not apply to routine editorial
   changes outside implementation subslices.
-- Give the first reviewer repository and task context. Ask it to identify
+- Give the first reviewer repository and task context, tests, and code diffs.
+  Ask it to identify
   problems, mistakes, regressions, and design issues across the changes and
   their surrounding code, and assess the implementation against the agreed scope.
 - Focus the second reviewer only on code quality, logic, bugs, and design.
-  Provide a filtered workspace or input bundle containing source, tests,
-  fixtures, build/module files, and code diffs, but no documentation or Git
-  history. Do not supply normal repository context that automatically exposes
-  `AGENTS.md`, plans, logs, design explanations, or the first reviewer's findings.
+  Provide a filtered workspace or input bundle containing only production source
+  files under review and relevant surrounding production code. Exclude tests,
+  fixtures, build/module files, code diffs, documentation, Git history, commit
+  messages, plans, logs, design explanations, and the first reviewer's findings.
+  Supply only minimal review instructions, without task rationale, intended
+  behavior, or other explanatory prose. Do not supply normal repository context
+  that automatically exposes `AGENTS.md` or any excluded materials.
   Instruct it not to read those materials or infer requirements that the code
   does not establish. If the tooling cannot provide this separation, disclose
   the limitation rather than claiming a blind review.
@@ -42,6 +48,9 @@
 - Re-run affected checks after fixes. Material behavior or design changes made
   during review must receive follow-up independent review under the same context
   rules before committing the completed subslice or moving on.
+- Follow-up reviews may use the original reviewers. Both must review the same
+  updated production-code snapshot, with their original context boundaries
+  preserved.
 
 ## Simple, idiomatic Go
 
@@ -74,6 +83,12 @@
 - Assert returned bytes, authorization outcomes, and upstream request counts,
   not merely log messages. Cache tests must distinguish proxy hits from Docker's
   own local cache.
+- For every implementation subslice, review the affected tests for redundancy,
+  necessity, and clarity. Remove tests that add no distinct regression protection.
+  Refactor tests where doing so reduces duplication or unnecessary machinery
+  without weakening assertions or obscuring intent. Remove fixtures and helpers
+  that are no longer needed. Preserve coverage of distinct behavior and failure
+  modes.
 
 ## Security before cache hits
 
@@ -114,8 +129,9 @@
 
 ## Commit messages
 
-- Push each commit to `origin` immediately after creating it. Do not accumulate
-  completed commits only in the local checkout.
+- When pushing is authorized, push each completed commit to `origin` immediately
+  after creating it. Otherwise, keep it local and report that pushing awaits
+  approval.
 - Give every commit a readable summary of the changes it implements in the
   commit body, and summarize those changes when reporting the commit to the user.
 - Do not add Amp branding or attribution to commit subjects, bodies, or trailers.
