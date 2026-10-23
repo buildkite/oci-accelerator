@@ -29,9 +29,12 @@ removal, live-provider selection, transfer limits, deadlines, and reader cleanup
 Proxy tests cover origin approval for peer-sourced full blobs and manifests, origin
 response headers, subsequent local hits, coalesced peer fills, pre-acceptance origin
 fallback without another GET, no-store bypass, delivery when storage admission fails,
-truncation without publication or origin retry, cancellation, shutdown, and source metrics.
+truncation and same-length corruption without publication or origin retry, cancellation,
+shutdown, and source metrics. Blob range tests exercise origin and peer streams, including
+early range delivery, continued fills after disconnect, transfer deadlines, shutdown,
+admission refusal, and invalid tails that never publish.
 Production-service fixtures cover entry transfers after discovery, periodic inventory
-refresh, and restart. Ranged requests remain origin/local, not peer-sourced.
+refresh, and restart.
 Run those checks alone with:
 
 ```sh

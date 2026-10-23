@@ -28,8 +28,8 @@ upstream registry again.
   a default one-minute delay after each attempt and completion-relative hourly
   full scans, both with ±20% jitter. Fetch duration and capacity queueing add to
   the poll delay, so there is no wall-clock freshness guarantee. On an authorized
-  eligible full blob or manifest miss, the proxy tries one randomly chosen live
-  hinted provider before using the origin body. Ranges use origin or local cache.
+  eligible blob or manifest miss, the proxy tries one randomly chosen live
+  hinted provider before using the origin body. Blob ranges can use the same full-object stream.
   Registry credentials and authorization grants are never shared.
   See [peer discovery](docs/deployment.md#peer-discovery).
 

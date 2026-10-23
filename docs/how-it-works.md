@@ -36,8 +36,8 @@ send.
 A blob request with a `Range` header, such as a resumed layer download, is sent
 upstream as a request for the whole blob, so the upstream registry still approves every
 request. The accelerator then returns only the requested bytes, reading them
-from disk if the blob is cached or from the upstream stream while filling the
-cache. A ranged fill continues after Docker disconnects, until
+from disk if the blob is cached or from a full origin or peer stream while filling
+the cache. A ranged fill continues after Docker disconnects, until
 `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` expires. Ranged requests never use authorization grants. A
 manifest request with a `Range` header, or any request with an `If-*` header, is
 forwarded upstream unchanged and not cached.
@@ -143,7 +143,7 @@ Neither a full scan nor an empty listing removes stale claims. Hints grant no
 access. See the [configuration reference](deployment.md#configuration)
 for poll, full-scan, and attempt timeout settings.
 
-For an eligible full digest-addressed blob or manifest GET, the proxy obtains upstream
+For an eligible digest-addressed blob or manifest GET, the proxy obtains upstream
 approval and checks its local cache first. If no entry or completed coalesced
 fill is available, it chooses one live hinted provider uniformly at random.
 It tries no second provider and does not refresh hints on the request path.
@@ -157,9 +157,10 @@ unchanged hint observation. A later inventory observation can restore it.
 Once a peer stream is accepted, the origin body closes and peer bytes stream to
 Docker, optionally filling the local cache. Storage admission refusal or a cache
 write failure does not prevent peer delivery. Size and digest verification gate cache
-publication. Bytes are not withheld until verification, and a mid-stream failure
-aborts the transfer rather than splicing in origin bytes. Ranged requests still
-use the origin or local cache.
+publication. Bytes stream before verification, but a failed final read is withheld
+so a full delivery cannot appear complete. A mid-stream failure aborts rather than
+splicing in origin bytes. Blob ranges select bytes from the same full-object stream.
+A selected range can finish before verification, but a failed tail is never cached.
 
 Peer destinations are unrestricted, unlike intercepted-registry egress. The
 protocol shares cached content within the fleet, never registry credentials or
@@ -279,7 +280,7 @@ not read tokens, check their scopes or expiry, or hold credentials of its own.
 
 Without a reusable authorization grant, the accelerator sends Docker's cacheable
 `GET` upstream first, following any redirects. Only a cacheable `200 OK` counts as approval.
-The body then comes from disk if cached. On a full eligible miss, it can stream
+The body then comes from disk if cached. On an eligible miss, it can stream
 from one hinted peer instead of origin. The original upstream response determines
 the cache key, metadata, authorization grant eligibility, and response headers.
 Neither a hint nor peer authentication replaces upstream approval, and no-store
@@ -348,7 +349,7 @@ repositories is stored twice.
 
 ### Filling
 
-After upstream approval and local lookup, a full eligible miss tries one random
+After upstream approval and local lookup, an eligible miss tries one random
 live hinted peer when peering is enabled. Otherwise it uses the approved origin
 body. An admitted fill streams the selected body to Docker while writing it to
 a temporary file. It publishes the entry, with an atomic rename, only after the

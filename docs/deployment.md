@@ -468,7 +468,7 @@ Timeout behavior:
 - For eligible blob range requests, `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` bounds the upstream
   fetch, starting
   before the first upstream GET, including when cache-fill admission is refused. Admitted
-  background fills remain subject to the same deadline.
+  background fills from origin or a peer remain subject to the same deadline.
 - Delivery from an already-open cached reader is not limited by
   `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`, but idle-I/O deadlines and shutdown handling still apply.
 - Peer entry downloads have a total `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` budget from the
@@ -705,10 +705,12 @@ Eligible range requests are unconditional SHA-256 blob Range GETs.
   otherwise update authorization grants.
 - A validated cache hit is served with standard single, suffix, or multipart range semantics
   from its pinned reader.
-- Until the full body is cached, a single range is selected from the full upstream stream and
+- Until the full body is cached, a single range is selected from a full origin or peer stream and
   returned as `206`, while comma-separated ranges fall back to the full `200`.
-- An admitted fill continues reading and verifying the same GET after the selected range ends or
+- An admitted fill continues reading and verifying the same source after the selected range ends or
   the client disconnects, bounded by `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` from request start.
+- A selected range can finish before the full digest is verified. A failed tail never publishes
+  the cache entry and does not trigger an origin retry.
 - Ranged manifests, `If-Range` and other conditional requests, no-store requests, and a Range
   header named by `Connection` remain passthrough.
 
@@ -825,8 +827,8 @@ docker compose up -d
 ## Peer discovery
 
 Peering exchanges addresses and node IDs, and each instance lists its cache keys to authenticated
-peers. Authorized eligible full blob and manifest misses can download content from one randomly
-chosen live hinted provider before falling back to origin. Ranges remain origin/local.
+peers. Authorized eligible blob and manifest misses can download content from one randomly
+chosen live hinted provider before falling back to origin. Blob ranges use the same full-object source.
 Registry credentials and authorization grants are never shared. Startup checks for node ID
 collisions before readiness, with a five-second overall network budget. Unreachable peers do
 not prevent startup after that budget.
@@ -1148,11 +1150,11 @@ measured benchmark, a throughput guarantee, or a wall-clock freshness guarantee.
 
 ### Peer entry transfers
 
-After upstream approval, an eligible local miss for a full digest-addressed blob or manifest
+After upstream approval, an eligible local miss for a digest-addressed blob or manifest
 GET tries one provider chosen uniformly at random from the hinted IDs with current membership. It
 resolves that ID's current address when sending. It does not refresh inventory or try a second
 peer on the pull path. Existing local hits and bounded waits for active fills take precedence.
-Ranged requests still use origin or the local cache.
+Eligible blob ranges select from the full peer stream using the existing background fill path.
 
 `POST /v1/cache/entry` requires fleet mutual TLS and an exact path without query parameters.
 Its `application/json` body contains all four fields, with no unknown or duplicate fields:
@@ -1260,7 +1262,8 @@ Interpreting them:
 
 - Labels are fixed enums and never contain clients, repositories, paths, digests, tokens, or URLs.
 - Counters reset on restart. Request-owned body counters are recorded when requests complete.
-- For a detached range fill, `oci_accelerator_upstream_body_bytes_total` and
+- For a detached range fill, `oci_accelerator_upstream_body_bytes_total`,
+  `oci_accelerator_peer_body_bytes_total`, and
   `oci_accelerator_fills_total` update when its pump completes, while store fill statistics remain
   available independently.
 - Logical cache bytes exclude filesystem overhead. Go heap allocation is not RSS.
@@ -1385,8 +1388,9 @@ stop grace period. Filesystem stalls can delay exit beyond those windows.
   egress available through opaque CONNECT tunnels, so deployment network controls remain essential.
 - No shared filesystem, coordinated eviction, or background content prefetch. Peer downloads
   depend on advisory hints and try one provider before origin fallback. A failed accepted
-  stream must be retried by the client, not transparently switched to origin. Ranges are not
-  peer-sourced, and no multi-node Docker peer acceptance suite is provided.
+  stream must be retried by the client, not transparently switched to origin. A selected blob
+  range may finish before a later tail failure is known. No multi-node Docker peer acceptance
+  suite is provided.
 - No Kubernetes manifests, and no automated container runtime acceptance in CI.
 - Fault tests exercise process termination and private tmpfs exhaustion, not power loss or
   faulty-device certification. See the [testing guide](testing.md).
