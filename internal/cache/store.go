@@ -151,6 +151,7 @@ func (s *Store) Stats() Stats {
 	for _, pending := range s.failedCleanups {
 		cleanupBytes += pending.charge
 	}
+
 	return Stats{
 		Bytes:        s.bytes,
 		Reserved:     s.reserved,
@@ -177,7 +178,6 @@ func (s *Store) Stats() Stats {
 // they drain before it returns. The caller must finish those Gets, close every
 // Reader, and call Close again. Closing Readers alone does not release the lock.
 func (s *Store) Close() error {
-
 	// Mark the store closed and snapshot the fills and reader count under the lock.
 	s.mu.Lock()
 	s.closed = true

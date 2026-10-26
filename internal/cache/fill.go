@@ -148,6 +148,7 @@ func (f *Fill) writeMetaFile() error {
 	if err != nil {
 		return err
 	}
+
 	mf, err := os.OpenFile(filepath.Join(f.dir, "meta"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err == nil {
 		err = mf.Chmod(0o600)
@@ -163,6 +164,7 @@ func (f *Fill) writeMetaFile() error {
 			err = e
 		}
 	}
+
 	return err
 }
 
@@ -218,6 +220,7 @@ func (f *Fill) supersedeTombstone(dest string) error {
 		e.reclaimed = true
 		f.store.bytes -= e.charge
 	}
+
 	return nil
 }
 
@@ -226,14 +229,12 @@ func (f *Fill) supersedeTombstone(dest string) error {
 // entry's charge. It never returns a non-deadline error.
 func (f *Fill) publishLocked(dest string) error {
 	f.store.mu.Lock()
-
 	if !time.Now().Before(f.deadline) {
 		f.store.mu.Unlock()
 		return errFillExpired
 	}
 
 	delete(f.store.fills, f.meta.Key)
-
 	f.store.reserved -= f.charge
 
 	e := &entry{
@@ -244,11 +245,10 @@ func (f *Fill) publishLocked(dest string) error {
 		verified: true, // Just hash-verified during Commit, so Readers can skip re-verification.
 	}
 	f.store.addEntryLocked(e)
-
 	f.store.bytes += f.charge
 	f.store.fillSuccess++
-
 	f.store.mu.Unlock()
+
 	return nil
 }
 
@@ -259,7 +259,6 @@ func (f *Fill) finish(cause error) error {
 	}
 
 	f.store.admissionMu.Lock()
-
 	f.store.mu.Lock()
 	f.store.startOpLocked()
 	f.store.mu.Unlock()
@@ -269,13 +268,11 @@ func (f *Fill) finish(cause error) error {
 	f.store.mu.Lock()
 	f.store.finishOpLocked()
 	f.store.mu.Unlock()
-
 	f.store.admissionMu.Unlock()
 
 	cause = errors.Join(cause, removeErr)
 
 	f.store.mu.Lock()
-
 	if cause == nil {
 		f.store.fillAbort++
 	} else if errors.Is(cause, errFillExpired) {
@@ -285,23 +282,22 @@ func (f *Fill) finish(cause error) error {
 	}
 
 	delete(f.store.fills, f.meta.Key)
-
 	f.store.reserved -= f.charge
-
 	if removeErr != nil {
 		f.store.retainCleanupLocked(f.dir, f.charge)
 	}
-
 	f.store.mu.Unlock()
 
 	f.done = true
 	close(f.completed)
+
 	return cause
 }
 
 func (f *Fill) unlockAndStopIfDone() {
 	done := f.done
 	f.mu.Unlock()
+
 	if done {
 		f.stopTimer()
 	}
@@ -311,6 +307,7 @@ func (f *Fill) stopTimer() {
 	if f.timer.Stop() {
 		f.timerDoneOnce.Do(func() { close(f.timerDone) })
 	}
+
 	<-f.timerDone
 }
 
@@ -320,5 +317,6 @@ func syncDirectory(p string) error {
 		return e
 	}
 	defer d.Close()
+
 	return d.Sync()
 }

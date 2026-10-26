@@ -21,13 +21,16 @@ func validateCAProfile(cert *x509.Certificate) error {
 	if cert.SignatureAlgorithm != x509.ECDSAWithSHA256 {
 		return errors.New("CA signature algorithm must be ECDSA-SHA256")
 	}
+
 	key, ok := cert.PublicKey.(*ecdsa.PublicKey)
 	if !ok || key.Curve != elliptic.P256() {
 		return errors.New("CA public key must be ECDSA P-256")
 	}
+
 	if !bytes.Equal(cert.RawIssuer, cert.RawSubject) {
 		return errors.New("CA certificate must be self-issued")
 	}
+
 	if !cert.IsCA || !cert.BasicConstraintsValid {
 		return errors.New("CA basic constraints must identify a CA")
 	}
@@ -40,6 +43,7 @@ func validateCAProfile(cert *x509.Certificate) error {
 	if len(cert.UnhandledCriticalExtensions) != 0 {
 		return fmt.Errorf("CA certificate has unhandled critical extensions: %v", cert.UnhandledCriticalExtensions)
 	}
+
 	// ParseCertificate rejects duplicate extension OIDs. Allowing only these
 	// three and requiring all three excludes constraints and optional extensions
 	// that this issuer does not support, even when marked non-critical.
@@ -62,5 +66,6 @@ func validateCAProfile(cert *x509.Certificate) error {
 	if len(cert.SubjectKeyId) != 20 {
 		return errors.New("CA subject key identifier must be 20 bytes")
 	}
+
 	return nil
 }

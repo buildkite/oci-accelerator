@@ -44,10 +44,12 @@ func upstreamFailure(err error) string {
 	case errors.Is(err, errUpgrade):
 		return "upgrade"
 	}
+
 	var certificate *tls.CertificateVerificationError
 	if errors.As(err, &certificate) {
 		return "tls_certificate"
 	}
+
 	var network net.Error
 	if errors.As(err, &network) && network.Timeout() {
 		// Includes TLS handshake and response-header timeouts. Do not inspect

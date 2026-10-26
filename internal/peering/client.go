@@ -39,10 +39,12 @@ func Exchange(ctx context.Context, client *http.Client, destination string, mess
 	if err != nil {
 		return Message{}, errExchange
 	}
+
 	body, err := encodeMessage(message)
 	if err != nil {
 		return Message{}, errExchange
 	}
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+destination+peersPath, bytes.NewReader(body))
 	if err != nil {
 		return Message{}, errExchange
@@ -61,13 +63,16 @@ func readPeerMessage(client *http.Client, request *http.Request) (Message, error
 		return Message{}, errExchange
 	}
 	defer response.Body.Close()
+
 	if response.StatusCode < 200 || response.StatusCode >= 300 || !jsonContentType(response.Header.Get("Content-Type")) {
 		return Message{}, errExchange
 	}
+
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, maxMessageBytes+1))
 	if err != nil || len(encoded) > maxMessageBytes {
 		return Message{}, errExchange
 	}
+
 	result, err := decodeMessage(encoded)
 	if err != nil {
 		return Message{}, errExchange

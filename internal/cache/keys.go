@@ -34,12 +34,15 @@ func (s *Store) KeyPage(after KeyPosition, limit int) ([]string, KeyPosition, er
 	if s.closed {
 		return nil, KeyPosition{}, nil
 	}
+
 	start := s.evictionOrder.Front()
+
 	// The usual continuation starts directly after the unchanged boundary.
 	// If it moved or disappeared, find the first position beyond its old tuple.
 	if e := s.entries[after.Key]; e != nil && e.last == after.Last {
 		start = e.eviction.Next()
 	}
+
 	keys := make([]string, 0, min(limit, len(s.entries)))
 	var last KeyPosition
 	for item := start; item != nil; item = item.Next() {
@@ -50,8 +53,10 @@ func (s *Store) KeyPage(after KeyPosition, limit int) ([]string, KeyPosition, er
 		if len(keys) == limit {
 			return keys, last, nil
 		}
+
 		keys = append(keys, e.meta.Key)
 		last = KeyPosition{Incarnation: s.incarnation, Last: e.last, Key: e.meta.Key}
 	}
+
 	return keys, KeyPosition{}, nil
 }

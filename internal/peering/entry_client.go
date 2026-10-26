@@ -28,14 +28,17 @@ func FetchEntry(ctx context.Context, client *http.Client, destination, expectedN
 	if client == nil || !validNodeID(expectedNode) || !validEntryMetadata(meta) {
 		return nil, errEntryFetch
 	}
+
 	destination, err := CanonicalAddress(destination)
 	if err != nil {
 		return nil, errEntryFetch
 	}
+
 	encoded, err := json.Marshal(entryMetadata{Key: meta.Key, Digest: meta.Digest, Size: meta.Size, MediaType: meta.MediaType})
 	if err != nil || len(encoded) > maxEntryMetadataBytes {
 		return nil, errEntryFetch
 	}
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+destination+entryPath, bytes.NewReader(encoded))
 	if err != nil {
 		return nil, errEntryFetch
@@ -44,6 +47,7 @@ func FetchEntry(ctx context.Context, client *http.Client, destination, expectedN
 	request.Header.Set("Accept", "application/octet-stream")
 	request.Header.Set("Accept-Encoding", "identity")
 	request.Close = true
+
 	transfer := *client
 	transfer.CheckRedirect = rejectRedirect
 	transfer.Jar = nil
@@ -60,6 +64,7 @@ func FetchEntry(ctx context.Context, client *http.Client, destination, expectedN
 			response.Body.Close()
 		}
 	}()
+
 	if len(response.Header.Values(entryNodeHeader)) != 1 || response.Header.Get(entryNodeHeader) != expectedNode ||
 		response.Uncompressed || len(response.Header.Values("Content-Encoding")) != 0 ||
 		len(response.Header.Values("Content-Range")) != 0 || len(response.Header.Values("Trailer")) != 0 || len(response.Trailer) != 0 {
@@ -73,6 +78,7 @@ func FetchEntry(ctx context.Context, client *http.Client, destination, expectedN
 		len(response.Header.Values("Content-Length")) != 1 || response.Header.Get("Content-Length") != strconv.FormatInt(meta.Size, 10) {
 		return nil, errEntryFetch
 	}
+
 	accepted = true
 	return &entryBody{response: response, ctx: ctx, remaining: meta.Size, digest: meta.Digest, sum: sha256.New()}, nil
 }
@@ -99,6 +105,7 @@ func (b *entryBody) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+
 	if int64(len(p)) > b.remaining {
 		p = p[:int(b.remaining)]
 	}
@@ -118,6 +125,7 @@ func (b *entryBody) Read(p []byte) (int, error) {
 			err = errEntryFetch
 		}
 	}
+
 	if err == io.EOF {
 		if len(b.response.Trailer) != 0 || "sha256:"+hex.EncodeToString(b.sum.Sum(nil)) != b.digest {
 			err = errEntryFetch
@@ -127,6 +135,7 @@ func (b *entryBody) Read(p []byte) (int, error) {
 		err = b.ctx.Err()
 	}
 	b.err = err
+
 	// Do not complete the advertised body on a failed final read. Streaming
 	// callers may write n bytes before checking err, hiding the failure.
 	if b.remaining == 0 && err != nil && err != io.EOF {

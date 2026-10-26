@@ -49,7 +49,9 @@ func newAuthorizationCache(authorizationTTL, anonymousTTL time.Duration, limit i
 	if (authorizationTTL <= 0 && anonymousTTL <= 0) || limit <= 0 {
 		return nil
 	}
+
 	c := &authorizationCache{authorizationTTL: authorizationTTL, anonymousTTL: anonymousTTL, limit: limit, entries: make(map[[32]byte]*authorizationEntry)}
+
 	// crypto/rand.Read terminates the process if secure randomness is unavailable.
 	rand.Read(c.secret[:])
 	return c
@@ -138,6 +140,7 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	for _, name := range []string{"host", "content-length", "transfer-encoding", "trailer"} {
 		delete(headers, name)
 	}
+
 	// net/http sends only the first User-Agent value, omitting an explicit
 	// empty value. ReverseProxy supplies that empty value when the client has
 	// no User-Agent, while direct transport callers get the HTTP/1.1 default instead.

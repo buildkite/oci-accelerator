@@ -41,6 +41,7 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if full, ok := fullBlobRangeRequest(req); ok {
 			req = full
 		}
+
 		var err error
 		fetch, err = t.startRangeFetch(req.Context())
 		if err != nil {
@@ -247,6 +248,7 @@ func redirectURL(base *url.URL, location string) (*url.URL, error) {
 	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Fragment != "" {
 		return nil, errRedirect
 	}
+
 	// Validate the authority but keep it as written. Presigned storage URLs can
 	// sign the Host header, so adding a default port would invalidate them.
 	if _, err := urlEndpoint(u); err != nil {
@@ -289,10 +291,12 @@ func urlEndpoint(u *url.URL) (hostport.HostPort, error) {
 			return hostport.HostPort{}, errRedirect
 		}
 	}
+
 	authority, err := hostport.Parse(u.Host, "443")
 	if err != nil {
 		return hostport.HostPort{}, errRedirect
 	}
+
 	// Mirror the transport's dial address: Hostname and Port, defaulting to 443.
 	port := u.Port()
 	if port == "" {

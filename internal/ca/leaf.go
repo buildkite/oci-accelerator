@@ -53,6 +53,7 @@ func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 		return nil, errors.New("invalid certificate host")
 	}
 	host = parsed.Host()
+
 	// Deliberately keep signing under the cache lock: one lock bounds issuance
 	// and avoids duplicate work. Misses block unrelated hits. Defer separate
 	// issuance locking until measurements show meaningful contention.
@@ -62,12 +63,14 @@ func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 	if now.Before(a.cert.NotBefore) || !now.Before(a.cert.NotAfter) {
 		return nil, errors.New("CA certificate is not currently valid")
 	}
+
 	if elem := a.leaves[host]; elem != nil {
 		entry := elem.Value.(*leafEntry)
 		if a.leafUsable(entry.cert.Leaf, now) {
 			a.order.MoveToBack(elem)
 			return entry.cert, nil
 		}
+
 		leaf, err := a.makeLeaf(host, now)
 		if err != nil {
 			return nil, err
@@ -76,10 +79,12 @@ func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 		a.order.MoveToBack(elem)
 		return leaf, nil
 	}
+
 	leaf, err := a.makeLeaf(host, now)
 	if err != nil {
 		return nil, err
 	}
+
 	if a.order.Len() >= a.maxLeaves {
 		oldest := a.order.Front()
 		delete(a.leaves, oldest.Value.(*leafEntry).host)
@@ -97,6 +102,7 @@ func (a *Authority) leafUsable(cert *x509.Certificate, now time.Time) bool {
 	if cert == nil || now.Before(cert.NotBefore) || !now.Before(cert.NotAfter) {
 		return false
 	}
+
 	return cert.NotAfter.Sub(now) > leafRenewal || cert.NotAfter.Equal(a.cert.NotAfter)
 }
 
@@ -109,6 +115,7 @@ func (a *Authority) makeLeaf(host string, now time.Time) (*tls.Certificate, erro
 	if err != nil {
 		return nil, err
 	}
+
 	notAfter := now.Add(24 * time.Hour)
 	if notAfter.After(a.cert.NotAfter) {
 		notAfter = a.cert.NotAfter
@@ -116,6 +123,7 @@ func (a *Authority) makeLeaf(host string, now time.Time) (*tls.Certificate, erro
 	if !notAfter.After(now) {
 		return nil, errors.New("CA expires too soon to issue a leaf")
 	}
+
 	t := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: host},
@@ -129,6 +137,7 @@ func (a *Authority) makeLeaf(host string, now time.Time) (*tls.Certificate, erro
 	} else {
 		t.DNSNames = []string{host}
 	}
+
 	der, err := x509.CreateCertificate(rand.Reader, t, a.cert, &key.PublicKey, a.key)
 	if err != nil {
 		return nil, err
@@ -137,6 +146,7 @@ func (a *Authority) makeLeaf(host string, now time.Time) (*tls.Certificate, erro
 	if err != nil {
 		return nil, err
 	}
+
 	// The certificate was created with this key's public half, so no PEM
 	// round trip or external key-pair validation is needed.
 	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil

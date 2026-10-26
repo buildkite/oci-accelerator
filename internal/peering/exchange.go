@@ -28,6 +28,7 @@ func NewHandler(snapshot func() Message, exchange func(Message) (Message, error)
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
+
 		var response Message
 		switch r.Method {
 		case http.MethodGet:
@@ -37,16 +38,19 @@ func NewHandler(snapshot func() Message, exchange func(Message) (Message, error)
 				http.Error(w, "invalid request", http.StatusBadRequest)
 				return
 			}
+
 			encoded, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMessageBytes))
 			if err != nil {
 				http.Error(w, "invalid request", http.StatusBadRequest)
 				return
 			}
+
 			request, err := decodeMessage(encoded)
 			if err != nil {
 				http.Error(w, "invalid request", http.StatusBadRequest)
 				return
 			}
+
 			response, err = exchange(request)
 			if err != nil {
 				http.Error(w, "exchange failed", http.StatusInternalServerError)
@@ -56,11 +60,13 @@ func NewHandler(snapshot func() Message, exchange func(Message) (Message, error)
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
+
 		encoded, err := encodeMessage(response)
 		if err != nil {
 			http.Error(w, "exchange failed", http.StatusInternalServerError)
 			return
 		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(encoded)
 	})
@@ -72,6 +78,7 @@ func encodeMessage(message Message) ([]byte, error) {
 	if err != nil {
 		return nil, errInvalidMessage
 	}
+
 	encoded, err := json.Marshal(message)
 	if err != nil || len(encoded) > maxMessageBytes {
 		return nil, errInvalidMessage
@@ -86,6 +93,7 @@ func decodeMessage(encoded []byte) (Message, error) {
 	if len(encoded) > maxMessageBytes || checkMessageKeys(encoded) != nil {
 		return Message{}, errInvalidMessage
 	}
+
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	var message Message
@@ -124,6 +132,7 @@ func checkObjectKeys(decoder *json.Decoder, allowed map[string]bool, value func(
 	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
 		return errInvalidMessage
 	}
+
 	seen := make(map[string]struct{})
 	for decoder.More() {
 		token, err := decoder.Token()
@@ -139,6 +148,7 @@ func checkObjectKeys(decoder *json.Decoder, allowed map[string]bool, value func(
 			return err
 		}
 	}
+
 	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
 		return errInvalidMessage
 	}

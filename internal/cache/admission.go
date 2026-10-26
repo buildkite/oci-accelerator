@@ -204,6 +204,7 @@ func (s *Store) begin(meta Metadata) (*Fill, error) {
 		fill.mu.Unlock()
 		fill.timerDoneOnce.Do(func() { close(fill.timerDone) })
 	})
+
 	return fill, nil
 }
 
@@ -211,6 +212,7 @@ func (s *Store) refuse(reason AdmissionReason, cause error) error {
 	s.mu.Lock()
 	s.admissions[reason]++
 	s.mu.Unlock()
+
 	return &AdmissionError{Reason: reason, Cause: cause}
 }
 
@@ -219,6 +221,7 @@ func (e *AdmissionError) Error() string {
 	if e.Cause != nil {
 		message += ": " + e.Cause.Error()
 	}
+
 	return message
 }
 
@@ -230,5 +233,6 @@ func (r AdmissionReason) String() string {
 	if int(r) >= len(names) {
 		return fmt.Sprintf("unknown(%d)", uint8(r))
 	}
+
 	return names[r]
 }

@@ -33,12 +33,15 @@ func (p *ProviderHints) Run(ctx context.Context) {
 		after cache.KeyPosition
 		err   error
 	}
+
 	known := make(map[string]*hintSchedule)
 	results := make(chan result, hintRefreshConcurrency)
 	var workers sync.WaitGroup
 	defer workers.Wait()
+
 	timer := time.NewTimer(0)
 	defer timer.Stop()
+
 	active := 0
 	for ctx.Err() == nil {
 		now := time.Now()
@@ -53,6 +56,7 @@ func (p *ProviderHints) Run(ctx context.Context) {
 		}
 		clear(p.added)
 		p.addedMu.Unlock()
+
 		peers := p.book.Snapshot().Peers
 		ids := make([]string, 0, len(peers))
 		retained := make(map[string]bool, len(peers))
@@ -69,6 +73,7 @@ func (p *ProviderHints) Run(ctx context.Context) {
 				delete(known, id)
 			}
 		}
+
 		sort.Slice(ids, func(i, j int) bool {
 			a, b := known[ids[i]].next, known[ids[j]].next
 			if a.Equal(b) {
@@ -76,6 +81,7 @@ func (p *ProviderHints) Run(ctx context.Context) {
 			}
 			return a.Before(b)
 		})
+
 		wait := p.refreshInterval
 		for _, id := range ids {
 			entry := known[id]
@@ -95,6 +101,7 @@ func (p *ProviderHints) Run(ctx context.Context) {
 				entry.scanning = true
 				entry.reset = false
 			}
+
 			entry.running = true
 			active++
 			workers.Add(1)
@@ -104,6 +111,7 @@ func (p *ProviderHints) Run(ctx context.Context) {
 				results <- result{id: id, after: after, err: err}
 			}(id, entry.after)
 		}
+
 		timer.Reset(wait)
 		select {
 		case <-ctx.Done():
@@ -119,6 +127,7 @@ func (p *ProviderHints) Run(ctx context.Context) {
 				// earlier fetch has released the peer's active slot.
 				continue
 			}
+
 			if result.err == nil || result.after != entry.after {
 				entry.stalled = 0
 			} else {
@@ -137,6 +146,7 @@ func (p *ProviderHints) Run(ctx context.Context) {
 				entry.fullAt = time.Now().Add(hintJitter(p.fullRefreshInterval))
 			}
 			entry.next = time.Now().Add(hintJitter(p.refreshInterval))
+
 			if result.err != nil && ctx.Err() == nil && !errors.Is(result.err, errUnknownPeer) {
 				if rejected {
 					p.logger.Debug("peer cache keys checkpoint rejected", "node_id", result.id)
@@ -156,10 +166,12 @@ func (p *ProviderHints) PeersAdded(ids []string) {
 	if len(ids) == 0 {
 		return
 	}
+
 	retained := make(map[string]bool)
 	for _, id := range p.book.Snapshot().Peers {
 		retained[id] = true
 	}
+
 	p.addedMu.Lock()
 	for id := range p.added {
 		if !retained[id] {
@@ -172,6 +184,7 @@ func (p *ProviderHints) PeersAdded(ids []string) {
 		}
 	}
 	p.addedMu.Unlock()
+
 	select {
 	case p.wake <- struct{}{}:
 	default:

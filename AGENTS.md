@@ -59,6 +59,11 @@
   requirements.
 - Prefer many small, focused Go files over a few large files. Organize files
   by coherent responsibility, keeping closely related code together.
+- Use one blank line between logical code blocks when the purpose changes.
+  Keep closely related statements together, including an operation and its
+  immediate error check, resource acquisition and its cleanup `defer`, and a
+  lock with its protected updates and unlock. Keep comments attached to the
+  code they describe. Do not separate every statement or brace-delimited block.
 - Name test files `<owner>[_<topic>]_test.go` after the source file or
   responsibility they verify, not the fixture or entry point they call. Keep
   shared fixtures in `test_helpers_test.go`, and keep helpers used by a single

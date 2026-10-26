@@ -177,14 +177,17 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 		inners = append(inners, inner)
 	}
 	p.mu.Unlock()
+
 	p.cancelRanges()
 	for _, inner := range inners {
 		inner.SetKeepAlivesEnabled(false)
 	}
+
 	err := p.server.Shutdown(ctx)
 	if err != nil {
 		p.closeAll()
 	}
+
 	done := make(chan struct{})
 	go func() { p.inflight.Wait(); close(done) }()
 	select {
@@ -194,6 +197,7 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 		<-done
 		err = ctx.Err()
 	}
+
 	p.transport.CloseIdleConnections()
 	return err
 }
@@ -208,6 +212,7 @@ func (p *Proxy) closeAll() {
 		conns = append(conns, conn)
 	}
 	p.mu.Unlock()
+
 	for _, conn := range conns {
 		_ = conn.Close()
 	}
@@ -223,6 +228,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.serveCA(w, r)
 			return
 		}
+
 		w.Header().Set("Allow", http.MethodConnect)
 		refuse(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -295,11 +301,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, "tunneling unavailable", http.StatusInternalServerError)
 		return
 	}
+
 	// Take ownership of the raw client conn and its buffered reader/writer.
 	client, rw, err := hijacker.Hijack()
 	if err != nil {
 		return
 	}
+
 	// Tell the client the tunnel is open so it can start sending bytes.
 	if _, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
 		err = rw.Flush()
@@ -308,6 +316,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		client.Close()
 		return
 	}
+
 	// Pump bytes both ways between client and upstream until either side closes.
 	relay(client, upstream, rw.Reader, p.cfg.IdleTimeout)
 }
@@ -317,11 +326,13 @@ func validateCONNECT(r *http.Request) (hostport.HostPort, error) {
 	if r.RequestURI == "" || r.Host == "" || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 		return hostport.HostPort{}, hostport.ErrInvalid
 	}
+
 	// Parse the request-line authority into a canonical host:port.
 	target, err := hostport.Parse(r.RequestURI, "")
 	if err != nil {
 		return hostport.HostPort{}, err
 	}
+
 	// Require the Host header to parse and match the request-line authority.
 	host, err := hostport.Parse(r.Host, "")
 	if err != nil || host != target {

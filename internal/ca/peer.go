@@ -34,14 +34,18 @@ func (a *Authority) peerTLSConfigs(now func() time.Time) (server, client *tls.Co
 	if _, err := source.certificate(); err != nil {
 		return nil, nil, err
 	}
+
 	roots := x509.NewCertPool()
 	roots.AddCert(a.cert)
+
 	verifyPeer := func(state tls.ConnectionState) error {
 		if len(state.PeerCertificates) == 0 {
 			return errors.New("peer certificate is required")
 		}
+
 		return validatePeerProfile(state.PeerCertificates[0])
 	}
+
 	server = &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		NextProtos: []string{"http/1.1"},
@@ -62,6 +66,7 @@ func (a *Authority) peerTLSConfigs(now func() time.Time) (server, client *tls.Co
 		},
 		VerifyConnection: verifyPeer,
 	}
+
 	return server, client, nil
 }
 
@@ -82,6 +87,7 @@ func (s *peerCertificateSource) certificate() (*tls.Certificate, error) {
 	if s.cert != nil && s.authority.leafUsable(s.cert.Leaf, now) {
 		return s.cert, nil
 	}
+
 	cert, err := s.authority.makePeerCertificate(now)
 	if err != nil {
 		return nil, err
@@ -99,6 +105,7 @@ func (a *Authority) makePeerCertificate(now time.Time) (*tls.Certificate, error)
 	if err != nil {
 		return nil, err
 	}
+
 	notAfter := now.Add(24 * time.Hour)
 	if notAfter.After(a.cert.NotAfter) {
 		notAfter = a.cert.NotAfter
@@ -116,6 +123,7 @@ func (a *Authority) makePeerCertificate(now time.Time) (*tls.Certificate, error)
 		DNSNames:     []string{peerDNSName},
 		URIs:         []*url.URL{peerURI},
 	}
+
 	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, &key.PublicKey, a.key)
 	if err != nil {
 		return nil, err
@@ -124,6 +132,7 @@ func (a *Authority) makePeerCertificate(now time.Time) (*tls.Certificate, error)
 	if err != nil {
 		return nil, err
 	}
+
 	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
 }
 
@@ -134,6 +143,7 @@ func validatePeerProfile(cert *x509.Certificate) error {
 	if len(cert.ExtKeyUsage) != 2 || !hasExtKeyUsage(cert, x509.ExtKeyUsageServerAuth) || !hasExtKeyUsage(cert, x509.ExtKeyUsageClientAuth) {
 		return errors.New("certificate does not have the peer usages")
 	}
+
 	return nil
 }
 
@@ -143,5 +153,6 @@ func hasExtKeyUsage(cert *x509.Certificate, usage x509.ExtKeyUsage) bool {
 			return true
 		}
 	}
+
 	return false
 }

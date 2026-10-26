@@ -43,6 +43,7 @@ func validMeta(m Metadata) bool {
 	if len(m.Digest) != digestLen || !strings.HasPrefix(m.Digest, digestPrefix) {
 		return false
 	}
+
 	return isLowerHex(m.Key) && isLowerHex(m.Digest[len(digestPrefix):])
 }
 
@@ -51,6 +52,7 @@ func encodeMeta(m Metadata) ([]byte, error) {
 	if e == nil && len(b) > int(metadataReservation) {
 		e = errors.New("cache metadata too large")
 	}
+
 	return b, e
 }
 
@@ -60,5 +62,6 @@ func isLowerHex(s string) bool {
 	if _, err := hex.DecodeString(s); err != nil {
 		return false
 	}
+
 	return s == strings.ToLower(s)
 }

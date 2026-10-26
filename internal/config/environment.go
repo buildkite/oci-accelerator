@@ -55,10 +55,12 @@ func applyEnvironment(raw *rawConfig, lookup func(string) (string, bool)) error 
 		if !present {
 			continue
 		}
+
 		if reason := setEnvironmentValue(setting.target, value); reason != "" {
 			return invalid(reason, setting.name)
 		}
 	}
+
 	return nil
 }
 
@@ -95,6 +97,7 @@ func setEnvironmentValue(target any, value string) string {
 		if value == "" {
 			return ""
 		}
+
 		for _, entry := range strings.Split(value, ",") {
 			text := strings.TrimSpace(entry)
 			if text == "" {
@@ -105,6 +108,7 @@ func setEnvironmentValue(target any, value string) string {
 	default:
 		panic("unsupported environment setting type")
 	}
+
 	return ""
 }
 
@@ -114,10 +118,12 @@ func isCanonicalDigits(value string) bool {
 	if value == "" || (len(value) > 1 && value[0] == '0') {
 		return false
 	}
+
 	for i := 0; i < len(value); i++ {
 		if value[i] < '0' || value[i] > '9' {
 			return false
 		}
 	}
+
 	return true
 }

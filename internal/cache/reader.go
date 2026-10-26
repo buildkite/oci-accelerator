@@ -62,10 +62,12 @@ func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 		offset += r.entry.meta.Size
 		whence = io.SeekStart
 	}
+
 	position, err := r.file.Seek(offset, whence)
 	if err == nil {
 		r.remaining = r.entry.meta.Size - position
 	}
+
 	return position, err
 }
 
@@ -96,6 +98,7 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 	if !validMeta(meta) {
 		return nil, ErrMiss
 	}
+
 	for {
 		// Abandon the lookup if the caller has already given up.
 		if ctx.Err() != nil {
@@ -151,6 +154,7 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 			e.verifying = nil
 			s.mu.Unlock()
 		}
+
 		return r, err
 	}
 }
@@ -204,6 +208,7 @@ func (s *Store) openReader(ctx context.Context, e *entry, needsVerification bool
 	e.verified = true
 	s.setEntryLastLocked(e, s.nextRecencyLocked())
 	s.mu.Unlock()
+
 	return &Reader{store: s, entry: e, file: f, remaining: meta.Size}, nil
 }
 
@@ -219,6 +224,7 @@ func verifyBody(ctx context.Context, r io.Reader, digest string, afterVerificati
 		if err = ctx.Err(); err != nil {
 			break
 		}
+
 		var n int
 		n, err = r.Read(buf)
 		if afterVerificationRead != nil {
@@ -228,6 +234,7 @@ func verifyBody(ctx context.Context, r io.Reader, digest string, afterVerificati
 		if n > 0 {
 			_, _ = h.Write(buf[:n])
 		}
+
 		if errors.Is(err, io.EOF) {
 			err = nil
 			break
@@ -236,9 +243,11 @@ func verifyBody(ctx context.Context, r io.Reader, digest string, afterVerificati
 			break
 		}
 	}
+
 	if err == nil && "sha256:"+hex.EncodeToString(h.Sum(nil)) != digest {
 		err = errors.New("digest mismatch")
 	}
+
 	return err
 }
 
@@ -246,12 +255,12 @@ func (s *Store) invalidate(e *entry) {
 	s.mu.Lock()
 	e.invalid = true
 	s.mu.Unlock()
+
 	s.unpin(e)
 }
 
 func (s *Store) unpin(e *entry) {
 	s.mu.Lock()
-
 	cleanup := e.invalid && e.pins == 1
 	if cleanup {
 		// Cover the admission-serialization wait as well as removal. Close must
@@ -291,6 +300,7 @@ func (s *Store) unpin(e *entry) {
 		if err != nil {
 			return
 		}
+
 		s.deleteEntryLocked(e)
 	}
 

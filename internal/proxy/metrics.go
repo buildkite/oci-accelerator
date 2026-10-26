@@ -62,6 +62,7 @@ type requestStats struct {
 	// request that becomes a plain GET upstream stays out of served-source metrics.
 	immutable bool
 }
+
 type statsKey struct{}
 
 // Finite histogram bounds, shared by classification and scrape labels.

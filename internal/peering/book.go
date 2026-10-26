@@ -64,6 +64,7 @@ func OpenBook(ctx context.Context, dir, self string, seeds []string, client *htt
 	if err != nil {
 		return nil, errBook
 	}
+
 	lock, err := openBookState(dir)
 	if err != nil {
 		return nil, errBook
@@ -73,11 +74,13 @@ func OpenBook(ctx context.Context, dir, self string, seeds []string, client *htt
 		_ = lock.close()
 		return nil, errBook
 	}
+
 	nodeID, err := loadNodeID(dir)
 	if err != nil {
 		_ = lock.close()
 		return nil, errBook
 	}
+
 	fresh := nodeID == ""
 	if fresh {
 		nodeID, err = newNodeID()
@@ -98,18 +101,21 @@ func OpenBook(ctx context.Context, dir, self string, seeds []string, client *htt
 		_ = lock.close()
 		return nil, err
 	}
+
 	if fresh {
 		if _, err := replaceState(dir, nodeIDName, []byte(nodeID), syncBookDir); err != nil {
 			_ = lock.close()
 			return nil, errBook
 		}
 	}
+
 	b := &Book{dir: dir, self: canonicalSelf, nodeID: nodeID, records: make(map[string]bookRecord, len(records)), seeds: make(map[string]bool), lock: lock, write: writeBookState}
 	for address, record := range records {
 		if address != canonicalSelf && record.NodeID != nodeID {
 			b.records[address] = record
 		}
 	}
+
 	// Also migrate legacy candidates and durably remove records for self.
 	if _, err := b.write(dir, b.records); err != nil {
 		_ = lock.close()
@@ -144,6 +150,7 @@ func (b *Book) AddSeeds(addresses []string) (int, error) {
 		}
 		seeds[canonical] = ""
 	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.lock.file == nil {
@@ -170,6 +177,7 @@ func (b *Book) merge(message Message, destination string, before *bookView) (res
 	if err != nil {
 		return result, errBook
 	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.lock.file == nil {
@@ -210,6 +218,7 @@ func (b *Book) merge(message Message, destination string, before *bookView) (res
 	} else if message.Address != b.self && (current[message.Address] != message.NodeID || destination != "") {
 		result.Verify = append(result.Verify, message.Address)
 	}
+
 	for _, address := range sortedAddresses(message.Peers) {
 		id := message.Peers[address]
 		if address == b.self || address == message.Address || address == destination {
@@ -221,6 +230,7 @@ func (b *Book) merge(message Message, destination string, before *bookView) (res
 		}
 	}
 	sort.Strings(result.Verify)
+
 	err = b.persist(next)
 	// persist can publish next and still fail to sync the directory, so
 	// compare against whatever the book now holds.
@@ -254,6 +264,7 @@ func (b *Book) persist(next map[string]bookRecord) error {
 	if b.lock.file == nil {
 		return errBook
 	}
+
 	changed := b.unsynced || len(next) != len(b.saved)
 	for address, record := range next {
 		saved, exists := b.saved[address]
@@ -266,6 +277,7 @@ func (b *Book) persist(next map[string]bookRecord) error {
 		b.records = next
 		return nil
 	}
+
 	published, err := b.write(b.dir, next)
 	if published {
 		for address, record := range b.records {
@@ -320,6 +332,7 @@ func (b *Book) bindings(now time.Time) map[string]string {
 	for address := range b.seeds {
 		peers[address] = ""
 	}
+
 	for address, record := range b.records {
 		if record.NodeID != "" && record.LastSuccess.Add(membershipTTL).After(now) {
 			peers[address] = record.NodeID
@@ -353,6 +366,7 @@ func addedIDs(previous, next map[string]string) []string {
 	for _, id := range previous {
 		known[id] = true
 	}
+
 	var added []string
 	for _, id := range next {
 		if id != "" && !known[id] {

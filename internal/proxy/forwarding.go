@@ -41,6 +41,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			pr.SetURL(upstream)
 			pr.Out.URL.RawQuery = rawQuery
 			pr.Out.Host = upstream.Host
+
 			for _, name := range []string{
 				"Forwarded", "X-Forwarded-For", "X-Forwarded-Host",
 				"X-Forwarded-Proto", "Proxy-Authorization", "Proxy-Authenticate",
@@ -59,6 +60,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			if resp.StatusCode == http.StatusSwitchingProtocols {
 				return errUpgrade
 			}
+
 			return nil
 		},
 		FlushInterval: -1,
@@ -139,8 +141,10 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 					r.Body = &uploadBody{ReadCloser: r.Body, controller: controller, idleTimeout: p.cfg.IdleTimeout}
 				}
 			}
+
 			rp.ServeHTTP(mw, r)
 		}
+
 		completed = true
 	})
 }
@@ -149,11 +153,13 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 // never query strings, userinfo, fragments, or a client-supplied authority.
 func requestLogURL(target hostport.HostPort, r *http.Request) string {
 	logged := url.URL{Scheme: "https", Host: target.String()}
+
 	// Inspect the raw target: net/http can leave scheme-relative authorities and
 	// literal fragments in URL.Path. For malformed targets, log only the registry.
 	if strings.HasPrefix(r.RequestURI, "/") && !strings.HasPrefix(r.RequestURI, "//") && !strings.Contains(r.RequestURI, "#") {
 		logged.Path, logged.RawPath = r.URL.Path, r.URL.RawPath
 	}
+
 	return logged.String()
 }
 

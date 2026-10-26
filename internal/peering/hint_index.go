@@ -45,6 +45,7 @@ func (x *hintIndex) merge(provider nodeID, keys []cacheKey) {
 			}
 			x.fifo.PushBack(key)
 		}
+
 		x.revision++
 		claim := providerClaim{id: provider, revision: x.revision}
 		if i := slices.IndexFunc(providers, func(p providerClaim) bool { return p.id == provider }); i >= 0 {
@@ -62,6 +63,7 @@ func (x *hintIndex) providers(key cacheKey) []string {
 	if len(providers) == 0 {
 		return nil
 	}
+
 	ids := make([]string, len(providers))
 	for i, provider := range providers {
 		ids[i] = provider.id.String()

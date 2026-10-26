@@ -40,16 +40,19 @@ func (b *fillingBody) Read(p []byte) (int, error) {
 	if b.fill == nil {
 		return n, err
 	}
+
 	// Cancellation must not publish a partial object: abort before writing.
 	if b.ctx.Err() != nil {
 		b.abort("aborted")
 		return n, err
 	}
+
 	if n > 0 {
 		if _, e := b.fill.Write(p[:n]); e != nil {
 			b.abort("failed")
 		}
 	}
+
 	// Commit only on a clean EOF with the request still live. Re-check b.fill
 	// (the write may have aborted) and the context (it may have just canceled).
 	if b.fill != nil && err != nil {
@@ -65,6 +68,7 @@ func (b *fillingBody) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
+
 func (b *fillingBody) abort(outcome string) {
 	if b.fill != nil {
 		b.fill.Abort()
@@ -72,6 +76,7 @@ func (b *fillingBody) abort(outcome string) {
 		b.stats.fill = outcome
 	}
 }
+
 func (b *fillingBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.abort("aborted")

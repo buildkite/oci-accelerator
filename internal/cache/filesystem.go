@@ -46,6 +46,7 @@ func acquireLock(dir string) (*os.File, error) {
 		lf.Close()
 		return nil, filesystemError(err)
 	}
+
 	return lf, nil
 }
 
@@ -73,6 +74,7 @@ func ensurePrivateDir(dir string) error {
 		}
 		return ErrUnsafeState
 	}
+
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		if err = os.Mkdir(dir, 0o700); err != nil {
@@ -83,6 +85,7 @@ func ensurePrivateDir(dir string) error {
 		}
 		info, err = os.Lstat(dir)
 	}
+
 	// The cache directory itself must be owned by this user and exactly 0700.
 	dirPrivate := err == nil && isRealDir(info) && info.Mode().Perm() == 0o700 && owned(info)
 	if !dirPrivate {
@@ -91,6 +94,7 @@ func ensurePrivateDir(dir string) error {
 		}
 		return ErrUnsafeState
 	}
+
 	return nil
 }
 

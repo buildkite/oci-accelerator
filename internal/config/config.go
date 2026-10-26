@@ -110,11 +110,13 @@ func load(path string, lookup func(string) (string, bool)) (Config, error) {
 		if value, ok := lookup(name); ok {
 			return value, true
 		}
+
 		value, ok := fileValues[name]
 		return value, ok
 	}); err != nil {
 		return Config{}, err
 	}
+
 	return validate(raw)
 }
 

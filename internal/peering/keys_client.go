@@ -21,10 +21,12 @@ func fetchKeys(ctx context.Context, client *http.Client, destination string, exp
 	if client == nil || !validNodeID(expected.String()) {
 		return errKeysFetch
 	}
+
 	destination, err := CanonicalAddress(destination)
 	if err != nil {
 		return errKeysFetch
 	}
+
 	for {
 		page, err := fetchKeysPage(ctx, client, destination, *after)
 		if err != nil {
@@ -33,6 +35,7 @@ func fetchKeys(ctx context.Context, client *http.Client, destination string, exp
 		if page.node != expected {
 			return errKeysFetch
 		}
+
 		// Continuations must stay in one store lifetime and advance their
 		// logical positions. Individual keys may repeat after live accesses.
 		if *after != (cache.KeyPosition{}) && page.next != (cache.KeyPosition{}) {
@@ -43,6 +46,7 @@ func fetchKeys(ctx context.Context, client *http.Client, destination string, exp
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+
 		apply(page.keys)
 		if page.next == (cache.KeyPosition{}) {
 			return nil
@@ -62,6 +66,7 @@ func fetchKeysPage(ctx context.Context, client *http.Client, destination string,
 		}
 		url += "?after=" + token
 	}
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return keysPage{}, errKeysFetch
@@ -75,6 +80,7 @@ func fetchKeysPage(ctx context.Context, client *http.Client, destination string,
 		return keysPage{}, errKeysFetch
 	}
 	defer response.Body.Close()
+
 	if response.StatusCode == http.StatusBadRequest && after != (cache.KeyPosition{}) {
 		if response.Header.Get(keysErrorHeader) == "invalid_cursor" {
 			return keysPage{}, cache.ErrKeyCursor
@@ -88,10 +94,12 @@ func fetchKeysPage(ctx context.Context, client *http.Client, destination string,
 	if response.StatusCode != http.StatusOK || !jsonContentType(response.Header.Get("Content-Type")) {
 		return keysPage{}, errKeysFetch
 	}
+
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, maxKeysPageBytes+1))
 	if err != nil || len(encoded) > maxKeysPageBytes {
 		return keysPage{}, errKeysFetch
 	}
+
 	page, err := decodeKeysPage(encoded)
 	if err != nil {
 		return keysPage{}, errKeysFetch

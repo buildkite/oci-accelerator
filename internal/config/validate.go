@@ -16,12 +16,14 @@ func validate(raw rawConfig) (Config, error) {
 	if len(raw.Registries) == 0 {
 		return Config{}, invalid("must contain at least one authority", "REGISTRIES")
 	}
+
 	if err := validatePath("CA_DIR", raw.CADir); err != nil {
 		return Config{}, err
 	}
 	if err := validatePath("CACHE_DIR", raw.Cache.Dir); err != nil {
 		return Config{}, err
 	}
+
 	listen, reason := canonicalBindAddress(raw.Listen, false)
 	if reason != "" {
 		return Config{}, invalid(reason, "LISTEN")
@@ -33,10 +35,12 @@ func validate(raw rawConfig) (Config, error) {
 			return Config{}, invalid(reason, "METRICS_LISTEN")
 		}
 	}
+
 	peerConfig, err := validatePeer(raw.Peer, listen, metricsListen, raw.CADir, raw.Cache.Dir)
 	if err != nil {
 		return Config{}, err
 	}
+
 	for _, limit := range []struct {
 		setting string
 		value   int64
@@ -52,6 +56,7 @@ func validate(raw rawConfig) (Config, error) {
 			return Config{}, invalid("must be positive", limit.setting)
 		}
 	}
+
 	for _, timeout := range []struct {
 		setting string
 		value   time.Duration
@@ -68,6 +73,7 @@ func validate(raw rawConfig) (Config, error) {
 			return Config{}, invalid("must be positive", timeout.setting)
 		}
 	}
+
 	for _, interval := range []struct {
 		setting string
 		value   time.Duration
@@ -79,6 +85,7 @@ func validate(raw rawConfig) (Config, error) {
 			return Config{}, invalid("must be at least 1s", interval.setting)
 		}
 	}
+
 	for _, timeout := range []struct {
 		setting string
 		value   time.Duration
@@ -91,6 +98,7 @@ func validate(raw rawConfig) (Config, error) {
 			return Config{}, invalid("must be non-negative", timeout.setting)
 		}
 	}
+
 	registries, reason := parseAuthorities(raw.Registries)
 	if reason != "" {
 		return Config{}, invalid(reason, "REGISTRIES")
@@ -99,6 +107,7 @@ func validate(raw rawConfig) (Config, error) {
 	if reason != "" {
 		return Config{}, invalid(reason, "REDIRECT_ALLOWLIST")
 	}
+
 	caDir, err := filepath.Abs(raw.CADir)
 	if err != nil {
 		return Config{}, invalid("cannot resolve directory path", "CA_DIR")
@@ -107,6 +116,7 @@ func validate(raw rawConfig) (Config, error) {
 	if err != nil {
 		return Config{}, invalid("cannot resolve directory path", "CACHE_DIR")
 	}
+
 	// The distinctness and nesting checks are lexical: they neither resolve
 	// symlinks nor inspect the filesystem. Startup ownership and layout checks
 	// apply separately.
@@ -148,8 +158,10 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 		if len(raw.Seeds) != 0 {
 			return Peer{}, invalid("must be empty when peer service is disabled", "PEER_SEEDS", "PEER_LISTEN")
 		}
+
 		return raw, nil
 	}
+
 	listen, reason := canonicalBindAddress(raw.Listen, false)
 	if reason != "" {
 		return Peer{}, invalid(reason, "PEER_LISTEN")
@@ -157,6 +169,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 	if listen == proxyListen || listen == metricsListen {
 		return Peer{}, invalid("must not equal another listener", "PEER_LISTEN")
 	}
+
 	if raw.Advertise == "" {
 		return Peer{}, invalid("must be set when peer service is enabled", "PEER_ADVERTISE")
 	}
@@ -164,6 +177,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 	if err != nil {
 		return Peer{}, invalid("must be an explicit usable host:port address", "PEER_ADVERTISE")
 	}
+
 	if raw.StateDir == "" {
 		return Peer{}, invalid("must be set when peer service is enabled", "PEER_STATE_DIR")
 	}
@@ -183,6 +197,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 			return Peer{}, invalid("directory paths must not equal or contain one another", "PEER_STATE_DIR", owned.name)
 		}
 	}
+
 	seen := make(map[string]struct{}, len(raw.Seeds))
 	seeds := make([]string, 0, len(raw.Seeds))
 	for _, seed := range raw.Seeds {
@@ -202,6 +217,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 	if len(seeds) > peering.MaxPeers {
 		return Peer{}, invalid("must contain at most 1024 unique addresses", "PEER_SEEDS")
 	}
+
 	raw.Listen = listen
 	raw.Advertise = advertise
 	raw.Seeds = seeds
@@ -216,6 +232,7 @@ func pathsOverlap(a, b string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -227,6 +244,7 @@ func invalid(reason string, settings ...string) error {
 	for i, setting := range settings {
 		names[i] = environmentPrefix + setting
 	}
+
 	return fmt.Errorf("%w: %s: %s", ErrInvalid, strings.Join(names, " and "), reason)
 }
 
@@ -239,6 +257,7 @@ func validatePath(setting, value string) error {
 	if strings.ContainsRune(value, 0) {
 		return invalid("must not contain NUL", setting)
 	}
+
 	return nil
 }
 
@@ -256,6 +275,7 @@ func canonicalBindAddress(address string, loopback bool) (canonical, reason stri
 	if err != nil {
 		return "", "must be a host:port address"
 	}
+
 	portNumber, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || portNumber == 0 {
 		return "", "port must be an integer from 1 to 65535"
@@ -267,6 +287,7 @@ func canonicalBindAddress(address string, loopback bool) (canonical, reason stri
 		if ip == nil || !ip.IsLoopback() || strings.Contains(host, "%") {
 			return "", "host must be a loopback IP literal without a zone"
 		}
+
 		return net.JoinHostPort(ip.String(), normalizedPort), ""
 	}
 
@@ -284,6 +305,7 @@ func canonicalBindAddress(address string, loopback bool) (canonical, reason stri
 			}
 		}
 	}
+
 	return net.JoinHostPort(canonicalHost, normalizedPort), ""
 }
 
@@ -303,5 +325,6 @@ func parseAuthorities(texts []string) (authorities []hostport.HostPort, reason s
 		seen[a.String()] = true
 		authorities[i] = a
 	}
+
 	return authorities, ""
 }

@@ -26,6 +26,7 @@ func CanonicalAddress(address string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	host := parsed.Host()
 	if ip := net.ParseIP(host); ip != nil && (ip.IsUnspecified() || ip.IsMulticast()) {
 		return "", errInvalidMessage
@@ -43,10 +44,12 @@ func canonicalMessage(message Message) (Message, error) {
 	if len(message.Peers) > MaxPeers || !validNodeID(message.NodeID) {
 		return Message{}, errInvalidMessage
 	}
+
 	address, err := CanonicalAddress(message.Address)
 	if err != nil {
 		return Message{}, errInvalidMessage
 	}
+
 	peers := make(map[string]string, len(message.Peers))
 	for peer, id := range message.Peers {
 		canonical, err := CanonicalAddress(peer)

@@ -44,6 +44,7 @@ func (p *Proxy) dialUpstream(ctx context.Context, network, address string) (net.
 		if ctx.Err() != nil {
 			break
 		}
+
 		// Reserve a share for each remaining address. Recompute after every
 		// failure so time unused by a fast refusal remains available to others.
 		attempt, cancelAttempt := context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(ips)-i))
@@ -88,10 +89,12 @@ func publicIP(ip net.IP) bool {
 	if !ok {
 		return false
 	}
+
 	a = a.Unmap()
 	if !a.IsGlobalUnicast() || a.IsPrivate() || a.IsLoopback() || a.IsLinkLocalUnicast() {
 		return false
 	}
+
 	for _, prefix := range nonPublic {
 		if prefix.Contains(a) {
 			return false
@@ -111,6 +114,7 @@ func (c *idleReadWriteConn) Read(b []byte) (int, error) {
 	}
 	return c.Conn.Read(b)
 }
+
 func (c *idleReadWriteConn) Write(b []byte) (int, error) {
 	if c.timeout > 0 {
 		// The transport may already be reading on a pooled connection. Give

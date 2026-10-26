@@ -12,6 +12,7 @@ import (
 const (
 	keysPath        = "/v1/cache/keys"
 	keysErrorHeader = "OCI-Accelerator-Error"
+
 	// maxKeysPerPage keeps a full page well within maxKeysPageBytes. It is
 	// part of the wire contract, because clients require every page but the
 	// last to hold exactly this many keys.
@@ -47,6 +48,7 @@ func encodeKeysPage(page keysPage) ([]byte, error) {
 	if validateKeysPage(page) != nil {
 		return nil, errInvalidKeysPage
 	}
+
 	wire := keysPageWire{NodeID: page.node.String(), Keys: make([]string, len(page.keys))}
 	for i, key := range page.keys {
 		wire.Keys[i] = key.String()
@@ -54,6 +56,7 @@ func encodeKeysPage(page keysPage) ([]byte, error) {
 	if page.next != (cache.KeyPosition{}) {
 		wire.Next, _ = encodeKeysCursor(page.next) // validated above
 	}
+
 	encoded, err := json.Marshal(wire)
 	if err != nil || len(encoded) > maxKeysPageBytes {
 		return nil, errInvalidKeysPage
@@ -69,12 +72,14 @@ func decodeKeysPage(encoded []byte) (keysPage, error) {
 	if len(encoded) > maxKeysPageBytes || checkKeysPageKeys(encoded) != nil {
 		return keysPage{}, errInvalidKeysPage
 	}
+
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	var wire keysPageWire
 	if decoder.Decode(&wire) != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		return keysPage{}, errInvalidKeysPage
 	}
+
 	node, ok := parseNodeID(wire.NodeID)
 	if !ok || len(wire.Keys) > maxKeysPerPage {
 		return keysPage{}, errInvalidKeysPage
@@ -85,6 +90,7 @@ func decodeKeysPage(encoded []byte) (keysPage, error) {
 			return keysPage{}, errInvalidKeysPage
 		}
 	}
+
 	if wire.Next != "" {
 		next, err := decodeKeysCursor(wire.Next)
 		if err != nil {
@@ -92,6 +98,7 @@ func decodeKeysPage(encoded []byte) (keysPage, error) {
 		}
 		page.next = next
 	}
+
 	if validateKeysPage(page) != nil {
 		return keysPage{}, errInvalidKeysPage
 	}
@@ -113,6 +120,7 @@ func validateKeysPage(page keysPage) error {
 			return errInvalidKeysPage
 		}
 	}
+
 	seen := make(map[cacheKey]bool, len(page.keys))
 	for _, key := range page.keys {
 		if seen[key] {
@@ -151,11 +159,13 @@ func checkStringArray(decoder *json.Decoder) error {
 	if token, err := decoder.Token(); err != nil || token != json.Delim('[') {
 		return errInvalidKeysPage
 	}
+
 	for decoder.More() {
 		if err := checkString(decoder); err != nil {
 			return err
 		}
 	}
+
 	if token, err := decoder.Token(); err != nil || token != json.Delim(']') {
 		return errInvalidKeysPage
 	}
