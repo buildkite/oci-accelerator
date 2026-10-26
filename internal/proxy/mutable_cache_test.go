@@ -42,6 +42,7 @@ func TestMutableCacheHitsChangeRecencyNotExpiryAndBoundTinyHEADs(t *testing.T) {
 		for i := range 1024 {
 			publishMutableCache(t, cache, req, i, nil, expires)
 		}
+
 		time.Sleep(30 * time.Second)
 		readMutableCache(t, cache, req, 0, "")
 		publishMutableCache(t, cache, req, 1024, nil, time.Now().Add(time.Hour))
@@ -98,10 +99,12 @@ func TestMutableCachePendingCapturesAreNotEvictionVictims(t *testing.T) {
 		default:
 			t.Fatal("aborted capture did not release its waiters")
 		}
+
 		resp, replacement, leader := cache.acquire(req, mutableTestKey(16))
 		if resp != nil || replacement == nil || !leader {
 			t.Fatal("aborting a capture did not restore admission")
 		}
+
 		cache.finish(replacement, nil, nil, 0, time.Time{})
 		for _, entry := range pending[1:] {
 			cache.finish(entry, nil, nil, 0, time.Time{})
@@ -148,6 +151,7 @@ func TestMutableCacheEvictedReadersPinMemoryWithinReservationBound(t *testing.T)
 			if cache.used > budget {
 				t.Fatalf("capture reservation exceeded 32 MiB: %d bytes", cache.used)
 			}
+
 			// A one-byte response still owns the full backing allocation.
 			body := make([]byte, 1, 1<<20)
 			body[0] = byte(i)
@@ -156,6 +160,7 @@ func TestMutableCacheEvictedReadersPinMemoryWithinReservationBound(t *testing.T)
 			if cache.used > budget {
 				t.Fatalf("published body and headers exceeded 32 MiB: %d bytes", cache.used)
 			}
+
 			resp = cache.hit(req, mutableTestKey(i))
 			if resp == nil {
 				t.Fatal("completed response was not published")
@@ -185,12 +190,14 @@ func TestMutableCacheEvictedReadersPinMemoryWithinReservationBound(t *testing.T)
 		if cache.used != before {
 			t.Fatal("EOF released memory before Close")
 		}
+
 		if err := readers[0].Close(); err != nil {
 			t.Fatal(err)
 		}
 		if cache.used != before {
 			t.Fatal("closing one reader released memory still owned by another")
 		}
+
 		body, err = io.ReadAll(extra)
 		if err != nil || string(body) != "\x00" {
 			t.Fatalf("last evicted reader returned %q, %v", body, err)
@@ -201,17 +208,20 @@ func TestMutableCacheEvictedReadersPinMemoryWithinReservationBound(t *testing.T)
 		if cache.used != before-firstCharge {
 			t.Fatalf("last Close left %d charged bytes, want %d", cache.used, before-firstCharge)
 		}
+
 		if err := extra.Close(); err != nil {
 			t.Fatal(err)
 		}
 		if cache.used != before-firstCharge {
 			t.Fatal("repeated Close released memory twice")
 		}
+
 		resp, replacement, leader := cache.acquire(req, mutableTestKey(1000))
 		if resp != nil || replacement == nil || !leader {
 			t.Fatal("closing the last reader did not restore capture admission")
 		}
 		cache.finish(replacement, nil, nil, 0, time.Time{})
+
 		for i, reader := range readers[1:] {
 			body, err := io.ReadAll(reader)
 			if err != nil || len(body) != 1 || body[0] != byte(i+1) {
@@ -235,6 +245,7 @@ func TestMutableCacheInvalidatedCaptureCannotPublishOverReplacement(t *testing.T
 	if resp != nil || old == nil || !leader {
 		t.Fatal("initial capture was not admitted")
 	}
+
 	reservation := cache.used
 	cache.invalidate(key)
 	if cache.used != reservation {
@@ -245,6 +256,7 @@ func TestMutableCacheInvalidatedCaptureCannotPublishOverReplacement(t *testing.T
 		t.Fatal("invalidation completed an unfinished capture")
 	default:
 	}
+
 	resp, replacement, leader := cache.acquire(req, key)
 	if resp != nil || replacement == nil || replacement == old || !leader {
 		t.Fatal("invalidation did not permit a distinct replacement capture")
@@ -281,16 +293,19 @@ func TestMutableCacheInvalidatedCaptureCannotPublishOverReplacement(t *testing.T
 	if resp, entry, leader := cache.acquire(req, key); resp != nil || entry != replacement || leader {
 		t.Fatal("old finish deleted or replaced the pending replacement")
 	}
+
 	resp, entry, leader := cache.acquire(req, mutableTestKey(15))
 	if resp != nil || entry == nil || !leader {
 		t.Fatal("finishing the invalidated capture did not restore its capture slot")
 	}
 	others = append(others, entry)
+
 	for _, entry := range others {
 		cache.finish(entry, nil, nil, 0, time.Time{})
 	}
 	cache.finish(replacement, http.Header{}, []byte("replacement"), 11, time.Now().Add(time.Hour))
 	readMutableCache(t, cache, req, 0, "replacement")
+
 	cache.invalidate(key)
 	if cache.used != 0 || cache.captures != 0 || len(cache.entries) != 0 {
 		t.Fatalf("finished captures retain bytes=%d captures=%d entries=%d", cache.used, cache.captures, len(cache.entries))
@@ -308,6 +323,7 @@ func publishMutableCache(t *testing.T, cache *mutableCache, req *http.Request, k
 	if resp != nil || entry == nil || !leader {
 		t.Fatalf("key %d was not admitted for capture", key)
 	}
+
 	cache.finish(entry, http.Header{}, body, int64(len(body)), expires)
 }
 
@@ -318,6 +334,7 @@ func readMutableCache(t *testing.T, cache *mutableCache, req *http.Request, key 
 		t.Fatalf("key %d was not a cache hit", key)
 	}
 	defer resp.Body.Close()
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil || string(body) != want {
 		t.Fatalf("key %d returned %q, %v, want %q", key, body, err, want)

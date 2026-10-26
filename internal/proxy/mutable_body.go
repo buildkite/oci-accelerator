@@ -54,6 +54,7 @@ func (b *mutableCapture) finish(complete bool) {
 	if !complete {
 		header, data = nil, nil
 	}
+
 	// Unknown-length responses become fixed-length only after clean EOF.
 	b.cache.finish(entry, header, data, int64(len(data)), b.expires)
 }

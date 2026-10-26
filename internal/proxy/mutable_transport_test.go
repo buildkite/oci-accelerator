@@ -140,12 +140,14 @@ func TestMutableRestrictionsAndFailuresBypass(t *testing.T) {
 			defer origin.Close()
 			_, client := mutableProxyFixture(t, origin)
 			client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
 			path := tc.path
 			if path == "" {
 				path = "/v2/team/image/manifests/latest"
 			}
 			req := authorizationRequest(t, origin.URL+path, "")
 			req.Header = tc.request.Clone()
+
 			for range 2 {
 				resp, err := client.Do(req.Clone(req.Context()))
 				if err != nil {
@@ -183,6 +185,7 @@ func TestMutableOriginalRestrictionsSurviveHeaderStripping(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertAuthorizationBody(t, resp, 200, "1")
+
 			req.Header.Set("Connection", stripped)
 			req.Header.Set(stripped, value)
 			resp, err = client.Do(req)
@@ -215,6 +218,7 @@ func TestMutableDisabledClasses(t *testing.T) {
 			p, client := mutableProxyFixture(t, origin)
 			p.mutable = newMutableCache(tc.ttl)
 			p.authorization = newAuthorizationCache(tc.auth, tc.anon, 10)
+
 			for _, credential := range []string{"", "Bearer a"} {
 				req := authorizationRequest(t, origin.URL+"/v2/team/image/tags/list", credential)
 				before := calls.Load()
@@ -253,14 +257,17 @@ func TestMutableCoalescesCompleteResponses(t *testing.T) {
 	}))
 	defer origin.Close()
 	tr := mutableTransportFixture(t, origin)
+
 	req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "Bearer shared")
 	results := make(chan mutableResult, 9)
 	go func() { results <- readMutable(tr, req.Clone(req.Context())) }()
 	waitFor(t, started, "streaming leader")
+
 	for range 8 {
 		go func() { results <- readMutable(tr, req.Clone(req.Context())) }()
 	}
 	waitMutableWaiters(t, tr, 8)
+
 	close(release)
 	for range 9 {
 		got := <-results
@@ -298,12 +305,14 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 			} else if scenario == "waiting disabled" {
 				tr.fillWaitTimeout = 0
 			}
+
 			req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "")
 			leaderCtx, cancelLeader := context.WithCancel(context.Background())
 			defer cancelLeader()
 			leader := make(chan mutableResult, 1)
 			go func() { leader <- readMutable(tr, req.Clone(leaderCtx)) }()
 			waitFor(t, started, "leader headers")
+
 			followerCtx, cancelFollower := context.WithCancel(context.Background())
 			defer cancelFollower()
 			follower := make(chan mutableResult, 1)
@@ -325,12 +334,14 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 			} else if got.err != nil || got.body != "independent" || calls.Load() != 2 {
 				t.Fatalf("fallback = %+v, calls=%d", got, calls.Load())
 			}
+
 			close(release)
 			got = <-leader
 			if scenario == "leader canceled" {
 				if got.err == nil {
 					t.Fatal("canceled leader completed successfully")
 				}
+
 				got = readMutable(tr, req)
 				if got.err != nil || got.body != "independent" || calls.Load() != 3 {
 					t.Fatalf("partial leader was cached: %+v calls=%d", got, calls.Load())
@@ -339,6 +350,7 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 				if got.err != nil || got.body != "leader" {
 					t.Fatalf("leader = %+v", got)
 				}
+
 				before := calls.Load()
 				got = readMutable(tr, req)
 				if got.err != nil || got.body != "leader" || calls.Load() != before {
@@ -375,12 +387,14 @@ func TestMutableInterruptedAndOversizedResponsesAreNotPublished(t *testing.T) {
 			defer origin.Close()
 			tr := mutableTransportFixture(t, origin)
 			req := authorizationRequest(t, origin.URL+"/v2/_catalog", "")
+
 			for range 2 {
 				got := readMutable(tr, req.Clone(req.Context()))
 				if got.body != body || scenario == "interrupted" && got.err == nil || scenario != "interrupted" && got.err != nil {
 					t.Fatalf("delivery changed: length=%d err=%v", len(got.body), got.err)
 				}
 			}
+
 			want := int32(2)
 			if scenario == "at limit" {
 				want = 1
@@ -426,10 +440,12 @@ func TestMutableObservedDenialFencesOlderSuccess(t *testing.T) {
 			defer origin.Close()
 			tr := mutableTransportFixture(t, origin)
 			tr.fillWaitTimeout = 0
+
 			req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "Bearer a")
 			leader := make(chan mutableResult, 1)
 			go func() { leader <- readMutable(tr, req.Clone(req.Context())) }()
 			waitFor(t, leaderStarted, "older capture")
+
 			second := make(chan mutableResult, 1)
 			go func() { second <- readMutable(tr, req.Clone(req.Context())) }()
 			waitFor(t, secondStarted, "independent upstream check")
@@ -439,6 +455,7 @@ func TestMutableObservedDenialFencesOlderSuccess(t *testing.T) {
 					t.Fatalf("older delivery = %+v", got)
 				}
 			}
+
 			close(releaseSecond)
 			if got := <-second; got.err != nil || got.body != "fresh upstream decision" {
 				t.Fatalf("independent check = %+v", got)
@@ -449,6 +466,7 @@ func TestMutableObservedDenialFencesOlderSuccess(t *testing.T) {
 					t.Fatalf("older delivery = %+v", got)
 				}
 			}
+
 			if got := readMutable(tr, req); got.err != nil || got.body != "fresh upstream decision" || calls.Load() != 3 {
 				t.Fatalf("older approval survived newer denial: %+v calls=%d", got, calls.Load())
 			}
@@ -478,6 +496,7 @@ func TestMutableExpiryIsCappedByAuthorization(t *testing.T) {
 				tr.authorization.authorizationTTL = ttl
 				req.Header.Set("Authorization", "Bearer a")
 			}
+
 			for range 2 {
 				got := readMutable(tr, req.Clone(req.Context()))
 				if got.err != nil || got.body != "1" {
@@ -515,11 +534,13 @@ func TestMutableExpiryStartsAtHeadersNotBodyCompletion(t *testing.T) {
 	defer origin.Close()
 	tr := mutableTransportFixture(t, origin)
 	tr.mutable.ttl = 20 * time.Millisecond
+
 	req := authorizationRequest(t, origin.URL+"/v2/team/image/tags/list", "")
 	resp, err := tr.RoundTrip(req.Clone(req.Context()))
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	time.Sleep(60 * time.Millisecond)
 	close(release)
 	body, err := io.ReadAll(resp.Body)
@@ -527,6 +548,7 @@ func TestMutableExpiryStartsAtHeadersNotBodyCompletion(t *testing.T) {
 	if err != nil || string(body) != "slow" {
 		t.Fatalf("slow delivery failed: %q, %v", body, err)
 	}
+
 	if got := readMutable(tr, req); got.err != nil || got.body != "fresh" || calls.Load() != 2 {
 		t.Fatalf("slow capture gained a new lifetime: %+v calls=%d", got, calls.Load())
 	}
@@ -556,6 +578,7 @@ func TestMutableCoalescingDoesNotShareUncacheableResponses(t *testing.T) {
 			waitFor(t, started, "leading request")
 			go func() { follower <- readMutable(tr, req.Clone(req.Context())) }()
 			waitMutableWaiters(t, tr, 1)
+
 			close(release)
 			if got := <-leader; got.err != nil || got.body != "first request only" {
 				t.Fatalf("leading response = %+v", got)
@@ -593,6 +616,7 @@ func readMutable(tr registryTransport, req *http.Request) mutableResult {
 	if err != nil {
 		return mutableResult{err: err}
 	}
+
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	return mutableResult{body: string(body), err: err}

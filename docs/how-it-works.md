@@ -196,7 +196,7 @@ using the example configuration, which lists `registry-1.docker.io` in
 | 1   | `CONNECT registry-1.docker.io:443`  | Docker opens a connection to Docker Hub <br> _The accelerator intercepts it, terminating TLS with a certificate signed by its root CA._                                  |
 | 2   | `GET /v2/`                          | Docker checks the API <br> _The accelerator forwards it. The `401` challenge pointing to `auth.docker.io` passes back unchanged._                                        |
 | 3   | `CONNECT auth.docker.io:443`        | Docker requests a pull token <br> _The accelerator tunnels the exchange without decrypting it because the host isn't configured._                                        |
-| 4   | `HEAD …/manifests/latest`           | Docker resolves the tag to an index digest <br> _The accelerator forwards the first request and briefly caches an eligible `200` for identical HEAD requests._                            |
+| 4   | `HEAD …/manifests/latest`           | Docker resolves the tag to an index digest <br> _The accelerator forwards the first request. An eligible `200` can establish this token's repository approval and briefly cache the HEAD response for independently approved tokens._ |
 | 5   | `GET …/manifests/sha256:<index>`    | Docker fetches the image index <br> _The accelerator streams it to Docker while writing it to disk, publishing after verifying length and digest._                       |
 | 6   | `GET …/manifests/sha256:<manifest>` | Docker fetches its platform's manifest <br> _Cached as in step 5._                                                                                                       |
 | 7   | `GET …/blobs/sha256:<config>`       | Docker fetches the image config <br> _The accelerator follows the redirect to Docker Hub's CDN, dropping `Authorization` and other headers, and caches it as in step 5._ |
@@ -287,9 +287,11 @@ registry that is never used.
 # Authorizing intercepted requests
 
 The upstream registry checks the credentials Docker sends. For a Bearer token,
-the accelerator treats one successful eligible immutable GET as approval to pull
-all immutable manifests and blobs in that exact registry repository for a bounded
-period. This assumes repository-wide pull permission is determined by the token,
+the accelerator treats one successful eligible immutable GET or, with shared
+mutable caching enabled, mutable GET or tag HEAD as approval for that exact token,
+registry, and repository for a bounded period. The grant covers immutable manifests
+and blobs as well as eligible shared mutable responses. This assumes
+repository-wide pull permission is determined by the token,
 independently of cookies or other headers, rather than by object-specific access
 rules. It does not interpret token claims, check their scopes or expiry, or hold
 credentials of its own. Disable credentialed grants if your registry does not
@@ -305,9 +307,11 @@ from one hinted peer instead of origin. The original upstream response determine
 the cache key, metadata, authorization grant eligibility, and response headers.
 Neither a hint nor peer authentication replaces upstream approval, and no-store
 or otherwise uncacheable responses never trigger peer fetches. Any other response,
-such as `401` or `404`, goes back to Docker unchanged. Mutable responses never
-approve digest-body deliveries. Their own successful responses can be reused
-only through the separate [mutable response cache](#mutable-response-caching).
+such as `401` or `404`, goes back to Docker unchanged. With shared mutable caching
+enabled, eligible successful upstream mutable GETs and tag HEADs can establish
+the same Bearer repository grant used for local digest-body deliveries. Mutable
+cache hits never create or renew that grant. Mutable responses themselves use
+the separate [mutable response cache](#mutable-response-caching).
 `GET /v2/` approves nothing.
 
 A disk-cache hit without a reusable grant still sends the request upstream, including
@@ -318,8 +322,12 @@ any redirects, though not the download, and may count toward registry rate limit
 After an eligible successful immutable upstream GET reaches its terminal response
 headers, including after redirects, its approval can be reused without contacting
 the upstream registry. This applies to digest manifests and blobs, including the
-full upstream GET used for an eligible blob range. Tags, HEAD, and writes neither
-establish nor use grants. `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` defaults to 15 minutes
+full upstream GET used for an eligible blob range. When
+`OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=true` (the default), eligible successful
+upstream tag GETs and HEADs, tag-list GETs, and referrer-list GETs also establish
+or renew Bearer repository grants and can use them to read shared mutable responses.
+Catalog requests, other HEADs, and writes do not establish repository grants.
+`OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` defaults to 15 minutes
 for requests without `Authorization`. `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL` independently
 defaults to 30 seconds for requests with `Authorization`, including an empty value.
 Set either TTL to `0s` to disable reuse for that class. Setting both to `0s` checks
@@ -329,7 +337,9 @@ the upstream registry on every delivery.
   process-local HMAC of the exact token, canonical upstream registry, and exact
   parsed repository. Other forwarded headers do not change this authorization
   identity. The grant covers eligible immutable manifests and blobs in that
-  repository, including blob ranges, not other registries or repositories.
+  repository, including blob ranges, and eligible shared mutable responses,
+  not other tokens, registries, or repositories. New tokens, including rotations,
+  must obtain upstream approval themselves and cannot borrow another token's grant.
 - **Other requests match exactly.** Other authentication and anonymous grants
   retain the exact canonical URL and every forwarded end-to-end header identity.
   Empty, malformed, or multiple Bearer credentials do not receive repository-wide reuse.
@@ -344,7 +354,7 @@ the upstream registry on every delivery.
 - **Bytes are shared, approvals are not.** Any client the upstream registry approves can
   receive the cached copy, whoever filled it.
 
-A live Bearer repository grant can serve only a verified committed local entry
+A live Bearer repository grant can serve a verified committed local immutable entry
 without an upstream GET, including eligible blob ranges. Local lookup uses the
 persisted `RequestKey`. Missing, corrupt, or ambiguous local lookup results take
 the normal upstream-first path. Every local miss requires its own upstream GET
@@ -367,6 +377,10 @@ Invalidation fences out late successful requests, so they cannot restore an
 invalidated approval. `404`, `410`, and transient failures do not revoke a Bearer
 repository grant, unless authentication-state headers or other invalidating policy
 are present. An upstream failure is returned to Docker, never hidden by cached content.
+With shared mutable caching enabled, an observed mutable denial invalidates only
+the matching token's repository grant, preventing both mutable and immutable reuse.
+An immutable denial likewise prevents shared mutable reuse. Shared response bytes
+and other tokens' grants are not globally purged.
 
 If you make a public repository private, an existing anonymous approval can still
 serve an identical request until it expires, up to 15 minutes by default.
@@ -388,22 +402,39 @@ request. This cache is process-local memory only, separate from verified disk
 bodies and authorization grants. It is neither persisted nor shared with peers.
 Only bodyless requests with unambiguous, unescaped paths qualify.
 
-- **Exact requests only.** A process-local HMAC key covers the outgoing method,
-  URL including the exact query, and every forwarded end-to-end header, including
-  credentials. Different credentials, queries, header values, or methods do not
-  share entries or in-flight fetches.
+- **Shared Bearer responses.** `OCI_ACCELERATOR_CACHE_MUTABLE_SHARED` defaults
+  to `true`. A single valid nonempty Bearer token can use shared tag GETs and
+  HEADs, tag lists, and referrer lists only with its own live token, registry,
+  and exact-repository grant. The process-local HMAC response key omits only
+  `Authorization`. It retains the outgoing method, URL with its exact query,
+  and all other forwarded end-to-end headers with their exact values and order.
+  Shared keys use a separate HMAC domain from anonymous exact-request keys.
+  GET and HEAD remain separate, and no other request dimension is relaxed.
+- **Exact-request fallback.** Catalog, anonymous, and non-Bearer requests match
+  the outgoing method, exact URL and query, and every forwarded end-to-end
+  header, including credentials. Empty, malformed, or multiple Bearer credentials
+  do not qualify for sharing. Setting the shared option to `false` restores this
+  matching for all mutable requests, including the authorization TTL cap and no
+  mutable grant creation. It does not change immutable caching or grants.
 - **Fixed expiry.** `OCI_ACCELERATOR_CACHE_MUTABLE_TTL` defaults to `30s`.
-  Expiry starts when upstream response headers arrive and is capped by the
-  applicable credentialed or anonymous authorization TTL. `0s` disables mutable
-  caching, and an authorization TTL of `0s` disables it for that class. Hits and
-  time spent capturing a body never extend the deadline.
+  Expiry starts when upstream response headers arrive. Shared response expiry is
+  independent of authorization grants and may outlive the producer's approval.
+  Every reader needs both an unexpired response and its own live grant. Exact
+  responses are capped by the applicable credentialed or anonymous authorization
+  TTL. `0s` disables mutable caching, and an authorization TTL of `0s` disables
+  reuse for that class. Hits never create or renew grants or extend response
+  expiry, and capture time never extends the deadline.
 - **Explicit restrictions still apply.** Request cache restrictions remain
   honored, including freshness ceilings and directives that prevent reuse.
   Upstream `max-age`, `s-maxage`, `Date`, `Age`, and `Expires` do not shorten or
-  extend mutable expiry. Response `no-store`, `no-cache`, `private`, any `Pragma`,
+  extend mutable response expiry. Grant eligibility still obeys upstream
+  authorization freshness restrictions, so `max-age=0` can prevent a grant even
+  when the response could otherwise be captured for its configured lifetime.
+  Response `no-store`, `no-cache`, `private`, any `Pragma`,
   authentication state (`Set-Cookie`, `WWW-Authenticate`, `Authentication-Info`,
-  `Proxy-Authentication-Info`), or `Vary: *` prevents reuse. Other `Vary` fields
-  are covered by the exact-request key.
+  `Proxy-Authentication-Info`), or `Vary: *` prevents reuse. `Vary: Authorization`
+  bypasses capture in shared mode. Other `Vary` fields remain covered by exact
+  request dimensions.
 - **No partial or failed reuse.** Conditional and range requests bypass this
   cache, as do responses with trailers. Errors, denials, and redirects are never
   shared. GET bodies stream to Docker while being captured and are published
@@ -417,22 +448,29 @@ Only bodyless requests with unambiguous, unescaped paths qualify.
   removed first, then completed entries are evicted least-recently-used first.
   Pending captures are not evicted. Readers keep their memory charged after
   eviction until they close. These bounds are not a total process RSS limit.
-- **Bounded coalescing.** Identical concurrent requests can wait for the leading
-  capture using `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` (default `1s`). `0s`
+- **Bounded coalescing.** Independently approved tokens can share a pending
+  capture when their shared response keys match. Tokens without a live grant,
+  including rotated tokens, must authorize upstream themselves and cannot join
+  somebody else's pending fetch. Followers recheck authorization after waiting.
+  Exact-mode followers must match the complete exact-request key. Followers wait
+  using `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` (default `1s`). `0s`
   disables waiting, not caching. A timeout or failed capture makes a follower
   fetch upstream independently, without competing cache publication. Leader
   cancellation cancels its fetch and followers retry upstream. A follower's
   cancellation does not cancel the leader.
 
-An independently observed denial or nonreusable, nontransient response discards
-older approval for that exact request, including captures still in progress.
-Transient failures alone do not revoke an approval.
+In shared mode, an independently observed denial revokes only the matching token's
+repository grant, affecting immutable reuse too. Immutable denials likewise block
+shared mutable reuse. Neither shared bytes nor other tokens' grants are globally
+purged. In exact mode, an independently observed denial or nonreusable,
+nontransient response discards older approval for that exact request, including
+captures still in progress. Transient failures alone do not revoke an approval.
 
 Hits send `Cache-Control: private, no-store` downstream so another cache cannot
 extend the reuse window. A tag move, push, deletion, token expiry, or access
 revocation does not invalidate an entry early. You accept stale metadata and
-approval until fixed expiry. There is no write-triggered invalidation,
-background refresh, or stale response fallback after expiry.
+approval until their respective fixed expiries. There is no write-triggered
+invalidation, background refresh, or stale response fallback after expiry.
 
 # Cache storage and eviction
 

@@ -58,6 +58,7 @@ func (c *mutableCache) acquire(req *http.Request, key [32]byte) (resp *http.Resp
 	defer c.mu.Unlock()
 
 	c.expireLocked()
+
 	if e := c.entries[key]; e != nil {
 		if e.pending {
 			return nil, e, false
@@ -66,15 +67,34 @@ func (c *mutableCache) acquire(req *http.Request, key [32]byte) (resp *http.Resp
 		return c.responseLocked(req, e), nil, false
 	}
 
+	entry = c.reserveLocked(key)
+	return nil, entry, entry != nil
+}
+
+// reserve admits only an absent key. A request still obtaining its own approval
+// cannot borrow a response or wait for another client's pending capture.
+func (c *mutableCache) reserve(key [32]byte) *mutableEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.expireLocked()
+
+	if c.entries[key] != nil {
+		return nil
+	}
+	return c.reserveLocked(key)
+}
+
+func (c *mutableCache) reserveLocked(key [32]byte) *mutableEntry {
 	if c.captures == mutableMaxCaptures {
-		return nil, nil, false
+		return nil
 	}
 
 	for (c.used+mutableReservation > mutableMaxBytes || len(c.entries) >= mutableMaxEntries) && c.lru.Len() > 0 {
 		c.removeLocked(c.lru.Back().Value.(*mutableEntry))
 	}
 	if c.used+mutableReservation > mutableMaxBytes || len(c.entries) >= mutableMaxEntries {
-		return nil, nil, false
+		return nil
 	}
 
 	// The index and the capture each own a reference. Invalidating the index
@@ -83,7 +103,7 @@ func (c *mutableCache) acquire(req *http.Request, key [32]byte) (resp *http.Resp
 	c.entries[key] = e
 	c.used += e.charge
 	c.captures++
-	return nil, e, true
+	return e
 }
 
 func (c *mutableCache) hit(req *http.Request, key [32]byte) *http.Response {
@@ -91,6 +111,7 @@ func (c *mutableCache) hit(req *http.Request, key [32]byte) *http.Response {
 	defer c.mu.Unlock()
 
 	c.expireLocked()
+
 	if e := c.entries[key]; e != nil && !e.pending {
 		return c.responseLocked(req, e)
 	}
@@ -116,6 +137,7 @@ func (c *mutableCache) finish(e *mutableEntry, header http.Header, body []byte, 
 	} else if current {
 		c.removeLocked(e)
 	}
+
 	c.releaseLocked(e)
 	close(e.done)
 }
@@ -134,6 +156,7 @@ func (c *mutableCache) invalidate(key [32]byte) {
 func (c *mutableCache) responseLocked(req *http.Request, e *mutableEntry) *http.Response {
 	c.lru.MoveToFront(e.element)
 	e.refs++
+
 	header := e.header.Clone()
 	header.Set("Cache-Control", "private, no-store")
 	if e.contentLength >= 0 {
@@ -141,6 +164,7 @@ func (c *mutableCache) responseLocked(req *http.Request, e *mutableEntry) *http.
 	} else {
 		header.Del("Content-Length")
 	}
+
 	return &http.Response{
 		StatusCode: http.StatusOK, Status: "200 OK",
 		Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,

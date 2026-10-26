@@ -12,6 +12,10 @@ func (t registryTransport) mutableRoundTrip(req *http.Request, lifetime time.Dur
 		return nil, err
 	}
 
+	if approvalKey, shared := t.mutableRepositoryKey(req); shared {
+		return t.sharedMutableRoundTrip(req, approvalKey, lifetime)
+	}
+
 	key := t.authorization.exactFingerprint(req)
 	stats, _ := req.Context().Value(statsKey{}).(*requestStats)
 	if stats == nil {
@@ -25,7 +29,7 @@ func (t registryTransport) mutableRoundTrip(req *http.Request, lifetime time.Dur
 	}
 
 	if entry != nil && !leader && t.fillWaitTimeout > 0 {
-		if resp, err := t.waitMutable(req, key, entry, stats); resp != nil || err != nil {
+		if resp, err := t.waitMutable(req, key, entry, stats, nil, nil); resp != nil || err != nil {
 			return resp, err
 		}
 	}
@@ -41,15 +45,26 @@ func (t registryTransport) mutableRoundTrip(req *http.Request, lifetime time.Dur
 		return resp, err
 	}
 
-	if err != nil || req.Context().Err() != nil || !mutableResponsePermitted(resp) || (req.Method != http.MethodHead && resp.ContentLength > mutableMaxResponse) {
+	if err != nil {
 		t.mutable.finish(entry, nil, nil, 0, time.Time{})
 		return resp, err
+	}
+	return t.captureMutable(req, resp, entry, lifetime, received, stats), nil
+}
+
+func (t registryTransport) captureMutable(req *http.Request, resp *http.Response, entry *mutableEntry, lifetime time.Duration, received time.Time, stats *requestStats) *http.Response {
+	if entry == nil {
+		return resp
+	}
+	if req.Context().Err() != nil || !mutableResponsePermitted(resp) || (req.Method != http.MethodHead && resp.ContentLength > mutableMaxResponse) {
+		t.mutable.finish(entry, nil, nil, 0, time.Time{})
+		return resp
 	}
 
 	header := mutableHeaders(resp.Header)
 	if mutableHeaderSize(header) > maxHeaderBytes {
 		t.mutable.finish(entry, nil, nil, 0, time.Time{})
-		return resp, nil
+		return resp
 	}
 
 	expires := received.Add(lifetime)
@@ -57,21 +72,29 @@ func (t registryTransport) mutableRoundTrip(req *http.Request, lifetime time.Dur
 	if req.Method == http.MethodHead {
 		// HEAD describes a representation but carries no body to capture.
 		t.mutable.finish(entry, header, nil, resp.ContentLength, expires)
-		return resp, nil
+		return resp
 	}
 
 	capacity := mutableMaxResponse
 	if resp.ContentLength >= 0 {
 		capacity = int(resp.ContentLength)
 	}
+
 	resp.Body = &mutableCapture{
 		ReadCloser: resp.Body, cache: t.mutable, entry: entry, request: req,
 		response: resp, header: header, data: make([]byte, 0, capacity), expires: expires,
 	}
-	return resp, nil
+	return resp
 }
 
 func (t registryTransport) invalidateMutableResponse(req *http.Request, resp *http.Response) {
+	if key, shared := t.mutableRepositoryKey(req); shared {
+		if mutableGrantRevoked(resp, t.authorization.authorizationTTL) {
+			t.authorization.invalidateKey(key)
+		}
+		return
+	}
+
 	if t.mutable == nil || t.authorization == nil || !mutableRequest(req) {
 		return
 	}
@@ -83,7 +106,7 @@ func (t registryTransport) invalidateMutableResponse(req *http.Request, resp *ht
 	}
 }
 
-func (t registryTransport) waitMutable(req *http.Request, key [32]byte, entry *mutableEntry, stats *requestStats) (*http.Response, error) {
+func (t registryTransport) waitMutable(req *http.Request, key [32]byte, entry *mutableEntry, stats *requestStats, approval *authorizationEntry, grant *authorizationGrant) (*http.Response, error) {
 	if t.metrics != nil {
 		t.metrics.mu.Lock()
 		t.metrics.activeWaits++
@@ -103,9 +126,13 @@ func (t registryTransport) waitMutable(req *http.Request, key [32]byte, entry *m
 		if req.Context().Err() != nil {
 			return nil, req.Context().Err()
 		}
+
 		if resp := t.mutable.hit(req, key); resp != nil {
-			stats.cache = "wait_hit"
-			return resp, nil
+			if approval == nil || t.authorization.valid(approval, grant) {
+				stats.cache = "wait_hit"
+				return resp, nil
+			}
+			resp.Body.Close()
 		}
 	case <-timer.C:
 		stats.wait = "timeout"
@@ -114,6 +141,7 @@ func (t registryTransport) waitMutable(req *http.Request, key [32]byte, entry *m
 	if err := req.Context().Err(); err != nil {
 		return nil, err
 	}
+
 	stats.fallback = "retry"
 	return nil, nil
 }

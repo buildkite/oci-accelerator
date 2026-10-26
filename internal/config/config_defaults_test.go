@@ -12,11 +12,13 @@ const validEnv = "OCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR
 func TestLoadDefaults(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
+
 	c, err := load("", environmentLookup(map[string]string{"REGISTRIES": "EXAMPLE.com.:443,[::1]:5000", "CA_DIR": "ca", "CACHE_DIR": "cache"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCache := Cache{Dir: filepath.Join(root, "cache"), MaxBytes: DefaultCacheMaxBytes, MaxFills: DefaultCacheMaxFills, MaxEntries: DefaultCacheMaxEntries, FillTimeout: DefaultCacheFillTimeout, FillWaitTimeout: time.Second, MutableTTL: 30 * time.Second, AuthorizationTTL: 30 * time.Second, AnonymousAuthorizationTTL: 15 * time.Minute, MaxAuthorizationEntries: 10000}
+
+	wantCache := Cache{Dir: filepath.Join(root, "cache"), MaxBytes: DefaultCacheMaxBytes, MaxFills: DefaultCacheMaxFills, MaxEntries: DefaultCacheMaxEntries, FillTimeout: DefaultCacheFillTimeout, FillWaitTimeout: time.Second, MutableTTL: 30 * time.Second, MutableShared: true, AuthorizationTTL: 30 * time.Second, AnonymousAuthorizationTTL: 15 * time.Minute, MaxAuthorizationEntries: 10000}
 	assertEqual(t, "Listen", c.Listen, "127.0.0.1:3128")
 	assertEqual(t, "CADir", c.CADir, filepath.Join(root, "ca"))
 	assertEqual(t, "Cache", c.Cache, wantCache)
@@ -38,17 +40,19 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadAllSettingOverrides(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
+
 	c, err := load("", environmentLookup(map[string]string{
 		"LISTEN": "[::1]:4321", "METRICS_LISTEN": "0.0.0.0:9091", "METRICS_ALLOW_REMOTE": "true",
 		"REGISTRIES": "ghcr.io", "REDIRECT_ALLOWLIST": "cdn.example:8443", "CA_DIR": "ca2", "CACHE_DIR": "cache2",
 		"CACHE_MAX_BYTES": "4294967297", "CACHE_MAX_FILLS": "3", "CACHE_MAX_ENTRIES": "47", "CACHE_FILL_TIMEOUT": "7m",
-		"CACHE_FILL_WAIT_TIMEOUT": "250ms", "CACHE_MUTABLE_TTL": "17s", "CACHE_AUTHORIZATION_TTL": "9s", "CACHE_ANONYMOUS_AUTHORIZATION_TTL": "13m", "CACHE_MAX_AUTHORIZATION_ENTRIES": "59",
+		"CACHE_FILL_WAIT_TIMEOUT": "250ms", "CACHE_MUTABLE_TTL": "17s", "CACHE_MUTABLE_SHARED": "false", "CACHE_AUTHORIZATION_TTL": "9s", "CACHE_ANONYMOUS_AUTHORIZATION_TTL": "13m", "CACHE_MAX_AUTHORIZATION_ENTRIES": "59",
 		"PEER_HINT_REFRESH_TIMEOUT": "17s", "PEER_HINT_REFRESH_INTERVAL": "23s", "PEER_HINT_FULL_REFRESH_INTERVAL": "2h",
 		"DIAL_TIMEOUT": "2s", "TLS_HANDSHAKE_TIMEOUT": "3s", "RESPONSE_HEADER_TIMEOUT": "4s", "IDLE_TIMEOUT": "5s", "SHUTDOWN_TIMEOUT": "6s", "MAX_CONNECTIONS": "17", "MAX_LEAF_CERTIFICATES": "19",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	assertEqual(t, "Listen", c.Listen, "[::1]:4321")
 	assertEqual(t, "MetricsListen", c.MetricsListen, "0.0.0.0:9091")
 	assertEqual(t, "CADir", c.CADir, filepath.Join(root, "ca2"))
@@ -74,6 +78,7 @@ OCI_ACCELERATOR_METRICS_ALLOW_REMOTE=true
 OCI_ACCELERATOR_REDIRECT_ALLOWLIST=cdn.example
 OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT=2s
 OCI_ACCELERATOR_CACHE_MUTABLE_TTL=5s
+OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=true
 OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL=3s
 OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL=4s
 `)
@@ -83,16 +88,19 @@ OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL=4s
 		"REDIRECT_ALLOWLIST":                "",
 		"CACHE_FILL_WAIT_TIMEOUT":           "0s",
 		"CACHE_MUTABLE_TTL":                 "0",
+		"CACHE_MUTABLE_SHARED":              "false",
 		"CACHE_AUTHORIZATION_TTL":           "0s",
 		"CACHE_ANONYMOUS_AUTHORIZATION_TTL": "0s",
 	}
+
 	c, err := load(path, environmentLookup(values))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.MetricsListen != "" || len(c.RedirectAllowlist) != 0 || c.Cache.FillWaitTimeout != 0 || c.Cache.MutableTTL != 0 || c.Cache.AuthorizationTTL != 0 || c.Cache.AnonymousAuthorizationTTL != 0 {
+	if c.MetricsListen != "" || len(c.RedirectAllowlist) != 0 || c.Cache.FillWaitTimeout != 0 || c.Cache.MutableTTL != 0 || c.Cache.MutableShared || c.Cache.AuthorizationTTL != 0 || c.Cache.AnonymousAuthorizationTTL != 0 {
 		t.Fatalf("zero overrides ignored: %+v", c)
 	}
+
 	delete(values, "METRICS_LISTEN")
 	if _, err := load(path, environmentLookup(values)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("false override must reject remote metrics from file: %v", err)

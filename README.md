@@ -14,9 +14,11 @@ of fetching them from the upstream registry again.
   a default 30-second lifetime. Pushes go straight to the upstream registry.
 - **Requires upstream approval.** Cached content is served only after the registry
   approves the request, or within a fixed approval window. A single valid nonempty
-  Bearer token reuses immutable-content approval within the same registry and repository.
-  Other immutable grants and all mutable responses require an exact-request match,
-  including credentials. For digest bodies, the default approval window is 15 minutes
+  Bearer token reuses approval within the same registry and exact repository for
+  immutable content and shared mutable metadata. Each token must obtain its own
+  upstream approval before using shared responses. Other immutable grants and
+  nonshared mutable responses require an exact-request match, including credentials.
+  For digest bodies, the default approval window is 15 minutes
   without `Authorization` and 30 seconds with it.
 - **Keeps credentials at the upstream registry.** Tokens remain opaque and are
   never persisted or sent to peers. Authorization identities use process-local HMACs.
@@ -45,10 +47,20 @@ of fetching them from the upstream registry again.
 See [how it works](docs/how-it-works.md) for the request flow, authorization,
 and cache storage in detail.
 
-Mutable responses expire a fixed interval after upstream headers arrive, capped
-by the applicable authorization TTL. Hits do not refresh them, and writes or
-unobserved access revocation do not invalidate them early. An independent upstream
-denial discards older approval for that exact request. Set
+Mutable responses expire a fixed interval after upstream headers arrive. With
+`OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=true` (the default), valid Bearer requests
+for tag GETs and HEADs, tag lists, and referrer lists can share responses across
+independently approved tokens. Only `Authorization` is omitted from the shared
+response key. Every reader needs both a live token-specific repository grant and
+an unexpired response. The response can outlive its producer's grant. Catalog,
+anonymous, and other non-Bearer requests retain exact-request caching capped by
+the applicable authorization TTL. Setting the shared option to `false` restores
+that exact matching and TTL cap for all mutable requests, with no mutable grant
+creation and no change to immutable caching. Hits never create or renew grants
+or extend response expiry, and writes or unobserved access revocation do not
+invalidate them early. In shared mode, an observed mutable denial revokes only
+the matching token's repository grant, including its immutable reuse, not other
+tokens' grants or shared bytes. Set
 `OCI_ACCELERATOR_CACHE_MUTABLE_TTL=0s` to disable this cache. It is process-local,
 never persisted, and never shared with peers.
 

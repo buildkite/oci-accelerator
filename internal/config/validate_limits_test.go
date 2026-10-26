@@ -22,6 +22,7 @@ func TestDurationBounds(t *testing.T) {
 			})
 		}
 	}
+
 	for _, field := range []string{"CACHE_FILL_WAIT_TIMEOUT", "CACHE_MUTABLE_TTL", "CACHE_AUTHORIZATION_TTL", "CACHE_ANONYMOUS_AUTHORIZATION_TTL"} {
 		t.Run(field, func(t *testing.T) {
 			values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", field: "-1ns"}

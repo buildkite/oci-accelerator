@@ -9,8 +9,13 @@ import (
 
 type mutablePolicyKey struct{}
 
-var mutableManifestPath = regexp.MustCompile(`^/v2/` + repositoryPattern + `/manifests/[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
-var mutableListingPath = regexp.MustCompile(`^/v2/` + repositoryPattern + `/(?:tags/list|referrers/[a-z0-9]+(?:[+._-][a-z0-9]+)*:[A-Za-z0-9=_-]+)$`)
+type mutablePolicy struct {
+	permitted bool
+	lifetime  time.Duration
+}
+
+var mutableManifestPath = regexp.MustCompile(`^/v2/(` + repositoryPattern + `)/manifests/[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+var mutableListingPath = regexp.MustCompile(`^/v2/(` + repositoryPattern + `)/(?:tags/list|referrers/[a-z0-9]+(?:[+._-][a-z0-9]+)*:[A-Za-z0-9=_-]+)$`)
 
 // mutableRequest admits only bodyless metadata reads with an unambiguous path.
 // Raw queries identify separate pages and variants. A bare trailing ? bypasses.
@@ -37,18 +42,51 @@ func (t registryTransport) mutableLifetime(req *http.Request) time.Duration {
 		return 0
 	}
 
-	if permitted, ok := req.Context().Value(mutablePolicyKey{}).(bool); ok && !permitted {
+	policy, originalPolicy := req.Context().Value(mutablePolicyKey{}).(mutablePolicy)
+	if originalPolicy && !policy.permitted {
 		return 0
 	}
 
-	lifetime := authorizationLifetime(req.Header, min(t.mutable.ttl, t.authorization.lifetime(req.Header)))
-	if original, ok := req.Context().Value(authorizationLifetimeKey{}).(time.Duration); ok && original < lifetime {
+	limit := min(t.mutable.ttl, t.authorization.lifetime(req.Header))
+	if _, shared := t.mutableRepositoryKey(req); shared {
+		// Shared data can outlive its producer's approval. Every reader must
+		// independently hold an unexpired repository grant.
+		limit = t.mutable.ttl
+	}
+
+	lifetime := authorizationLifetime(req.Header, limit)
+	if originalPolicy && policy.lifetime < lifetime {
 		// A stripped positive ceiling is absent from the outgoing identity.
 		// Bypass rather than borrow an entry created with looser restrictions.
 		return 0
 	}
+	if original, ok := req.Context().Value(authorizationLifetimeKey{}).(time.Duration); ok && original <= 0 {
+		return 0
+	}
 
 	return lifetime
+}
+
+// Identify repository reads even when request restrictions require upstream
+// forwarding. Their denials still revoke the corresponding repository grant.
+func (t registryTransport) mutableRepositoryKey(req *http.Request) ([32]byte, bool) {
+	if !t.mutableShared || t.mutable == nil || t.authorization == nil || t.authorization.authorizationTTL <= 0 || req.URL.RawPath != "" || req.URL.ForceQuery {
+		return [32]byte{}, false
+	}
+
+	parts := mutableManifestPath.FindStringSubmatch(req.URL.Path)
+	if parts == nil || req.Method != http.MethodGet && req.Method != http.MethodHead {
+		if req.Method != http.MethodGet {
+			return [32]byte{}, false
+		}
+		parts = mutableListingPath.FindStringSubmatch(req.URL.Path)
+	}
+
+	token, ok := bearerToken(req)
+	if parts == nil || !ok {
+		return [32]byte{}, false
+	}
+	return t.authorization.repositoryFingerprint(req, parts[1], token), true
 }
 
 // mutableResponsePermitted deliberately ignores upstream freshness ceilings.

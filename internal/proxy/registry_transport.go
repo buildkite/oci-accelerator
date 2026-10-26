@@ -26,6 +26,7 @@ type registryTransport struct {
 	fillWaitTimeout time.Duration                              // wait for another request's fill before one retry. Zero disables
 	authorization   *authorizationCache                        // local authorization grants (nil disables grant reuse)
 	mutable         *mutableCache                              // local short-lived responses and pending captures
+	mutableShared   bool                                       // repository-approved Bearer metadata sharing
 	startRangeFetch func(context.Context) (*rangeFetch, error) // registers a range fetch bounded by fill timeout and shutdown
 	fetchPeer       func(context.Context, cache.Metadata) (io.ReadCloser, error)
 }

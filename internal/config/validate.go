@@ -28,6 +28,7 @@ func validate(raw rawConfig) (Config, error) {
 	if reason != "" {
 		return Config{}, invalid(reason, "LISTEN")
 	}
+
 	metricsListen := raw.MetricsListen
 	if metricsListen != "" {
 		metricsListen, reason = canonicalBindAddress(metricsListen, !raw.MetricsAllowRemote)
@@ -104,6 +105,7 @@ func validate(raw rawConfig) (Config, error) {
 	if reason != "" {
 		return Config{}, invalid(reason, "REGISTRIES")
 	}
+
 	redirectAllowlist, reason := parseAuthorities(raw.RedirectAllowlist)
 	if reason != "" {
 		return Config{}, invalid(reason, "REDIRECT_ALLOWLIST")
@@ -113,6 +115,7 @@ func validate(raw rawConfig) (Config, error) {
 	if err != nil {
 		return Config{}, invalid("cannot resolve directory path", "CA_DIR")
 	}
+
 	cacheDir, err := filepath.Abs(raw.Cache.Dir)
 	if err != nil {
 		return Config{}, invalid("cannot resolve directory path", "CACHE_DIR")
@@ -124,6 +127,7 @@ func validate(raw rawConfig) (Config, error) {
 	if caDir == cacheDir {
 		return Config{}, invalid("must be distinct directory paths", "CA_DIR", "CACHE_DIR")
 	}
+
 	// Cache inventory owns every child of its root, including removal of
 	// abandoned staging directories. The CA must not live inside that namespace.
 	if relative, err := filepath.Rel(cacheDir, caDir); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {

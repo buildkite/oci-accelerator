@@ -20,11 +20,18 @@ func TestLoadRejectsInvalidEnvironmentValuesSafely(t *testing.T) {
 		{"CACHE_MUTABLE_TTL", "secret-value", "duration string"},
 		{"CACHE_MUTABLE_TTL", "", "duration string"},
 		{"CACHE_MUTABLE_TTL", "9223372036854775808ns", "duration string"},
+		{"CACHE_MUTABLE_SHARED", "", "true or false"},
+		{"CACHE_MUTABLE_SHARED", "TRUE", "true or false"},
+		{"CACHE_MUTABLE_SHARED", "1", "true or false"},
+		{"CACHE_MUTABLE_SHARED", " true", "true or false"},
+		{"CACHE_MUTABLE_SHARED", "secret-value", "true or false"},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.field+"="+tt.value, func(t *testing.T) {
 			values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache"}
 			values[tt.field] = tt.value
+
 			_, err := load("", environmentLookup(values))
 			assertInvalidSetting(t, err, tt.reason, tt.field)
 			if strings.Contains(err.Error(), "secret-value") {
