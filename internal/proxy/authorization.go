@@ -60,8 +60,10 @@ func newAuthorizationCache(authorizationTTL, anonymousTTL time.Duration, limit i
 }
 
 func (c *authorizationCache) start(req *http.Request) (*authorizationEntry, *authorizationGrant) {
-	key := c.fingerprint(req)
+	return c.startKey(c.fingerprint(req))
+}
 
+func (c *authorizationCache) startKey(key [32]byte) (*authorizationEntry, *authorizationGrant) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -76,10 +78,26 @@ func (c *authorizationCache) start(req *http.Request) (*authorizationEntry, *aut
 	} else {
 		c.lru.MoveToFront(e.element)
 	}
+
 	if e.grant != nil && !time.Now().Before(e.grant.expires) {
 		e.grant = nil
 	}
 
+	return e, e.grant
+}
+
+// lookup never allocates an attempt or renews approval. Only upstream checks
+// register entries, so cache hits cannot evict another token's pending check.
+func (c *authorizationCache) lookup(key [32]byte) (*authorizationEntry, *authorizationGrant) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	e := c.entries[key]
+	if e == nil || e.grant == nil || !time.Now().Before(e.grant.expires) {
+		return nil, nil
+	}
+
+	c.lru.MoveToFront(e.element)
 	return e, e.grant
 }
 
@@ -100,10 +118,14 @@ func (c *authorizationCache) commit(e *authorizationEntry, grant *authorizationG
 // response cannot be overridden by a concurrent success. A transient failure
 // without authentication-state headers leaves the existing grant intact.
 func (c *authorizationCache) invalidate(e *authorizationEntry) {
+	c.invalidateKey(e.key)
+}
+
+func (c *authorizationCache) invalidateKey(key [32]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if current := c.entries[e.key]; current != nil {
+	if current := c.entries[key]; current != nil {
 		c.remove(current)
 	}
 }
@@ -118,18 +140,33 @@ func (c *authorizationCache) valid(e *authorizationEntry, g *authorizationGrant)
 // fingerprint scopes bearer pull permission to an exact registry repository.
 // Other credentials retain exact-request grants.
 func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
-	// Normalize the host to a canonical host:port authority.
-	authority, _ := hostport.Parse(req.URL.Host, "443")
-
 	if object, token, ok := repositoryBearer(req); ok {
-		mac := hmac.New(sha256.New, c.secret[:])
-		// Token and repository cannot contain NUL, so boundaries are unambiguous.
-		mac.Write([]byte("repository-bearer\x00" + authority.String() + "\x00" + object.repository + "\x00" + token))
-
-		var key [32]byte
-		copy(key[:], mac.Sum(nil))
-		return key
+		return c.repositoryFingerprint(req, object.repository, token)
 	}
+
+	return c.exactFingerprint(req)
+}
+
+func (c *authorizationCache) repositoryFingerprint(req *http.Request, repository, token string) [32]byte {
+	authority, _ := hostport.Parse(req.URL.Host, "443")
+	mac := hmac.New(sha256.New, c.secret[:])
+	// Token and repository cannot contain NUL, so boundaries are unambiguous.
+	mac.Write([]byte("repository-bearer\x00" + authority.String() + "\x00" + repository + "\x00" + token))
+
+	var key [32]byte
+	copy(key[:], mac.Sum(nil))
+	return key
+}
+
+// exactFingerprint identifies a response independently of authorization scope.
+func (c *authorizationCache) exactFingerprint(req *http.Request) [32]byte {
+	return c.responseFingerprint(req, false)
+}
+
+// Shared response identities omit only Authorization and use a separate domain
+// so an anonymous exact-request entry can never collide with shared content.
+func (c *authorizationCache) responseFingerprint(req *http.Request, shared bool) [32]byte {
+	authority, _ := hostport.Parse(req.URL.Host, "443")
 
 	// Merge header names that differ only by case into lowercased buckets,
 	// visiting them in sorted order so folding is deterministic.
@@ -142,6 +179,10 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	headers := make(http.Header, len(names))
 	for _, name := range names {
 		canonical := strings.ToLower(name)
+		if shared && canonical == "authorization" {
+			continue
+		}
+
 		// Preserve presence (including an empty value list), value order, and
 		// exact values, including non-UTF-8 bytes allowed in HTTP field values.
 		headers[canonical] = append(headers[canonical], req.Header[name]...)
@@ -167,7 +208,12 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 
 	// Keyed HMAC with a length-prefixed writer so field boundaries are unambiguous.
 	mac := hmac.New(sha256.New, c.secret[:])
-	mac.Write([]byte("exact-request\x00"))
+	if shared {
+		mac.Write([]byte("shared-mutable\x00"))
+	} else {
+		mac.Write([]byte("exact-request\x00"))
+	}
+
 	write := func(value string) {
 		var size [8]byte
 		binary.BigEndian.PutUint64(size[:], uint64(len(value)))
@@ -270,14 +316,8 @@ func repositoryBearer(req *http.Request) (immutableObject, string, bool) {
 	}
 
 	parts := objectPath.FindStringSubmatch(req.URL.Path)
-	values := req.Header.Values("Authorization")
-	if parts == nil || len(values) != 1 {
-		return immutableObject{}, "", false
-	}
-
-	scheme, token, ok := strings.Cut(values[0], " ")
-	token = strings.TrimLeft(token, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") || !bearerCredential.MatchString(token) {
+	token, ok := bearerToken(req)
+	if parts == nil || !ok {
 		return immutableObject{}, "", false
 	}
 
@@ -286,6 +326,17 @@ func repositoryBearer(req *http.Request) (immutableObject, string, bool) {
 		kind = manifestKind
 	}
 	return immutableObject{repository: parts[1], digest: parts[3], kind: kind}, token, true
+}
+
+func bearerToken(req *http.Request) (string, bool) {
+	values := req.Header.Values("Authorization")
+	if len(values) != 1 {
+		return "", false
+	}
+
+	scheme, token, ok := strings.Cut(values[0], " ")
+	token = strings.TrimLeft(token, " ")
+	return token, ok && strings.EqualFold(scheme, "Bearer") && bearerCredential.MatchString(token)
 }
 
 // lifetime selects the TTL by header presence, not credential validity. An

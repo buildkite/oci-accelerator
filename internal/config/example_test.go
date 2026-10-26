@@ -13,11 +13,13 @@ func TestEnvironmentExampleContainsEverySetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	raw := defaults()
 	settings := environmentSettings(&raw)
-	if len(settings) != 29 {
-		t.Fatalf("environment settings = %d, want 29", len(settings))
+	if len(settings) != 31 {
+		t.Fatalf("environment settings = %d, want 31", len(settings))
 	}
+
 	for _, setting := range settings {
 		name := "OCI_ACCELERATOR_" + setting.name
 		if _, ok := values[name]; !ok {
@@ -25,6 +27,7 @@ func TestEnvironmentExampleContainsEverySetting(t *testing.T) {
 		}
 		delete(values, name)
 	}
+
 	if len(values) != 0 {
 		t.Errorf(".env.example has unknown settings: %v", values)
 	}

@@ -25,11 +25,17 @@ type registryTransport struct {
 	metrics         *metrics                                   // request counters, including upstream connection attempts
 	fillWaitTimeout time.Duration                              // wait for another request's fill before one retry. Zero disables
 	authorization   *authorizationCache                        // local authorization grants (nil disables grant reuse)
+	mutable         *mutableCache                              // local short-lived responses and pending captures
+	mutableShared   bool                                       // repository-approved Bearer metadata sharing
 	startRangeFetch func(context.Context) (*rangeFetch, error) // registers a range fetch bounded by fill timeout and shutdown
 	fetchPeer       func(context.Context, cache.Metadata) (io.ReadCloser, error)
 }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if lifetime := t.mutableLifetime(req); lifetime > 0 {
+		return t.mutableRoundTrip(req, lifetime)
+	}
+
 	clientRequest := req
 
 	ranged, _ := req.Context().Value(rangeRequestKey{}).(bool)
@@ -93,6 +99,10 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			resp = serveRangeResponse(selection, resp, &rangeStream{source: resp.Body, size: resp.ContentLength})
 		}
 	}
+
+	// Bypassed mutable reads can still observe a denial for an outgoing
+	// identity whose request restrictions were stripped by the reverse proxy.
+	t.invalidateMutableResponse(req, resp)
 	return resp, err
 }
 

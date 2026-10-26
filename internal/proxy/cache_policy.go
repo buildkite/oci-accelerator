@@ -214,7 +214,9 @@ type immutableObject struct {
 //
 // /v2/<repo>/blobs/<digest>      e.g. /v2/nginx/blobs/sha256:000…
 // /v2/<repo>/manifests/<digest>  e.g. /v2/buildkite/agent/manifests/sha256:000…
-var objectPath = regexp.MustCompile(`^/v2/([a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*)*)/(blobs|manifests)/(sha256:[a-f0-9]{64})$`)
+const repositoryPattern = `[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*)*`
+
+var objectPath = regexp.MustCompile(`^/v2/(` + repositoryPattern + `)/(blobs|manifests)/(sha256:[a-f0-9]{64})$`)
 
 func immutableObjectRequest(r *http.Request) (immutableObject, bool) {
 	// Only plain GETs qualify: reject non-GET, any query, escaped paths, or a Range request.

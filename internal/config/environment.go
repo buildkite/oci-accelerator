@@ -22,6 +22,7 @@ func environmentSettings(raw *rawConfig) []environmentSetting {
 		{"REDIRECT_ALLOWLIST", &raw.RedirectAllowlist},
 		{"CA_DIR", &raw.CADir},
 		{"CACHE_DIR", &raw.Cache.Dir},
+
 		{"PEER_LISTEN", &raw.Peer.Listen},
 		{"PEER_ADVERTISE", &raw.Peer.Advertise},
 		{"PEER_SEEDS", &raw.Peer.Seeds},
@@ -29,14 +30,18 @@ func environmentSettings(raw *rawConfig) []environmentSetting {
 		{"PEER_HINT_REFRESH_TIMEOUT", &raw.Peer.HintRefreshTimeout},
 		{"PEER_HINT_REFRESH_INTERVAL", &raw.Peer.HintRefreshInterval},
 		{"PEER_HINT_FULL_REFRESH_INTERVAL", &raw.Peer.HintFullRefreshInterval},
+
 		{"CACHE_MAX_BYTES", &raw.Cache.MaxBytes},
 		{"CACHE_MAX_FILLS", &raw.Cache.MaxFills},
 		{"CACHE_MAX_ENTRIES", &raw.Cache.MaxEntries},
 		{"CACHE_FILL_TIMEOUT", &raw.Cache.FillTimeout},
 		{"CACHE_FILL_WAIT_TIMEOUT", &raw.Cache.FillWaitTimeout},
+		{"CACHE_MUTABLE_TTL", &raw.Cache.MutableTTL},
+		{"CACHE_MUTABLE_SHARED", &raw.Cache.MutableShared},
 		{"CACHE_AUTHORIZATION_TTL", &raw.Cache.AuthorizationTTL},
 		{"CACHE_ANONYMOUS_AUTHORIZATION_TTL", &raw.Cache.AnonymousAuthorizationTTL},
 		{"CACHE_MAX_AUTHORIZATION_ENTRIES", &raw.Cache.MaxAuthorizationEntries},
+
 		{"DIAL_TIMEOUT", &raw.DialTimeout},
 		{"TLS_HANDSHAKE_TIMEOUT", &raw.TLSHandshakeTimeout},
 		{"RESPONSE_HEADER_TIMEOUT", &raw.ResponseHeaderTimeout},

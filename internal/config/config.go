@@ -21,6 +21,7 @@ const (
 	DefaultCacheMaxEntries                      = 100000
 	DefaultCacheFillTimeout                     = 10 * time.Minute
 	DefaultCacheFillWaitTimeout                 = time.Second
+	DefaultCacheMutableTTL                      = 30 * time.Second
 	DefaultCacheAuthorizationTTL                = 30 * time.Second
 	DefaultCacheAnonymousAuthorizationTTL       = 15 * time.Minute
 	DefaultCacheMaxAuthorizationEntries         = 10000
@@ -57,6 +58,8 @@ type Cache struct {
 	MaxEntries                int
 	FillTimeout               time.Duration
 	FillWaitTimeout           time.Duration
+	MutableTTL                time.Duration
+	MutableShared             bool
 	AuthorizationTTL          time.Duration
 	AnonymousAuthorizationTTL time.Duration
 	MaxAuthorizationEntries   int
@@ -123,21 +126,26 @@ func load(path string, lookup func(string) (string, bool)) (Config, error) {
 func defaults() rawConfig {
 	return rawConfig{
 		Listen: "127.0.0.1:3128",
+
 		Cache: Cache{
 			MaxBytes:                  DefaultCacheMaxBytes,
 			MaxFills:                  DefaultCacheMaxFills,
 			MaxEntries:                DefaultCacheMaxEntries,
 			FillTimeout:               DefaultCacheFillTimeout,
 			FillWaitTimeout:           DefaultCacheFillWaitTimeout,
+			MutableTTL:                DefaultCacheMutableTTL,
+			MutableShared:             true,
 			AuthorizationTTL:          DefaultCacheAuthorizationTTL,
 			AnonymousAuthorizationTTL: DefaultCacheAnonymousAuthorizationTTL,
 			MaxAuthorizationEntries:   DefaultCacheMaxAuthorizationEntries,
 		},
+
 		Peer: Peer{
 			HintRefreshTimeout:      DefaultPeerHintRefreshTimeout,
 			HintRefreshInterval:     DefaultPeerHintRefreshInterval,
 			HintFullRefreshInterval: DefaultPeerHintFullRefreshInterval,
 		},
+
 		DialTimeout:           10 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,

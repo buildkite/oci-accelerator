@@ -1,20 +1,25 @@
 # OCI Accelerator
 
 OCI Accelerator is an HTTPS proxy that speeds up Docker image pulls by caching
-upstream registry content on local disk. Docker Engine sends its registry
-traffic through the proxy, which serves repeat downloads of image layers and
-digest-addressed manifests from its cache instead of fetching them from the
-upstream registry again.
+upstream registry content on local disk and mutable metadata briefly in memory.
+Docker Engine sends its registry traffic through the proxy, which serves repeat
+downloads of image layers and digest-addressed manifests from its cache instead
+of fetching them from the upstream registry again.
 
 - **Works as a proxy, not a mirror.** Image names and `docker login` stay the
   same, and any upstream registry implementing the Registry HTTP API V2 works.
-- **Caches only content addressed by digest.** Blobs and manifests are cached by
-  SHA-256 digest. Tags and pushes go straight to the upstream registry.
+- **Caches content by digest and metadata briefly.** Blobs and digest manifests
+  are verified and cached on disk. Successful tag manifest GETs and HEADs, tag
+  lists, referrer lists, and catalog responses have a separate memory cache with
+  a default 30-second lifetime. Pushes go straight to the upstream registry.
 - **Requires upstream approval.** Cached content is served only after the registry
   approves the request, or within a fixed approval window. A single valid nonempty
-  Bearer token reuses approval within the same registry and repository. Other
-  authentication and anonymous requests require an exact-request match. The default
-  window is 15 minutes without `Authorization` and 30 seconds with it.
+  Bearer token reuses approval within the same registry and exact repository for
+  immutable content and shared mutable metadata. Each token must obtain its own
+  upstream approval before using shared responses. Other immutable grants and
+  nonshared mutable responses require an exact-request match, including credentials.
+  For digest bodies, the default approval window is 15 minutes
+  without `Authorization` and 30 seconds with it.
 - **Keeps credentials at the upstream registry.** Tokens remain opaque and are
   never persisted or sent to peers. Authorization identities use process-local HMACs.
 - **Streams large layers.** Layers are never buffered in memory, and concurrent
@@ -22,7 +27,8 @@ upstream registry again.
 - **Uses one trusted CA.** Docker hosts trust the root CA once, and certificates for
   each upstream registry are signed on demand.
 - **Bounded, self-maintaining storage.** Disk use is capped, least-recently-used
-  entries are evicted, and objects that don't fit pass through uncached.
+  entries are evicted, and objects that don't fit pass through uncached. Mutable
+  response captures and retained entries share a separate 32 MiB memory budget.
 - **Optional peer caching.** Instances sharing a CA can discover and remember
   each other over a separate mutually authenticated TLS port. Peering exchanges
   addresses and persistent node IDs, and each instance lists its cache keys to
@@ -40,6 +46,23 @@ upstream registry again.
 
 See [how it works](docs/how-it-works.md) for the request flow, authorization,
 and cache storage in detail.
+
+Mutable responses expire a fixed interval after upstream headers arrive. With
+`OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=true` (the default), valid Bearer requests
+for tag GETs and HEADs, tag lists, and referrer lists can share responses across
+independently approved tokens. Only `Authorization` is omitted from the shared
+response key. Every reader needs both a live token-specific repository grant and
+an unexpired response. The response can outlive its producer's grant. Catalog,
+anonymous, and other non-Bearer requests retain exact-request caching capped by
+the applicable authorization TTL. Setting the shared option to `false` restores
+that exact matching and TTL cap for all mutable requests, with no mutable grant
+creation and no change to immutable caching. Hits never create or renew grants
+or extend response expiry, and writes or unobserved access revocation do not
+invalidate them early. In shared mode, an observed mutable denial revokes only
+the matching token's repository grant, including its immutable reuse, not other
+tokens' grants or shared bytes. Set
+`OCI_ACCELERATOR_CACHE_MUTABLE_TTL=0s` to disable this cache. It is process-local,
+never persisted, and never shared with peers.
 
 ## Usage
 

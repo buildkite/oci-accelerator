@@ -1,7 +1,8 @@
 # Deploying and using OCI Accelerator
 
 OCI Accelerator is an HTTP CONNECT proxy. It intercepts configured HTTPS registries and caches
-verified SHA-256 blobs and digest manifests. All other destinations are tunneled unmodified.
+verified SHA-256 blobs and digest manifests on disk, plus mutable metadata briefly in memory.
+All other destinations are tunneled unmodified.
 See [how it works](how-it-works.md) for the request flow and design.
 
 | Client or platform                                                        | Status        |
@@ -25,13 +26,23 @@ See [how it works](how-it-works.md) for the request flow and design.
   no insecure mode.
 - **Credentials stay with Docker.** Never put credentials in proxy configuration. Cross-origin redirects
   never forward credentials or cookies.
-- **The upstream registry authorizes deliveries.** Each cached delivery is approved by an
+- **The upstream registry authorizes deliveries.** Each cached digest-body delivery is approved by an
   upstream GET or a live grant. A single valid nonempty Bearer token reuses approval
   within the same upstream registry and exact repository. Other authentication and
   anonymous grants match the exact request. The default window is 15 minutes without
   `Authorization` and 30 seconds with it, including an empty value. Public-to-private
   revocation can therefore lag by 15 minutes by default. Set both authorization TTLs to
   `0s` to check every delivery. A failed upstream request never falls back to cached content.
+- **Mutable metadata can be stale.** Successful tag manifest GETs and HEADs, tag lists,
+  referrer lists, and catalog responses can be reused for 30 seconds by default.
+  `OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=true` lets independently approved Bearer tokens
+  share repository metadata, not catalog responses. Every reader needs its own live
+  token-specific repository grant and an unexpired response. Response expiry is independent
+  of grants. Catalog, anonymous, and non-Bearer responses retain exact-request matching,
+  including credentials, and the applicable authorization TTL cap. Setting the shared
+  option to `false` applies that exact mode to all mutable requests without changing
+  immutable caching. Writes and unobserved access revocation do not invalidate entries early.
+  Set `OCI_ACCELERATOR_CACHE_MUTABLE_TTL=0s` to disable this separate response cache.
 - **Logs contain repository names, tags, and digests.** Restrict access to them.
 - **Metrics and probes are unauthenticated.** They bind loopback only unless explicitly opted in.
 - **Redirect checks do not constrain tunnels.** Destination checks protect only fetches the
@@ -448,7 +459,9 @@ You can configure private registries explicitly.
 | `OCI_ACCELERATOR_CACHE_MAX_FILLS` | 16      | Concurrent storage writers. Excess misses stream uncached                               |
 | `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` | 100000 | Entry slots, including fills and pending cleanup                                        |
 | `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` | `10m` | Bounds ranged fetches from request start and peer transfers. Ends ordinary full-GET cache admission |
-| `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` | `1s` | `0s` disables waiting for an existing fill                                           |
+| `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` | `1s` | Wait for an existing immutable fill or mutable capture. `0s` disables waiting, not caching |
+| `OCI_ACCELERATOR_CACHE_MUTABLE_TTL` | `30s` | Fixed mutable response lifetime from upstream headers. Shared expiry is independent of grants. Exact mode is capped by the applicable authorization TTL. `0s` disables |
+| `OCI_ACCELERATOR_CACHE_MUTABLE_SHARED` | `true` | Share repository mutable responses across independently approved Bearer tokens. `false` uses exact mutable matching and authorization TTL caps, with no mutable grant creation. Immutable caching is unchanged |
 | `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL` | `30s` | Fixed approval lifetime for requests with Authorization, including empty. `0s` disables that class |
 | `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` | `15m` | Fixed approval lifetime for requests without Authorization. `0s` disables that class |
 | `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` | 10000 | Positive shared bound on both classes of in-memory authorization grants               |
@@ -484,7 +497,9 @@ Timeout behavior:
 
 Memory: `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` and
 `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound their indexes, not total
-process RSS, so tune both to available memory. Bodies stream rather than accumulate in memory.
+process RSS, so tune both to available memory. Immutable bodies stream rather than
+accumulate in memory. The separate [mutable response cache](#mutable-response-cache)
+has fixed internal memory and entry bounds, not additional environment settings.
 
 ### Built-in limits
 
@@ -494,8 +509,11 @@ process RSS, so tune both to available memory. Bodies stream rather than accumul
 | Upstream connections per destination         | 16                                 |
 | Idle upstream connections                    | 32 globally, 8 per destination     |
 | Redirects followed                           | 5                                  |
-| Cache metadata charge                        | 4 KiB per entry                    |
-| Eviction removal attempts per admission      | 8                                  |
+| Disk cache metadata charge                   | 4 KiB per entry                    |
+| Disk eviction removal attempts per admission | 8                                  |
+| Mutable captures and retained response memory | 32 MiB accounted, not process RSS |
+| Mutable response body and retained headers   | 1 MiB body, 64 KiB headers         |
+| Mutable concurrent captures and indexed entries | 16 captures, 1,024 entries      |
 | CA PEM file size                             | 64 KiB each                        |
 | Root CA validity                             | 10 years                           |
 | Leaf certificate validity                    | At most 24 hours                   |
@@ -680,10 +698,12 @@ Docker push uses the same proxy and CA configuration as pull.
 - Active uploads are limited by `OCI_ACCELERATOR_IDLE_TIMEOUT` for stalled I/O, not by
   `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` or
   a total upload size.
-- Successful deletion does not invalidate existing pull [authorization grants](#authorization-grants).
-  Eligible GETs covered by a live grant may still serve cached content until the original grant
-  expiry. Set both authorization TTLs to `0s` when every cache delivery must check current
-  upstream access.
+- Writes do not invalidate existing pull [authorization grants](#authorization-grants) or
+  [mutable responses](#mutable-response-cache). Eligible immutable GETs covered by a live
+  grant and eligible mutable requests with an unexpired response and the required approval
+  may still serve cached content until their fixed expiries, even after a tag move or deletion.
+  Set both authorization TTLs to `0s` when every cache delivery must check current upstream
+  access. Set only `OCI_ACCELERATOR_CACHE_MUTABLE_TTL=0s` to disable mutable reuse.
 
 ## Request handling
 
@@ -694,9 +714,10 @@ authorization approval. This section lists additional rules that may affect your
 
 | Request                                                        | Handling                                            |
 | -------------------------------------------------------------- | --------------------------------------------------- |
-| GET, HEAD, OPTIONS                                             | Forwarded. Requests with a body are denied           |
+| GET, HEAD, OPTIONS                                             | Forwarded unless an eligible cache hit applies. Requests with a body are denied |
 | POST, PUT, PATCH, DELETE                                       | Streamed upstream without caching or path filtering |
-| Tag, `/v2/`, HEAD, conditional requests, ineligible ranges     | Always passed through                               |
+| `/v2/`, other HEADs, conditional requests, ineligible ranges   | Always passed through                               |
+| Tag manifest GET and HEAD, tag lists, referrer lists, `_catalog` | Eligible for the separate mutable response cache |
 | Upgrades, other methods, authority conflicts, non-origin-form targets | Denied                                       |
 
 ### Range requests
@@ -747,7 +768,9 @@ and the request and response headers that prevent a grant. Additionally:
 - A single valid nonempty Bearer token uses a process-local HMAC of the exact token,
   canonical upstream registry, and exact parsed repository. All other forwarded headers
   are ignored for authorization identity, not for response eligibility or representation selection.
-  The grant covers eligible immutable digest manifests and blobs, including blob ranges.
+  The grant covers eligible immutable digest manifests and blobs, including blob ranges,
+  and, when shared mutable caching is enabled, tag GETs and HEADs, tag lists, and referrer
+  lists. It never covers other tokens, registries, or repositories.
 - Other authentication and anonymous grants retain exact-request matching on the original
   canonical URL and every forwarded end-to-end header. Transport-managed fields use their
   forwarded form, while other exact values and value order are preserved. Anonymous requests
@@ -755,8 +778,16 @@ and the request and response headers that prevent a grant. Additionally:
   `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound and can refer to the same verified disk body.
 - A grant starts at eligible successful immutable upstream GET terminal headers, including
   after redirects. A blob range's full upstream GET qualifies for a Bearer repository grant.
-  Tags, HEAD, and writes neither establish nor use grants. A grant is never renewed on hits,
+  With `OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=true`, eligible successful upstream tag GETs
+  and HEADs, tag-list GETs, and referrer-list GETs also establish or renew that grant.
+  Catalog, other HEADs, and writes do not establish repository grants. New tokens, including
+  rotations, must obtain their own upstream approval and cannot join another token's pending
+  mutable fetch without a live grant. A grant is never created or renewed on hits,
   persisted, or refreshed or coalesced in the background.
+- Repository-wide grants require repository-wide pull permission for each token,
+  independent of cookies or other headers. For object-specific pull ACLs, disable
+  credentialed grants with `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL=0s`.
+  Disabling shared mutable caching alone does not solve object-specific access.
 - Tokens are opaque, so revocation or expiry can take effect as late as the grant's original
   expiry.
 - Every redirect hop must be reusable. Only explicit `max-age` and `s-maxage` ceilings shorten a
@@ -770,9 +801,9 @@ and the request and response headers that prevent a grant. Additionally:
   grant without creating or renewing one. Other credentials and anonymous requests
   retain their exact-request grant behavior. A tighter positive `max-age` or `s-maxage`
   still permits a successful eligible GET to establish a grant bounded by that ceiling.
-- A live Bearer repository grant skips upstream only for verified committed local hits,
-  including eligible blob ranges. Local lookup uses the persisted `RequestKey`. Missing,
-  corrupt, or ambiguous local lookup results take the normal upstream-first path. Every local
+- For immutable content, a live Bearer repository grant skips upstream only for verified
+  committed local hits, including eligible blob ranges. Local lookup uses the persisted
+  `RequestKey`. Missing, corrupt, or ambiguous local lookup results take the normal upstream-first path. Every local
   miss needs its own upstream GET and accepted redirects before fetching peer bytes, even
   with a live grant. Other grants retain exact-request local-body reuse. A full grant-hit
   response reconstructs only content type, length, digest, a current `Date`, and
@@ -792,13 +823,18 @@ the client: there is no failed-request fallback.
 Response restrictions on any redirect hop or the terminal response still invalidate,
 even when the request requires revalidation.
 Invalidation fences out late successful requests, so they cannot restore the invalidated grant.
+In shared mutable mode, a mutable response revokes the matching token's repository grant
+on `401` or `403`, authentication-state headers, nonreusable or freshness-zero
+`Cache-Control`, any `Pragma`, or `Vary: *` or `Vary: Authorization`, preventing immutable
+reuse too. An immutable denial likewise prevents
+shared mutable reuse. Shared response bytes and other tokens' grants are not globally purged.
 
 ## Cache storage
 
 See [cache storage and eviction](how-it-works.md#cache-storage-and-eviction) for entry layout,
 filling, and eviction.
 
-### What is cached
+### Immutable disk cache
 
 - Admitted: query-free SHA-256 blob GETs (including image configuration blobs) and digest
   manifests in supported OCI and Docker schema-2 media types. Eligible blob ranges can populate
@@ -811,8 +847,94 @@ filling, and eviction.
   usable through normal upstream-first lookup, but cannot use the Bearer repository fast path
   until replaced by a new fill. Existing entries are not backfilled. You do not need to flush
   or migrate your cache.
-- Bypassed: tags, HEAD, ranged manifests, conditional and non-identity-encoded responses,
-  unknown-length bodies, no-store traffic, and unsupported `Vary` dimensions.
+- Bypassed by the disk cache: mutable metadata, HEAD, ranged manifests, conditional and
+  non-identity-encoded responses, unknown-length bodies, no-store traffic, and unsupported
+  `Vary` dimensions.
+
+### Mutable response cache
+
+This separate process-local memory cache admits successful `200` responses for:
+
+- `GET` and `HEAD /v2/<name>/manifests/<tag>`, as separate entries
+- `GET /v2/<name>/tags/list`, including distinct pagination queries
+- `GET /v2/<name>/referrers/<digest>`, including distinct filter queries
+- `GET /v2/_catalog`, including distinct pagination queries
+
+`OCI_ACCELERATOR_CACHE_MUTABLE_SHARED` defaults to `true`. For a single valid nonempty
+Bearer token, tag GETs and HEADs, tag lists, and referrer lists use shared response keys.
+Only `Authorization` is omitted from the process-local HMAC key. The outgoing method,
+URL with its exact query, and all other forwarded end-to-end headers retain their exact
+values and order. Shared keys use a separate HMAC domain from anonymous exact-request keys.
+Each reader needs its own live grant for the exact token, registry, and repository.
+Sharing requires token-independent, byte-identical mutable metadata for otherwise identical
+requests among tokens approved for the repository. Set
+`OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=false` for token-filtered listings or metadata.
+
+Catalog, anonymous, and non-Bearer requests retain exact-request matching, including
+credentials. Empty, malformed, or multiple Bearer credentials do not qualify for sharing.
+Setting the shared option to `false` restores exact mutable matching, authorization TTL
+caps, and no mutable grant creation. Immutable caching and grants remain unchanged.
+
+Mutable data is never written to disk, advertised in peer inventories, or fetched from
+peers. Only bodyless requests with unambiguous, unescaped paths qualify.
+
+`OCI_ACCELERATOR_CACHE_MUTABLE_TTL` defaults to `30s`, measured from upstream response
+header receipt, not capture completion or the last hit. A longer mutable TTL means tags
+can remain stale longer. Shared responses have a fixed
+lifetime independent of grants and can outlive the producer's approval. Every reader needs
+both a live grant and an unexpired response. Exact-mode response lifetime is capped by the
+credentialed or anonymous authorization TTL. An authorization TTL of `0s` disables mutable
+reuse for that class, and a mutable TTL of `0s` disables it entirely. Hits never create or
+renew a grant and never extend response expiry.
+
+Request cache restrictions are still honored. Upstream `max-age`, `s-maxage`, `Date`,
+`Age`, and `Expires` are ignored for mutable response expiry. Authorization freshness
+restrictions still apply to shared grants, so upstream `max-age=0` can prevent approval
+or revoke existing approval while response bytes remain available for their configured
+lifetime to independently approved readers.
+Responses with `no-store`, `no-cache`,
+`private`, any `Pragma`, authentication state, or `Vary: *` cannot be reused. Authentication
+state means `Set-Cookie`, `WWW-Authenticate`, `Authentication-Info`, or
+`Proxy-Authentication-Info`. `Vary: Authorization` bypasses capture in shared mode.
+Other `Vary` dimensions remain covered by exact request dimensions.
+Conditional and range requests, and responses with trailers, bypass this cache. Redirects
+remain passthrough. Errors, denials, and redirects are never shared.
+
+Bodies stream to the client while being captured. Only clean EOF and a matching length
+where known allow publication. Oversized, incomplete, or capacity-rejected responses
+continue their ordinary upstream delivery without cache publication. HEAD retains headers
+and representation length without capturing a body.
+
+Fixed internal constants bound accounted capture and retained memory to 32 MiB, each
+response body to 1 MiB, retained headers to 64 KiB per response, concurrent captures to 16,
+and the entry index to 1,024 entries including pending captures. Reservations are
+conservative. Unknown-length captures reserve the full body bound while streaming unchanged.
+After clean EOF, partially used buffers are copied into right-sized allocations before
+publication, while exact-sized buffers need no copy. Retained bodies are charged by capacity.
+Admission removes expired entries first, then evicts completed entries in
+LRU order, never pending captures. Active readers keep memory charged even after eviction
+until they close. This accounting bounds neither process RSS nor transient allocations
+and is independent of disk cache limits.
+
+Independently approved tokens can coalesce across tokens when their shared response keys
+match. New tokens, including rotations, must authorize upstream themselves and cannot join
+another token's pending fetch without their own live grant. Followers recheck authorization
+after waiting. Exact-mode followers must match the complete exact-request key.
+Followers wait up to `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` (default `1s`).
+`0s` disables waiting, not caching. A wait timeout or unsuccessful leader causes a fresh
+independent upstream request without competing cache publication. Leader cancellation
+cancels its fetch and followers retry. Follower cancellation does not affect the leader.
+
+In shared mode, the [grant invalidation rules](#authorization-grants) apply to mutable
+responses too, affecting immutable reuse. Immutable denials likewise prevent shared
+mutable reuse. Shared bytes and other tokens' grants are not globally purged. In exact mode,
+an independently observed denial or nonreusable, nontransient response discards older
+approval for that exact request and prevents older captures from publishing. Transient
+failures alone do not revoke approval.
+
+Hits return `Cache-Control: private, no-store` downstream. You accept stale metadata and
+authorization until their respective fixed expiries, including after writes or access
+revocation. There is no invalidation on writes, background refresh, or stale serving after expiry.
 
 ### Capacity and eviction
 
@@ -828,7 +950,7 @@ filling, and eviction.
 - Hits and publications advance a store-local logical recency sequence, so equal or backwards
   wall-clock times cannot move them behind earlier accesses. This access history is not persisted.
 
-### Concurrent fills
+### Concurrent disk fills
 
 - Concurrent clients authorize independently. One writer fills a key, and matching followers may
   wait for it (`OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT`) and then open the verified entry.
@@ -1252,6 +1374,10 @@ Request completion records contain:
 | `peer`, `peer_body_bytes`             | Peer source selection (`hit` or `unavailable`) and bytes consumed from a selected peer body |
 | `url`                                 | See below                                                                    |
 
+`admission=mutable_capacity` identifies mutable capture admission refused because the
+capture, entry-index, or accounted-memory limit could not accommodate it. Ordinary cache
+bypasses and requests that encounter an existing capture do not receive this value.
+
 The `url` field appears on completion records and upstream-failure warnings, including cache
 hits and rejected requests. It contains the intercepted registry's HTTPS authority and the
 original escaped request path:
@@ -1394,7 +1520,8 @@ stop grace period. Filesystem stalls can delay exit beyond those windows.
 | Root CA                  | Re-checked and reused from `OCI_ACCELERATOR_CA_DIR`                 |
 | Leaf certificates        | Memory only, re-signed on demand                                    |
 | Authorization grants     | Cleared. The next delivery needs fresh upstream approval            |
-| Cache entries            | Kept. Each body is rehashed on first reuse                          |
+| Mutable responses        | Cleared. No persistence or peer sharing                             |
+| Immutable disk entries   | Kept. Each body is rehashed on first reuse                          |
 | Abandoned fills          | Removed at startup                                                  |
 | Metrics counters         | Reset                                                               |
 | Known peers              | Retained in `OCI_ACCELERATOR_PEER_STATE_DIR` when peering is enabled |
@@ -1416,7 +1543,7 @@ stop grace period. Filesystem stalls can delay exit beyond those windows.
 | Docker reports an unknown certificate authority              | CA not installed under the exact `certs.d/<host[:port]>` directory                             | [Trust the CA](#trust-the-ca) for that authority                                      |
 | Private registry fails through the proxy with a TLS error    | The proxy process does not trust the upstream registry's real CA                               | Add it to the proxy's system trust store. Never disable verification                  |
 | Pulls work but no request records show the upstream registry | Registry not in `OCI_ACCELERATOR_REGISTRIES` (port must match), listed in `no-proxy`/`NO_PROXY`, or daemon not restarted | Fix `OCI_ACCELERATOR_REGISTRIES` or [Docker's proxy configuration](#point-docker-at-the-proxy) |
-| Revoked access or a deleted image still pulls briefly        | An existing [authorization grant](#authorization-grants)                                       | Wait for the applicable authorization TTL, or set both TTLs to `0s`                    |
+| Revoked access, a moved tag, or a deleted image still appears briefly | An existing [authorization grant](#authorization-grants) or [mutable response](#mutable-response-cache) | Wait for fixed expiry, or set both authorization TTLs to `0s`. Disable only mutable reuse with `OCI_ACCELERATOR_CACHE_MUTABLE_TTL=0s` |
 | `.ca-init-*` directories in the CA parent                    | A crash or SIGKILL during initialization                                                       | [Clean up staging directories](#clean-up-staging-directories)                         |
 | Compose warns about existing volumes                         | Volumes were created by `docker run`                                                           | Expected. Run only one proxy against them                                             |
 
