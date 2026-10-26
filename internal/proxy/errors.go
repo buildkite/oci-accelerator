@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"net"
 )
 
@@ -12,15 +11,13 @@ var errUpgrade = errors.New("upstream upgrade denied")
 
 var errRedirect = errors.New("upstream redirect refused")
 
-// Internal dial-refusal reasons. Each wraps errRedirect so existing
-// errors.Is(err, errRedirect) checks and the client-facing 502 are unchanged.
-// The distinct reason exists only to make logs actionable for users. None of
-// these is ever surfaced to the client.
+// Internal dial-refusal reasons make logs actionable for users. None of these
+// is ever surfaced to the client.
 var (
-	errDialAddress   = fmt.Errorf("%w: unparseable upstream address", errRedirect)
-	errDialResolve   = fmt.Errorf("%w: upstream DNS resolution failed", errRedirect)
-	errDialForbidden = fmt.Errorf("%w: upstream address not permitted", errRedirect)
-	errDialConnect   = fmt.Errorf("%w: upstream connection failed", errRedirect)
+	errDialAddress   = errors.New("unparseable upstream address")
+	errDialResolve   = errors.New("upstream DNS resolution failed")
+	errDialForbidden = errors.New("upstream address not permitted")
+	errDialConnect   = errors.New("upstream connection failed")
 )
 
 // upstreamFailure returns only fixed labels. Never log the original error: it

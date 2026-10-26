@@ -248,10 +248,8 @@ func TestDialUpstreamRefusalReasonsAreDistinctAndLoggedWhileRefusingClosed(t *te
 				conn.Close()
 				t.Fatal("dial unexpectedly succeeded")
 			}
-			// Every reason wraps errRedirect so callers and the client-facing 502
-			// stay uniform, yet the specific reason is distinguishable internally.
-			if !errors.Is(err, errRedirect) {
-				t.Fatalf("err = %v, does not wrap errRedirect", err)
+			if errors.Is(err, errRedirect) {
+				t.Fatalf("dial failure classified as a redirect: %v", err)
 			}
 			if !errors.Is(err, tc.reason) {
 				t.Fatalf("err = %v, want reason %v", err, tc.reason)
