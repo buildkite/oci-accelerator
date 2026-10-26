@@ -185,11 +185,13 @@ func TestUploadContinueAndKeepAlive(t *testing.T) {
 		if err != nil || string(body) != "payload" {
 			t.Errorf("upload = %q, %v", body, err)
 		}
+
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer origin.Close()
 	_, addr, client := interceptFixture(t, origin, nil, true)
 	conn, reader := uploadConnection(t, addr, client, origin.URL)
+
 	for range 2 {
 		_, _ = fmt.Fprintf(conn, "PUT /upload HTTP/1.1\r\nHost: %s\r\nContent-Length: 7\r\nExpect: 100-continue\r\n\r\n", strings.TrimPrefix(origin.URL, "https://"))
 		resp, err := http.ReadResponse(reader, &http.Request{Method: "PUT"})
@@ -200,16 +202,26 @@ func TestUploadContinueAndKeepAlive(t *testing.T) {
 		if resp.StatusCode != http.StatusContinue {
 			t.Fatalf("expected continue, got %d", resp.StatusCode)
 		}
+
 		_, _ = io.WriteString(conn, "payload")
-		resp, err = http.ReadResponse(reader, &http.Request{Method: "PUT"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("expected created, got %d", resp.StatusCode)
+		for {
+			resp, err = http.ReadResponse(reader, &http.Request{Method: "PUT"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+
+			// The proxy can send its own continue before forwarding the origin's.
+			if resp.StatusCode == http.StatusContinue {
+				continue
+			}
+			if resp.StatusCode != http.StatusCreated {
+				t.Fatalf("expected created, got %d", resp.StatusCode)
+			}
+			break
 		}
 	}
+
 	if calls.Load() != 2 {
 		t.Fatalf("upstream calls = %d", calls.Load())
 	}
