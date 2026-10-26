@@ -11,6 +11,63 @@ import (
 	"time"
 )
 
+func TestRepositoryGrantRequestCeiling(t *testing.T) {
+	const layer = "0123456789abcdef"
+	for _, ranged := range []bool{false, true} {
+		for _, ceiling := range []struct {
+			value    string
+			upstream bool
+		}{
+			{"", false},
+			{"max-age=60", false},
+			{"max-age=30", false},
+			{"max-age=1", true},
+			{"s-maxage=1", true},
+		} {
+			t.Run(fmt.Sprintf("range=%t/%s", ranged, ceiling.value), func(t *testing.T) {
+				var gets atomic.Int32
+				origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gets.Add(1)
+					blobHeaders(w, layer)
+					io.WriteString(w, layer)
+				}))
+				defer origin.Close()
+				p, client := cacheFixture(t, origin, 1<<20, nil)
+				p.authorization = newAuthorizationCache(30*time.Second, time.Minute, 100)
+				resp, body := getBlob(t, client, origin.URL+blobURL(layer), "Bearer reader")
+				if resp.StatusCode != 200 || body != layer {
+					t.Fatalf("approval = %d %q", resp.StatusCode, body)
+				}
+				// Repeat to cover both an unrestricted grant and a fresh grant
+				// established by a request with a tighter ceiling.
+				for i := int32(1); i <= 2; i++ {
+					req := authorizationRequest(t, origin.URL+blobURL(layer), "Bearer reader")
+					if ceiling.value != "" {
+						req.Header.Set("Cache-Control", ceiling.value)
+					}
+					status, want := http.StatusOK, layer
+					if ranged {
+						req.Header.Set("Range", "bytes=3-8")
+						status, want = http.StatusPartialContent, "345678"
+					}
+					resp, err := client.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					assertAuthorizationBody(t, resp, status, want)
+					wantGETs := int32(1)
+					if ceiling.upstream {
+						wantGETs += i
+					}
+					if gets.Load() != wantGETs {
+						t.Fatalf("upstream GETs = %d, want %d", gets.Load(), wantGETs)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestRepositoryGrantReadsOtherClientsObjects(t *testing.T) {
 	const seed = "repository approval"
 	const layer = "0123456789abcdef"

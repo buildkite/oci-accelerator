@@ -762,6 +762,8 @@ and the request and response headers that prevent a grant. Additionally:
 - Every redirect hop must be reusable. Only explicit `max-age` and `s-maxage` ceilings shorten a
   grant below its configured TTL. `Age`, `Date`, and `Expires` are ignored. A grant never
   outlives the TTL, but may be trusted for the full residual TTL regardless of upstream age.
+  For Bearer repository grants, a request ceiling below the configured credentialed TTL
+  bypasses grant reuse and requires fresh upstream approval, even for a newly approved grant.
 - A live Bearer repository grant skips upstream only for verified committed local hits,
   including eligible blob ranges. Local lookup uses the persisted `RequestKey`. Missing,
   corrupt, or ambiguous local lookup results take the normal upstream-first path. Every local

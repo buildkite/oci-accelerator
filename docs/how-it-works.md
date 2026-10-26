@@ -321,7 +321,9 @@ the upstream registry on every delivery.
   Anonymous approvals cannot serve requests carrying `Authorization`.
 - **Fixed lifetime.** It starts at approval, never exceeds the configured TTL, and
   hits don't extend it. A shorter `max-age` or `s-maxage` on the request or any
-  response shortens it.
+  response shortens it. A request ceiling below the configured credentialed TTL
+  always requires fresh upstream approval instead of reusing a Bearer repository
+  grant, even if that grant was just established.
 - **Memory only.** Grants are never persisted, are cleared on restart, and both
   classes share the `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound (10000 by default).
 - **Bytes are shared, approvals are not.** Any client the upstream registry approves can

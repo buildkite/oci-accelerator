@@ -58,7 +58,10 @@ func (t registryTransport) beginGrantAttempt(req *http.Request, object immutable
 	entry, grant := t.authorization.start(req)
 
 	// Serve from a cached grant if reuse is allowed and we may wait.
-	if cacheShaped && permitted && requestLifetime > 0 && mayWait {
+	// Repository identity excludes request headers. Without tracking approval
+	// age, a tighter request ceiling must get fresh upstream approval instead.
+	if cacheShaped && permitted && requestLifetime > 0 && mayWait &&
+		(!repository || requestLifetime >= t.authorization.lifetime(req.Header)) {
 		if resp := t.authorizedResponse(req, entry, grant, stats); resp != nil {
 			return resp, nil
 		}
