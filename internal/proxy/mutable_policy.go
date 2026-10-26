@@ -75,10 +75,15 @@ func (t registryTransport) mutableRepositoryKey(req *http.Request) ([32]byte, bo
 	}
 
 	parts := mutableManifestPath.FindStringSubmatch(req.URL.Path)
-	if parts == nil || req.Method != http.MethodGet && req.Method != http.MethodHead {
+	if parts != nil {
+		if req.Method != http.MethodGet && req.Method != http.MethodHead {
+			return [32]byte{}, false
+		}
+	} else {
 		if req.Method != http.MethodGet {
 			return [32]byte{}, false
 		}
+
 		parts = mutableListingPath.FindStringSubmatch(req.URL.Path)
 	}
 
@@ -86,6 +91,7 @@ func (t registryTransport) mutableRepositoryKey(req *http.Request) ([32]byte, bo
 	if parts == nil || !ok {
 		return [32]byte{}, false
 	}
+
 	return t.authorization.repositoryFingerprint(req, parts[1], token), true
 }
 
