@@ -95,7 +95,6 @@ func (r *Reader) Close() error {
 // seams for pausing after verification begins and immediately before a wait.
 func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, beforeWait func()) (*Reader, error) {
 	// Malformed keys can never name a committed entry, so skip the lookup.
-	meta.RequestKey = ""
 	if !validMeta(meta) {
 		return nil, ErrMiss
 	}

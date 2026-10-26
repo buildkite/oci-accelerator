@@ -171,84 +171,39 @@ func loadBookRecords(dir string) (map[string]bookRecord, error) {
 		return nil, errBook
 	}
 
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var state struct {
-		Version int             `json:"version"`
-		Peers   json.RawMessage `json:"peers"`
-	}
-	if decoder.Decode(&state) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+	keys := json.NewDecoder(bytes.NewReader(raw))
+	if checkObjectKeys(keys, map[string]bool{"version": true, "peers": true}, func(key string) error {
+		if key == "version" {
+			var version int
+			return keys.Decode(&version)
+		}
+
+		return checkObjectKeys(keys, nil, func(string) error {
+			return checkObjectKeys(keys, map[string]bool{"node_id": true, "last_success": true}, func(string) error { return checkString(keys) })
+		})
+	}) != nil {
 		return nil, errBook
 	}
 
-	peers := make(map[string]string)
-	records := make(map[string]bookRecord)
-	switch state.Version {
-	case 1:
-		var addresses []string
-		if json.Unmarshal(state.Peers, &addresses) != nil || addresses == nil || len(addresses) > MaxPeers {
-			return nil, errBook
-		}
-		for i, address := range addresses {
-			if i > 0 && addresses[i-1] >= address {
-				return nil, errBook
-			}
-			peers[address] = ""
-		}
-	case 2:
-		keys := json.NewDecoder(bytes.NewReader(state.Peers))
-		if checkObjectKeys(keys, nil, func(string) error { return checkString(keys) }) != nil || json.Unmarshal(state.Peers, &peers) != nil {
-			return nil, errBook
-		}
-	case 3:
-		keys := json.NewDecoder(bytes.NewReader(state.Peers))
-		if checkObjectKeys(keys, nil, func(string) error {
-			return checkObjectKeys(keys, nil, func(string) error { return checkString(keys) })
-		}) != nil {
-			return nil, errBook
-		}
-		decoder := json.NewDecoder(bytes.NewReader(state.Peers))
-		decoder.DisallowUnknownFields()
-		if decoder.Decode(&records) != nil || records == nil {
-			return nil, errBook
-		}
-		for address, record := range records {
-			if record.NodeID != "" && record.LastSuccess.IsZero() {
-				return nil, errBook
-			}
-			peers[address] = record.NodeID
-		}
-	default:
-		return nil, errBook
-	}
-	if len(peers) > MaxPeers {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var state bookState
+	if decoder.Decode(&state) != nil || decoder.Decode(&struct{}{}) != io.EOF || state.Version != 3 || state.Peers == nil || len(state.Peers) > MaxPeers {
 		return nil, errBook
 	}
 
 	ids := make(map[string]bool)
-	for address, id := range peers {
+	for address, record := range state.Peers {
 		canonical, err := CanonicalAddress(address)
 		if err != nil || canonical != address {
 			return nil, errBook
 		}
-		if id != "" && (!validNodeID(id) || ids[id]) {
+		if !validNodeID(record.NodeID) || ids[record.NodeID] || record.LastSuccess.IsZero() {
 			return nil, errBook
 		}
-		ids[id] = true
+		ids[record.NodeID] = true
 	}
-
-	if state.Version < 3 {
-		// Persisted by OpenBook before use, so restarts cannot renew this grace.
-		now := time.Now()
-		for address, id := range peers {
-			record := bookRecord{NodeID: id}
-			if id != "" {
-				record.LastSuccess = now
-			}
-			records[address] = record
-		}
-	}
-	return records, nil
+	return state.Peers, nil
 }
 
 // writeBookState reports whether rename published a replacement, separately

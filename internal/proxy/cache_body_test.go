@@ -178,10 +178,11 @@ func fillingBodyFixture(t *testing.T, body string) (*cache.Store, cache.Metadata
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	meta := cache.Metadata{
-		Key:       fmt.Sprintf("%x", sha256.Sum256([]byte("key:"+body))),
-		Digest:    fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))),
-		Size:      int64(len(body)),
-		MediaType: "application/octet-stream",
+		Key:        fmt.Sprintf("%x", sha256.Sum256([]byte("key:"+body))),
+		RequestKey: fmt.Sprintf("%x", sha256.Sum256([]byte("request:"+body))),
+		Digest:     fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))),
+		Size:       int64(len(body)),
+		MediaType:  "application/octet-stream",
 	}
 	return s, meta
 }

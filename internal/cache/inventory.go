@@ -131,7 +131,7 @@ func loadInventoryEntry(path, key string) (*entry, error) {
 
 	// Discard the entry unless the "meta" file parses into valid metadata for this key.
 	var disk diskMetadata
-	if json.Unmarshal(raw, &disk) != nil || !validMeta(disk.Metadata) || disk.Key != key {
+	if json.Unmarshal(raw, &disk) != nil || !validStoredMeta(disk.Metadata) || disk.Key != key {
 		return nil, nil
 	}
 

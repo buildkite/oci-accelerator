@@ -116,7 +116,7 @@ func OpenBook(ctx context.Context, dir, self string, seeds []string, client *htt
 		}
 	}
 
-	// Also migrate legacy candidates and durably remove records for self.
+	// Durably remove records for self before using the book.
 	if _, err := b.write(dir, b.records); err != nil {
 		_ = lock.close()
 		return nil, errBook
@@ -282,7 +282,7 @@ func (b *Book) persist(next map[string]bookRecord) error {
 	if published {
 		for address, record := range b.records {
 			newRecord, exists := next[address]
-			if !exists || record.NodeID != "" && record.NodeID != newRecord.NodeID {
+			if !exists || record.NodeID != newRecord.NodeID {
 				b.revision++
 				break
 			}
@@ -297,33 +297,18 @@ func (b *Book) persist(next map[string]bookRecord) error {
 	return nil
 }
 
-// expire durably removes old members and migrated candidates. Seeds remain in
-// the separate configured retry set.
+// expire durably removes old members. Seeds remain in the separate configured
+// retry set.
 func (b *Book) expire(now time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	next := maps.Clone(b.records)
 	for address, record := range next {
-		if record.NodeID == "" || !record.LastSuccess.Add(membershipTTL).After(now) {
+		if !record.LastSuccess.Add(membershipTTL).After(now) {
 			delete(next, address)
 		}
 	}
 	return b.persist(next)
-}
-
-// candidates returns unidentified legacy addresses for bounded local probing.
-// Discovery captures them before expiry removes them from durable state.
-func (b *Book) candidates() []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	var addresses []string
-	for address, record := range b.records {
-		if record.NodeID == "" && !b.seeds[address] {
-			addresses = append(addresses, address)
-		}
-	}
-	sort.Strings(addresses)
-	return addresses
 }
 
 // bindings derives scheduler state without exposing expired identities.
@@ -334,7 +319,7 @@ func (b *Book) bindings(now time.Time) map[string]string {
 	}
 
 	for address, record := range b.records {
-		if record.NodeID != "" && record.LastSuccess.Add(membershipTTL).After(now) {
+		if record.LastSuccess.Add(membershipTTL).After(now) {
 			peers[address] = record.NodeID
 		}
 	}

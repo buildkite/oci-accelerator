@@ -12,7 +12,7 @@ import (
 )
 
 func testMeta(key, body string) Metadata {
-	return Metadata{Key: fmt.Sprintf("%x", sha256.Sum256([]byte(key))), Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))), Size: int64(len(body)), MediaType: "application/octet-stream"}
+	return Metadata{Key: fmt.Sprintf("%x", sha256.Sum256([]byte(key))), RequestKey: fmt.Sprintf("%x", sha256.Sum256([]byte("request:"+key))), Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(body))), Size: int64(len(body)), MediaType: "application/octet-stream"}
 }
 
 func openTest(t *testing.T, limit int64) *Store {

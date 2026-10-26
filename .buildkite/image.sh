@@ -69,9 +69,8 @@ fi
 release=false
 if [[ "$version" != "$previous" ]]; then
   if [[ -n "$previous" ]]; then
-    # Older commits used unprefixed versions. Adding v alone creates a new tag.
     previous_number=${previous#v}
-    if [[ ! "$previous_number" =~ $version_pattern ]] ||
+    if [[ "$previous" != v* || ! "$previous_number" =~ $version_pattern ]] ||
        [[ $(printf '%s\n' "$previous_number" "$version_number" | LC_ALL=C sort -V | head -n 1) != "$previous_number" ]]; then
       echo 'VERSION must increase from the comparison commit' >&2
       exit 1

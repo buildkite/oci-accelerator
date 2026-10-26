@@ -58,6 +58,14 @@ func TestOpenPersistsCAAndPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	fingerprint := a.Fingerprint()
+	files := make(map[string][]byte)
+	for _, name := range []string{certName, keyName} {
+		files[name], err = os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	a2, err := Open(dir, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -65,6 +73,13 @@ func TestOpenPersistsCAAndPermissions(t *testing.T) {
 	if a2.Fingerprint() != fingerprint {
 		t.Fatal("CA rotated across restart")
 	}
+	for name, before := range files {
+		after, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("Open changed %s: %v", name, err)
+		}
+	}
+
 	for path, want := range map[string]os.FileMode{dir: 0o700, filepath.Join(dir, keyName): 0o600, filepath.Join(dir, certName): 0o644} {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -86,48 +101,6 @@ func TestNewCAUsesOCIAcceleratorName(t *testing.T) {
 	}
 	if got, want := a.cert.Subject.CommonName, "OCI Accelerator CA"; got != want {
 		t.Fatalf("CA common name = %q, want %q", got, want)
-	}
-}
-
-func TestOpenPreservesOldNameCA(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "ca")
-	a, err := Open(dir, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rewriteCertificate(t, dir, a, a.key, func(cert *x509.Certificate) {
-		cert.Subject.CommonName = "Docker Accelerator CA"
-		cert.RawSubject = nil
-	})
-	certBefore, err := os.ReadFile(filepath.Join(dir, certName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyBefore, err := os.ReadFile(filepath.Join(dir, keyName))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := Open(dir, 1)
-	if err != nil {
-		t.Fatalf("Open old-name CA: %v", err)
-	}
-	if reopened.cert.Subject.CommonName != "Docker Accelerator CA" {
-		t.Fatalf("CA common name changed to %q", reopened.cert.Subject.CommonName)
-	}
-	certAfter, _ := os.ReadFile(filepath.Join(dir, certName))
-	keyAfter, _ := os.ReadFile(filepath.Join(dir, keyName))
-	if !bytes.Equal(certBefore, certAfter) || !bytes.Equal(keyBefore, keyAfter) {
-		t.Fatal("Open changed old-name CA certificate or key bytes")
-	}
-	roots := x509.NewCertPool()
-	roots.AddCert(reopened.cert)
-	leaf, err := reopened.Certificate("registry.example")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := leaf.Leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: "registry.example"}); err != nil {
-		t.Fatalf("verify leaf against old-name CA: %v", err)
 	}
 }
 

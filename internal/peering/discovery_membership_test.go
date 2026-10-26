@@ -5,8 +5,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -281,55 +279,6 @@ func TestDiscoveryExpiryPersistenceLogsFailureEpisodes(t *testing.T) {
 				synctest.Wait()
 				if got := strings.Count(logs.String(), "peer membership expiry persistence failed"); got != 2 {
 					t.Fatalf("second failure episode: error logs=%d, want 2", got)
-				}
-			})
-		})
-	}
-}
-
-func TestDiscoveryMigratesUnidentifiedAddressesAsBoundedCandidates(t *testing.T) {
-	for _, raw := range []string{
-		`{"version":1,"peers":["legacy.test:1","seed.test:1"]}`,
-		`{"version":2,"peers":{"legacy.test:1":"","seed.test:1":""}}`,
-	} {
-		t.Run(raw, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				d := cooldownDiscovery(t, nil)
-				dir := d.book.dir
-				if err := d.book.Close(); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(raw), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				book, err := OpenBook(context.Background(), dir, "b.test:2", nil, nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { book.Close() })
-				if _, err := book.AddSeeds([]string{"seed.test:1", "SEED.TEST.:1"}); err != nil {
-					t.Fatal(err)
-				}
-				var calls requestLog
-				client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-					calls.add(r.URL.Host)
-					return nil, context.DeadlineExceeded
-				})}
-				d = NewDiscovery(book, client, d.logger, nil)
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-				go d.Run(ctx)
-				synctest.Wait()
-				if calls.count("seed.test:1") != 1 || calls.count("legacy.test:1") != 1 {
-					t.Fatalf("initial seed and candidate requests = %v", calls.all())
-				}
-				if records, err := loadBookRecords(dir); err != nil || len(records) != 0 {
-					t.Fatalf("legacy candidates remain on disk: %v, %v", records, err)
-				}
-				time.Sleep(10 * time.Minute)
-				synctest.Wait()
-				if calls.count("legacy.test:1") != 3 || calls.count("seed.test:1") <= 3 || len(book.Snapshot().Peers) != 0 {
-					t.Fatalf("seed and candidate attempts=%v members=%v", calls.all(), book.Snapshot().Peers)
 				}
 			})
 		})

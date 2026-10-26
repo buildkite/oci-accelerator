@@ -31,12 +31,14 @@ func TestImagePipeline(t *testing.T) {
 	git(origin, "init", "-b", "main")
 	git(origin, "commit", "--allow-empty", "-m", "before VERSION")
 	git(origin, "branch", "before-version")
+	git(origin, "checkout", "-b", "unprefixed")
 	writeFile(t, filepath.Join(origin, "VERSION"), "0.1.0\n", 0o600)
 	git(origin, "add", "VERSION")
-	git(origin, "commit", "-m", "first version")
-	git(origin, "branch", "legacy")
+	git(origin, "commit", "-m", "unsupported version format")
+	git(origin, "checkout", "main")
 	writeFile(t, filepath.Join(origin, "VERSION"), "v0.1.0\n", 0o600)
-	git(origin, "commit", "-am", "add version prefix")
+	git(origin, "add", "VERSION")
+	git(origin, "commit", "-m", "first release")
 	git(origin, "branch", "first-release")
 	writeFile(t, filepath.Join(origin, "VERSION"), "v0.1.9\n", 0o600)
 	git(origin, "commit", "-am", "previous version")
@@ -63,7 +65,7 @@ func TestImagePipeline(t *testing.T) {
 	}{
 		{name: "check without credentials", mode: "check", wantBuild: true},
 		{name: "publish build number and latest from shallow main", wantSecret: true, wantBuild: true, wantPush: true, wantTags: []string{"build-108", "latest"}},
-		{name: "prefix-only migration is a release", checkout: "first-release", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.1.0"}, annotationVersion: "v0.1.0", annotationHeading: "**Published oci-accelerator v0.1.0**"},
+		{name: "publish first release", checkout: "first-release", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.1.0"}, annotationVersion: "v0.1.0", annotationHeading: "**Published oci-accelerator v0.1.0**"},
 		{name: "merged release after main advances", checkout: "release", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.1.10"}, annotationVersion: "v0.1.10", annotationHeading: "**Published oci-accelerator v0.1.10**"},
 		{name: "release at main tip", failure: "main-tip", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.2.0", "build-108", "latest"}, annotationVersion: "v0.2.0", annotationHeading: "**Published oci-accelerator v0.2.0**"},
 		{name: "retry already published release", checkout: "release", failure: "published", wantSecret: true, wantInspect: true, annotationVersion: "v0.1.10", annotationHeading: "**Version v0.1.10 is already published**"},
@@ -76,8 +78,8 @@ func TestImagePipeline(t *testing.T) {
 		{name: "PR version bump", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "v0.2.0\n", wantBuild: true},
 		{name: "initial prefixed version", checkout: "before-version", branch: "feature", pr: "16", mode: "check", version: "v0.1.0\n", wantBuild: true},
 		{name: "PR downgrade", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "v0.1.9\n", wantError: true},
-		{name: "legacy to higher prefixed version", checkout: "legacy", branch: "feature", pr: "16", mode: "check", version: "v0.1.1\n", wantBuild: true},
-		{name: "legacy to lower prefixed version", checkout: "legacy", branch: "feature", pr: "16", mode: "check", version: "v0.0.9\n", wantError: true},
+		{name: "prefix-only change rejected", checkout: "unprefixed", version: "v0.1.0\n", wantError: true},
+		{name: "unprefixed comparison rejected", checkout: "unprefixed", version: "v0.1.1\n", wantError: true},
 		{name: "PR with earlier bump then unchanged tip", checkout: "unmerged", branch: "feature", pr: "16", mode: "check", version: "v0.1.9\n", failure: "extra-commit", wantError: true},
 		{name: "missing version prefix", mode: "check", version: "0.2.0\n", wantError: true},
 		{name: "leading zero version", mode: "check", version: "v0.02.0\n", wantError: true},
@@ -134,6 +136,10 @@ func TestImagePipeline(t *testing.T) {
 				git(repo, "commit", "-m", "remove version")
 			}
 			git(repo, "push", "origin", "HEAD:refs/heads/fixture")
+			if checkout == "unprefixed" {
+				git(filepath.Join(root, "origin"), "update-ref", "refs/heads/main", git(repo, "rev-parse", "HEAD"))
+			}
+
 			if tc.failure == "fetch" {
 				git(repo, "remote", "set-url", "origin", filepath.Join(root, "missing"))
 			}

@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -304,50 +302,6 @@ func TestDiscoveryCandidateCannotReplaceRecoveredMember(t *testing.T) {
 		want := map[string]string{"x.test:1": testNodeID(1)}
 		if !reflect.DeepEqual(d.book.Snapshot().Peers, want) || log.count("x.test:1") != 2 || log.count("z.test:9") != 1 {
 			t.Fatalf("candidate displaced recovered member: book=%v requests=%v", d.book.Snapshot().Peers, log.all())
-		}
-	})
-}
-
-func TestDiscoveryUnidentifiedCandidateDoesNotShareSeedIdentity(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		dir := bookTestDir(t)
-		book, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := book.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":1,"peers":["legacy.test:1"]}`), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		book, err = OpenBook(context.Background(), dir, "self.test:1", nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { book.Close() })
-		if _, err := book.AddSeeds([]string{"seed.test:1"}); err != nil {
-			t.Fatal(err)
-		}
-		var log requestLog
-		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			log.add(r.URL.Host)
-			switch r.URL.Host {
-			case "seed.test:1":
-				return messageResponse(Message{Address: "listener.test:1", NodeID: testNodeID(1)}), nil
-			case "legacy.test:1":
-				return messageResponse(Message{Address: "legacy.test:1", NodeID: testNodeID(2)}), nil
-			}
-			return nil, context.DeadlineExceeded
-		})}
-		d := NewDiscovery(book, client, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		go d.Run(ctx)
-		synctest.Wait()
-		want := map[string]string{"legacy.test:1": testNodeID(2)}
-		if !reflect.DeepEqual(book.Snapshot().Peers, want) || log.count("legacy.test:1") != 1 {
-			t.Fatalf("unidentified candidate lost: book=%v requests=%v", book.Snapshot().Peers, log.all())
 		}
 	})
 }

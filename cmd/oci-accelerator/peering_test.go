@@ -674,7 +674,7 @@ func waitForPeerEntry(t *testing.T, service *peerService, meta cache.Metadata, w
 func commitPeerTestEntry(t *testing.T, store *cache.Store, body string) cache.Metadata {
 	t.Helper()
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
-	meta := cache.Metadata{Key: digest, Digest: "sha256:" + digest, Size: int64(len(body)), MediaType: "application/octet-stream"}
+	meta := cache.Metadata{Key: digest, RequestKey: digest, Digest: "sha256:" + digest, Size: int64(len(body)), MediaType: "application/octet-stream"}
 	fill, err := store.Begin(meta)
 	if err != nil {
 		t.Fatal(err)

@@ -486,7 +486,7 @@ func entryTestStore(t *testing.T, data []byte) (*cache.Store, cache.Metadata) {
 
 func entryTestMeta(data []byte) cache.Metadata {
 	sum := sha256.Sum256(data)
-	return cache.Metadata{Key: hex.EncodeToString(sum[:]), Digest: "sha256:" + hex.EncodeToString(sum[:]), Size: int64(len(data)), MediaType: "application/octet-stream"}
+	return cache.Metadata{Key: hex.EncodeToString(sum[:]), RequestKey: hex.EncodeToString(sum[:]), Digest: "sha256:" + hex.EncodeToString(sum[:]), Size: int64(len(data)), MediaType: "application/octet-stream"}
 }
 
 func entryTestJSON(t *testing.T, meta cache.Metadata) []byte {

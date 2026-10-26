@@ -50,8 +50,6 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	// Bootstrap may leave idle connections even if startup fails before discovery.
 	defer client.CloseIdleConnections()
 
-	// Load seeds before NewDiscovery captures non-seed legacy candidates.
-	// Construct discovery before Run expires those candidates from the book.
 	rejected, err := book.AddSeeds(cfg.Peer.Seeds)
 	if err != nil {
 		return nil, errors.Join(errors.New("peer seed persistence failed"), book.Close())

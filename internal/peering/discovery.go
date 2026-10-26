@@ -46,18 +46,12 @@ type peerSchedule struct {
 // leaves the book and returns is reported again. newPeers runs while
 // discovery holds its lock, so it must not block or call back into Discovery.
 func NewDiscovery(book *Book, client *http.Client, logger *slog.Logger, newPeers func(ids []string)) *Discovery {
-	d := &Discovery{
+	return &Discovery{
 		book: book, client: client, logger: logger, newPeers: newPeers, wake: make(chan struct{}, 1),
 		interval: 30 * time.Second, maxBackoff: 5 * time.Minute,
 		known:   make(map[string]*peerSchedule),
 		pending: make(map[string]bool),
 	}
-
-	for _, address := range book.candidates() {
-		d.pending[address] = true
-		d.known[address] = &peerSchedule{}
-	}
-	return d
 }
 
 func (d *Discovery) Handler() http.Handler {
@@ -232,11 +226,6 @@ func (d *Discovery) Run(ctx context.Context) {
 // share the current address's in-flight exchange and outbound cooldown, rather
 // than probing it separately. Only a recent failed check permits an alias.
 func (d *Discovery) preferCurrent(address, id string, view bookView, now time.Time) bool {
-	if id == "" {
-		// Migrated candidates and unresolved seeds do not share an identity.
-		return false
-	}
-
 	hint := d.known[address]
 	current := addressForID(view.peers, id)
 	if current == "" || current == address {

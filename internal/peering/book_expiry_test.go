@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"os"
-	"path/filepath"
 	"reflect"
 	"syscall"
 	"testing"
@@ -149,50 +147,6 @@ func TestBookExpiryRefreshReopenAndSeeds(t *testing.T) {
 		}
 		assertBookPeers(t, b, map[string]string{"seed.test:1": testNodeID(2)})
 	})
-}
-
-func TestBookMigrationGraceCannotRenewOnRestart(t *testing.T) {
-	for _, raw := range []string{
-		`{"version":2,"peers":{"legacy.test:1":"000000000001","unresolved.test:1":""}}`,
-	} {
-		t.Run(raw, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				dir := bookTestDir(t)
-				if err := os.Mkdir(dir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(raw), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				time.Sleep(20 * time.Minute)
-				if err := b.Close(); err != nil {
-					t.Fatal(err)
-				}
-				b, err = OpenBook(context.Background(), dir, "self.test:1", nil, nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer b.Close()
-				if len(b.Addresses()) == 0 {
-					t.Fatal("migration did not grant grace")
-				}
-				time.Sleep(10 * time.Minute)
-				if len(b.Addresses()) != 0 || len(b.Snapshot().Peers) != 0 {
-					t.Fatal("restart renewed migration grace")
-				}
-				if err := b.expire(time.Now()); err != nil {
-					t.Fatal(err)
-				}
-				if peers, err := loadBookState(dir); err != nil || len(peers) != 0 {
-					t.Fatalf("migration records remain: %v, %v", peers, err)
-				}
-			})
-		})
-	}
 }
 
 func TestBookExpiryPersistenceFailures(t *testing.T) {

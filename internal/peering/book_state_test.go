@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -21,20 +20,27 @@ func TestOpenBookValidatesSelfBeforeFilesystem(t *testing.T) {
 
 func TestOpenBookRejectsInvalidState(t *testing.T) {
 	tests := map[string]string{
-		"corrupt":              `{`,
-		"version":              `{"version":4,"peers":{}}`,
-		"v3 missing timestamp": `{"version":3,"peers":{"a.test:1":{"node_id":"000000000001"}}}`,
-		"v3 duplicate address": `{"version":3,"peers":{"a.test:1":{"node_id":""},"a.test:1":{"node_id":""}}}`,
-		"v3 unknown field":     `{"version":3,"peers":{"a.test:1":{"other":""}}}`,
-		"unknown field":        `{"version":2,"peers":{},"extra":1}`,
-		"invalid peer":         `{"version":2,"peers":{"bad":"000000000001"}}`,
-		"invalid node ID":      `{"version":2,"peers":{"a.test:1":"short"}}`,
-		"null node ID":         `{"version":2,"peers":{"a.test:1":null}}`,
-		"duplicate address":    `{"version":2,"peers":{"a.test:1":"000000000001","a.test:1":"000000000002"}}`,
-		"duplicate node ID":    `{"version":2,"peers":{"a.test:1":"000000000001","b.test:1":"000000000001"}}`,
-		"v1 invalid peer":      `{"version":1,"peers":["bad"]}`,
-		"v1 duplicate":         `{"version":1,"peers":["a.test:1","a.test:1"]}`,
-		"oversized":            strings.Repeat(" ", bookStateMax+1),
+		"corrupt":                `{`,
+		"version":                `{"version":4,"peers":{}}`,
+		"v1":                     `{"version":1,"peers":["a.test:1","b.test:2"]}`,
+		"v2":                     `{"version":2,"peers":{"a.test:1":"000000000001"}}`,
+		"unidentified v3":        `{"version":3,"peers":{"a.test:1":{"node_id":"","last_success":"2026-01-01T00:00:00Z"}}}`,
+		"missing timestamp":      `{"version":3,"peers":{"a.test:1":{"node_id":"000000000001"}}}`,
+		"zero timestamp":         `{"version":3,"peers":{"a.test:1":{"node_id":"000000000001","last_success":"0001-01-01T00:00:00Z"}}}`,
+		"unknown record field":   `{"version":3,"peers":{"a.test:1":{"node_id":"000000000001","last_success":"2026-01-01T00:00:00Z","other":""}}}`,
+		"unknown field":          `{"version":3,"peers":{},"extra":1}`,
+		"invalid peer":           `{"version":3,"peers":{"bad":{"node_id":"000000000001","last_success":"2026-01-01T00:00:00Z"}}}`,
+		"noncanonical peer":      `{"version":3,"peers":{"A.TEST:1":{"node_id":"000000000001","last_success":"2026-01-01T00:00:00Z"}}}`,
+		"invalid node ID":        `{"version":3,"peers":{"a.test:1":{"node_id":"short","last_success":"2026-01-01T00:00:00Z"}}}`,
+		"null node ID":           `{"version":3,"peers":{"a.test:1":{"node_id":null,"last_success":"2026-01-01T00:00:00Z"}}}`,
+		"duplicate address":      `{"version":3,"peers":{"a.test:1":{"node_id":"000000000001","last_success":"2026-01-01T00:00:00Z"},"a.test:1":{"node_id":"000000000002","last_success":"2026-01-01T00:00:00Z"}}}`,
+		"duplicate node ID":      `{"version":3,"peers":{"a.test:1":{"node_id":"000000000001","last_success":"2026-01-01T00:00:00Z"},"b.test:1":{"node_id":"000000000001","last_success":"2026-01-01T00:00:00Z"}}}`,
+		"duplicate record field": `{"version":3,"peers":{"a.test:1":{"node_id":"000000000001","node_id":"000000000002","last_success":"2026-01-01T00:00:00Z"}}}`,
+		"duplicate version":      `{"version":3,"version":3,"peers":{}}`,
+		"duplicate peers":        `{"version":3,"peers":{},"peers":{}}`,
+		"null peers":             `{"version":3,"peers":null}`,
+		"trailing object":        `{"version":3,"peers":{}} {}`,
+		"oversized":              strings.Repeat(" ", bookStateMax+1),
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -48,35 +54,19 @@ func TestOpenBookRejectsInvalidState(t *testing.T) {
 			if _, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil); err == nil {
 				t.Fatal("OpenBook succeeded")
 			}
-		})
-	}
-}
 
-func TestOpenBookMigratesVersion1AddressesToCandidates(t *testing.T) {
-	dir := bookTestDir(t)
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":1,"peers":["a.test:1","b.test:2"]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer b.Close()
-	if got, err := loadBookState(dir); err != nil || !reflect.DeepEqual(got, map[string]string{"a.test:1": "", "b.test:2": ""}) {
-		t.Fatalf("migrated candidates = %v, %v", got, err)
-	}
-	if got := b.Snapshot().Peers; len(got) != 0 {
-		t.Fatalf("version 1 addresses exported with identities: %v", got)
+			raw, err := os.ReadFile(filepath.Join(dir, bookStateName))
+			if err != nil || string(raw) != content {
+				t.Fatalf("rejected state changed: %q, %v", raw, err)
+			}
+		})
 	}
 }
 
 func TestOpenBookRejectsUnsafeAndUnknownFiles(t *testing.T) {
 	for name, setup := range map[string]func(string) error{
 		"state permissions": func(dir string) error {
-			return os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":2,"peers":{}}`), 0o644)
+			return os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":3,"peers":{}}`), 0o644)
 		},
 		"state symlink": func(dir string) error { return os.Symlink("missing", filepath.Join(dir, bookStateName)) },
 		"unknown":       func(dir string) error { return os.WriteFile(filepath.Join(dir, "other"), nil, 0o600) },

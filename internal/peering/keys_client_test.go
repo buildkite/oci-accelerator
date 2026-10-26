@@ -28,7 +28,7 @@ func TestFetchKeysLiveStoreMovementAndRestart(t *testing.T) {
 	want := make([]cacheKey, 0, maxKeysPerPage+1)
 	for i := maxKeysPerPage; i >= 0; i-- {
 		key := testCacheKey(i)
-		fill, err := store.Begin(cache.Metadata{Key: key.String(), Digest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", MediaType: "application/octet-stream"})
+		fill, err := store.Begin(cache.Metadata{Key: key.String(), RequestKey: key.String(), Digest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", MediaType: "application/octet-stream"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -270,7 +270,7 @@ func TestFetchKeysReportsInvalidCursorWithoutDiscardingProgress(t *testing.T) {
 		want   error
 	}{
 		"structured with rewritten body": {http.StatusBadRequest, "invalid_cursor", "request rejected", checkpoint, cache.ErrKeyCursor},
-		"legacy body":                    {http.StatusBadRequest, "", "invalid cursor\n", checkpoint, cache.ErrKeyCursor},
+		"body without error header":      {http.StatusBadRequest, "", "invalid cursor\n", checkpoint, errKeysFetch},
 		"generic bad request":            {http.StatusBadRequest, "", "invalid request\n", checkpoint, errKeysFetch},
 		"unknown error code":             {http.StatusBadRequest, "other", "request rejected", checkpoint, errKeysFetch},
 		"no checkpoint":                  {http.StatusBadRequest, "invalid_cursor", "invalid cursor\n", cache.KeyPosition{}, errKeysFetch},

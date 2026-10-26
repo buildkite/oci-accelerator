@@ -288,8 +288,8 @@ To cut a release, open a PR that increases the root [`VERSION`](../VERSION) file
 example from `v0.1.0` to `v0.1.1`. Use one stable `vMAJOR.MINOR.PATCH` version, with a
 lowercase `v` prefix and without leading zeros, prerelease suffix, or build metadata.
 CI validates its format and checks numeric increases against the PR's merge base with
-`main`. Historical unprefixed versions are accepted for comparison. Adding the prefix
-alone, such as `0.1.0` to `v0.1.0`, publishes the prefixed tag without changing the old tag.
+`main`. A comparison version must use the same prefixed format. Unprefixed versions
+are rejected, including changes that only add the prefix.
 
 After you merge the PR, the non-PR `main` build compares `VERSION` with its first parent.
 If the value changed, it publishes `buildkite/oci-accelerator:v0.1.1` for both `linux/amd64`
@@ -347,9 +347,6 @@ other container defaults (see [image](#image)). The registries and `./data` path
 are examples, not built-in defaults. Configuration applies built-in defaults, an optional explicitly
 selected dotenv file, then process environment overrides. There is no file discovery,
 environment mutation, `OCI_ACCELERATOR_CONFIG` variable, or hot reload.
-
-YAML configuration and `--config` are not supported. When migrating an older deployment,
-replace YAML setting names with the `OCI_ACCELERATOR_*` variables below.
 
 `--check` validates this same combined configuration without inspecting state, binding listeners,
 or creating directories. Unknown process environment variables are ignored. Unknown names in a
@@ -841,12 +838,12 @@ filling, and eviction.
   the same full-body entry.
 - Cache keys preserve registry, repository, digest, object kind, exact `Accept` values, and
   observed `Content-Type`. Bodies are hashed as received.
-- New metadata also persists a local-only credential-free `RequestKey` for canonical upstream authority,
+- Cache metadata requires a local-only credential-free `RequestKey` for canonical upstream authority,
   exact parsed repository, object kind, digest, and ordered `Accept` values, without media type.
-  The representation key still includes media type. Older entries without `RequestKey` remain
-  usable through normal upstream-first lookup, but cannot use the Bearer repository fast path
-  until replaced by a new fill. Existing entries are not backfilled. You do not need to flush
-  or migrate your cache.
+  It must contain exactly 64 lowercase hexadecimal characters. Startup inventory deletes
+  entries with a missing or invalid `RequestKey`. The representation key still includes
+  media type. Exact representation reads and fill-completion lookups do not depend on
+  `RequestKey`, and the peer wire protocol does not carry it.
 - Bypassed by the disk cache: mutable metadata, HEAD, ranged manifests, conditional and
   non-identity-encoded responses, unknown-length bodies, no-store traffic, and unsupported
   `Vary` dimensions.
@@ -1088,8 +1085,7 @@ change require A's normal check first. Conflicting candidates share that check, 
 chained verification workers. All retained peers and configured seeds keep their normal
 independent schedules, even when gossip contains cyclic identity conflicts.
 Candidate responses are checked again before admission, so B cannot replace A if A
-recovers while B's request is in flight. Unidentified migrated candidates do not share
-an identity with unresolved seeds.
+recovers while B's request is in flight.
 
 Exchanges start immediately, normally repeat every 30 seconds with ±20% jitter, and use
 exponential failure backoff capped at five minutes before jitter. Inbound exchanges and gossip
@@ -1137,7 +1133,7 @@ replaced immediately when membership changes. Successful renewals update exact f
 memory, but trigger a replacement only when a member's timestamp has advanced at least 7 minutes
 30 seconds beyond its saved checkpoint. Each replacement saves all current timestamps, so peers
 can share a checkpoint write. This is not a global limit on write frequency. Startup also rewrites
-the file to migrate or clean loaded state.
+the file to durably remove records for this instance's own address or ID.
 Persisted freshness prevents restarts from renewing dead membership. With successful persistence,
 the saved timestamp trails the latest accepted success by less than 7 minutes 30 seconds, so a
 restart can expire membership that much earlier, never later, than its in-memory lifetime.
@@ -1175,7 +1171,7 @@ Snapshot lookup and direct verification share one five-second network budget. Un
 addresses, unsupported snapshot endpoints, invalid responses, and exhausted time are inconclusive
 and do not prevent startup. A stale gossip record alone never fails startup. These checks are
 best-effort, not a fleet-wide uniqueness guarantee. Concurrent joins, partitions, incomplete
-books, and older peers can hide a collision.
+books, and unavailable snapshot endpoints can hide a collision.
 
 Give each instance its own persistent peer state volume. Do not clone this state into another
 instance, because doing so duplicates its identity. The ID is not a secret or authentication
@@ -1184,14 +1180,14 @@ conflict with this instance's own ID or address still fail the exchange and log
 `peer identity collision`. Fix the advertised address or duplicated state. Two other nodes
 sharing one ID can repeatedly replace each other's records. There is no ongoing collision recovery.
 
-Upgrade all peers together so every member enforces verified admission and expiry. The wire
-format remains identity-aware and is incompatible with address-only exchanges, with no fallback.
-Startup migrates older `peers.json` state to the freshness-aware format. Existing identified
-records receive a one-time 30-minute grace period, persisted during migration rather than renewed
-on each restart. Unidentified legacy addresses enter bounded candidate probing instead, and are
-removed from durable state when discovery starts. Configured seeds are read from configuration
-on each startup rather than persisted as unverified members. Keep a stopped-state backup if you
-need rollback, because older binaries cannot read the new state format.
+Peer exchanges require the current identity-aware wire format.
+Startup accepts only version 3 `peers.json` state. Each record must have a valid, nonempty node
+ID unique within the book and a nonzero last-success timestamp. Unsupported versions and
+unidentified records are rejected without replacing the file. To reset membership, stop the
+instance, back up its peer state directory, and remove only `peers.json` before restarting.
+Retain `node-id` to preserve the instance's identity and configure a reachable seed to rebuild
+membership through verified outbound exchanges. Configured seeds are read from configuration
+on each startup rather than persisted as unverified members.
 
 State files must be regular, process-owned, mode 0600 files. Startup takes an exclusive process
 lock, removes recognized abandoned staging files, and rejects corrupt state, unsafe files, or
@@ -1226,9 +1222,9 @@ When more keys follow, the page is full and `next` is an opaque, versioned, URL-
 identifying its final key's logical recency position and the open cache's random incarnation.
 Request the following page with `GET /v1/cache/keys?after=<next>`. An empty `next` ends the listing,
 including when the final page is full. A cursor from before a cache restart is rejected with
-HTTP `400` and the header `OCI-Accelerator-Error: invalid_cursor`. The client also accepts
-HTTP `400` with the exact legacy body `invalid cursor\n` from older peers. An explicit
-invalid-cursor response ends the attempt and clears the client's checkpoint immediately,
+HTTP `400` and the header `OCI-Accelerator-Error: invalid_cursor`. The client requires both
+the status and header to recognize an explicit cursor rejection, regardless of the response body.
+An explicit invalid-cursor response ends the attempt and clears the client's checkpoint immediately,
 but a fresh scan still waits for the next normally delayed poll.
 
 The listing excludes in-progress, failed, and invalidated fills and entries claimed for removal.
@@ -1337,7 +1333,8 @@ Only matching committed entries are served. Opening the reader refreshes local r
 pins the entry against eviction until it closes. Missing or mismatched entries return `404`.
 Malformed requests return `400`, and busy or unavailable service returns `503`. Peers never
 fetch from origin or another peer to satisfy this endpoint. Redirects are never followed.
-Older peers without this endpoint are treated as unavailable, not as definitive stale claims.
+An unavailable endpoint is not a definitive stale claim. Only a valid `404` from the expected
+node retires the matching hint observation.
 
 Each instance permits eight incoming and eight outgoing entry streams, separately from
 discovery and listing worker limits. Data connections close after each request, leaving no

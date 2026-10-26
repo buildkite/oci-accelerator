@@ -84,8 +84,6 @@ Configuration uses `OCI_ACCELERATOR_*` environment variables only. You can expli
 select a dotenv file with `--env-file`. Process environment values override file values,
 including empty values. No file is discovered automatically or modified. See the
 [configuration guide](docs/deployment.md#configuration) for all variables and rules.
-YAML configuration and `--config` are no longer supported. If you are upgrading, migrate
-those settings to the corresponding `OCI_ACCELERATOR_*` variables.
 
 To publish a versioned image, open a PR that increases `VERSION`. See the
 [release process](docs/deployment.md#releasing-images) for tags and retry behavior.
