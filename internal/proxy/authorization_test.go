@@ -94,7 +94,7 @@ func TestAuthorizationClassesShareBodyWithIndependentReuse(t *testing.T) {
 			// must not disable one class merely because the other TTL is zero.
 			for _, req := range []*http.Request{anonymous, a} {
 				req = req.Clone(req.Context())
-				req.Header.Set("User-Agent", "wire-client") // New grant identity.
+				req.Header.Set("User-Agent", "wire-client") // Only exact-request grants change identity.
 				before := gets.Load()
 				for i := 0; i < 2; i++ {
 					resp, err := client.Do(req.Clone(req.Context()))
@@ -104,6 +104,9 @@ func TestAuthorizationClassesShareBodyWithIndependentReuse(t *testing.T) {
 					assertAuthorizationBody(t, resp, http.StatusOK, body)
 				}
 				want := int32(1)
+				if req.Header.Get("Authorization") != "" && tc.authTTL > 0 {
+					want = 0
+				}
 				if req.Header.Get("Authorization") == "" && tc.anonymousTTL == 0 || req.Header.Get("Authorization") != "" && tc.authTTL == 0 {
 					want = 2
 				}
@@ -115,7 +118,7 @@ func TestAuthorizationClassesShareBodyWithIndependentReuse(t *testing.T) {
 	}
 }
 
-func TestAuthorizationFastHitsMatchEntireRequest(t *testing.T) {
+func TestAuthorizationBearerGrantsIgnoreOtherHeaders(t *testing.T) {
 	const body = `{"schemaVersion":2}`
 	var gets atomic.Int32
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,17 +142,18 @@ func TestAuthorizationFastHitsMatchEntireRequest(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		edit func(*http.Request)
+		gets int32
 	}{
-		{"base", func(r *http.Request) {}},
-		{"other token", func(r *http.Request) { r.Header.Set("Authorization", "Bearer other") }},
-		{"anonymous", func(r *http.Request) { r.Header.Del("Authorization") }},
-		{"empty auth", func(r *http.Request) { r.Header.Set("Authorization", "") }},
-		{"cookie", func(r *http.Request) { r.Header.Set("Cookie", "session=other") }},
-		{"custom", func(r *http.Request) { r.Header.Set("X-Registry-Secret", "other") }},
-		{"accept", func(r *http.Request) { r.Header.Set("Accept", "application/octet-stream") }},
-		{"agent", func(r *http.Request) { r.Header.Set("User-Agent", "other") }},
-		{"repository", func(r *http.Request) { r.URL.Path = strings.Replace(r.URL.Path, "team/image", "other/image", 1) }},
-		{"manifest", func(r *http.Request) { r.URL.Path = manifestURL("team/image", body) }},
+		{"base", func(r *http.Request) {}, 1},
+		{"other token", func(r *http.Request) { r.Header.Set("Authorization", "Bearer other") }, 1},
+		{"anonymous", func(r *http.Request) { r.Header.Del("Authorization") }, 1},
+		{"empty auth", func(r *http.Request) { r.Header.Set("Authorization", "") }, 1},
+		{"cookie", func(r *http.Request) { r.Header.Set("Cookie", "session=other") }, 0},
+		{"custom", func(r *http.Request) { r.Header.Set("X-Registry-Secret", "other") }, 0},
+		{"accept", func(r *http.Request) { r.Header.Set("Accept", "application/octet-stream") }, 1},
+		{"agent", func(r *http.Request) { r.Header.Set("User-Agent", "other") }, 0},
+		{"repository", func(r *http.Request) { r.URL.Path = strings.Replace(r.URL.Path, "team/image", "other/image", 1) }, 1},
+		{"manifest", func(r *http.Request) { r.URL.Path = manifestURL("team/image", body) }, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := base.Clone(base.Context())
@@ -165,8 +169,8 @@ func TestAuthorizationFastHitsMatchEntireRequest(t *testing.T) {
 					t.Fatalf("unexpected fast-hit headers: %v", resp.Header)
 				}
 			}
-			if got := gets.Load() - before; got != 1 {
-				t.Fatalf("origin requests = %d, want exactly one for this identity", got)
+			if got := gets.Load() - before; got != tc.gets {
+				t.Fatalf("origin requests = %d, want %d", got, tc.gets)
 			}
 		})
 	}
@@ -373,13 +377,13 @@ func TestAuthorizationRechecksPreserveTransientAndInvalidateDenials(t *testing.T
 		assertAuthorizationBody(t, resp, wantStatus, wantBody)
 	}
 	fetch(true, 200, body)
-	for _, code := range []int{408, 429, 500, 503} {
+	for _, code := range []int{404, 410, 408, 429, 500, 503} {
 		status.Store(int32(code))
 		fetch(false, code, "upstream result\n")
 		before := gets.Load()
 		fetch(true, 200, body)
 		if gets.Load() != before {
-			t.Fatalf("transient %d discarded grant", code)
+			t.Fatalf("unrelated failure %d discarded repository grant", code)
 		}
 	}
 	// A TLS failure must not weaken certificate verification or discard the
@@ -393,7 +397,7 @@ func TestAuthorizationRechecksPreserveTransientAndInvalidateDenials(t *testing.T
 		t.Fatal("TLS recheck unexpectedly succeeded")
 	}
 	fetch(true, 200, body)
-	for _, code := range []int{401, 403, 404, 410} {
+	for _, code := range []int{401, 403} {
 		status.Store(200)
 		fetch(false, 200, body)
 		status.Store(int32(code))
@@ -427,10 +431,10 @@ func TestAuthorizationRechecksPreserveTransientAndInvalidateDenials(t *testing.T
 	fetch(true, 503, "upstream result\n")
 }
 
-func TestAuthorizationTransientAuthenticationStateInvalidatesGrant(t *testing.T) {
+func TestAuthorizationTransientRestrictionsInvalidateGrant(t *testing.T) {
 	const body = "authorized object"
 	for _, code := range []int{408, 429, 500, 503} {
-		for _, header := range []string{"Set-Cookie", "Authentication-Info", "Proxy-Authentication-Info", "WWW-Authenticate"} {
+		for _, header := range []string{"Set-Cookie", "Authentication-Info", "Proxy-Authentication-Info", "WWW-Authenticate", "Cache-Control"} {
 			t.Run(fmt.Sprintf("%d/%s", code, header), func(t *testing.T) {
 				var gets atomic.Int32
 				origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -441,6 +445,9 @@ func TestAuthorizationTransientAuthenticationStateInvalidatesGrant(t *testing.T)
 					}
 					// Even an empty authentication-state header forbids reuse.
 					w.Header().Set(header, "")
+					if header == "Cache-Control" {
+						w.Header().Set(header, "no-store")
+					}
 					http.Error(w, "upstream result", code)
 				}))
 				defer origin.Close()

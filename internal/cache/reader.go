@@ -40,7 +40,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 		// Retire only this generation. Keep its pin and charge until Close,
 		// even if a replacement is published before this reader finishes.
 		r.store.mu.Lock()
-		r.entry.invalid = true
+		r.store.invalidateEntryLocked(r.entry)
 		r.store.mu.Unlock()
 	}
 
@@ -95,6 +95,7 @@ func (r *Reader) Close() error {
 // seams for pausing after verification begins and immediately before a wait.
 func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, beforeWait func()) (*Reader, error) {
 	// Malformed keys can never name a committed entry, so skip the lookup.
+	meta.RequestKey = ""
 	if !validMeta(meta) {
 		return nil, ErrMiss
 	}
@@ -108,7 +109,7 @@ func (s *Store) get(ctx context.Context, meta Metadata, afterVerificationRead, b
 		// Select a live entry that still matches the requested generation.
 		s.mu.Lock()
 		e := s.entries[meta.Key]
-		if s.closed || e == nil || e.meta != meta || e.invalid || e.claimed {
+		if s.closed || e == nil || !sameRepresentation(e.meta, meta) || e.invalid || e.claimed {
 			s.mu.Unlock()
 			return nil, ErrMiss
 		}
@@ -253,7 +254,7 @@ func verifyBody(ctx context.Context, r io.Reader, digest string, afterVerificati
 
 func (s *Store) invalidate(e *entry) {
 	s.mu.Lock()
-	e.invalid = true
+	s.invalidateEntryLocked(e)
 	s.mu.Unlock()
 
 	s.unpin(e)

@@ -140,11 +140,21 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 	})
 	sum := sha256.Sum256(key)
 	return cache.Metadata{
-		Key:       hex.EncodeToString(sum[:]),
-		Digest:    object.digest,
-		Size:      resp.ContentLength,
-		MediaType: media[0],
+		Key:        hex.EncodeToString(sum[:]),
+		RequestKey: objectRequestKey(req, object),
+		Digest:     object.digest,
+		Size:       resp.ContentLength,
+		MediaType:  media[0],
 	}, true
+}
+
+// objectRequestKey locates a representation before its response metadata is
+// known. It never includes credentials. Ambiguous stored representations miss.
+func objectRequestKey(req *http.Request, object immutableObject) string {
+	authority, _ := hostport.Parse(req.URL.Host, "443")
+	encoded, _ := json.Marshal([]any{authority.String(), object.repository, string(object.kind), object.digest, req.Header.Values("Accept")})
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
 }
 
 // identityEncoded reports whether h has no Content-Encoding or a single "identity".

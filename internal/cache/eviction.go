@@ -88,12 +88,14 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func
 		}
 
 		e.claimed = true
+		s.deleteRequestLocked(e)
 		s.startOpLocked()
 		s.mu.Unlock()
 		err := s.removeAll(e.dir)
 		s.mu.Lock()
 		s.finishOpLocked()
 		e.claimed = false
+		s.addRequestLocked(e)
 		if err == nil && s.entries[e.meta.Key] == e && e.pins == 0 {
 			s.deleteEntryLocked(e)
 			// Eviction only selects unpinned entries, so their charge is free.
@@ -124,6 +126,7 @@ func (s *Store) buildEvictionOrderLocked() {
 		// live accesses from advancing, even at the maximum disk timestamp.
 		e.last = s.nextRecencyLocked()
 		e.eviction = s.evictionOrder.PushBack(e)
+		s.addRequestLocked(e)
 	}
 }
 
@@ -139,6 +142,7 @@ func (s *Store) nextRecencyLocked() int64 {
 // maintained eviction order. Entries compare by (last, key).
 func (s *Store) addEntryLocked(e *entry) {
 	s.entries[e.meta.Key] = e
+	s.addRequestLocked(e)
 	s.insertEvictionLocked(e)
 }
 
@@ -153,6 +157,7 @@ func (s *Store) setEntryLastLocked(e *entry, last int64) {
 }
 
 func (s *Store) deleteEntryLocked(e *entry) {
+	s.deleteRequestLocked(e)
 	if e.eviction != nil {
 		s.evictionOrder.Remove(e.eviction)
 		e.eviction = nil

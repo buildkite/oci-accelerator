@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func TestWarmBlobRangesAuthorizeFullGETWithoutGrantReuse(t *testing.T) {
+func TestWarmBlobRangesReuseRepositoryGrant(t *testing.T) {
 	const blob = "0123456789abcdefghijklmnop"
 	var gets, sent atomic.Int32
 	var denied atomic.Bool
@@ -79,10 +79,25 @@ func TestWarmBlobRangesAuthorizeFullGETWithoutGrantReuse(t *testing.T) {
 	}
 	denied.Store(true)
 	resp, body = requestRange(t, client, url, "Bearer alice", "bytes=3-7")
+	if resp.StatusCode != 206 || body != "34567" || gets.Load() != 1 {
+		t.Fatalf("live grant did not serve range locally: %d %q GETs=%d", resp.StatusCode, body, gets.Load())
+	}
+	// Force reauthorization of a range. Its denial revokes permission for full
+	// reads too, even though the complete verified body remains cached.
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("Authorization", "Bearer alice")
+	req.Header.Set("Range", "bytes=3-7")
+	req.Header.Set("Cache-Control", "no-cache")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAuthorizationBody(t, resp, 403, "denied\n")
+	resp, body = getBlob(t, client, url, "Bearer alice")
 	if resp.StatusCode != 403 || body != "denied\n" {
 		t.Fatalf("denial replaced: %d %q", resp.StatusCode, body)
 	}
-	if gets.Load() != 9 || sent.Load() != int32(len(blob)) {
+	if gets.Load() != 3 || sent.Load() != int32(len(blob)) {
 		t.Fatalf("upstream GETs=%d bytes=%d", gets.Load(), sent.Load())
 	}
 	shutdown(t, p)

@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// rangeRequestKey marks a full upstream GET made for a client's Range request.
-// It must not borrow or create full-request authorization grants.
+// rangeRequestKey marks a full representation GET for a client's Range request.
+// Only bearer repository grants can approve it without a new upstream GET.
 type rangeRequestKey struct{}
 
 // fullBlobRangeRequest separates the client's range selection from the full
