@@ -34,6 +34,7 @@ func environmentSettings(raw *rawConfig) []environmentSetting {
 		{"CACHE_MAX_ENTRIES", &raw.Cache.MaxEntries},
 		{"CACHE_FILL_TIMEOUT", &raw.Cache.FillTimeout},
 		{"CACHE_FILL_WAIT_TIMEOUT", &raw.Cache.FillWaitTimeout},
+		{"CACHE_MUTABLE_TTL", &raw.Cache.MutableTTL},
 		{"CACHE_AUTHORIZATION_TTL", &raw.Cache.AuthorizationTTL},
 		{"CACHE_ANONYMOUS_AUTHORIZATION_TTL", &raw.Cache.AnonymousAuthorizationTTL},
 		{"CACHE_MAX_AUTHORIZATION_ENTRIES", &raw.Cache.MaxAuthorizationEntries},

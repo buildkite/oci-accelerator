@@ -30,6 +30,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			metrics:         p.metrics,
 			fillWaitTimeout: p.cfg.Cache.FillWaitTimeout,
 			authorization:   p.authorization,
+			mutable:         p.mutable,
 			startRangeFetch: p.startRangeFetch,
 			fetchPeer:       p.fetchPeer,
 		},
@@ -100,6 +101,8 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 
 		// Stash policy and stats on the context so the transport can read/update them.
 		ctx := context.WithValue(r.Context(), policyKey{}, policy)
+		// Preserve mutable eligibility before hop-by-hop header stripping too.
+		ctx = context.WithValue(ctx, mutablePolicyKey{}, mutableRequest(r))
 		if p.authorization != nil {
 			// Preserve revalidation restrictions even if Connection names a
 			// header that the reverse proxy will remove from the outgoing request.

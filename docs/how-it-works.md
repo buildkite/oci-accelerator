@@ -16,20 +16,29 @@ For each connection, the accelerator chooses one of two paths:
 - **Everything else is tunneled.** Traffic to any other destination passes
   through unchanged, without being decrypted, inspected, or cached.
 
-The accelerator only caches content addressed by SHA-256 digest, because a
-digest always refers to the same bytes. It checks every stored byte against its
-digest, so a cached copy is always identical to what the upstream registry would
-send.
+The disk cache holds only content addressed by SHA-256 digest, because a
+digest always refers to the same bytes. It checks every stored body against its
+digest. A separate, short-lived memory cache holds successful mutable metadata
+responses, which can become stale before their fixed expiry.
 
-| Cached                                     |                                    |
+| Cached on disk                             |                                    |
 | ------------------------------------------ | ---------------------------------- |
 | `GET /v2/<name>/blobs/sha256:<digest>`     | Layer or image config              |
 | `GET /v2/<name>/manifests/sha256:<digest>` | Manifest or image index, by digest |
 
-| Not Cached                       |                                      |
-| -------------------------------- | ------------------------------------ |
-| `GET /v2/<name>/manifests/<tag>` | Manifest by tag, which can be moved  |
-| `GET /v2/<name>/tags/list`       | Repository's tags                    |
+| Cached briefly in memory                        |                                      |
+| ----------------------------------------------- | ------------------------------------ |
+| `GET`, `HEAD /v2/<name>/manifests/<tag>`          | Manifest by tag, which can be moved   |
+| `GET /v2/<name>/tags/list`                       | Repository's tags                    |
+| `GET /v2/<name>/referrers/<digest>`              | Referrers, including filter variants |
+| `GET /v2/_catalog`                              | Registry catalog                     |
+
+Queries identify distinct mutable responses, including listing pages and filters.
+GET and HEAD are separate entries. See [mutable response caching](#mutable-response-caching)
+for eligibility, lifetime, and resource limits.
+
+| Not cached                      |                                      |
+| ------------------------------- | ------------------------------------ |
 | `GET /v2/`                       | API version and authentication check |
 | `PUT`, `PATCH`, `POST`, `DELETE` | Pushes and deletions                 |
 
@@ -43,7 +52,7 @@ repository grants, and their successful full upstream GETs can establish them. A
 manifest request with a `Range` header, or any request with an `If-*` header, is
 forwarded upstream unchanged and not cached.
 
-When a registry redirects a cacheable request, for example to a CDN, the
+When a registry redirects an eligible digest-addressed GET, for example to a CDN, the
 accelerator follows up to five HTTPS redirects itself. If the final response is
 a cacheable `200 OK`, it returns that to Docker and caches it under the original
 request. Any other final response goes back to Docker unchanged. When a redirect
@@ -53,6 +62,9 @@ leave the upstream registry's origin. The accelerator sends each redirect
 target's host and port, in both the URL and the `Host` header, exactly as
 `Location` wrote them, so presigned storage URLs that sign the host, such as S3
 URLs, stay valid.
+
+Mutable requests retain single-hop forwarding. Their redirects pass back to
+Docker unchanged and are never cached.
 
 The accelerator checks the address of every upstream connection it makes for an
 intercepted registry, including redirects. Public hosts need no configuration,
@@ -184,7 +196,7 @@ using the example configuration, which lists `registry-1.docker.io` in
 | 1   | `CONNECT registry-1.docker.io:443`  | Docker opens a connection to Docker Hub <br> _The accelerator intercepts it, terminating TLS with a certificate signed by its root CA._                                  |
 | 2   | `GET /v2/`                          | Docker checks the API <br> _The accelerator forwards it. The `401` challenge pointing to `auth.docker.io` passes back unchanged._                                        |
 | 3   | `CONNECT auth.docker.io:443`        | Docker requests a pull token <br> _The accelerator tunnels the exchange without decrypting it because the host isn't configured._                                        |
-| 4   | `HEAD …/manifests/latest`           | Docker resolves the tag to an index digest <br> _The accelerator forwards it because tags can move._                                                                     |
+| 4   | `HEAD …/manifests/latest`           | Docker resolves the tag to an index digest <br> _The accelerator forwards the first request and briefly caches an eligible `200` for identical HEAD requests._                            |
 | 5   | `GET …/manifests/sha256:<index>`    | Docker fetches the image index <br> _The accelerator streams it to Docker while writing it to disk, publishing after verifying length and digest._                       |
 | 6   | `GET …/manifests/sha256:<manifest>` | Docker fetches its platform's manifest <br> _Cached as in step 5._                                                                                                       |
 | 7   | `GET …/blobs/sha256:<config>`       | Docker fetches the image config <br> _The accelerator follows the redirect to Docker Hub's CDN, dropping `Authorization` and other headers, and caches it as in step 5._ |
@@ -283,19 +295,22 @@ rules. It does not interpret token claims, check their scopes or expiry, or hold
 credentials of its own. Disable credentialed grants if your registry does not
 satisfy that assumption.
 
-### Approval on each request
+### Approval for immutable content
 
-Without a reusable authorization grant, the accelerator sends Docker's cacheable
-`GET` upstream first, following any redirects. Only a cacheable `200 OK` counts as approval.
+For digest-addressed content without a reusable authorization grant, the accelerator
+sends Docker's cacheable `GET` upstream first, following any redirects. Only a
+cacheable `200 OK` counts as approval.
 The body then comes from disk if cached. On an eligible miss, it can stream
 from one hinted peer instead of origin. The original upstream response determines
 the cache key, metadata, authorization grant eligibility, and response headers.
 Neither a hint nor peer authentication replaces upstream approval, and no-store
 or otherwise uncacheable responses never trigger peer fetches. Any other response,
-such as `401` or `404`, goes back to Docker unchanged. `HEAD`, `GET /v2/`, and tag
-requests approve nothing.
+such as `401` or `404`, goes back to Docker unchanged. Mutable responses never
+approve digest-body deliveries. Their own successful responses can be reused
+only through the separate [mutable response cache](#mutable-response-caching).
+`GET /v2/` approves nothing.
 
-A cache hit without a reusable grant still sends the request upstream, including
+A disk-cache hit without a reusable grant still sends the request upstream, including
 any redirects, though not the download, and may count toward registry rate limits.
 
 ### Authorization grants
@@ -365,11 +380,65 @@ any of the following:
 - an authentication header (`Set-Cookie`, `WWW-Authenticate`,
   `Authentication-Info`, `Proxy-Authentication-Info`)
 
+### Mutable response caching
+
+Successful `200` responses to tag manifest GETs and HEADs, tag lists, digest
+referrer lists, and the registry catalog can be reused without another upstream
+request. This cache is process-local memory only, separate from verified disk
+bodies and authorization grants. It is neither persisted nor shared with peers.
+Only bodyless requests with unambiguous, unescaped paths qualify.
+
+- **Exact requests only.** A process-local HMAC key covers the outgoing method,
+  URL including the exact query, and every forwarded end-to-end header, including
+  credentials. Different credentials, queries, header values, or methods do not
+  share entries or in-flight fetches.
+- **Fixed expiry.** `OCI_ACCELERATOR_CACHE_MUTABLE_TTL` defaults to `30s`.
+  Expiry starts when upstream response headers arrive and is capped by the
+  applicable credentialed or anonymous authorization TTL. `0s` disables mutable
+  caching, and an authorization TTL of `0s` disables it for that class. Hits and
+  time spent capturing a body never extend the deadline.
+- **Explicit restrictions still apply.** Request cache restrictions remain
+  honored, including freshness ceilings and directives that prevent reuse.
+  Upstream `max-age`, `s-maxage`, `Date`, `Age`, and `Expires` do not shorten or
+  extend mutable expiry. Response `no-store`, `no-cache`, `private`, any `Pragma`,
+  authentication state (`Set-Cookie`, `WWW-Authenticate`, `Authentication-Info`,
+  `Proxy-Authentication-Info`), or `Vary: *` prevents reuse. Other `Vary` fields
+  are covered by the exact-request key.
+- **No partial or failed reuse.** Conditional and range requests bypass this
+  cache, as do responses with trailers. Errors, denials, and redirects are never
+  shared. GET bodies stream to Docker while being captured and are published
+  only after clean EOF and length validation where a length is known. Oversized
+  or incomplete captures are discarded without changing upstream delivery.
+  HEAD entries retain response metadata without capturing a body.
+- **Bounded memory.** Internal constants limit captures plus retained responses
+  to 32 MiB of accounted memory, with a 1 MiB body and 64 KiB of headers per
+  response, at most 16 simultaneous captures, and 1,024 indexed entries including
+  pending captures. Admission reserves conservatively. Expired entries are
+  removed first, then completed entries are evicted least-recently-used first.
+  Pending captures are not evicted. Readers keep their memory charged after
+  eviction until they close. These bounds are not a total process RSS limit.
+- **Bounded coalescing.** Identical concurrent requests can wait for the leading
+  capture using `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` (default `1s`). `0s`
+  disables waiting, not caching. A timeout or failed capture makes a follower
+  fetch upstream independently, without competing cache publication. Leader
+  cancellation cancels its fetch and followers retry upstream. A follower's
+  cancellation does not cancel the leader.
+
+An independently observed denial or nonreusable, nontransient response discards
+older approval for that exact request, including captures still in progress.
+Transient failures alone do not revoke an approval.
+
+Hits send `Cache-Control: private, no-store` downstream so another cache cannot
+extend the reuse window. A tag move, push, deletion, token expiry, or access
+revocation does not invalidate an entry early. You accept stale metadata and
+approval until fixed expiry. There is no write-triggered invalidation,
+background refresh, or stale response fallback after expiry.
+
 # Cache storage and eviction
 
-The cache lives in `OCI_ACCELERATOR_CACHE_DIR` on local disk. The directory must be private to
-the accelerator's user, and a lock file ensures only one accelerator process
-uses it at a time. A second process fails to start.
+The immutable body cache lives in `OCI_ACCELERATOR_CACHE_DIR` on local disk. The
+directory must be private to the accelerator's user, and a lock file ensures
+only one accelerator process uses it at a time. A second process fails to start.
 
 ### Entries
 

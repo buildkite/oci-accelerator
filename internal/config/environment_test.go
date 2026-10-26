@@ -17,6 +17,9 @@ func TestLoadRejectsInvalidEnvironmentValuesSafely(t *testing.T) {
 		{"PEER_HINT_REFRESH_TIMEOUT", "secret-value", "duration string"},
 		{"PEER_HINT_REFRESH_INTERVAL", "secret-value", "duration string"},
 		{"PEER_HINT_FULL_REFRESH_INTERVAL", "secret-value", "duration string"},
+		{"CACHE_MUTABLE_TTL", "secret-value", "duration string"},
+		{"CACHE_MUTABLE_TTL", "", "duration string"},
+		{"CACHE_MUTABLE_TTL", "9223372036854775808ns", "duration string"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.field+"="+tt.value, func(t *testing.T) {

@@ -21,6 +21,7 @@ const (
 	DefaultCacheMaxEntries                      = 100000
 	DefaultCacheFillTimeout                     = 10 * time.Minute
 	DefaultCacheFillWaitTimeout                 = time.Second
+	DefaultCacheMutableTTL                      = 30 * time.Second
 	DefaultCacheAuthorizationTTL                = 30 * time.Second
 	DefaultCacheAnonymousAuthorizationTTL       = 15 * time.Minute
 	DefaultCacheMaxAuthorizationEntries         = 10000
@@ -57,6 +58,7 @@ type Cache struct {
 	MaxEntries                int
 	FillTimeout               time.Duration
 	FillWaitTimeout           time.Duration
+	MutableTTL                time.Duration
 	AuthorizationTTL          time.Duration
 	AnonymousAuthorizationTTL time.Duration
 	MaxAuthorizationEntries   int
@@ -129,6 +131,7 @@ func defaults() rawConfig {
 			MaxEntries:                DefaultCacheMaxEntries,
 			FillTimeout:               DefaultCacheFillTimeout,
 			FillWaitTimeout:           DefaultCacheFillWaitTimeout,
+			MutableTTL:                DefaultCacheMutableTTL,
 			AuthorizationTTL:          DefaultCacheAuthorizationTTL,
 			AnonymousAuthorizationTTL: DefaultCacheAnonymousAuthorizationTTL,
 			MaxAuthorizationEntries:   DefaultCacheMaxAuthorizationEntries,

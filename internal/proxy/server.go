@@ -31,6 +31,7 @@ type Proxy struct {
 	cache         *cache.Store                                                 // object store owned by New's caller (nil disables caching)
 	fetchPeer     func(context.Context, cache.Metadata) (io.ReadCloser, error) // optional body source, configured before serving
 	authorization *authorizationCache                                          // bounded, process-local approvals shared across connections
+	mutable       *mutableCache                                                // bounded, process-local mutable responses
 	destinations  map[string]struct{}                                          // registries plus redirect allowlist, exempt from the public-IP dial check
 	lookupIP      func(context.Context, string) ([]net.IPAddr, error)          // DNS resolver hook, overridable in tests
 	dialIP        func(context.Context, string, string) (net.Conn, error)      // upstream dialer hook, overridable in tests
@@ -83,6 +84,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		transport:     transport,
 		cache:         store,
 		authorization: newAuthorizationCache(cfg.Cache.AuthorizationTTL, cfg.Cache.AnonymousAuthorizationTTL, cfg.Cache.MaxAuthorizationEntries),
+		mutable:       newMutableCache(cfg.Cache.MutableTTL),
 		metrics:       newMetrics(),
 		configured:    make(map[string]struct{}, len(cfg.Registries)),
 		destinations:  make(map[string]struct{}),

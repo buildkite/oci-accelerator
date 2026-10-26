@@ -91,6 +91,7 @@ func validate(raw rawConfig) (Config, error) {
 		value   time.Duration
 	}{
 		{"CACHE_FILL_WAIT_TIMEOUT", raw.Cache.FillWaitTimeout},
+		{"CACHE_MUTABLE_TTL", raw.Cache.MutableTTL},
 		{"CACHE_AUTHORIZATION_TTL", raw.Cache.AuthorizationTTL},
 		{"CACHE_ANONYMOUS_AUTHORIZATION_TTL", raw.Cache.AnonymousAuthorizationTTL},
 	} {
