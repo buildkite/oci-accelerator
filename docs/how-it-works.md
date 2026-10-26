@@ -444,10 +444,15 @@ Only bodyless requests with unambiguous, unescaped paths qualify.
 - **Bounded memory.** Internal constants limit captures plus retained responses
   to 32 MiB of accounted memory, with a 1 MiB body and 64 KiB of headers per
   response, at most 16 simultaneous captures, and 1,024 indexed entries including
-  pending captures. Admission reserves conservatively. Expired entries are
-  removed first, then completed entries are evicted least-recently-used first.
+  pending captures. Admission reserves conservatively. Unknown-length captures
+  reserve the full body bound while streaming unchanged. After clean EOF, partially
+  used buffers are copied into right-sized allocations before publication, while
+  exact-sized buffers need no copy. Retained bodies are charged by capacity.
+  Expired entries are removed first, then completed entries are evicted
+  least-recently-used first.
   Pending captures are not evicted. Readers keep their memory charged after
-  eviction until they close. These bounds are not a total process RSS limit.
+  eviction until they close. These bounds limit neither total process RSS nor
+  transient allocations.
 - **Bounded coalescing.** Independently approved tokens can share a pending
   capture when their shared response keys match. Tokens without a live grant,
   including rotated tokens, must authorize upstream themselves and cannot join

@@ -897,10 +897,13 @@ and representation length without capturing a body.
 Fixed internal constants bound accounted capture and retained memory to 32 MiB, each
 response body to 1 MiB, retained headers to 64 KiB per response, concurrent captures to 16,
 and the entry index to 1,024 entries including pending captures. Reservations are
-conservative. Admission removes expired entries first, then evicts completed entries in
+conservative. Unknown-length captures reserve the full body bound while streaming unchanged.
+After clean EOF, partially used buffers are copied into right-sized allocations before
+publication, while exact-sized buffers need no copy. Retained bodies are charged by capacity.
+Admission removes expired entries first, then evicts completed entries in
 LRU order, never pending captures. Active readers keep memory charged even after eviction
-until they close. This accounting is not a process RSS bound and is independent of disk
-cache limits.
+until they close. This accounting bounds neither process RSS nor transient allocations
+and is independent of disk cache limits.
 
 Independently approved tokens can coalesce across tokens when their shared response keys
 match. New tokens, including rotations, must authorize upstream themselves and cannot join

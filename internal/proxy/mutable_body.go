@@ -53,6 +53,11 @@ func (b *mutableCapture) finish(complete bool) {
 	b.entry, b.header, b.data = nil, nil, nil
 	if !complete {
 		header, data = nil, nil
+	} else if len(data) < cap(data) {
+		// Do not retain unused capture capacity in a completed response.
+		compacted := make([]byte, len(data))
+		copy(compacted, data)
+		data = compacted
 	}
 
 	// Unknown-length responses become fixed-length only after clean EOF.

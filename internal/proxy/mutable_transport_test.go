@@ -95,6 +95,44 @@ func TestMutableEndpointsCacheExactResponses(t *testing.T) {
 	}
 }
 
+func TestMutableSmallChunkedResponsesDoNotExhaustMemory(t *testing.T) {
+	for _, size := range []int{0, 2 << 10} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			body := strings.Repeat("x", size)
+			var calls atomic.Int32
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				io.WriteString(w, body)
+			}))
+			defer origin.Close()
+			tr := mutableTransportFixture(t, origin)
+
+			// All 64 small responses fit comfortably in the memory budget.
+			// Reading them again must not evict and refetch the earliest pages.
+			for pass := range 2 {
+				for page := range 64 {
+					req := authorizationRequest(t, origin.URL+"/v2/team/image/tags/list?last="+strconv.Itoa(page), "")
+					resp, err := tr.RoundTrip(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if pass == 0 && resp.ContentLength != -1 {
+						resp.Body.Close()
+						t.Fatalf("upstream response has content length %d, want unknown", resp.ContentLength)
+					}
+					assertAuthorizationBody(t, resp, http.StatusOK, body)
+				}
+			}
+
+			if got := calls.Load(); got != 64 {
+				t.Fatalf("upstream requests = %d, want 64 after rereading all cached pages", got)
+			}
+		})
+	}
+}
+
 func TestMutableRestrictionsAndFailuresBypass(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

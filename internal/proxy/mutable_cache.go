@@ -18,8 +18,9 @@ const (
 )
 
 // mutableCache owns response buffers, not credentials. Pending captures reserve
-// their maximum allocation before contacting upstream. Completed entries use LRU
+// one maximum-size response before contacting upstream. Completed entries use LRU
 // eviction, but an evicted buffer remains charged until its last reader closes.
+// Transient compaction allocations are outside this retained-memory accounting.
 // All mutable fields are protected by mu. Published headers and bytes are immutable.
 type mutableCache struct {
 	ttl      time.Duration
