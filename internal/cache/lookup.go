@@ -9,15 +9,18 @@ func (s *Store) Lookup(requestKey string) (Metadata, error) {
 	if s.closed || len(requestKey) != keyHexLen || !isLowerHex(requestKey) {
 		return Metadata{}, ErrMiss
 	}
+
 	candidates := s.requests[requestKey]
 	if len(candidates) != 1 {
 		return Metadata{}, ErrMiss
 	}
+
 	for _, e := range candidates {
 		if !e.invalid && !e.claimed && s.entries[e.meta.Key] == e {
 			return e.meta, nil
 		}
 	}
+
 	return Metadata{}, ErrMiss
 }
 
@@ -28,6 +31,7 @@ func (s *Store) addRequestLocked(e *entry) {
 	if e.meta.RequestKey == "" || e.invalid || e.claimed {
 		return
 	}
+
 	candidates := s.requests[e.meta.RequestKey]
 	if candidates == nil {
 		candidates = make(map[string]*entry)

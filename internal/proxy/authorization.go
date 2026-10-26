@@ -120,10 +120,12 @@ func (c *authorizationCache) valid(e *authorizationEntry, g *authorizationGrant)
 func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	// Normalize the host to a canonical host:port authority.
 	authority, _ := hostport.Parse(req.URL.Host, "443")
+
 	if object, token, ok := repositoryBearer(req); ok {
 		mac := hmac.New(sha256.New, c.secret[:])
 		// Token and repository cannot contain NUL, so boundaries are unambiguous.
 		mac.Write([]byte("repository-bearer\x00" + authority.String() + "\x00" + object.repository + "\x00" + token))
+
 		var key [32]byte
 		copy(key[:], mac.Sum(nil))
 		return key
@@ -136,6 +138,7 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+
 	headers := make(http.Header, len(names))
 	for _, name := range names {
 		canonical := strings.ToLower(name)
@@ -215,6 +218,7 @@ func (t registryTransport) authorizedResponse(req *http.Request, e *authorizatio
 		if err != nil {
 			return nil
 		}
+
 		// Recheck request eligibility and the stored representation's identity,
 		// not the object that originally established repository approval.
 		expected, ok := objectRequestMetadata(req, meta.MediaType)
@@ -222,6 +226,7 @@ func (t registryTransport) authorizedResponse(req *http.Request, e *authorizatio
 			return nil
 		}
 	}
+
 	body, err := t.cache.Get(req.Context(), meta)
 	if err != nil {
 		return nil
@@ -263,16 +268,19 @@ func repositoryBearer(req *http.Request) (immutableObject, string, bool) {
 	if req.Method != http.MethodGet || req.URL.RawQuery != "" || req.URL.ForceQuery || req.URL.RawPath != "" {
 		return immutableObject{}, "", false
 	}
+
 	parts := objectPath.FindStringSubmatch(req.URL.Path)
 	values := req.Header.Values("Authorization")
 	if parts == nil || len(values) != 1 {
 		return immutableObject{}, "", false
 	}
+
 	scheme, token, ok := strings.Cut(values[0], " ")
 	token = strings.TrimLeft(token, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") || !bearerCredential.MatchString(token) {
 		return immutableObject{}, "", false
 	}
+
 	kind := blobKind
 	if parts[2] == "manifests" {
 		kind = manifestKind

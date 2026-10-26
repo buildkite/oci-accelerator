@@ -114,6 +114,7 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 	if !ok || !cacheHeaders(resp.Header, meta.Digest) {
 		return cache.Metadata{}, false
 	}
+
 	meta.Size = resp.ContentLength
 	return meta, true
 }
