@@ -12,7 +12,7 @@ func (t registryTransport) mutableRoundTrip(req *http.Request, lifetime time.Dur
 		return nil, err
 	}
 
-	key := t.authorization.fingerprint(req)
+	key := t.authorization.exactFingerprint(req)
 	stats, _ := req.Context().Value(statsKey{}).(*requestStats)
 	if stats == nil {
 		stats = &requestStats{cache: "bypass"}
@@ -79,7 +79,7 @@ func (t registryTransport) invalidateMutableResponse(req *http.Request, resp *ht
 	// Match immutable authorization fencing: transport failures and transient
 	// statuses do not revoke an approval, but authentication-state headers do.
 	if hasAuthenticationState(resp.Header) || !isTransient(resp.StatusCode) && !mutableResponsePermitted(resp) {
-		t.mutable.invalidate(t.authorization.fingerprint(req))
+		t.mutable.invalidate(t.authorization.exactFingerprint(req))
 	}
 }
 

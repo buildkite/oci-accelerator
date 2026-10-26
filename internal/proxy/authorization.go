@@ -118,10 +118,8 @@ func (c *authorizationCache) valid(e *authorizationEntry, g *authorizationGrant)
 // fingerprint scopes bearer pull permission to an exact registry repository.
 // Other credentials retain exact-request grants.
 func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
-	// Normalize the host to a canonical host:port authority.
-	authority, _ := hostport.Parse(req.URL.Host, "443")
-
 	if object, token, ok := repositoryBearer(req); ok {
+		authority, _ := hostport.Parse(req.URL.Host, "443")
 		mac := hmac.New(sha256.New, c.secret[:])
 		// Token and repository cannot contain NUL, so boundaries are unambiguous.
 		mac.Write([]byte("repository-bearer\x00" + authority.String() + "\x00" + object.repository + "\x00" + token))
@@ -130,6 +128,13 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 		copy(key[:], mac.Sum(nil))
 		return key
 	}
+
+	return c.exactFingerprint(req)
+}
+
+// exactFingerprint identifies a response independently of authorization scope.
+func (c *authorizationCache) exactFingerprint(req *http.Request) [32]byte {
+	authority, _ := hostport.Parse(req.URL.Host, "443")
 
 	// Merge header names that differ only by case into lowercased buckets,
 	// visiting them in sorted order so folding is deterministic.
