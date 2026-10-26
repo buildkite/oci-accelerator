@@ -29,9 +29,6 @@ func TestBlobMetadataAcceptsTerminalBlobResponse(t *testing.T) {
 	if _, ok := objectMetadata(req, resp); !ok {
 		t.Fatal("response without optional CDN digest was rejected")
 	}
-	if meta.Key != "ce77ff66e6785141501fc0f3fd7fbedac4bb24e00a106e0830aecff478edf8f3" {
-		t.Fatalf("legacy blob key changed: %s", meta.Key)
-	}
 }
 
 func TestBlobMetadataRejectsUnsupportedRequests(t *testing.T) {

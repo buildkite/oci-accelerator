@@ -35,10 +35,15 @@ func TestLookupPersistsRequestAssociationAndExactReadsIgnoreIt(t *testing.T) {
 	if _, ok := s.Completion(exact); !ok {
 		t.Fatal("exact peer metadata did not match published entry")
 	}
+
 	// Request identity is not part of representation identity, even when a
-	// caller carries another request association for the same exact bytes.
-	exact.RequestKey = testMeta("other request", "").Key
+	// caller carries a malformed request association for the same exact bytes.
+	exact.RequestKey = "malformed"
 	read(t, s, exact, "body")
+	if _, ok := s.Completion(exact); !ok {
+		t.Fatal("malformed request association prevented exact completion lookup")
+	}
+
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -117,25 +122,25 @@ func TestLookupEvictionAndInventoryDiscard(t *testing.T) {
 	assertLookup(t, reopened, b.RequestKey, Metadata{}, ErrMiss)
 }
 
-func TestRequestKeyValidationAndLegacyEntry(t *testing.T) {
+func TestRequestKeyValidation(t *testing.T) {
 	s := openTest(t, 1<<20)
-	m := testMeta("legacy", "body")
+	m := testMeta("healthy", "body")
 	put(t, s, m, "body")
-	assertLookup(t, s, m.Key, Metadata{}, ErrMiss)
+	assertLookup(t, s, m.RequestKey, m, nil)
 	for _, key := range []string{"", "abc", strings.Repeat("a", 63), strings.Repeat("A", 64), strings.Repeat("g", 64)} {
 		assertLookup(t, s, key, Metadata{}, ErrMiss)
-		if key == "" {
-			continue
-		}
 		invalid := testMeta("invalid request association", "body")
 		invalid.RequestKey = key
-		if f, err := s.Begin(invalid); !errors.Is(err, ErrBypass) {
-			if f != nil {
-				f.Abort()
-			}
+		f, err := s.Begin(invalid)
+		if f != nil {
+			f.Abort()
+		}
+		var admission *AdmissionError
+		if !errors.Is(err, ErrBypass) || !errors.As(err, &admission) || admission.Reason != AdmissionInvalid {
 			t.Fatalf("Begin with request key %q = %v", key, err)
 		}
 	}
+	assertLookup(t, s, m.RequestKey, m, nil)
 	read(t, s, m, "body")
 }
 

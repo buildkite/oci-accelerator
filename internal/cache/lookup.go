@@ -28,7 +28,7 @@ func (s *Store) Lookup(requestKey string) (Metadata, error) {
 // when invalidating or claiming entries keeps Lookup constant-time even if one
 // request has many representations or tombstones. All helpers require Store.mu.
 func (s *Store) addRequestLocked(e *entry) {
-	if e.meta.RequestKey == "" || e.invalid || e.claimed {
+	if e.invalid || e.claimed {
 		return
 	}
 

@@ -841,12 +841,12 @@ filling, and eviction.
   the same full-body entry.
 - Cache keys preserve registry, repository, digest, object kind, exact `Accept` values, and
   observed `Content-Type`. Bodies are hashed as received.
-- New metadata also persists a local-only credential-free `RequestKey` for canonical upstream authority,
+- Cache metadata requires a local-only credential-free `RequestKey` for canonical upstream authority,
   exact parsed repository, object kind, digest, and ordered `Accept` values, without media type.
-  The representation key still includes media type. Older entries without `RequestKey` remain
-  usable through normal upstream-first lookup, but cannot use the Bearer repository fast path
-  until replaced by a new fill. Existing entries are not backfilled. You do not need to flush
-  or migrate your cache.
+  It must contain exactly 64 lowercase hexadecimal characters. Startup inventory deletes
+  entries with a missing or invalid `RequestKey`. The representation key still includes
+  media type. Exact representation reads and fill-completion lookups do not depend on
+  `RequestKey`, and the peer wire protocol does not carry it.
 - Bypassed by the disk cache: mutable metadata, HEAD, ranged manifests, conditional and
   non-identity-encoded responses, unknown-length bodies, no-store traffic, and unsupported
   `Vary` dimensions.

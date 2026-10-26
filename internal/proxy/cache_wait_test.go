@@ -515,7 +515,7 @@ func TestCacheFillWaitRetriesWhenCompletedEntryIsEvictedBeforeGet(t *testing.T) 
 	}
 
 	otherBody := "replacement entry"
-	other := cache.Metadata{Key: strings.Repeat("0", 64), Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(otherBody))), Size: int64(len(otherBody)), MediaType: "application/octet-stream"}
+	other := cache.Metadata{Key: strings.Repeat("0", 64), RequestKey: strings.Repeat("1", 64), Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(otherBody))), Size: int64(len(otherBody)), MediaType: "application/octet-stream"}
 	var once sync.Once
 	upstream := &closeCallbackBody{ReadCloser: io.NopCloser(strings.NewReader(body)), close: func() {
 		once.Do(func() {

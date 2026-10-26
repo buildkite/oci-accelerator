@@ -14,7 +14,7 @@ import (
 )
 
 func TestBuildEvictionOrderBulkSortsReverseAndShuffledEntries(t *testing.T) {
-	s := &Store{entries: make(map[string]*entry)}
+	s := &Store{entries: make(map[string]*entry), requests: make(map[string]map[string]*entry)}
 	originalLast := make(map[string]int64)
 	// Deliberately mix recency, ties, and insertion order. Map traversal must not
 	// affect the bulk-built startup index.

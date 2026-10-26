@@ -72,14 +72,17 @@ func TestLoadInventoryEntryOutcomesWithoutRemoval(t *testing.T) {
 	})
 }
 func TestRecoveryAndCorruption(t *testing.T) {
-	for _, mode := range []string{"body-missing", "short", "corrupt", "meta-missing", "meta-invalid", "meta-huge", "temporary"} {
+	for _, mode := range []string{"body-missing", "short", "corrupt", "meta-missing", "meta-invalid", "meta-huge", "request-key-missing", "request-key-empty", "request-key-short", "request-key-uppercase", "request-key-nonhex", "temporary"} {
 		t.Run(mode, func(t *testing.T) {
 			s := openTest(t, 1<<20)
 			m := testMeta("key", "abcd")
+			healthy := testMeta("healthy", "control")
 			put(t, s, m, "abcd")
+			put(t, s, healthy, "control")
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
 			}
+
 			d := filepath.Join(s.dir, m.Key)
 			switch mode {
 			case "body-missing":
@@ -106,11 +109,40 @@ func TestRecoveryAndCorruption(t *testing.T) {
 				if err := os.Truncate(filepath.Join(d, "meta"), 1<<30); err != nil {
 					t.Fatal(err)
 				}
-			case "temporary":
-				if err := os.Rename(d, filepath.Join(s.dir, ".fill-abandoned")); err != nil {
+			case "request-key-missing", "request-key-empty", "request-key-short", "request-key-uppercase", "request-key-nonhex":
+				path := filepath.Join(d, "meta")
+				raw, err := os.ReadFile(path)
+				if err != nil {
 					t.Fatal(err)
 				}
+				var fields map[string]any
+				if err := json.Unmarshal(raw, &fields); err != nil {
+					t.Fatal(err)
+				}
+				delete(fields, "RequestKey")
+				if mode != "request-key-missing" {
+					fields["RequestKey"] = map[string]string{
+						"request-key-empty":     "",
+						"request-key-short":     strings.Repeat("a", 63),
+						"request-key-uppercase": strings.Repeat("A", 64),
+						"request-key-nonhex":    strings.Repeat("g", 64),
+					}[mode]
+				}
+				encoded, err := json.Marshal(fields)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, encoded, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "temporary":
+				temporary := filepath.Join(s.dir, ".fill-abandoned")
+				if err := os.Rename(d, temporary); err != nil {
+					t.Fatal(err)
+				}
+				d = temporary
 			}
+
 			s2, err := openDefault(s.dir, s.max)
 			if err != nil {
 				t.Fatal(err)
@@ -122,6 +154,13 @@ func TestRecoveryAndCorruption(t *testing.T) {
 				}
 				t.Fatal("bad entry hit")
 			}
+			if _, err := os.Stat(d); !os.IsNotExist(err) {
+				t.Fatalf("discarded entry directory remains: %v", err)
+			}
+			assertLookup(t, s2, m.RequestKey, Metadata{}, ErrMiss)
+			assertLookup(t, s2, healthy.RequestKey, healthy, nil)
+			read(t, s2, healthy, "control")
+
 			put(t, s2, m, "abcd")
 			read(t, s2, m, "abcd")
 		})

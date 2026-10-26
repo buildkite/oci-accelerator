@@ -36,7 +36,7 @@ type AdmissionError struct {
 
 func (s *Store) begin(meta Metadata) (*Fill, error) {
 	// Reject metadata that fails structural validation before any accounting.
-	if !validMeta(meta) {
+	if !validStoredMeta(meta) {
 		return nil, s.refuse(AdmissionInvalid, nil)
 	}
 

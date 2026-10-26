@@ -510,9 +510,11 @@ The representation key still includes media type. Both keys are hashes, so the
 metadata file stores no raw request headers or credentials. Entries are not shared
 between repositories, so a layer used by two repositories is stored twice.
 
-Older entries without `RequestKey` remain usable through normal upstream-first
-lookup, but cannot use the Bearer repository fast path until replaced by a new
-fill. Existing entries are not backfilled. You do not need to flush or migrate your cache.
+Every admitted or loaded entry requires a nonempty `RequestKey` containing exactly
+64 lowercase hexadecimal characters. Startup inventory deletes entries with a
+missing or invalid `RequestKey`, along with other discardable entries. Exact
+representation reads and fill-completion lookups do not depend on `RequestKey`,
+and the peer wire protocol does not carry it.
 
 ### Filling
 
