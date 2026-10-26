@@ -270,7 +270,7 @@ func TestFetchKeysReportsInvalidCursorWithoutDiscardingProgress(t *testing.T) {
 		want   error
 	}{
 		"structured with rewritten body": {http.StatusBadRequest, "invalid_cursor", "request rejected", checkpoint, cache.ErrKeyCursor},
-		"legacy body":                    {http.StatusBadRequest, "", "invalid cursor\n", checkpoint, cache.ErrKeyCursor},
+		"body without error header":      {http.StatusBadRequest, "", "invalid cursor\n", checkpoint, errKeysFetch},
 		"generic bad request":            {http.StatusBadRequest, "", "invalid request\n", checkpoint, errKeysFetch},
 		"unknown error code":             {http.StatusBadRequest, "other", "request rejected", checkpoint, errKeysFetch},
 		"no checkpoint":                  {http.StatusBadRequest, "invalid_cursor", "invalid cursor\n", cache.KeyPosition{}, errKeysFetch},

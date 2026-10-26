@@ -1228,9 +1228,9 @@ When more keys follow, the page is full and `next` is an opaque, versioned, URL-
 identifying its final key's logical recency position and the open cache's random incarnation.
 Request the following page with `GET /v1/cache/keys?after=<next>`. An empty `next` ends the listing,
 including when the final page is full. A cursor from before a cache restart is rejected with
-HTTP `400` and the header `OCI-Accelerator-Error: invalid_cursor`. The client also accepts
-HTTP `400` with the exact legacy body `invalid cursor\n` from older peers. An explicit
-invalid-cursor response ends the attempt and clears the client's checkpoint immediately,
+HTTP `400` and the header `OCI-Accelerator-Error: invalid_cursor`. The client requires both
+the status and header to recognize an explicit cursor rejection, regardless of the response body.
+An explicit invalid-cursor response ends the attempt and clears the client's checkpoint immediately,
 but a fresh scan still waits for the next normally delayed poll.
 
 The listing excludes in-progress, failed, and invalidated fills and entries claimed for removal.
