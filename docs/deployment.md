@@ -1088,8 +1088,7 @@ change require A's normal check first. Conflicting candidates share that check, 
 chained verification workers. All retained peers and configured seeds keep their normal
 independent schedules, even when gossip contains cyclic identity conflicts.
 Candidate responses are checked again before admission, so B cannot replace A if A
-recovers while B's request is in flight. Unidentified migrated candidates do not share
-an identity with unresolved seeds.
+recovers while B's request is in flight.
 
 Exchanges start immediately, normally repeat every 30 seconds with ±20% jitter, and use
 exponential failure backoff capped at five minutes before jitter. Inbound exchanges and gossip
@@ -1137,7 +1136,7 @@ replaced immediately when membership changes. Successful renewals update exact f
 memory, but trigger a replacement only when a member's timestamp has advanced at least 7 minutes
 30 seconds beyond its saved checkpoint. Each replacement saves all current timestamps, so peers
 can share a checkpoint write. This is not a global limit on write frequency. Startup also rewrites
-the file to migrate or clean loaded state.
+the file to durably remove records for this instance's own address or ID.
 Persisted freshness prevents restarts from renewing dead membership. With successful persistence,
 the saved timestamp trails the latest accepted success by less than 7 minutes 30 seconds, so a
 restart can expire membership that much earlier, never later, than its in-memory lifetime.
@@ -1186,12 +1185,15 @@ sharing one ID can repeatedly replace each other's records. There is no ongoing 
 
 Upgrade all peers together so every member enforces verified admission and expiry. The wire
 format remains identity-aware and is incompatible with address-only exchanges, with no fallback.
-Startup migrates older `peers.json` state to the freshness-aware format. Existing identified
-records receive a one-time 30-minute grace period, persisted during migration rather than renewed
-on each restart. Unidentified legacy addresses enter bounded candidate probing instead, and are
-removed from durable state when discovery starts. Configured seeds are read from configuration
-on each startup rather than persisted as unverified members. Keep a stopped-state backup if you
-need rollback, because older binaries cannot read the new state format.
+Startup accepts only version 3 `peers.json` state. Each record must have a valid, nonempty node
+ID unique within the book and a nonzero last-success timestamp. Versions 1 and 2 and unidentified
+version 3 records are rejected without replacing the file. There is no automatic migration or
+synthetic freshness grace period. If you have unsupported state, stop the instance, back up its
+peer state directory, and remove only `peers.json` before restarting. Retain `node-id` to preserve
+the instance's identity and configure a reachable seed to rebuild membership through verified
+outbound exchanges. Configured seeds are read from configuration on each startup rather than
+persisted as unverified members. Keep your stopped-state backup if you need rollback, because
+older binaries may not read the current state format.
 
 State files must be regular, process-owned, mode 0600 files. Startup takes an exclusive process
 lock, removes recognized abandoned staging files, and rejects corrupt state, unsafe files, or
