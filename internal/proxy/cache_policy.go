@@ -94,14 +94,8 @@ func cacheHeaders(h http.Header, digest string) bool {
 // Content-Type of at most 1024 bytes, and cache-permitting headers.
 func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, bool) {
 
-	// Only cache immutable digest-addressed objects returning a complete, known-length, unencoded body.
-	object, ok := immutableObjectRequest(req)
-	if !ok || resp.StatusCode != http.StatusOK || resp.ContentLength < 0 || resp.Uncompressed || len(resp.Trailer) != 0 || resp.Header.Get("Content-Range") != "" {
-		return cache.Metadata{}, false
-	}
-
-	// Reject if request or response headers forbid caching (e.g. Cache-Control, digest mismatch).
-	if !cacheHeaders(req.Header, object.digest) || !cacheHeaders(resp.Header, object.digest) {
+	// Only cache complete, known-length bodies without trailers or decompression.
+	if resp.StatusCode != http.StatusOK || resp.ContentLength < 0 || resp.Uncompressed || len(resp.Trailer) != 0 || resp.Header.Get("Content-Range") != "" {
 		return cache.Metadata{}, false
 	}
 
@@ -110,14 +104,30 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 		return cache.Metadata{}, false
 	}
 
-	// Require exactly one Content-Type header of bounded length.
+	// Require exactly one Content-Type header.
 	media := resp.Header.Values("Content-Type")
-	if len(media) != 1 || len(media[0]) > 1024 {
+	if len(media) != 1 {
+		return cache.Metadata{}, false
+	}
+
+	meta, ok := objectRequestMetadata(req, media[0])
+	if !ok || !cacheHeaders(resp.Header, meta.Digest) {
+		return cache.Metadata{}, false
+	}
+	meta.Size = resp.ContentLength
+	return meta, true
+}
+
+// objectRequestMetadata checks request eligibility and identifies its immutable
+// representation for a media type. The caller supplies the representation size.
+func objectRequestMetadata(req *http.Request, mediaType string) (cache.Metadata, bool) {
+	object, ok := immutableObjectRequest(req)
+	if !ok || !cacheHeaders(req.Header, object.digest) || len(mediaType) > 1024 {
 		return cache.Metadata{}, false
 	}
 
 	// Content-Type must parse, and manifests must carry a recognized manifest media type.
-	baseMedia, _, err := mime.ParseMediaType(media[0])
+	baseMedia, _, err := mime.ParseMediaType(mediaType)
 	if err != nil || object.kind == manifestKind && !manifestMediaType(baseMedia) {
 		return cache.Metadata{}, false
 	}
@@ -130,14 +140,13 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 
 	// Length-delimited serialization avoids collisions and preserves distinct
 	// Accept header values. Only the hash, not raw request headers, is persisted.
-	key, _ := json.Marshal(append(objectKeyInputs(a.String(), object, req.Header.Values("Accept")), media[0]))
+	key, _ := json.Marshal(append(objectKeyInputs(a.String(), object, req.Header.Values("Accept")), mediaType))
 	sum := sha256.Sum256(key)
 	return cache.Metadata{
 		Key:        hex.EncodeToString(sum[:]),
 		RequestKey: objectRequestKey(req, object),
 		Digest:     object.digest,
-		Size:       resp.ContentLength,
-		MediaType:  media[0],
+		MediaType:  mediaType,
 	}, true
 }
 

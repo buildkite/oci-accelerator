@@ -215,11 +215,9 @@ func (t registryTransport) authorizedResponse(req *http.Request, e *authorizatio
 		if err != nil {
 			return nil
 		}
-		// Validate the stored association against the requested representation,
+		// Recheck request eligibility and the stored representation's identity,
 		// not the object that originally established repository approval.
-		response := cachedResponse(req, meta, http.NoBody)
-		response.Header.Del("Cache-Control")
-		expected, ok := objectMetadata(req, response)
+		expected, ok := objectRequestMetadata(req, meta.MediaType)
 		if !ok || expected.Key != meta.Key || expected.Digest != meta.Digest {
 			return nil
 		}
