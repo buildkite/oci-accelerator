@@ -348,9 +348,6 @@ are examples, not built-in defaults. Configuration applies built-in defaults, an
 selected dotenv file, then process environment overrides. There is no file discovery,
 environment mutation, `OCI_ACCELERATOR_CONFIG` variable, or hot reload.
 
-YAML configuration and `--config` are not supported. When migrating an older deployment,
-replace YAML setting names with the `OCI_ACCELERATOR_*` variables below.
-
 `--check` validates this same combined configuration without inspecting state, binding listeners,
 or creating directories. Unknown process environment variables are ignored. Unknown names in a
 dotenv file are rejected.
@@ -1174,7 +1171,7 @@ Snapshot lookup and direct verification share one five-second network budget. Un
 addresses, unsupported snapshot endpoints, invalid responses, and exhausted time are inconclusive
 and do not prevent startup. A stale gossip record alone never fails startup. These checks are
 best-effort, not a fleet-wide uniqueness guarantee. Concurrent joins, partitions, incomplete
-books, and older peers can hide a collision.
+books, and unavailable snapshot endpoints can hide a collision.
 
 Give each instance its own persistent peer state volume. Do not clone this state into another
 instance, because doing so duplicates its identity. The ID is not a secret or authentication
@@ -1183,17 +1180,14 @@ conflict with this instance's own ID or address still fail the exchange and log
 `peer identity collision`. Fix the advertised address or duplicated state. Two other nodes
 sharing one ID can repeatedly replace each other's records. There is no ongoing collision recovery.
 
-Upgrade all peers together so every member enforces verified admission and expiry. The wire
-format remains identity-aware and is incompatible with address-only exchanges, with no fallback.
+Peer exchanges require the current identity-aware wire format.
 Startup accepts only version 3 `peers.json` state. Each record must have a valid, nonempty node
-ID unique within the book and a nonzero last-success timestamp. Versions 1 and 2 and unidentified
-version 3 records are rejected without replacing the file. There is no automatic migration or
-synthetic freshness grace period. If you have unsupported state, stop the instance, back up its
-peer state directory, and remove only `peers.json` before restarting. Retain `node-id` to preserve
-the instance's identity and configure a reachable seed to rebuild membership through verified
-outbound exchanges. Configured seeds are read from configuration on each startup rather than
-persisted as unverified members. Keep your stopped-state backup if you need rollback, because
-older binaries may not read the current state format.
+ID unique within the book and a nonzero last-success timestamp. Unsupported versions and
+unidentified records are rejected without replacing the file. To reset membership, stop the
+instance, back up its peer state directory, and remove only `peers.json` before restarting.
+Retain `node-id` to preserve the instance's identity and configure a reachable seed to rebuild
+membership through verified outbound exchanges. Configured seeds are read from configuration
+on each startup rather than persisted as unverified members.
 
 State files must be regular, process-owned, mode 0600 files. Startup takes an exclusive process
 lock, removes recognized abandoned staging files, and rejects corrupt state, unsafe files, or
@@ -1339,7 +1333,8 @@ Only matching committed entries are served. Opening the reader refreshes local r
 pins the entry against eviction until it closes. Missing or mismatched entries return `404`.
 Malformed requests return `400`, and busy or unavailable service returns `503`. Peers never
 fetch from origin or another peer to satisfy this endpoint. Redirects are never followed.
-Older peers without this endpoint are treated as unavailable, not as definitive stale claims.
+An unavailable endpoint is not a definitive stale claim. Only a valid `404` from the expected
+node retires the matching hint observation.
 
 Each instance permits eight incoming and eight outgoing entry streams, separately from
 discovery and listing worker limits. Data connections close after each request, leaving no
