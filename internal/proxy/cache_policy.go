@@ -130,14 +130,7 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 
 	// Length-delimited serialization avoids collisions and preserves distinct
 	// Accept header values. Only the hash, not raw request headers, is persisted.
-	key, _ := json.Marshal([]any{
-		a.String(),
-		object.repository,
-		string(object.kind),
-		object.digest,
-		req.Header.Values("Accept"),
-		media[0],
-	})
+	key, _ := json.Marshal(append(objectKeyInputs(a.String(), object, req.Header.Values("Accept")), media[0]))
 	sum := sha256.Sum256(key)
 	return cache.Metadata{
 		Key:        hex.EncodeToString(sum[:]),
@@ -152,9 +145,15 @@ func objectMetadata(req *http.Request, resp *http.Response) (cache.Metadata, boo
 // known. It never includes credentials. Ambiguous stored representations miss.
 func objectRequestKey(req *http.Request, object immutableObject) string {
 	authority, _ := hostport.Parse(req.URL.Host, "443")
-	encoded, _ := json.Marshal([]any{authority.String(), object.repository, string(object.kind), object.digest, req.Header.Values("Accept")})
+	encoded, _ := json.Marshal(objectKeyInputs(authority.String(), object, req.Header.Values("Accept")))
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
+}
+
+// objectKeyInputs is the shared request identity. Representation keys append
+// the response media type without changing the request-known inputs.
+func objectKeyInputs(authority string, object immutableObject, accept []string) []any {
+	return []any{authority, object.repository, string(object.kind), object.digest, accept}
 }
 
 // identityEncoded reports whether h has no Content-Encoding or a single "identity".
