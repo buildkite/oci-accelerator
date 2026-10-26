@@ -160,65 +160,124 @@ func TestRepositoryGrantReadsOtherClientsObjects(t *testing.T) {
 	}
 }
 
-func TestRepositoryGrantSurvivesMissingObjectRevalidation(t *testing.T) {
+func TestRepositoryGrantRevalidation(t *testing.T) {
 	const seed = "approved seed"
 	const layer = "another client's cached layer"
-	for _, code := range []int{404, 410} {
-		for _, header := range []string{"Cache-Control", "If-None-Match"} {
-			t.Run(fmt.Sprintf("%d/%s", code, header), func(t *testing.T) {
-				var gets atomic.Int32
-				origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					gets.Add(1)
-					if r.URL.Path == blobURL("missing") && header == "Cache-Control" {
-						http.Redirect(w, r, "/missing-result", http.StatusTemporaryRedirect)
+	for _, tc := range []struct {
+		name, header, value string
+		status              int
+		restrict            bool
+		redirect            bool
+		expire              bool
+		cold                bool
+	}{
+		{name: "conditional unchanged", header: "If-None-Match", value: `"previous"`, status: 304},
+		{name: "conditional changed", header: "If-None-Match", value: `"previous"`, status: 200},
+		{name: "no-cache", header: "Cache-Control", value: "no-cache", status: 200, redirect: true, cold: true},
+		{name: "pragma", header: "Pragma", value: "no-cache", status: 200},
+		{name: "restricted conditional", header: "If-None-Match", value: `"previous"`, status: 304, restrict: true},
+		{name: "restricted response", header: "Cache-Control", value: "no-cache", status: 200, restrict: true},
+		{name: "restricted redirect", header: "Cache-Control", value: "no-cache", status: 200, restrict: true, redirect: true},
+		{name: "missing conditional", header: "If-None-Match", value: `"previous"`, status: 404},
+		{name: "gone conditional", header: "If-None-Match", value: `"previous"`, status: 410},
+		{name: "missing redirect", header: "Cache-Control", value: "no-cache", status: 404, redirect: true},
+		{name: "gone redirect", header: "Cache-Control", value: "no-cache", status: 410, redirect: true},
+		{name: "unauthorized", header: "If-None-Match", value: `"previous"`, status: 401},
+		{name: "forbidden", header: "Cache-Control", value: "no-cache", status: 403},
+		{name: "original expiry", header: "If-None-Match", value: `"previous"`, status: 200, expire: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gets atomic.Int32
+			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gets.Add(1)
+				if r.URL.Path == blobURL("revalidate") || r.URL.Path == "/revalidation-result" {
+					if tc.restrict && r.URL.Path == blobURL("revalidate") {
+						w.Header().Set("Cache-Control", "no-store")
+					}
+					if tc.redirect && r.URL.Path == blobURL("revalidate") {
+						http.Redirect(w, r, "/revalidation-result", http.StatusTemporaryRedirect)
 						return
 					}
-					if r.URL.Path == blobURL("missing") || r.URL.Path == "/missing-result" {
-						http.Error(w, "missing", code)
+					if tc.status == http.StatusNotModified {
+						w.WriteHeader(tc.status)
 						return
 					}
-					body := seed
-					if r.URL.Path == blobURL(layer) {
-						if r.Header.Get("Authorization") != "Bearer filler" {
-							http.Error(w, "denied", 403)
-							return
-						}
-						body = layer
+					if tc.status != http.StatusOK {
+						http.Error(w, "upstream result", tc.status)
+						return
 					}
-					blobHeaders(w, body)
-					io.WriteString(w, body)
-				}))
-				defer origin.Close()
-				p, client := cacheFixture(t, origin, 1<<20, nil)
-				p.authorization = newAuthorizationCache(time.Minute, time.Minute, 100)
-				resp, body := getBlob(t, client, origin.URL+blobURL(layer), "Bearer filler")
-				if resp.StatusCode != 200 || body != layer {
-					t.Fatalf("warm layer = %d %q", resp.StatusCode, body)
+					blobHeaders(w, "revalidate")
+					io.WriteString(w, "revalidate")
+					return
 				}
-				resp, body = getBlob(t, client, origin.URL+blobURL(seed), "Bearer reader")
-				if resp.StatusCode != 200 || body != seed {
-					t.Fatalf("approval = %d %q", resp.StatusCode, body)
+				body := seed
+				if r.URL.Path == blobURL(layer) {
+					if r.Header.Get("Authorization") != "Bearer filler" {
+						http.Error(w, "denied", 403)
+						return
+					}
+					body = layer
 				}
-				req := authorizationRequest(t, origin.URL+blobURL("missing"), "Bearer reader")
-				value := "no-cache"
-				if header == "If-None-Match" {
-					value = `"previous"`
+				if tc.expire && r.URL.Path == blobURL(seed) {
+					w.Header().Set("Cache-Control", "max-age=1")
 				}
-				req.Header.Set(header, value)
-				resp, err := client.Do(req)
+				blobHeaders(w, body)
+				io.WriteString(w, body)
+			}))
+			defer origin.Close()
+			p, client := cacheFixture(t, origin, 1<<20, nil)
+			p.authorization = newAuthorizationCache(time.Minute, time.Minute, 100)
+			resp, body := getBlob(t, client, origin.URL+blobURL(layer), "Bearer filler")
+			if resp.StatusCode != 200 || body != layer {
+				t.Fatalf("warm layer = %d %q", resp.StatusCode, body)
+			}
+			req := authorizationRequest(t, origin.URL+blobURL("revalidate"), "Bearer reader")
+			req.Header.Set(tc.header, tc.value)
+			if tc.cold {
+				// A successful request requiring revalidation cannot create
+				// approval for a token that has no repository grant yet.
+				resp, err := client.Do(req.Clone(req.Context()))
 				if err != nil {
 					t.Fatal(err)
 				}
-				assertAuthorizationBody(t, resp, code, "missing\n")
+				assertAuthorizationBody(t, resp, 200, "revalidate")
 				resp, body = getBlob(t, client, origin.URL+blobURL(layer), "Bearer reader")
-				wantGETs := int32(3)
-				if header == "Cache-Control" {
-					wantGETs++ // Revalidation follows an upstream redirect.
+				if resp.StatusCode != 403 || body != "denied\n" || gets.Load() != 4 {
+					t.Fatalf("cold reader = %d %q, upstream GETs = %d, want 403 and 4", resp.StatusCode, body, gets.Load())
 				}
-				if resp.StatusCode != 200 || body != layer || gets.Load() != wantGETs {
-					t.Fatalf("grant after %d = %d %q, upstream GETs = %d, want %d", code, resp.StatusCode, body, gets.Load(), wantGETs)
-				}
-			})
-		}
+			}
+			resp, body = getBlob(t, client, origin.URL+blobURL(seed), "Bearer reader")
+			if resp.StatusCode != 200 || body != seed {
+				t.Fatalf("approval = %d %q", resp.StatusCode, body)
+			}
+			before := gets.Load()
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "revalidate"
+			if tc.status == http.StatusNotModified {
+				want = ""
+			} else if tc.status != http.StatusOK {
+				want = "upstream result\n"
+			}
+			assertAuthorizationBody(t, resp, tc.status, want)
+			if tc.expire {
+				// The original approval had a one-second ceiling. Revalidation
+				// must not replace it with the configured one-minute lease.
+				time.Sleep(1100 * time.Millisecond)
+			}
+			resp, body = getBlob(t, client, origin.URL+blobURL(layer), "Bearer reader")
+			status, want, count := 200, layer, before+1
+			if tc.restrict || tc.expire || tc.status == 401 || tc.status == 403 {
+				status, want, count = 403, "denied\n", count+1
+			}
+			if tc.redirect {
+				count++
+			}
+			if resp.StatusCode != status || body != want || gets.Load() != count {
+				t.Fatalf("after revalidation = %d %q, upstream GETs = %d, want %d %q and %d", resp.StatusCode, body, gets.Load(), status, want, count)
+			}
+		})
 	}
 }

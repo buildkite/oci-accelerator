@@ -134,6 +134,15 @@ func (a *grantAttempt) settle(req *http.Request, resp *http.Response, received t
 		return
 	}
 
+	// Request-only restrictions require upstream approval for this delivery,
+	// not revocation of an existing repository grant. Preserve its original
+	// expiry after successful revalidation without creating or renewing one.
+	// narrow already invalidated any response-side restrictions on every hop.
+	if a.repository && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotModified) &&
+		(!permitted || a.requestLifetime <= 0) {
+		return
+	}
+
 	meta, ok := objectMetadata(req, resp)
 	if ok && permitted && received.Before(a.deadline) {
 		a.cache.commit(a.entry, &authorizationGrant{meta: meta, expires: a.deadline})

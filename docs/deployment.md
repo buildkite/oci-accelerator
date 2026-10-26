@@ -764,6 +764,12 @@ and the request and response headers that prevent a grant. Additionally:
   outlives the TTL, but may be trusted for the full residual TTL regardless of upstream age.
   For Bearer repository grants, a request ceiling below the configured credentialed TTL
   bypasses grant reuse and requires fresh upstream approval, even for a newly approved grant.
+- Bearer repository requests with conditional `If-*` headers or request restrictions
+  that forbid grant creation, including `Cache-Control: no-cache` and `Pragma`, always go upstream.
+  An otherwise unrestricted terminal `200` or `304` preserves an existing repository
+  grant without creating or renewing one. Other credentials and anonymous requests
+  retain their exact-request grant behavior. A tighter positive `max-age` or `s-maxage`
+  still permits a successful eligible GET to establish a grant bounded by that ceiling.
 - A live Bearer repository grant skips upstream only for verified committed local hits,
   including eligible blob ranges. Local lookup uses the persisted `RequestKey`. Missing,
   corrupt, or ambiguous local lookup results take the normal upstream-first path. Every local
@@ -779,9 +785,12 @@ the client: there is no failed-request fallback.
 | ------------------------------------------------------------------------- | ------------------------------------------- |
 | `401`, `403`, or an authoritative reuse-forbidden response                  | Invalidated                                 |
 | Any response with `Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or `WWW-Authenticate` | Invalidated |
+| Otherwise unrestricted terminal `200` or `304` for a conditional request or one whose request restrictions forbid grant creation | Bearer repository grant kept until its original expiry, not created or renewed |
 | `404`, `410` without other invalidating headers or policy                    | Bearer repository grant kept. Exact-request grant invalidated |
 | Timeout, DNS or TLS failure, `408`, `429`, `5xx` without invalidating headers or policy | Kept until its original expiry |
 
+Response restrictions on any redirect hop or the terminal response still invalidate,
+even when the request requires revalidation.
 Invalidation fences out late successful requests, so they cannot restore the invalidated grant.
 
 ## Cache storage

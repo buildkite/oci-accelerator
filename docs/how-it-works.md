@@ -336,9 +336,18 @@ the normal upstream-first path. Every local miss requires its own upstream GET
 and accepted redirects before it can fetch peer bytes, even with a live grant.
 Other grants retain their existing exact-request local-body reuse.
 
+Bearer repository requests with conditional `If-*` headers or request restrictions
+that forbid grant creation, including `Cache-Control: no-cache` and `Pragma`, always go upstream.
+An otherwise unrestricted terminal `200` or `304` preserves an existing repository
+grant at its original expiry, without creating or renewing one. This does not
+change exact-request grants for other credentials or anonymous requests.
+A tighter positive `max-age` or `s-maxage` still permits a successful eligible
+GET to establish a grant bounded by that ceiling.
+
 Tokens remain opaque. Token expiry or revocation can take effect as late as the
 grant's original expiry. Matching upstream `401` or `403`, authentication-state
-headers, and authoritative reuse-forbidden responses invalidate the grant.
+headers, and authoritative reuse-forbidden responses on any redirect hop or the
+terminal response invalidate the grant, even when the request requires revalidation.
 Invalidation fences out late successful requests, so they cannot restore an
 invalidated approval. `404`, `410`, and transient failures do not revoke a Bearer
 repository grant, unless authentication-state headers or other invalidating policy

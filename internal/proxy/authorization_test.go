@@ -222,7 +222,7 @@ func TestAuthorizationBearerGrantsIgnoreOtherHeaders(t *testing.T) {
 	}
 }
 
-func TestAuthorizationStrippedBypassInvalidatesGrant(t *testing.T) {
+func TestAuthorizationStrippedBypassGrantOutcomes(t *testing.T) {
 	const body = "verified object"
 	for _, header := range []string{"Range", "If-None-Match"} {
 		for _, code := range []int{200, 401, 403} {
@@ -278,11 +278,18 @@ func TestAuthorizationStrippedBypassInvalidatesGrant(t *testing.T) {
 				if gets.Load() != 2 {
 					t.Fatal("original bypass used the fast path")
 				}
-				// A denial must invalidate the old grant. Even a complete 200
-				// for the forwarded GET must not commit a grant for a bypass.
-				fetch(base, 403, "revoked\n")
-				if gets.Load() != 3 {
-					t.Fatal("bypass retained or committed a reusable grant")
+				// A successful bypass preserves the old repository grant,
+				// while an upstream denial still revokes it.
+				if code == http.StatusOK {
+					fetch(base, 200, body)
+					if gets.Load() != 2 {
+						t.Fatal("successful bypass discarded the existing grant")
+					}
+				} else {
+					fetch(base, 403, "revoked\n")
+					if gets.Load() != 3 {
+						t.Fatal("denied bypass retained a reusable grant")
+					}
 				}
 			})
 		}
