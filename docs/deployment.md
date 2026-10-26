@@ -288,8 +288,8 @@ To cut a release, open a PR that increases the root [`VERSION`](../VERSION) file
 example from `v0.1.0` to `v0.1.1`. Use one stable `vMAJOR.MINOR.PATCH` version, with a
 lowercase `v` prefix and without leading zeros, prerelease suffix, or build metadata.
 CI validates its format and checks numeric increases against the PR's merge base with
-`main`. Historical unprefixed versions are accepted for comparison. Adding the prefix
-alone, such as `0.1.0` to `v0.1.0`, publishes the prefixed tag without changing the old tag.
+`main`. A comparison version must use the same prefixed format. Unprefixed versions
+are rejected, including changes that only add the prefix.
 
 After you merge the PR, the non-PR `main` build compares `VERSION` with its first parent.
 If the value changed, it publishes `buildkite/oci-accelerator:v0.1.1` for both `linux/amd64`
