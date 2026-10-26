@@ -283,8 +283,10 @@ func TestCacheFillWaitFollowerCancellationLeavesLeaderFillIntact(t *testing.T) {
 			_, _ = io.WriteString(w, body)
 			return
 		}
-		<-r.Context().Done()
-		close(followerClosed)
+		if n == 2 {
+			<-r.Context().Done()
+			close(followerClosed)
+		}
 	}))
 	defer origin.Close()
 	releaseLeader := safeRelease(release)

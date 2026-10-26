@@ -444,21 +444,18 @@ func TestEntryHandlerDeadlineReleasesBlockedReader(t *testing.T) {
 
 func TestEntryHandlerOverridesControlWriteDeadline(t *testing.T) {
 	store, meta := entryTestStore(t, []byte("past control deadline"))
-	handler := NewEntryHandler(testIDA, store, time.Second)
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(&entryDelayedWriter{ResponseWriter: w}, r)
-	}))
-	server.Config.WriteTimeout = 10 * time.Millisecond
-	server.StartTLS()
-	defer server.Close()
-	body, err := FetchEntry(context.Background(), server.Client(), testServerAddress(server), testIDA, meta)
-	if err != nil {
-		t.Fatal(err)
+	handler := NewEntryHandler(testIDA, store, time.Minute)
+	now := time.Now()
+	w := &entryDeadlineWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		now:              now,
+		deadline:         now.Add(-time.Second),
 	}
-	defer body.Close()
-	got, err := io.ReadAll(body)
-	if err != nil || string(got) != "past control deadline" {
-		t.Fatalf("delayed bytes = %q, %v", got, err)
+	r := httptest.NewRequest(http.MethodPost, entryPath, bytes.NewReader(entryTestJSON(t, meta)))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || w.Body.String() != "past control deadline" {
+		t.Fatalf("entry response = %d, %q", w.Code, w.Body.String())
 	}
 }
 
@@ -528,11 +525,27 @@ func (w *entryBlockingWriter) SetWriteDeadline(deadline time.Time) error {
 	return nil
 }
 
-type entryDelayedWriter struct{ http.ResponseWriter }
+type entryDeadlineWriter struct {
+	*httptest.ResponseRecorder
+	now      time.Time
+	mu       sync.Mutex
+	deadline time.Time
+}
 
-func (w *entryDelayedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *entryDeadlineWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	expired := !w.deadline.IsZero() && !w.deadline.After(w.now)
+	w.mu.Unlock()
+	if expired {
+		return 0, context.DeadlineExceeded
+	}
 
-func (w *entryDelayedWriter) Write(p []byte) (int, error) {
-	time.Sleep(30 * time.Millisecond)
-	return w.ResponseWriter.Write(p)
+	return w.ResponseRecorder.Write(p)
+}
+
+func (w *entryDeadlineWriter) SetWriteDeadline(deadline time.Time) error {
+	w.mu.Lock()
+	w.deadline = deadline
+	w.mu.Unlock()
+	return nil
 }
