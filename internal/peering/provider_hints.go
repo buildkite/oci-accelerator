@@ -63,6 +63,7 @@ func NewProviderHints(book *Book, client *http.Client, inventory func(cache.KeyP
 		transfers:           make(chan struct{}, 8),
 		added:               make(map[string]bool),
 	}
+
 	for _, id := range snapshot.Peers {
 		p.added[id] = true
 	}
@@ -98,8 +99,10 @@ func (p *ProviderHints) refresh(ctx context.Context, peer string, after *cache.K
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
 	ctx, cancel := context.WithTimeout(ctx, p.refreshTimeout)
 	defer cancel()
+
 	address := addressForID(p.book.Snapshot().Peers, peer)
 	if address == "" {
 		return errUnknownPeer
@@ -123,9 +126,11 @@ func (p *ProviderHints) Providers(key string) []string {
 	if !ok {
 		return nil
 	}
+
 	p.mu.Lock()
 	ids := p.index.providers(parsed)
 	p.mu.Unlock()
+
 	peers := p.book.Snapshot().Peers
 	return slices.DeleteFunc(ids, func(id string) bool { return addressForID(peers, id) == "" })
 }

@@ -209,6 +209,7 @@ func immutableObjectRequest(r *http.Request) (immutableObject, bool) {
 			return immutableObject{}, false
 		}
 	}
+
 	// Require the path to be an exact /v2/<repo>/(blobs|manifests)/sha256:<digest> match.
 	parts := objectPath.FindStringSubmatch(r.URL.Path)
 	if parts == nil {

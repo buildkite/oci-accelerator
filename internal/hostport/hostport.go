@@ -30,6 +30,7 @@ func Parse(text, defaultPort string) (HostPort, error) {
 	if err != nil {
 		return HostPort{}, ErrInvalid
 	}
+
 	if port == "" {
 		port = defaultPort
 	}
@@ -57,12 +58,14 @@ func Canonicalize(host string) (string, error) {
 	if host == "" || strings.Contains(host, ":") && net.ParseIP(host) == nil {
 		return "", ErrInvalid
 	}
+
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.String(), nil
 	}
 	if looksLikeIPv4(host) || !validHostname(host) {
 		return "", ErrInvalid
 	}
+
 	return host, nil
 }
 
@@ -70,6 +73,7 @@ func split(text string) (string, string, error) {
 	if strings.HasSuffix(text, ":") && !strings.HasSuffix(text, "::") {
 		return "", "", ErrInvalid
 	}
+
 	if strings.HasPrefix(text, "[") {
 		end := strings.IndexByte(text, ']')
 		if end < 0 || net.ParseIP(text[1:end]) == nil || !strings.Contains(text[1:end], ":") {
@@ -80,12 +84,14 @@ func split(text string) (string, string, error) {
 		}
 		return net.SplitHostPort(text)
 	}
+
 	if strings.Count(text, ":") > 1 { // bare IPv6 without a port
 		return text, "", nil
 	}
 	if strings.Contains(text, ":") {
 		return net.SplitHostPort(text)
 	}
+
 	return text, "", nil
 }
 
@@ -97,11 +103,13 @@ func looksLikeIPv4(host string) bool {
 	if strings.Count(host, ".") != 3 {
 		return false
 	}
+
 	for _, r := range host {
 		if r != '.' && (r < '0' || r > '9') {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -117,6 +125,7 @@ func validHostname(host string) bool {
 	if len(host) > 253 {
 		return false
 	}
+
 	for _, label := range strings.Split(host, ".") {
 		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
 			return false
@@ -127,6 +136,7 @@ func validHostname(host string) bool {
 			}
 		}
 	}
+
 	return true
 }
 
@@ -145,5 +155,6 @@ func (h HostPort) String() string {
 		}
 		return h.host
 	}
+
 	return net.JoinHostPort(h.host, h.port)
 }

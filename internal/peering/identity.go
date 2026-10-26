@@ -21,6 +21,7 @@ func loadNodeID(dir string) (string, error) {
 	if err := validateRegular(path); err != nil {
 		return "", err
 	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -45,6 +46,7 @@ func validNodeID(id string) bool {
 	if len(id) != 12 {
 		return false
 	}
+
 	for _, c := range id {
 		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
 			return false

@@ -18,6 +18,7 @@ func newKeysHandler(self nodeID, inventory func(cache.KeyPosition, int) ([]strin
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
+
 		keys, next, err := inventory(after, maxKeysPerPage)
 		if errors.Is(err, cache.ErrKeyCursor) {
 			w.Header().Set(keysErrorHeader, "invalid_cursor")
@@ -28,6 +29,7 @@ func newKeysHandler(self nodeID, inventory func(cache.KeyPosition, int) ([]strin
 			http.Error(w, "cache keys unavailable", http.StatusInternalServerError)
 			return
 		}
+
 		page := keysPage{node: self, keys: make([]cacheKey, len(keys)), next: next}
 		for i, text := range keys {
 			if page.keys[i], ok = parseCacheKey(text); !ok {
@@ -35,11 +37,13 @@ func newKeysHandler(self nodeID, inventory func(cache.KeyPosition, int) ([]strin
 				return
 			}
 		}
+
 		encoded, err := encodeKeysPage(page)
 		if err != nil {
 			http.Error(w, "cache keys unavailable", http.StatusInternalServerError)
 			return
 		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(encoded)
 	})
@@ -54,6 +58,7 @@ func parseKeysRequest(r *http.Request) (cache.KeyPosition, bool) {
 	if r.RequestURI == keysPath {
 		return cache.KeyPosition{}, true
 	}
+
 	token, found := strings.CutPrefix(r.RequestURI, keysPath+"?after=")
 	if !found {
 		return cache.KeyPosition{}, false

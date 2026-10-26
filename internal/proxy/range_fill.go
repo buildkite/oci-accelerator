@@ -54,6 +54,7 @@ func (p *Proxy) startRangeFetch(client context.Context) (*rangeFetch, error) {
 func (t registryTransport) pumpRangeFill(fetch *rangeFetch, source *fillingBody) io.ReadCloser {
 	reader, writer := io.Pipe()
 	stopClient := context.AfterFunc(fetch.client, func() { reader.CloseWithError(fetch.client.Err()) })
+
 	// Also unblock a writer held by a client that stopped reading at shutdown
 	// or at the fill deadline, because canceling upstream alone cannot unblock a pipe.
 	stopFetch := context.AfterFunc(fetch.ctx, func() { reader.CloseWithError(fetch.ctx.Err()) })
@@ -64,13 +65,11 @@ func (t registryTransport) pumpRangeFill(fetch *rangeFetch, source *fillingBody)
 		defer stopFetch()
 
 		_, err := io.Copy(writer, source)
-
 		writer.CloseWithError(err)
 
 		// If delivery stopped but storage is still useful, finish the same GET.
 		// Stop immediately on a cache failure after the client has gone away.
 		buffer := make([]byte, 32*1024)
-
 		for source.fill != nil && fetch.ctx.Err() == nil {
 			if _, err := source.Read(buffer); err != nil {
 				break

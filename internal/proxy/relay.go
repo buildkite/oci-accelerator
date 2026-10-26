@@ -74,6 +74,7 @@ func (c *activityConn) Read(b []byte) (int, error) {
 	}
 	return n, err
 }
+
 func (c *activityConn) Write(b []byte) (int, error) {
 	n, err := c.Conn.Write(b)
 	if n != 0 {

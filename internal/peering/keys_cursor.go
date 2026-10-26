@@ -16,6 +16,7 @@ func encodeKeysCursor(position cache.KeyPosition) (string, error) {
 	if !ok || position.Last <= 0 || position.Incarnation == ([16]byte{}) {
 		return "", errInvalidKeysPage
 	}
+
 	var raw [keysCursorBytes]byte
 	raw[0] = 1
 	copy(raw[1:17], position.Incarnation[:])
@@ -28,10 +29,12 @@ func decodeKeysCursor(token string) (cache.KeyPosition, error) {
 	if len(token) != base64.RawURLEncoding.EncodedLen(keysCursorBytes) {
 		return cache.KeyPosition{}, errInvalidKeysPage
 	}
+
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
 	if err != nil || len(raw) != keysCursorBytes || raw[0] != 1 {
 		return cache.KeyPosition{}, errInvalidKeysPage
 	}
+
 	var position cache.KeyPosition
 	copy(position.Incarnation[:], raw[1:17])
 	position.Last = int64(binary.BigEndian.Uint64(raw[17:25]))

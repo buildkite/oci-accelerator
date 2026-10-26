@@ -35,12 +35,14 @@ func parseCacheKey(s string) (cacheKey, bool) {
 	if len(s) != 2*cacheKeyLen {
 		return key, false
 	}
+
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
 			return key, false
 		}
 	}
+
 	_, err := hex.Decode(key[:], []byte(s))
 	return key, err == nil
 }

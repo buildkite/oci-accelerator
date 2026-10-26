@@ -17,6 +17,7 @@ func readEnvFile(path string) (map[string]string, error) {
 	if path == "" {
 		return values, nil
 	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("read environment file: %w", err)
@@ -27,6 +28,7 @@ func readEnvFile(path string) (map[string]string, error) {
 	for _, setting := range environmentSettings(&rawConfig{}) {
 		allowed[environmentPrefix+setting.name] = struct{}{}
 	}
+
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 4096), maxEnvLineBytes)
 	line := 1
@@ -38,6 +40,7 @@ func readEnvFile(path string) (map[string]string, error) {
 		if skip {
 			continue
 		}
+
 		if _, ok := allowed[name]; !ok {
 			return nil, fmt.Errorf("%w at line %d: unknown environment setting", ErrInvalid, line)
 		}
@@ -50,8 +53,10 @@ func readEnvFile(path string) (map[string]string, error) {
 		if errors.Is(err, bufio.ErrTooLong) {
 			return nil, fmt.Errorf("%w at line %d: environment file line is too long", ErrInvalid, line)
 		}
+
 		return nil, fmt.Errorf("read environment file: %w", err)
 	}
+
 	return values, nil
 }
 
@@ -59,6 +64,7 @@ func parseEnvLine(line string) (name, value string, skip bool, category string) 
 	if strings.IndexByte(line, 0) >= 0 {
 		return "", "", false, "NUL byte"
 	}
+
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 		return "", "", true, ""
@@ -66,6 +72,7 @@ func parseEnvLine(line string) (name, value string, skip bool, category string) 
 	if strings.HasPrefix(trimmed, "export ") || strings.HasPrefix(trimmed, "export\t") {
 		return "", "", false, "export is not supported"
 	}
+
 	name, rest, found := strings.Cut(trimmed, "=")
 	if !found || name == "" {
 		return "", "", false, "expected KEY=value"
@@ -73,6 +80,7 @@ func parseEnvLine(line string) (name, value string, skip bool, category string) 
 	if strings.TrimSpace(name) != name || strings.ContainsAny(name, " \t") {
 		return "", "", false, "malformed environment setting name"
 	}
+
 	// Whitespace outside quotes is insignificant. Quotes group literal bytes,
 	// without escape processing, interpolation, or command execution.
 	rest = strings.TrimSpace(rest)
@@ -90,6 +98,7 @@ func parseEnvLine(line string) (name, value string, skip bool, category string) 
 		}
 		return name, value, false, ""
 	}
+
 	for i := 0; i < len(rest); i++ {
 		if rest[i] == '#' && (i == 0 || rest[i-1] == ' ' || rest[i-1] == '\t') {
 			rest = rest[:i]

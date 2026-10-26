@@ -23,6 +23,7 @@ import (
 func main() {
 	ctx, stop := shutdownContext()
 	defer stop()
+
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, net.Listen); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		// Every failure, usage or runtime, exits 2. Only zero versus non-zero is meaningful.
@@ -117,6 +118,7 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 	if flags.NArg() != 0 {
 		return config.Config{}, false, errors.New("positional arguments are not supported")
 	}
+
 	cfg, err = config.Load(*envFile)
 	if err != nil {
 		if errors.Is(err, config.ErrInvalid) {
@@ -124,10 +126,12 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 		}
 		return config.Config{}, false, errors.New("configuration validation failed")
 	}
+
 	if *check {
 		fmt.Fprintln(stdout, "configuration validated")
 		return cfg, true, nil
 	}
+
 	return cfg, false, nil
 }
 
@@ -143,6 +147,7 @@ func openCacheStore(cfg config.Config, logger *slog.Logger) (*cache.Store, func(
 	if err != nil {
 		return nil, nil, cacheDiagnostic("cache startup failed", err)
 	}
+
 	cleanup := func() error {
 		if err := store.Close(); err != nil {
 			diagnostic := cacheDiagnostic("cache cleanup failed", err)
@@ -151,6 +156,7 @@ func openCacheStore(cfg config.Config, logger *slog.Logger) (*cache.Store, func(
 		}
 		return nil
 	}
+
 	return store, cleanup, nil
 }
 
@@ -170,10 +176,12 @@ func startMetrics(cfg config.Config, p *proxy.Proxy, listen func(string, string)
 	if cfg.MetricsListen == "" {
 		return nil, nil, nil
 	}
+
 	metricsListener, err := listen("tcp", cfg.MetricsListen)
 	if err != nil {
 		return nil, nil, errors.New("cannot listen on configured metrics address")
 	}
+
 	metricsServer := newMetricsServer(cfg, p)
 	metricsDone := make(chan struct{})
 	var metricsErr error
@@ -184,19 +192,23 @@ func startMetrics(cfg config.Config, p *proxy.Proxy, listen func(string, string)
 		}
 		close(metricsDone)
 	}()
+
 	cleanup := func() error {
 		var err error
 		shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
+
 		if e := metricsServer.Shutdown(shutdown); e != nil {
 			_ = metricsServer.Close()
 			err = errors.Join(err, errors.New("metrics cleanup failed"))
 		}
+
 		<-metricsDone
 		err = errors.Join(err, metricsErr)
 		_ = metricsListener.Close()
 		return err
 	}
+
 	return metricsDone, cleanup, nil
 }
 
@@ -209,14 +221,17 @@ func serveUntilSignal(ctx context.Context, p *proxy.Proxy, listener net.Listener
 		serveErr = p.Serve(listener)
 		close(done)
 	}()
+
 	select {
 	case <-metricsDone:
 	case <-peeringDone:
 	case <-done:
 	case <-ctx.Done():
 	}
+
 	shutdown, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
 	shutdownErr := p.Shutdown(shutdown)
 	<-done
 	return errors.Join(serveErr, shutdownErr)

@@ -15,6 +15,7 @@ import (
 func bootstrapNodeID(ctx context.Context, client *http.Client, self, id string, fresh bool, peers map[string]string, seeds []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
 	destinations := make(map[string]string, len(peers)+len(seeds))
 	known := make(map[string]bool, len(peers))
 	verify := make(map[string]string)
@@ -22,6 +23,7 @@ func bootstrapNodeID(ctx context.Context, client *http.Client, self, id string, 
 		destinations[address] = peerID
 		known[peerID] = true
 	}
+
 	for _, address := range seeds {
 		canonical, err := CanonicalAddress(address)
 		if err != nil {
@@ -32,11 +34,13 @@ func bootstrapNodeID(ctx context.Context, client *http.Client, self, id string, 
 		}
 	}
 	delete(destinations, self)
+
 	// A fast unrelated snapshot must not hide a clone among the original
 	// destinations when the other initial requests are canceled.
 	for address, peerID := range destinations {
 		verify[address] = peerID
 	}
+
 	snapshots := probeSnapshots(ctx, client, identityFirst(destinations, id), func(Message) bool { return true })
 	for _, snapshot := range snapshots {
 		if !fresh && snapshot.NodeID == id && snapshot.Address != self {
@@ -53,6 +57,7 @@ func bootstrapNodeID(ctx context.Context, client *http.Client, self, id string, 
 		}
 		known[snapshot.NodeID] = true
 	}
+
 	if fresh {
 		for known[id] {
 			var err error
@@ -63,6 +68,7 @@ func bootstrapNodeID(ctx context.Context, client *http.Client, self, id string, 
 		}
 		return id, nil
 	}
+
 	conflicts := probeSnapshots(ctx, client, identityFirst(verify, id), func(message Message) bool {
 		return message.NodeID == id && message.Address != self
 	})
@@ -92,6 +98,7 @@ func probeSnapshots(ctx context.Context, client *http.Client, addresses []string
 		jobs <- address
 	}
 	close(jobs)
+
 	workers := min(exchangeConcurrency, len(addresses))
 	results := make(chan Message, workers)
 	var requests sync.WaitGroup
@@ -111,6 +118,7 @@ func probeSnapshots(ctx context.Context, client *http.Client, addresses []string
 			results <- Message{}
 		})
 	}
+
 	var snapshots []Message
 	for range workers {
 		if message := <-results; message.NodeID != "" {

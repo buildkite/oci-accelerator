@@ -77,6 +77,7 @@ func (c *trackedConn) Read(b []byte) (int, error) {
 		if remaining > 0 {
 			c.header = append(c.header, b[:remaining]...)
 		}
+
 		if end := bytes.Index(c.header, []byte("\r\n\r\n")); end >= 0 {
 			c.rawOK = rawCONNECTAcceptable(c.header[:end])
 			c.checked = true

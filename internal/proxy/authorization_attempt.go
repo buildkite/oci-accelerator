@@ -75,10 +75,12 @@ func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted
 	if a == nil {
 		return
 	}
+
 	if hasAuthenticationState(resp.Header) {
 		a.cache.invalidate(a.entry)
 		return
 	}
+
 	if isTransient(resp.StatusCode) {
 		return
 	}
@@ -104,6 +106,7 @@ func (a *grantAttempt) settle(req *http.Request, resp *http.Response, received t
 	if a == nil || isTransient(resp.StatusCode) {
 		return
 	}
+
 	meta, ok := objectMetadata(req, resp)
 	if ok && permitted && received.Before(a.deadline) {
 		a.cache.commit(a.entry, &authorizationGrant{meta: meta, expires: a.deadline})
@@ -118,5 +121,6 @@ func (a *grantAttempt) abandon() {
 	if a == nil {
 		return
 	}
+
 	a.cache.invalidate(a.entry)
 }

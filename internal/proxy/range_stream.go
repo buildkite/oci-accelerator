@@ -22,6 +22,7 @@ func (s *rangeStream) Read(p []byte) (int, error) {
 			return 0, err
 		}
 	}
+
 	n, err := s.source.Read(p)
 	s.consumed += int64(n)
 	s.position = s.consumed
@@ -38,9 +39,11 @@ func (s *rangeStream) Seek(offset int64, whence int) (int64, error) {
 	default:
 		return 0, errors.New("invalid range seek")
 	}
+
 	if offset < s.consumed || offset > s.size {
 		return 0, errors.New("range seek outside unread content")
 	}
+
 	s.position = offset
 	return offset, nil
 }

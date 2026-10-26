@@ -36,7 +36,7 @@ func runInitCA(args []string, stdout io.Writer) error {
 		// Filesystem errors can include user-supplied paths. Keep diagnostics fixed.
 		return errors.New("CA initialization failed: check the CA directory, ownership, permissions, and certificate/key validity")
 	}
-	_, err = fmt.Fprintf(stdout, "ca_certificate=%q\nca_sha256=%s\n", signer.CertificatePath(), signer.Fingerprint())
 
+	_, err = fmt.Fprintf(stdout, "ca_certificate=%q\nca_sha256=%s\n", signer.CertificatePath(), signer.Fingerprint())
 	return err
 }

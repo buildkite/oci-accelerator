@@ -24,6 +24,7 @@ const (
 	certName   = "ca.crt"
 	keyName    = "ca.key"
 	caKeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature
+
 	// Oversized PEM files fail Open without modifying the installation.
 	maxPEMSize = 64 << 10
 )
@@ -48,6 +49,7 @@ func Open(dir string, maxLeaves int) (*Authority, error) {
 	if dir == "" || maxLeaves <= 0 {
 		return nil, errors.New("CA directory and a positive leaf limit are required")
 	}
+
 	dir = filepath.Clean(dir)
 	info, err := os.Lstat(dir)
 	switch {
@@ -70,6 +72,7 @@ func Open(dir string, maxLeaves int) (*Authority, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return &Authority{dir: dir, cert: cert, key: key, maxLeaves: maxLeaves, leafCache: newLeafCache()}, nil
 }
 
@@ -93,6 +96,7 @@ func initialize(dir string) error {
 	if err := checkParent(parent); err != nil {
 		return err
 	}
+
 	stage, err := os.MkdirTemp(parent, ".ca-init-")
 	if err != nil {
 		return err
@@ -101,6 +105,7 @@ func initialize(dir string) error {
 	if err := os.Chmod(stage, 0o700); err != nil {
 		return err
 	}
+
 	certDER, key, err := newCA(time.Now())
 	if err != nil {
 		return err
@@ -109,6 +114,7 @@ func initialize(dir string) error {
 	if err != nil {
 		return err
 	}
+
 	if err := writeExclusive(filepath.Join(stage, keyName), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return err
 	}
@@ -118,6 +124,7 @@ func initialize(dir string) error {
 	if err := syncDir(stage); err != nil {
 		return err
 	}
+
 	// Publish atomically: renaming onto a non-empty dir fails, so concurrent
 	// initializers never replace a published CA and no lock is needed. A crash
 	// can orphan the staging directory. It may belong to an active initializer,
@@ -128,8 +135,10 @@ func initialize(dir string) error {
 		if publishedCA(dir) {
 			return syncDir(parent)
 		}
+
 		return err
 	}
+
 	return syncDir(parent)
 }
 
@@ -142,6 +151,7 @@ func publishedCA(dir string) bool {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {
 		return false
 	}
+
 	if err := checkRegular(filepath.Join(dir, certName), 0o644); err != nil {
 		return false
 	}
@@ -157,6 +167,7 @@ func checkCADir(info os.FileInfo) error {
 	if !ownedByCurrentUser(info) {
 		return errors.New("CA directory must be owned by the current user")
 	}
+
 	return nil
 }
 
@@ -173,6 +184,7 @@ func checkParent(parent string) error {
 	if !ownedByCurrentUser(info) {
 		return errors.New("CA parent must be owned by the current user")
 	}
+
 	return nil
 }
 
@@ -187,6 +199,7 @@ func syncDir(path string) error {
 		return err
 	}
 	defer f.Close()
+
 	return f.Sync()
 }
 
@@ -195,12 +208,14 @@ func writeExclusive(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+
 	if err = f.Chmod(mode); err == nil {
 		_, err = f.Write(data)
 	}
 	if err == nil {
 		err = f.Sync()
 	}
+
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
@@ -216,6 +231,7 @@ func newCA(now time.Time) ([]byte, *ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+
 	t := &x509.Certificate{
 		SerialNumber:          serial,
 		SignatureAlgorithm:    x509.ECDSAWithSHA256,
@@ -226,6 +242,7 @@ func newCA(now time.Time) ([]byte, *ecdsa.PrivateKey, error) {
 		BasicConstraintsValid: true,
 		KeyUsage:              caKeyUsage,
 	}
+
 	der, err := x509.CreateCertificate(rand.Reader, t, t, &key.PublicKey, key)
 	return der, key, err
 }
@@ -239,6 +256,7 @@ func load(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("read CA key: %w", err)
 	}
+
 	cb, rest := pem.Decode(certPEM)
 	if cb == nil || cb.Type != "CERTIFICATE" || len(rest) != 0 {
 		return nil, nil, errors.New("invalid CA certificate PEM")
@@ -253,6 +271,7 @@ func load(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	if err := cert.CheckSignatureFrom(cert); err != nil {
 		return nil, nil, fmt.Errorf("verify CA self-signature: %w", err)
 	}
+
 	kb, rest := pem.Decode(keyPEM)
 	if kb == nil || kb.Type != "EC PRIVATE KEY" || len(rest) != 0 {
 		return nil, nil, errors.New("invalid CA key PEM")
@@ -267,10 +286,12 @@ func load(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	if !key.PublicKey.Equal(cert.PublicKey) {
 		return nil, nil, errors.New("CA certificate and key do not match")
 	}
+
 	now := time.Now()
 	if now.Before(cert.NotBefore) || !now.Before(cert.NotAfter) {
 		return nil, nil, errors.New("CA certificate is not currently valid")
 	}
+
 	return cert, key, nil
 }
 
@@ -283,11 +304,13 @@ func readRegular(path string, maxPerm os.FileMode) ([]byte, error) {
 	if err := checkRegular(path, maxPerm); err != nil {
 		return nil, err
 	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+
 	raw, err := io.ReadAll(io.LimitReader(f, maxPEMSize+1))
 	if err != nil {
 		return nil, err
@@ -295,6 +318,7 @@ func readRegular(path string, maxPerm os.FileMode) ([]byte, error) {
 	if len(raw) > maxPEMSize {
 		return nil, errors.New("CA PEM file exceeds 64 KiB size limit")
 	}
+
 	return raw, nil
 }
 
@@ -309,5 +333,6 @@ func checkRegular(path string, maxPerm os.FileMode) error {
 	if !ownedByCurrentUser(info) {
 		return errors.New("file must be owned by the current user")
 	}
+
 	return nil
 }

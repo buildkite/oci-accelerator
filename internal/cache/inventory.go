@@ -80,7 +80,6 @@ func (s *Store) inventory() error {
 // "meta" and "body" files without modifying disk or Store accounting. A nil
 // entry and nil error identifies discardable state.
 func loadInventoryEntry(path, key string) (*entry, error) {
-
 	// The entry directory must be a 0700 directory owned by this user.
 	dirInfo, err := os.Lstat(path)
 	if err != nil || dirInfo.Mode().Perm() != 0o700 || !owned(dirInfo) {
@@ -147,5 +146,6 @@ func loadInventoryEntry(path, key string) (*entry, error) {
 	if !ok {
 		return nil, errors.New("cache entry size overflow")
 	}
+
 	return &entry{meta: disk.Metadata, dir: path, charge: charge, last: disk.Committed}, nil
 }

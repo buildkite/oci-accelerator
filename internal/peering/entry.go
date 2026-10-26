@@ -42,6 +42,7 @@ func NewEntryHandler(self string, store *cache.Store, timeout time.Duration) htt
 			http.Error(w, "entry unavailable", http.StatusServiceUnavailable)
 			return
 		}
+
 		select {
 		case slots <- struct{}{}:
 			defer func() { <-slots }()
@@ -49,20 +50,24 @@ func NewEntryHandler(self string, store *cache.Store, timeout time.Duration) htt
 			http.Error(w, "entry busy", http.StatusServiceUnavailable)
 			return
 		}
+
 		if r.Method != http.MethodPost || r.RequestURI != entryPath || !jsonContentType(r.Header.Get("Content-Type")) ||
 			len(r.Header.Values("Content-Encoding")) != 0 || len(r.TransferEncoding) != 0 || len(r.Trailer) != 0 ||
 			len(r.Header.Values("Trailer")) != 0 || r.ContentLength < 0 || r.ContentLength > maxEntryMetadataBytes {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
+
 		encoded, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEntryMetadataBytes))
 		meta, valid := decodeEntryMetadata(encoded)
 		if err != nil || !valid {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
+
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
+
 		reader, err := store.Get(ctx, meta)
 		if reader != nil {
 			defer reader.Close()
@@ -81,6 +86,7 @@ func NewEntryHandler(self string, store *cache.Store, timeout time.Duration) htt
 			http.Error(w, "entry unavailable", http.StatusServiceUnavailable)
 			return
 		}
+
 		controller := http.NewResponseController(w)
 		deadline, _ := ctx.Deadline()
 		// Replace the control server's short write deadline only for a hit.
@@ -88,6 +94,7 @@ func NewEntryHandler(self string, store *cache.Store, timeout time.Duration) htt
 			http.Error(w, "entry unavailable", http.StatusServiceUnavailable)
 			return
 		}
+
 		stopped := make(chan struct{})
 		stop := context.AfterFunc(ctx, func() {
 			_ = controller.SetWriteDeadline(time.Now())
@@ -98,6 +105,7 @@ func NewEntryHandler(self string, store *cache.Store, timeout time.Duration) htt
 				<-stopped
 			}
 		}()
+
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 		w.WriteHeader(http.StatusOK)
@@ -112,6 +120,7 @@ func decodeEntryMetadata(encoded []byte) (cache.Metadata, bool) {
 	if len(encoded) > maxEntryMetadataBytes || !utf8.Valid(encoded) {
 		return cache.Metadata{}, false
 	}
+
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.UseNumber()
 	fields := 0
@@ -134,6 +143,7 @@ func decodeEntryMetadata(encoded []byte) (cache.Metadata, bool) {
 	if _, err := decoder.Token(); err != io.EOF {
 		return cache.Metadata{}, false
 	}
+
 	var wire entryMetadata
 	if json.Unmarshal(encoded, &wire) != nil {
 		return cache.Metadata{}, false

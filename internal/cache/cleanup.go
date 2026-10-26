@@ -27,6 +27,7 @@ func (s *Store) retryCleanupsLocked() {
 	for range min(cleanupRetryLimit, s.cleanupQueue.Len()) {
 		next := s.cleanupQueue.Front()
 		path := next.Value.(string)
+
 		s.startOpLocked()
 		s.mu.Unlock()
 		err := s.removeAll(path)

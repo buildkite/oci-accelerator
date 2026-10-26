@@ -52,6 +52,7 @@ func NewDiscovery(book *Book, client *http.Client, logger *slog.Logger, newPeers
 		known:   make(map[string]*peerSchedule),
 		pending: make(map[string]bool),
 	}
+
 	for _, address := range book.candidates() {
 		d.pending[address] = true
 		d.known[address] = &peerSchedule{}
@@ -74,12 +75,15 @@ func (d *Discovery) Run(ctx context.Context) {
 		err          error
 		verification bool
 	}
+
 	results := make(chan result, exchangeConcurrency)
 	var requests sync.WaitGroup
 	defer d.client.CloseIdleConnections()
 	defer requests.Wait()
+
 	timer := time.NewTimer(0)
 	defer timer.Stop()
+
 	active := 0
 	verifying := 0
 	expiryFailed := false
@@ -95,6 +99,7 @@ func (d *Discovery) Run(ctx context.Context) {
 			d.logger.Info("peer membership expiry persistence recovered")
 			expiryFailed = false
 		}
+
 		snapshot, before := d.book.observe()
 		wait := d.interval
 		addresses := d.destinations(before, now)
@@ -103,11 +108,13 @@ func (d *Discovery) Run(ctx context.Context) {
 		sort.SliceStable(addresses, func(i, j int) bool {
 			return d.known[addresses[i]].next.Before(d.known[addresses[j]].next)
 		})
+
 		for _, address := range addresses {
 			entry := d.known[address]
 			if entry.running {
 				continue
 			}
+
 			_, retained := before.peers[address]
 			verification := !retained
 			// Unverified hints cannot monopolize all slots and starve regular
@@ -135,12 +142,14 @@ func (d *Discovery) Run(ctx context.Context) {
 				wait = remaining
 			}
 		}
+
 		for address, pending := range d.pending {
 			if remaining := d.known[address].next.Sub(now); !pending && remaining > 0 && remaining < wait {
 				wait = remaining
 			}
 		}
 		d.mu.Unlock()
+
 		timer.Reset(wait)
 		select {
 		case <-ctx.Done():
@@ -152,6 +161,7 @@ func (d *Discovery) Run(ctx context.Context) {
 			if result.verification {
 				verifying--
 			}
+
 			d.mu.Lock()
 			entry := d.known[result.address]
 			entry.running = false
@@ -165,6 +175,7 @@ func (d *Discovery) Run(ctx context.Context) {
 					merged, result.err = d.receive(result.message, result.address, &result.before)
 				}
 			}
+
 			entry.confirmedID = ""
 			if result.err == nil && ctx.Err() == nil && result.message.Address == result.address && merged.Peers[result.address] == result.message.NodeID {
 				entry.confirmedID = result.message.NodeID
@@ -182,6 +193,7 @@ func (d *Discovery) Run(ctx context.Context) {
 					}
 				}
 			}
+
 			if result.err != nil && !errors.Is(result.err, errStaleObservation) {
 				if entry.failures == 0 {
 					d.logger.Warn("peer exchange unavailable", "peer", result.address)
@@ -195,6 +207,7 @@ func (d *Discovery) Run(ctx context.Context) {
 				}
 				entry.failures = 0
 			}
+
 			d.deferExchange(entry, entry.failures)
 			if result.verification {
 				_, view := d.book.observe()
@@ -223,11 +236,13 @@ func (d *Discovery) preferCurrent(address, id string, view bookView, now time.Ti
 		// Migrated candidates and unresolved seeds do not share an identity.
 		return false
 	}
+
 	hint := d.known[address]
 	current := addressForID(view.peers, id)
 	if current == "" || current == address {
 		return false
 	}
+
 	entry := d.known[current]
 	if entry.running || !entry.next.After(now) {
 		return true
@@ -271,17 +286,20 @@ func (d *Discovery) receive(message Message, destination string, before *bookVie
 		}
 		return Message{}, err
 	}
+
 	response, view := d.book.observe()
 	d.prune(view, time.Now())
 	if result.Rejected != 0 {
 		d.logger.Warn("peer address book full", "rejected", result.Rejected, "limit", MaxPeers)
 	}
+
 	dropped := 0
 	for _, address := range result.Verify {
 		if _, retained := view.peers[address]; retained {
 			// Existing members and seeds already have independent schedules.
 			continue
 		}
+
 		// Requests and responses are canonicalized at the wire boundary.
 		id := message.Peers[address]
 		if address == message.Address {
@@ -296,6 +314,7 @@ func (d *Discovery) receive(message Message, destination string, before *bookVie
 			dropped++
 			continue
 		}
+
 		d.pending[address] = true
 		if d.known[address] == nil {
 			d.known[address] = &peerSchedule{}
@@ -305,6 +324,7 @@ func (d *Discovery) receive(message Message, destination string, before *bookVie
 	if dropped != 0 {
 		d.logger.Warn("peer verification queue full", "rejected", dropped, "limit", MaxPeers)
 	}
+
 	select {
 	case d.wake <- struct{}{}:
 	default:
@@ -318,6 +338,7 @@ func (d *Discovery) receive(message Message, destination string, before *bookVie
 // only after their in-flight requests have returned.
 func (d *Discovery) destinations(view bookView, now time.Time) []string {
 	d.prune(view, now)
+
 	addresses := sortedAddresses(view.peers)
 	for address, pending := range d.pending {
 		if _, retained := view.peers[address]; pending && !retained {
@@ -340,6 +361,7 @@ func (d *Discovery) prune(view bookView, now time.Time) {
 			delete(d.pending, address)
 		}
 	}
+
 	for address, entry := range d.known {
 		_, retained := view.peers[address]
 		_, verifying := d.pending[address]

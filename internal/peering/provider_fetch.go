@@ -21,16 +21,19 @@ func (p *ProviderHints) Fetch(ctx context.Context, client *http.Client, meta cac
 	if !ok || ctx.Err() != nil {
 		return nil, errUnknownPeer
 	}
+
 	select {
 	case p.transfers <- struct{}{}:
 	default:
 		return nil, errUnknownPeer
 	}
 	release := sync.OnceFunc(func() { <-p.transfers })
+
 	peers := p.book.Snapshot().Peers
 	p.mu.Lock()
 	claims := slices.Clone(p.index.byKey[key])
 	p.mu.Unlock()
+
 	claims = slices.DeleteFunc(claims, func(claim providerClaim) bool {
 		return claim.id == p.self || addressForID(peers, claim.id.String()) == ""
 	})
@@ -38,6 +41,7 @@ func (p *ProviderHints) Fetch(ctx context.Context, client *http.Client, meta cac
 		release()
 		return nil, errUnknownPeer
 	}
+
 	claim := claims[rand.IntN(len(claims))]
 	// Resolve again at dispatch, rather than retaining an address in the hint.
 	address := addressForID(p.book.Snapshot().Peers, claim.id.String())
@@ -45,6 +49,7 @@ func (p *ProviderHints) Fetch(ctx context.Context, client *http.Client, meta cac
 		release()
 		return nil, errUnknownPeer
 	}
+
 	body, err := FetchEntry(ctx, client, address, claim.id.String(), meta)
 	if err != nil {
 		release()

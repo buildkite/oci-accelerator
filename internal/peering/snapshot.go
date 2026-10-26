@@ -10,6 +10,7 @@ func readSnapshot(ctx context.Context, client *http.Client, destination string) 
 	if err != nil {
 		return Message{}, errExchange
 	}
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+destination+peersPath, nil)
 	if err != nil {
 		return Message{}, errExchange

@@ -58,6 +58,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func
 	if maxAttempts > 0 {
 		count = min(count, maxAttempts)
 		start = s.resumeStart(candidates)
+
 		// Globally feasible requests may need several bounded batches. Resume
 		// beyond this batch even when this response still bypasses storage.
 		last := candidates[(start+count-1)%len(candidates)]
@@ -80,10 +81,12 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func
 			s.evictionAfter = ""
 			return nil
 		}
+
 		e := candidates[(start+i)%len(candidates)]
 		if s.entries[e.meta.Key] != e || e.pins != 0 || e.claimed || e.eviction != positions[i] || e.last > before {
 			continue
 		}
+
 		e.claimed = true
 		s.startOpLocked()
 		s.mu.Unlock()
@@ -101,6 +104,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func
 			removeErr = err
 		}
 	}
+
 	if fits() {
 		s.evictionAfter = ""
 		return nil
@@ -108,6 +112,7 @@ func (s *Store) evictLocked(need int64, needSlots int, before int64, gather func
 	if removeErr != nil {
 		return removeErr
 	}
+
 	return ErrBypass
 }
 
@@ -170,6 +175,7 @@ func (s *Store) evictionCandidatesLocked(before int64) []*entry {
 			candidates = append(candidates, e)
 		}
 	}
+
 	return candidates
 }
 
@@ -183,12 +189,14 @@ func (s *Store) sortedEntriesLocked(before int64, unpinnedOnly bool) []*entry {
 			entries = append(entries, e)
 		}
 	}
+
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].last == entries[j].last {
 			return entries[i].meta.Key < entries[j].meta.Key
 		}
 		return entries[i].last < entries[j].last
 	})
+
 	return entries
 }
 
@@ -201,6 +209,7 @@ func (s *Store) batchSuffices(batch []*entry, need int64, needSlots int) bool {
 		available += e.charge
 		availableSlots++
 	}
+
 	return available >= need && availableSlots >= needSlots
 }
 
@@ -210,11 +219,13 @@ func (s *Store) resumeStart(candidates []*entry) int {
 	if s.evictionAfter == "" {
 		return 0
 	}
+
 	for i, e := range candidates {
 		if e.last > s.evictionAfterLast || e.last == s.evictionAfterLast && e.meta.Key > s.evictionAfter {
 			return i
 		}
 	}
+
 	return 0
 }
 
@@ -231,6 +242,7 @@ func (s *Store) insertEvictionLocked(e *entry) {
 			return
 		}
 	}
+
 	e.eviction = s.evictionOrder.PushFront(e)
 }
 
@@ -238,5 +250,6 @@ func add(a, b int64) (int64, bool) {
 	if a < 0 || b < 0 || a > int64(^uint64(0)>>1)-b {
 		return 0, false
 	}
+
 	return a + b, true
 }

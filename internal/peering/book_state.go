@@ -33,6 +33,7 @@ func openBookState(dir string) (bookLock, error) {
 	if err := ensureBookDir(dir); err != nil {
 		return bookLock{}, err
 	}
+
 	path := filepath.Join(dir, ".lock")
 	if err := validateOptionalRegular(path); err != nil {
 		return bookLock{}, err
@@ -50,6 +51,7 @@ func openBookState(dir string) (bookLock, error) {
 		_ = lock.close()
 		return bookLock{}, err
 	}
+
 	// A previous process may have exited after rename but before directory
 	// sync. Confirm the visible state before startup can acknowledge it.
 	if err := syncBookDir(dir); err != nil {
@@ -63,6 +65,7 @@ func (l *bookLock) close() error {
 	if l.file == nil {
 		return nil
 	}
+
 	err := errors.Join(syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN), l.file.Close())
 	l.file = nil
 	return err
@@ -73,6 +76,7 @@ func ensureBookDir(dir string) error {
 	if err != nil || !safeBookDir(parent) || parent.Mode().Perm()&0o022 != 0 {
 		return errBook
 	}
+
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		if err := os.Mkdir(dir, 0o700); err != nil {
@@ -86,6 +90,7 @@ func ensureBookDir(dir string) error {
 	if err != nil || !safeBookDir(info) || info.Mode().Perm() != 0o700 {
 		return errBook
 	}
+
 	// Sync even an existing directory's parent, so a prior failed startup
 	// cannot leave an unsynced directory entry that later writes rely on.
 	return syncBookDir(filepath.Dir(dir))
@@ -95,6 +100,7 @@ func safeBookDir(info os.FileInfo) bool {
 	if info == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
+
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && int(stat.Uid) == os.Geteuid()
 }
@@ -154,6 +160,7 @@ func loadBookRecords(dir string) (map[string]bookRecord, error) {
 	if err := validateRegular(path); err != nil {
 		return nil, err
 	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -163,6 +170,7 @@ func loadBookRecords(dir string) (map[string]bookRecord, error) {
 	if readErr != nil || closeErr != nil || len(raw) > bookStateMax {
 		return nil, errBook
 	}
+
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var state struct {
@@ -172,6 +180,7 @@ func loadBookRecords(dir string) (map[string]bookRecord, error) {
 	if decoder.Decode(&state) != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		return nil, errBook
 	}
+
 	peers := make(map[string]string)
 	records := make(map[string]bookRecord)
 	switch state.Version {
@@ -215,6 +224,7 @@ func loadBookRecords(dir string) (map[string]bookRecord, error) {
 	if len(peers) > MaxPeers {
 		return nil, errBook
 	}
+
 	ids := make(map[string]bool)
 	for address, id := range peers {
 		canonical, err := CanonicalAddress(address)
@@ -226,6 +236,7 @@ func loadBookRecords(dir string) (map[string]bookRecord, error) {
 		}
 		ids[id] = true
 	}
+
 	if state.Version < 3 {
 		// Persisted by OpenBook before use, so restarts cannot renew this grace.
 		now := time.Now()
@@ -261,6 +272,7 @@ func replaceState(dir, name string, raw []byte, syncDir func(string) error) (boo
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
+
 	if err = f.Chmod(0o600); err == nil {
 		_, err = f.Write(raw)
 	}
@@ -270,6 +282,7 @@ func replaceState(dir, name string, raw []byte, syncDir func(string) error) (boo
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
+
 	if err == nil {
 		err = os.Rename(tmp, filepath.Join(dir, name))
 	}

@@ -24,6 +24,7 @@ func (l *limitedListener) Accept() (net.Conn, error) {
 	case <-l.done:
 		return nil, net.ErrClosed
 	}
+
 	conn, err := l.Listener.Accept()
 	if err != nil {
 		<-l.slots

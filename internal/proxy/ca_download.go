@@ -15,6 +15,7 @@ func (p *Proxy) serveCA(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.IdleTimeout > 0 {
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(p.cfg.IdleTimeout))
 	}
+
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		refuse(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -39,6 +40,7 @@ func (p *Proxy) serveCA(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(certificate)))
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodGet {
 		_, _ = w.Write(certificate)

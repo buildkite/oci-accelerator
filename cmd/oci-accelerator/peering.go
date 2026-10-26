@@ -35,10 +35,12 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if cfg.Peer.Listen == "" {
 		return nil, nil
 	}
+
 	serverTLS, clientTLS, err := signer.PeerTLSConfigs()
 	if err != nil {
 		return nil, errors.New("peer TLS startup failed")
 	}
+
 	client := peering.NewClient(clientTLS)
 	book, err := peering.OpenBook(ctx, cfg.Peer.StateDir, cfg.Peer.Advertise, cfg.Peer.Seeds, client)
 	if err != nil {
@@ -47,6 +49,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	}
 	// Bootstrap may leave idle connections even if startup fails before discovery.
 	defer client.CloseIdleConnections()
+
 	// Load seeds before NewDiscovery captures non-seed legacy candidates.
 	// Construct discovery before Run expires those candidates from the book.
 	rejected, err := book.AddSeeds(cfg.Peer.Seeds)
@@ -56,16 +59,19 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 	if rejected != 0 {
 		logger.Warn("peer seed targets full", "rejected", rejected, "limit", peering.MaxPeers)
 	}
+
 	listener, err := listen("tcp", cfg.Peer.Listen)
 	if err != nil {
 		return nil, errors.Join(errors.New("cannot listen on configured peer address"), book.Close())
 	}
+
 	transferClient := peering.NewClient(clientTLS)
 	transferClient.Timeout = cfg.Cache.FillTimeout
 	hints := peering.NewProviderHints(book, client, store.KeyPage, cfg.Peer.HintRefreshTimeout, cfg.Peer.HintRefreshInterval, cfg.Peer.HintFullRefreshInterval, logger)
 	discovery := peering.NewDiscovery(book, client, logger, hints.PeersAdded)
 	entries := peering.NewEntryHandler(book.Snapshot().NodeID, store, cfg.Cache.FillTimeout)
 	handler := peering.PeerHandler(discovery.Handler(), hints.Handler(), entries)
+
 	var handlerMu sync.Mutex
 	var handlers sync.WaitGroup
 	stopping := false
@@ -80,6 +86,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 			handlers.Add(1)
 			handlerMu.Unlock()
 			defer handlers.Done()
+
 			handler.ServeHTTP(w, r)
 		}),
 		ReadHeaderTimeout:            5 * time.Second,
@@ -91,6 +98,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		ErrorLog:                     log.New(io.Discard, "", 0),
 		DisableGeneralOptionsHandler: true,
 	}
+
 	serveDone := make(chan struct{})
 	var serveErr error
 	go func() {
@@ -99,30 +107,37 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		}
 		close(serveDone)
 	}()
+
 	discoveryCtx, cancel := context.WithCancel(ctx)
 	discoveryDone := make(chan struct{})
 	go func() {
 		discovery.Run(discoveryCtx)
 		close(discoveryDone)
 	}()
+
 	hintsDone := make(chan struct{})
 	go func() {
 		hints.Run(discoveryCtx)
 		close(hintsDone)
 	}()
+
 	cleanup := func() error {
 		defer transferClient.CloseIdleConnections()
+
 		cancel()
 		handlerMu.Lock()
 		stopping = true
 		handlerMu.Unlock()
+
 		shutdown, stop := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer stop()
+
 		var cleanupErr error
 		if err := server.Shutdown(shutdown); err != nil {
 			_ = server.Close()
 			cleanupErr = errors.New("peer server cleanup failed")
 		}
+
 		<-serveDone
 		<-discoveryDone
 		<-hintsDone
@@ -131,6 +146,7 @@ func startPeering(ctx context.Context, cfg config.Config, signer *ca.Authority, 
 		handlers.Wait()
 		return errors.Join(cleanupErr, serveErr, book.Close())
 	}
+
 	logger.Info("peer service ready", "listen", listener.Addr().String(), "advertise", cfg.Peer.Advertise, "node_id", book.Snapshot().NodeID, "known_peers", len(book.Addresses()))
 	return &peerService{
 		done:  serveDone,

@@ -49,6 +49,7 @@ func serveRangeResponse(req *http.Request, resp *http.Response, content io.ReadS
 		defer close(body.done)
 		defer body.closeSource()
 		defer writer.Close()
+
 		// Range errors and multipart responses need their own length. In
 		// particular, never retain the full upstream length on a 416 response.
 		output.header.Del("Content-Length")
@@ -86,6 +87,7 @@ type rangeResponseBody struct {
 
 func (b *rangeResponseBody) Close() error {
 	err := b.PipeReader.Close()
+
 	// Unblock prefix reads too, not just writes to the client-facing pipe.
 	b.closeSource()
 	<-b.done

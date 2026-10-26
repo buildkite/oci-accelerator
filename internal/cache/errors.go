@@ -21,5 +21,6 @@ func filesystemError(err error) error {
 	if err == nil {
 		return nil
 	}
+
 	return fmt.Errorf("%w: %w", ErrFilesystem, err)
 }

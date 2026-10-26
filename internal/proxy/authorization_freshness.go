@@ -49,6 +49,7 @@ func authorizationLifetime(h http.Header, limit time.Duration) time.Duration {
 					}
 					value = value[1 : len(value)-1]
 				}
+
 				seconds, ok := authorizationSeconds(value)
 				if !ok {
 					return 0
