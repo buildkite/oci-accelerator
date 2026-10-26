@@ -34,11 +34,12 @@ send.
 | `PUT`, `PATCH`, `POST`, `DELETE` | Pushes and deletions                 |
 
 A blob request with a `Range` header, such as a resumed layer download, is sent
-upstream as a request for the whole blob, so the upstream registry still approves every
-request. The accelerator then returns only the requested bytes, reading them
+upstream as a request for the whole blob unless a live Bearer repository grant
+allows a verified committed local hit. The accelerator then returns only the requested bytes, reading them
 from disk if the blob is cached or from a full origin or peer stream while filling
 the cache. A ranged fill continues after Docker disconnects, until
-`OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` expires. Ranged requests never use authorization grants. A
+`OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` expires. Eligible blob ranges can use Bearer
+repository grants, and their successful full upstream GETs can establish them. A
 manifest request with a `Range` header, or any request with an `If-*` header, is
 forwarded upstream unchanged and not cached.
 
@@ -144,8 +145,10 @@ access. See the [configuration reference](deployment.md#configuration)
 for poll, full-scan, and attempt timeout settings.
 
 For an eligible digest-addressed blob or manifest GET, the proxy obtains upstream
-approval and checks its local cache first. If no entry or completed coalesced
-fill is available, it chooses one live hinted provider uniformly at random.
+approval unless a live grant allows a verified committed local hit. Every local
+miss needs its own upstream GET and accepted redirects, even with a live Bearer
+repository grant. If no entry or completed coalesced fill is available after
+approval, it chooses one live hinted provider uniformly at random.
 It tries no second provider and does not refresh hints on the request path.
 The peer serves only an exact matching committed local entry. Opening it updates
 its recency and pins it against eviction until the reader closes.
@@ -271,10 +274,14 @@ registry that is never used.
 
 # Authorizing intercepted requests
 
-The accelerator makes no access decisions of its own. The upstream registry
-decides who can pull what, using the credentials Docker sends, and the
-accelerator only serves cached content that the registry has approved. It does
-not read tokens, check their scopes or expiry, or hold credentials of its own.
+The upstream registry checks the credentials Docker sends. For a Bearer token,
+the accelerator treats one successful eligible immutable GET as approval to pull
+all immutable manifests and blobs in that exact registry repository for a bounded
+period. This assumes repository-wide pull permission is determined by the token,
+independently of cookies or other headers, rather than by object-specific access
+rules. It does not interpret token claims, check their scopes or expiry, or hold
+credentials of its own. Disable credentialed grants if your registry does not
+satisfy that assumption.
 
 ### Approval on each request
 
@@ -293,25 +300,58 @@ any redirects, though not the download, and may count toward registry rate limit
 
 ### Authorization grants
 
-After an approval, an identical request can be served from disk without contacting
-the upstream registry. `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` defaults to 15 minutes
+After an eligible successful immutable upstream GET reaches its terminal response
+headers, including after redirects, its approval can be reused without contacting
+the upstream registry. This applies to digest manifests and blobs, including the
+full upstream GET used for an eligible blob range. Tags, HEAD, and writes neither
+establish nor use grants. `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` defaults to 15 minutes
 for requests without `Authorization`. `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL` independently
 defaults to 30 seconds for requests with `Authorization`, including an empty value.
 Set either TTL to `0s` to disable reuse for that class. Setting both to `0s` checks
 the upstream registry on every delivery.
 
-- **Identical requests only.** Grants match on the URL and every forwarded header.
-  Requests with different `Authorization`, cookies, or other header values do not
-  share approvals. Anonymous approvals cannot serve requests carrying `Authorization`.
-- **Fixed lifetime.** It starts at approval, and hits don't extend it. A shorter
-  `max-age` or `s-maxage` on the request or any response shortens it.
+- **Bearer repository approval.** A single valid nonempty Bearer token uses a
+  process-local HMAC of the exact token, canonical upstream registry, and exact
+  parsed repository. Other forwarded headers do not change this authorization
+  identity. The grant covers eligible immutable manifests and blobs in that
+  repository, including blob ranges, not other registries or repositories.
+- **Other requests match exactly.** Other authentication and anonymous grants
+  retain the exact canonical URL and every forwarded end-to-end header identity.
+  Empty, malformed, or multiple Bearer credentials do not receive repository-wide reuse.
+  Anonymous approvals cannot serve requests carrying `Authorization`.
+- **Fixed lifetime.** It starts at approval, never exceeds the configured TTL, and
+  hits don't extend it. A shorter `max-age` or `s-maxage` on the request or any
+  response shortens it. A request ceiling below the configured credentialed TTL
+  always requires fresh upstream approval instead of reusing a Bearer repository
+  grant, even if that grant was just established.
 - **Memory only.** Grants are never persisted, are cleared on restart, and both
   classes share the `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound (10000 by default).
 - **Bytes are shared, approvals are not.** Any client the upstream registry approves can
   receive the cached copy, whoever filled it.
 
-A grant can serve only a present, verified local body. If that body is missing,
-the request needs fresh upstream approval before it can fetch from a peer.
+A live Bearer repository grant can serve only a verified committed local entry
+without an upstream GET, including eligible blob ranges. Local lookup uses the
+persisted `RequestKey`. Missing, corrupt, or ambiguous local lookup results take
+the normal upstream-first path. Every local miss requires its own upstream GET
+and accepted redirects before it can fetch peer bytes, even with a live grant.
+Other grants retain their existing exact-request local-body reuse.
+
+Bearer repository requests with conditional `If-*` headers or request restrictions
+that forbid grant creation, including `Cache-Control: no-cache` and `Pragma`, always go upstream.
+An otherwise unrestricted terminal `200` or `304` preserves an existing repository
+grant at its original expiry, without creating or renewing one. This does not
+change exact-request grants for other credentials or anonymous requests.
+A tighter positive `max-age` or `s-maxage` still permits a successful eligible
+GET to establish a grant bounded by that ceiling.
+
+Tokens remain opaque. Token expiry or revocation can take effect as late as the
+grant's original expiry. Matching upstream `401` or `403`, authentication-state
+headers, and authoritative reuse-forbidden responses on any redirect hop or the
+terminal response invalidate the grant, even when the request requires revalidation.
+Invalidation fences out late successful requests, so they cannot restore an
+invalidated approval. `404`, `410`, and transient failures do not revoke a Bearer
+repository grant, unless authentication-state headers or other invalidating policy
+are present. An upstream failure is returned to Docker, never hidden by cached content.
 
 If you make a public repository private, an existing anonymous approval can still
 serve an identical request until it expires, up to 15 minutes by default.
@@ -341,15 +381,20 @@ Each cached object is stored as a body file and a small JSON metadata file:
 | `Digest`    | The object's `sha256:` digest                                                                                |
 | `Size`      | Body length in bytes                                                                                         |
 | `MediaType` | The response's `Content-Type`                                                                                |
+| `RequestKey` | Local-only credential-free hash of canonical upstream authority, exact parsed repository, object kind, digest, and ordered `Accept` values |
 | `committed` | Commit time, in Unix nanoseconds                                                                             |
 
-The key is a hash, so the metadata file stores no request headers or
-credentials. Entries are not shared between repositories, so a layer used by two
-repositories is stored twice.
+The representation key still includes media type. Both keys are hashes, so the
+metadata file stores no raw request headers or credentials. Entries are not shared
+between repositories, so a layer used by two repositories is stored twice.
+
+Older entries without `RequestKey` remain usable through normal upstream-first
+lookup, but cannot use the Bearer repository fast path until replaced by a new
+fill. Existing entries are not backfilled. You do not need to flush or migrate your cache.
 
 ### Filling
 
-After upstream approval and local lookup, an eligible miss tries one random
+After its own upstream approval and local lookup, an eligible miss tries one random
 live hinted peer when peering is enabled. Otherwise it uses the approved origin
 body. An admitted fill streams the selected body to Docker while writing it to
 a temporary file. It publishes the entry, with an atomic rename, only after the
@@ -391,6 +436,7 @@ rebuilt from commit times.
 
 Each body is hashed again, in full, before it is first served after startup, so
 that first hit is slower. A missing or corrupt entry is treated as a miss and
-refilled from origin or an eligible hinted peer after upstream approval.
+refilled from origin or an eligible hinted peer after its own upstream approval,
+even with a live Bearer repository grant.
 Don't edit or delete files in a live cache.
 To reset it, stop the accelerator and remove the whole directory.

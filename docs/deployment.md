@@ -26,10 +26,12 @@ See [how it works](how-it-works.md) for the request flow and design.
 - **Credentials stay with Docker.** Never put credentials in proxy configuration. Cross-origin redirects
   never forward credentials or cookies.
 - **The upstream registry authorizes deliveries.** Each cached delivery is approved by an
-  upstream GET or an exact-request grant. The default window is 15 minutes without
+  upstream GET or a live grant. A single valid nonempty Bearer token reuses approval
+  within the same upstream registry and exact repository. Other authentication and
+  anonymous grants match the exact request. The default window is 15 minutes without
   `Authorization` and 30 seconds with it, including an empty value. Public-to-private
   revocation can therefore lag by 15 minutes by default. Set both authorization TTLs to
-  `0s` to check every delivery. There is no offline or failed-request fallback.
+  `0s` to check every delivery. A failed upstream request never falls back to cached content.
 - **Logs contain repository names, tags, and digests.** Restrict access to them.
 - **Metrics and probes are unauthenticated.** They bind loopback only unless explicitly opted in.
 - **Redirect checks do not constrain tunnels.** Destination checks protect only fetches the
@@ -679,7 +681,7 @@ Docker push uses the same proxy and CA configuration as pull.
   `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` or
   a total upload size.
 - Successful deletion does not invalidate existing pull [authorization grants](#authorization-grants).
-  Previously approved exact GETs may still serve cached content until the original grant
+  Eligible GETs covered by a live grant may still serve cached content until the original grant
   expiry. Set both authorization TTLs to `0s` when every cache delivery must check current
   upstream access.
 
@@ -701,8 +703,11 @@ authorization approval. This section lists additional rules that may affect your
 
 Eligible range requests are unconditional SHA-256 blob Range GETs.
 
-- They go upstream on every request as full GETs, and never look up, create, invalidate, or
-  otherwise update authorization grants.
+- A live Bearer repository grant can authorize verified committed local hits without an
+  upstream GET. Every local miss goes upstream as a full GET, even with a live grant.
+  Eligible successful full-GET terminal headers can
+  establish a Bearer repository grant, and invalidating responses revoke it as for full pulls.
+  Other authentication and anonymous ranges retain per-request upstream approval.
 - A validated cache hit is served with standard single, suffix, or multipart range semantics
   from its pinned reader.
 - Until the full body is cached, a single range is selected from a full origin or peer stream and
@@ -739,30 +744,54 @@ and the request and response headers that prevent a grant. Additionally:
 - The anonymous and credentialed TTLs are independent. A request with any `Authorization`
   header, including an empty one, uses the credentialed TTL. If `Connection` strips that
   header before forwarding, the request cannot reuse or create an anonymous approval.
-- Only full immutable digest blob and manifest GETs can reuse authorization.
-- Grants are keyed by a process-local HMAC of the original canonical URL and every forwarded
-  end-to-end header. Transport-managed fields use their forwarded form, while other exact values and
-  value order are preserved. Anonymous requests are distinct. Both classes share the
+- A single valid nonempty Bearer token uses a process-local HMAC of the exact token,
+  canonical upstream registry, and exact parsed repository. All other forwarded headers
+  are ignored for authorization identity, not for response eligibility or representation selection.
+  The grant covers eligible immutable digest manifests and blobs, including blob ranges.
+- Other authentication and anonymous grants retain exact-request matching on the original
+  canonical URL and every forwarded end-to-end header. Transport-managed fields use their
+  forwarded form, while other exact values and value order are preserved. Anonymous requests
+  are distinct. All grants share the
   `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound and can refer to the same verified disk body.
-- A grant starts from an eligible terminal `200`. It is never renewed on hits, persisted, or
-  refreshed or coalesced in the background.
+- A grant starts at eligible successful immutable upstream GET terminal headers, including
+  after redirects. A blob range's full upstream GET qualifies for a Bearer repository grant.
+  Tags, HEAD, and writes neither establish nor use grants. A grant is never renewed on hits,
+  persisted, or refreshed or coalesced in the background.
 - Tokens are opaque, so revocation or expiry can take effect as late as the grant's original
   expiry.
 - Every redirect hop must be reusable. Only explicit `max-age` and `s-maxage` ceilings shorten a
   grant below its configured TTL. `Age`, `Date`, and `Expires` are ignored. A grant never
   outlives the TTL, but may be trusted for the full residual TTL regardless of upstream age.
-- A grant hit requires a present verified body. Otherwise the request goes upstream. The
+  For Bearer repository grants, a request ceiling below the configured credentialed TTL
+  bypasses grant reuse and requires fresh upstream approval, even for a newly approved grant.
+- Bearer repository requests with conditional `If-*` headers or request restrictions
+  that forbid grant creation, including `Cache-Control: no-cache` and `Pragma`, always go upstream.
+  An otherwise unrestricted terminal `200` or `304` preserves an existing repository
+  grant without creating or renewing one. Other credentials and anonymous requests
+  retain their exact-request grant behavior. A tighter positive `max-age` or `s-maxage`
+  still permits a successful eligible GET to establish a grant bounded by that ceiling.
+- A live Bearer repository grant skips upstream only for verified committed local hits,
+  including eligible blob ranges. Local lookup uses the persisted `RequestKey`. Missing,
+  corrupt, or ambiguous local lookup results take the normal upstream-first path. Every local
+  miss needs its own upstream GET and accepted redirects before fetching peer bytes, even
+  with a live grant. Other grants retain exact-request local-body reuse. A full grant-hit
   response reconstructs only content type, length, digest, a current `Date`, and
   `Cache-Control: private, no-store`. Downstream caches must not extend the grant's lifetime.
 
 Upstream outcomes affect an existing grant as follows. The failed request is always returned to
 the client: there is no failed-request fallback.
 
-| Upstream outcome                                                          | Grant                              |
-| ------------------------------------------------------------------------- | ---------------------------------- |
-| `401`, `403`, `404`, `410`, or an authoritative nonreusable response      | Invalidated                        |
+| Upstream outcome                                                          | Matching grant                              |
+| ------------------------------------------------------------------------- | ------------------------------------------- |
+| `401`, `403`, or an authoritative reuse-forbidden response                  | Invalidated                                 |
 | Any response with `Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or `WWW-Authenticate` | Invalidated |
-| Timeout, DNS or TLS failure, `408`, `429`, `5xx`                          | Kept until its original expiry     |
+| Otherwise unrestricted terminal `200` or `304` for a conditional request or one whose request restrictions forbid grant creation | Bearer repository grant kept until its original expiry, not created or renewed |
+| `404`, `410` without other invalidating headers or policy                    | Bearer repository grant kept. Exact-request grant invalidated |
+| Timeout, DNS or TLS failure, `408`, `429`, `5xx` without invalidating headers or policy | Kept until its original expiry |
+
+Response restrictions on any redirect hop or the terminal response still invalidate,
+even when the request requires revalidation.
+Invalidation fences out late successful requests, so they cannot restore the invalidated grant.
 
 ## Cache storage
 
@@ -776,6 +805,12 @@ filling, and eviction.
   the same full-body entry.
 - Cache keys preserve registry, repository, digest, object kind, exact `Accept` values, and
   observed `Content-Type`. Bodies are hashed as received.
+- New metadata also persists a local-only credential-free `RequestKey` for canonical upstream authority,
+  exact parsed repository, object kind, digest, and ordered `Accept` values, without media type.
+  The representation key still includes media type. Older entries without `RequestKey` remain
+  usable through normal upstream-first lookup, but cannot use the Bearer repository fast path
+  until replaced by a new fill. Existing entries are not backfilled. You do not need to flush
+  or migrate your cache.
 - Bypassed: tags, HEAD, ranged manifests, conditional and non-identity-encoded responses,
   unknown-length bodies, no-store traffic, and unsupported `Vary` dimensions.
 
@@ -876,7 +911,9 @@ This establishes fleet membership, not independently trusted node identities. Ev
 the shared CA key can impersonate any peer. Compromising one instance compromises the fleet's
 trust domain, so individual-node revocation is not possible while it retains that key.
 Authenticated fleet members can retrieve matching cached content without presenting registry
-credentials to the serving peer. The requesting proxy enforces upstream GET authorization.
+credentials to the serving peer. The requesting proxy obtains its own upstream GET approval,
+including accepted redirects, before fetching peer bytes, even with a live grant. Peers never authorize
+registry access and never receive tokens or grants.
 
 Learned destinations are unrestricted. An authenticated peer can cause connection attempts to
 any hostname/IP and port reachable from your instance. Mutual TLS rejects non-peers but cannot
@@ -1150,8 +1187,9 @@ measured benchmark, a throughput guarantee, or a wall-clock freshness guarantee.
 
 ### Peer entry transfers
 
-After upstream approval, an eligible local miss for a digest-addressed blob or manifest
-GET tries one provider chosen uniformly at random from the hinted IDs with current membership. It
+After its own upstream GET approval, including accepted redirects, an eligible local miss for a
+digest-addressed blob or manifest GET tries one provider chosen uniformly at random from
+the hinted IDs with current membership, even with a live Bearer repository grant. It
 resolves that ID's current address when sending. It does not refresh inventory or try a second
 peer on the pull path. Existing local hits and bounded waits for active fills take precedence.
 Eligible blob ranges select from the full peer stream using the existing background fill path.

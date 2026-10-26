@@ -60,6 +60,60 @@ func TestPeerFillRequiresOriginApprovalAndThenServesLocally(t *testing.T) {
 	}
 }
 
+func TestRepositoryGrantStillAuthorizesPeerMissUpstream(t *testing.T) {
+	const seed = "local approval"
+	const content = "only stored at the peer"
+	var gets atomic.Int32
+	var denied atomic.Bool
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gets.Add(1)
+		if denied.Load() {
+			http.Error(w, "denied", http.StatusForbidden)
+			return
+		}
+		if r.URL.Path == blobURL(seed) {
+			blobHeaders(w, seed)
+			io.WriteString(w, seed)
+			return
+		}
+		blobHeaders(w, content)
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer origin.Close()
+	p, client := cacheFixture(t, origin, 1<<20, nil)
+	p.authorization = newAuthorizationCache(time.Minute, time.Minute, 100)
+	resp, body := getBlob(t, client, origin.URL+blobURL(seed), "Bearer reader")
+	if resp.StatusCode != 200 || body != seed {
+		t.Fatalf("initial approval = %d %q", resp.StatusCode, body)
+	}
+	peer := newPeerEntryFixture(t, p, origin.URL+blobURL(content), content, "application/octet-stream", nil)
+	p.SetPeerFetcher(peer.fetch)
+	resp, body = getBlob(t, client, origin.URL+blobURL(content), "Bearer reader")
+	if resp.StatusCode != 200 || body != content || gets.Load() != 2 || peer.requests.Load() != 1 {
+		t.Fatalf("peer miss = %d %q, origin=%d peer=%d", resp.StatusCode, body, gets.Load(), peer.requests.Load())
+	}
+	// Once stored locally, the peer-filled body can consume the live grant.
+	resp, body = getBlob(t, client, origin.URL+blobURL(content), "Bearer reader")
+	if resp.StatusCode != 200 || body != content || gets.Load() != 2 || peer.requests.Load() != 1 {
+		t.Fatalf("local hit = %d %q, origin=%d peer=%d", resp.StatusCode, body, gets.Load(), peer.requests.Load())
+	}
+	denied.Store(true)
+	// A different uncached representation still reaches upstream and cannot
+	// hide its denial by fetching from a peer under the repository grant.
+	req := authorizationRequest(t, origin.URL+blobURL(content), "Bearer reader")
+	req.Header.Set("Accept", "application/octet-stream")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAuthorizationBody(t, resp, 403, "denied\n")
+	if gets.Load() != 3 || peer.requests.Load() != 1 {
+		t.Fatalf("denied miss contacted peer: origin=%d peer=%d", gets.Load(), peer.requests.Load())
+	}
+}
+
 func TestPeerFailureBeforeDeliveryUsesApprovedOriginBody(t *testing.T) {
 	for _, failure := range []string{"missing", "busy", "wrong identity", "timeout"} {
 		t.Run(failure, func(t *testing.T) {

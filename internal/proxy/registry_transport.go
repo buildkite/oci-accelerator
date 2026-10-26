@@ -24,7 +24,7 @@ type registryTransport struct {
 	cache           *cache.Store                               // object store owned by New's caller (nil disables caching)
 	metrics         *metrics                                   // request counters, including upstream connection attempts
 	fillWaitTimeout time.Duration                              // wait for another request's fill before one retry. Zero disables
-	authorization   *authorizationCache                        // exact-request grants (nil disables grant reuse)
+	authorization   *authorizationCache                        // local authorization grants (nil disables grant reuse)
 	startRangeFetch func(context.Context) (*rangeFetch, error) // registers a range fetch bounded by fill timeout and shutdown
 	fetchPeer       func(context.Context, cache.Metadata) (io.ReadCloser, error)
 }
@@ -35,8 +35,8 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	ranged, _ := req.Context().Value(rangeRequestKey{}).(bool)
 	var fetch *rangeFetch
 
-	// Fetch the full representation for this range request. Each request
-	// authorizes upstream independently, but may wait for another cache fill.
+	// Fetch the full representation for this range request. A bearer repository
+	// grant can approve it locally, otherwise it authorizes upstream.
 	if ranged {
 		if full, ok := fullBlobRangeRequest(req); ok {
 			req = full

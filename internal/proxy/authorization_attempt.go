@@ -14,6 +14,7 @@ type grantAttempt struct {
 	requestLifetime time.Duration
 	digest          string
 	deadline        time.Time
+	repository      bool
 }
 
 // beginGrantAttempt registers this request's authorization attempt and, when a
@@ -31,13 +32,18 @@ type grantAttempt struct {
 // Range or conditional headers were stripped. Its response can invalidate a
 // matching grant, but permitted remains false so it cannot serve or commit one.
 func (t registryTransport) beginGrantAttempt(req *http.Request, object immutableObject, cacheShaped, permitted, mayWait bool, stats *requestStats) (*http.Response, *grantAttempt) {
-	// Opt ranged requests out of grant caching: the grant path only serves full 200s,
-	// and the range path handles their authorization and serving.
-	if ranged, _ := req.Context().Value(rangeRequestKey{}).(bool); ranged {
+	repositoryObject, _, repository := repositoryBearer(req)
+	if repository {
+		object = repositoryObject
+	}
+
+	// Only bearer repository grants cover ranges. Other credentials retain
+	// their exact-request behavior.
+	if ranged, _ := req.Context().Value(rangeRequestKey{}).(bool); ranged && !repository {
 		return nil, nil
 	}
 
-	if t.authorization == nil || t.cache == nil || !cacheShaped {
+	if t.authorization == nil || t.cache == nil || !cacheShaped && !repository {
 		return nil, nil
 	}
 
@@ -52,7 +58,10 @@ func (t registryTransport) beginGrantAttempt(req *http.Request, object immutable
 	entry, grant := t.authorization.start(req)
 
 	// Serve from a cached grant if reuse is allowed and we may wait.
-	if permitted && requestLifetime > 0 && mayWait {
+	// Repository identity excludes request headers. Without tracking approval
+	// age, a tighter request ceiling must get fresh upstream approval instead.
+	if cacheShaped && permitted && requestLifetime > 0 && mayWait &&
+		(!repository || requestLifetime >= t.authorization.lifetime(req.Header)) {
 		if resp := t.authorizedResponse(req, entry, grant, stats); resp != nil {
 			return resp, nil
 		}
@@ -63,14 +72,15 @@ func (t registryTransport) beginGrantAttempt(req *http.Request, object immutable
 		entry:           entry,
 		requestLifetime: requestLifetime,
 		digest:          object.digest,
+		repository:      repository,
 	}
 }
 
 // narrow folds this hop's freshness into the running deadline and abandons the
 // grant outright if the hop forbids caching. It must run before settle so the
 // deadline reflects the terminal hop. permitted is passed per hop because
-// caching permission erodes across the redirect chain. Transient failures are
-// ignored unless they carry authentication-state headers.
+// caching permission erodes across the redirect chain. Transient failures do
+// not renew grants. Explicit repository reuse restrictions still invalidate.
 func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted bool) {
 	if a == nil {
 		return
@@ -78,6 +88,18 @@ func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted
 
 	if hasAuthenticationState(resp.Header) {
 		a.cache.invalidate(a.entry)
+		return
+	}
+
+	if a.repository && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+		authorizationLifetime(resp.Header, a.cache.authorizationTTL) <= 0 || !cacheHeaders(resp.Header, a.digest)) {
+		a.cache.invalidate(a.entry)
+		return
+	}
+
+	// A missing object says nothing about repository pull permission, even
+	// when this request forced revalidation or was conditional.
+	if a.repository && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) {
 		return
 	}
 
@@ -92,7 +114,9 @@ func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted
 		a.deadline = hopDeadline
 	}
 
-	if !permitted || lifetime <= 0 || !cacheHeaders(resp.Header, a.digest) {
+	// Defer repository invalidation due to request restrictions until the
+	// terminal outcome. A revalidation redirect can still end in a missing object.
+	if !a.repository && (!permitted || lifetime <= 0 || !cacheHeaders(resp.Header, a.digest)) {
 		a.cache.invalidate(a.entry)
 	}
 }
@@ -106,11 +130,23 @@ func (a *grantAttempt) settle(req *http.Request, resp *http.Response, received t
 	if a == nil || isTransient(resp.StatusCode) {
 		return
 	}
+	if a.repository && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) {
+		return
+	}
+
+	// Request-only restrictions require upstream approval for this delivery,
+	// not revocation of an existing repository grant. Preserve its original
+	// expiry after successful revalidation without creating or renewing one.
+	// narrow already invalidated any response-side restrictions on every hop.
+	if a.repository && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotModified) &&
+		(!permitted || a.requestLifetime <= 0) {
+		return
+	}
 
 	meta, ok := objectMetadata(req, resp)
 	if ok && permitted && received.Before(a.deadline) {
 		a.cache.commit(a.entry, &authorizationGrant{meta: meta, expires: a.deadline})
-	} else {
+	} else if !a.repository || !permitted || a.requestLifetime <= 0 {
 		a.cache.invalidate(a.entry)
 	}
 }

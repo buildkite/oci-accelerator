@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,7 +43,7 @@ type authorizationEntry struct {
 }
 
 type authorizationGrant struct {
-	meta    cache.Metadata // cached object metadata to serve without re-authorizing upstream
+	meta    cache.Metadata // representation for exact-request grants, unused by repository grants
 	expires time.Time      // instant past which the grant is stale and must not be reused
 }
 
@@ -113,11 +115,21 @@ func (c *authorizationCache) valid(e *authorizationEntry, g *authorizationGrant)
 	return c.entries[e.key] == e && e.grant == g && time.Now().Before(g.expires)
 }
 
-// fingerprint hashes the request line and forwarded headers as the HTTP/1.1
-// transport sends them, so wire-equivalent GETs share one grant.
+// fingerprint scopes bearer pull permission to an exact registry repository.
+// Other credentials retain exact-request grants.
 func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 	// Normalize the host to a canonical host:port authority.
 	authority, _ := hostport.Parse(req.URL.Host, "443")
+
+	if object, token, ok := repositoryBearer(req); ok {
+		mac := hmac.New(sha256.New, c.secret[:])
+		// Token and repository cannot contain NUL, so boundaries are unambiguous.
+		mac.Write([]byte("repository-bearer\x00" + authority.String() + "\x00" + object.repository + "\x00" + token))
+
+		var key [32]byte
+		copy(key[:], mac.Sum(nil))
+		return key
+	}
 
 	// Merge header names that differ only by case into lowercased buckets,
 	// visiting them in sorted order so folding is deterministic.
@@ -126,6 +138,7 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+
 	headers := make(http.Header, len(names))
 	for _, name := range names {
 		canonical := strings.ToLower(name)
@@ -154,6 +167,7 @@ func (c *authorizationCache) fingerprint(req *http.Request) [32]byte {
 
 	// Keyed HMAC with a length-prefixed writer so field boundaries are unambiguous.
 	mac := hmac.New(sha256.New, c.secret[:])
+	mac.Write([]byte("exact-request\x00"))
 	write := func(value string) {
 		var size [8]byte
 		binary.BigEndian.PutUint64(size[:], uint64(len(value)))
@@ -196,7 +210,24 @@ func (t registryTransport) authorizedResponse(req *http.Request, e *authorizatio
 		return nil
 	}
 
-	body, err := t.cache.Get(req.Context(), g.meta)
+	meta := g.meta
+	object, _, repository := repositoryBearer(req)
+	if repository {
+		var err error
+		meta, err = t.cache.Lookup(objectRequestKey(req, object))
+		if err != nil {
+			return nil
+		}
+
+		// Recheck request eligibility and the stored representation's identity,
+		// not the object that originally established repository approval.
+		expected, ok := objectRequestMetadata(req, meta.MediaType)
+		if !ok || expected.Key != meta.Key || expected.Digest != meta.Digest {
+			return nil
+		}
+	}
+
+	body, err := t.cache.Get(req.Context(), meta)
 	if err != nil {
 		return nil
 	}
@@ -209,21 +240,52 @@ func (t registryTransport) authorizedResponse(req *http.Request, e *authorizatio
 	}
 
 	stats.cache = "hit"
+	return cachedResponse(req, meta, body)
+}
 
+func cachedResponse(req *http.Request, meta cache.Metadata, body io.ReadCloser) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK, Status: "200 OK",
 		Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
-		Request: req, Body: body, ContentLength: g.meta.Size,
+		Request: req, Body: body, ContentLength: meta.Size,
 		Header: http.Header{
-			"Content-Type":          {g.meta.MediaType},
-			"Content-Length":        {strconv.FormatInt(g.meta.Size, 10)},
-			"Docker-Content-Digest": {g.meta.Digest},
-			// Do not let downstream caches turn this bounded, request-specific
+			"Content-Type":          {meta.MediaType},
+			"Content-Length":        {strconv.FormatInt(meta.Size, 10)},
+			"Docker-Content-Digest": {meta.Digest},
+			// Do not let downstream caches turn this bounded authorization
 			// approval into an independently reusable response.
 			"Cache-Control": {"private, no-store"},
 			"Date":          {time.Now().UTC().Format(http.TimeFormat)},
 		},
 	}
+}
+
+var bearerCredential = regexp.MustCompile(`^[A-Za-z0-9._~+/-]+=*$`)
+
+// repositoryBearer also identifies bypassed immutable reads so their denials
+// revoke the same repository grant. It never treats tags or writes as approvals.
+func repositoryBearer(req *http.Request) (immutableObject, string, bool) {
+	if req.Method != http.MethodGet || req.URL.RawQuery != "" || req.URL.ForceQuery || req.URL.RawPath != "" {
+		return immutableObject{}, "", false
+	}
+
+	parts := objectPath.FindStringSubmatch(req.URL.Path)
+	values := req.Header.Values("Authorization")
+	if parts == nil || len(values) != 1 {
+		return immutableObject{}, "", false
+	}
+
+	scheme, token, ok := strings.Cut(values[0], " ")
+	token = strings.TrimLeft(token, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || !bearerCredential.MatchString(token) {
+		return immutableObject{}, "", false
+	}
+
+	kind := blobKind
+	if parts[2] == "manifests" {
+		kind = manifestKind
+	}
+	return immutableObject{repository: parts[1], digest: parts[3], kind: kind}, token, true
 }
 
 // lifetime selects the TTL by header presence, not credential validity. An

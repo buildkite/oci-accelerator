@@ -64,6 +64,10 @@
   immediate error check, resource acquisition and its cleanup `defer`, and a
   lock with its protected updates and unlock. Keep comments attached to the
   code they describe. Do not separate every statement or brace-delimited block.
+- After `gofmt`, explicitly review every added or edited Go function for these
+  logical-block separators before considering the change ready. `gofmt` and
+  `git diff --check` do not enforce this rule. Include this spacing check in
+  review requests, and inspect the final code rather than only the diff hunks.
 - Name test files `<owner>[_<topic>]_test.go` after the source file or
   responsibility they verify, not the fixture or entry point they call. Keep
   shared fixtures in `test_helpers_test.go`, and keep helpers used by a single

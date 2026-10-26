@@ -39,6 +39,7 @@ type Store struct {
 	fillSuccess, fillFailure, fillAbort, fillExpiry int64                                // terminal fill outcome counters.
 	admissions                                      [AdmissionReasonCount]int64          // per-reason admission decision counters.
 	entries                                         map[string]*entry                    // published cache entries indexed by key.
+	requests                                        map[string]map[string]*entry         // eligible entries by request and representation key, bounded by maxEntries.
 	fills                                           map[string]*Fill                     // in-progress fills indexed by key.
 	claims                                          map[string]int64                     // reserved key ownership and byte charge during staging, before a fill publishes.
 	activeOps                                       int                                  // count of in-flight filesystem operations running with mu released.
@@ -86,6 +87,7 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 		maxEntries:  limits.MaxEntries,
 		fillTimeout: limits.FillTimeout,
 		entries:     make(map[string]*entry),
+		requests:    make(map[string]map[string]*entry),
 		fills:       make(map[string]*Fill),
 		claims:      make(map[string]int64),
 		lock:        lf,
@@ -113,8 +115,9 @@ func OpenWithLimits(dir string, limits Limits) (*Store, error) {
 }
 
 // Begin admits meta's key, reserves capacity (evicting if needed), and stages a
-// fill. It returns an *AdmissionError, matching ErrBypass, when the object
-// cannot be admitted. The caller should then serve the object uncached.
+// fill, preserving meta.RequestKey. It returns an *AdmissionError, matching
+// ErrBypass, when the object cannot be admitted. The caller should then serve
+// the object uncached.
 func (s *Store) Begin(meta Metadata) (*Fill, error) {
 	return s.begin(meta)
 }
@@ -127,10 +130,10 @@ func (s *Store) Completion(meta Metadata) (<-chan struct{}, bool) {
 	if s.closed {
 		return nil, false
 	}
-	if e, ok := s.entries[meta.Key]; ok && e.meta == meta && !e.invalid {
+	if e, ok := s.entries[meta.Key]; ok && sameRepresentation(e.meta, meta) && !e.invalid && !e.claimed {
 		return completedNotification, true
 	}
-	if f, ok := s.fills[meta.Key]; ok && f.meta == meta {
+	if f, ok := s.fills[meta.Key]; ok && sameRepresentation(f.meta, meta) {
 		return f.completed, true
 	}
 	return nil, false

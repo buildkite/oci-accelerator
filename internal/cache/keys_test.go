@@ -86,6 +86,7 @@ func TestKeysExcludesFailedFill(t *testing.T) {
 func TestKeysExcludesInvalidEntryAwaitingCleanup(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cache")
 	bad, good := testMeta("bad", "same"), testMeta("good", "good")
+	bad.RequestKey = testMeta("bad request", "").Key
 	s, err := openDefault(dir, 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +117,7 @@ func TestKeysExcludesInvalidEntryAwaitingCleanup(t *testing.T) {
 		t.Fatal("corrupt entry is not an indexed tombstone")
 	}
 	assertKeys(t, s, []string{good.Key})
+	assertLookup(t, s, bad.RequestKey, Metadata{}, ErrMiss)
 }
 
 func TestKeysExcludesEntryClaimedByEviction(t *testing.T) {
@@ -125,6 +127,7 @@ func TestKeysExcludesEntryClaimedByEviction(t *testing.T) {
 	}
 	defer s.Close()
 	old, replacement := testMeta("old", "1"), testMeta("new", "2")
+	old.RequestKey = testMeta("evicting request", "").Key
 	put(t, s, old, "1")
 
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -162,6 +165,7 @@ func TestKeysExcludesEntryClaimedByEviction(t *testing.T) {
 		t.Fatal("evicting entry is not an indexed claim")
 	}
 	assertKeys(t, s, nil)
+	assertLookup(t, s, old.RequestKey, Metadata{}, ErrMiss)
 	close(release)
 	if err := awaitResult(t, admitted, "admission after eviction"); err != nil {
 		t.Fatal(err)

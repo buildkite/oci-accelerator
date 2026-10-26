@@ -11,10 +11,12 @@ upstream registry again.
 - **Caches only content addressed by digest.** Blobs and manifests are cached by
   SHA-256 digest. Tags and pushes go straight to the upstream registry.
 - **Requires upstream approval.** Cached content is served only after the registry
-  approves the same request, or within a fixed approval window. The default is
-  15 minutes without `Authorization` and 30 seconds with it.
-- **Keeps credentials at the upstream registry.** Tokens are never read or
-  stored.
+  approves the request, or within a fixed approval window. A single valid nonempty
+  Bearer token reuses approval within the same registry and repository. Other
+  authentication and anonymous requests require an exact-request match. The default
+  window is 15 minutes without `Authorization` and 30 seconds with it.
+- **Keeps credentials at the upstream registry.** Tokens remain opaque and are
+  never persisted or sent to peers. Authorization identities use process-local HMACs.
 - **Streams large layers.** Layers are never buffered in memory, and concurrent
   pulls of the same layer share one download.
 - **Uses one trusted CA.** Docker hosts trust the root CA once, and certificates for
@@ -29,7 +31,10 @@ upstream registry again.
   full scans, both with ±20% jitter. Fetch duration and capacity queueing add to
   the poll delay, so there is no wall-clock freshness guarantee. On an authorized
   eligible blob or manifest miss, the proxy tries one randomly chosen live
-  hinted provider before using the origin body. Blob ranges can use the same full-object stream.
+  hinted provider before using the origin body. A live Bearer repository grant skips
+  upstream only for verified committed local hits. Every local miss needs its own
+  upstream GET and accepted redirects before fetching peer bytes, even with a live grant.
+  Blob ranges can use the same full-object stream.
   Registry credentials and authorization grants are never shared.
   See [peer discovery](docs/deployment.md#peer-discovery).
 
