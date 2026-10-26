@@ -1,10 +1,13 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 func TestMutableEndpointsCacheExactResponses(t *testing.T) {
@@ -130,6 +134,107 @@ func TestMutableSmallChunkedResponsesDoNotExhaustMemory(t *testing.T) {
 				t.Fatalf("upstream requests = %d, want 64 after rereading all cached pages", got)
 			}
 		})
+	}
+}
+
+func TestMutableAdmissionLogsCapacityWithoutChangingDelivery(t *testing.T) {
+	for _, mode := range []string{"exact", "shared-unapproved", "shared-approved"} {
+		for _, pressure := range []string{"captures", "memory", "existing"} {
+			t.Run(mode+"/"+pressure, func(t *testing.T) {
+				var calls atomic.Int32
+				origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					io.WriteString(w, "upstream metadata")
+				}))
+				defer origin.Close()
+				p, _ := mutableProxyFixture(t, origin)
+				p.cfg.Cache.MutableShared = mode != "exact"
+				p.cfg.Cache.FillWaitTimeout = 0
+				req := authorizationRequest(t, origin.URL+"/v2/team/image/tags/list", "Bearer reader")
+				req.Header.Set("User-Agent", "admission-test")
+				target, err := hostport.Parse(req.URL.Host, "443")
+				if err != nil {
+					t.Fatal(err)
+				}
+				handler := p.interceptHandler(target)
+
+				if mode == "shared-approved" {
+					seed := req.Clone(req.Context())
+					seed.URL.RawQuery = "seed=approval"
+					seed.URL.Scheme, seed.URL.Host = "", ""
+					seed.RequestURI = seed.URL.RequestURI()
+					w := httptest.NewRecorder()
+					handler.ServeHTTP(w, seed)
+					if w.Code != http.StatusOK || w.Body.String() != "upstream metadata" {
+						t.Fatalf("approval seed = %d %q", w.Code, w.Body.String())
+					}
+				}
+
+				var pending []*mutableEntry
+				defer func() {
+					for _, entry := range pending {
+						p.mutable.finish(entry, nil, nil, 0, time.Time{})
+					}
+				}()
+				if pressure == "memory" {
+					// Pin completed responses after eviction, leaving no room for a capture.
+					for i := range 31 {
+						key := mutableTestKey(i)
+						_, entry, leader := p.mutable.acquire(req, key)
+						if entry == nil || !leader {
+							t.Fatalf("could not prepare pinned response %d", i)
+						}
+						p.mutable.finish(entry, http.Header{}, make([]byte, 1<<20), 1<<20, time.Now().Add(time.Minute))
+						resp := p.mutable.hit(req, key)
+						defer resp.Body.Close()
+						p.mutable.invalidate(key)
+					}
+				} else {
+					for i := range 16 {
+						key := mutableTestKey(i)
+						if pressure == "existing" && i == 0 {
+							key = p.authorization.responseFingerprint(req, mode != "exact")
+						}
+						_, entry, leader := p.mutable.acquire(req, key)
+						if entry == nil || !leader {
+							t.Fatalf("could not prepare pending capture %d", i)
+						}
+						pending = append(pending, entry)
+					}
+				}
+
+				var logs bytes.Buffer
+				p.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+				before := calls.Load()
+				for _, path := range []string{"/v2/team/image/tags/list", "/v2/"} {
+					request := req.Clone(req.Context())
+					request.URL.Path = path
+					request.URL.Scheme, request.URL.Host = "", ""
+					request.RequestURI = request.URL.RequestURI()
+					w := httptest.NewRecorder()
+					handler.ServeHTTP(w, request)
+					if w.Code != http.StatusOK || w.Body.String() != "upstream metadata" {
+						t.Fatalf("delivery = %d %q", w.Code, w.Body.String())
+					}
+
+					var record struct{ Admission string }
+					if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+						t.Fatal(err)
+					}
+					want := ""
+					if path != "/v2/" && pressure != "existing" {
+						want = "mutable_capacity"
+					}
+					if record.Admission != want {
+						t.Fatalf("%s admission = %q, want %q", path, record.Admission, want)
+					}
+					logs.Reset()
+				}
+				if got := calls.Load() - before; got != 2 {
+					t.Fatalf("upstream calls = %d, want 2", got)
+				}
+			})
+		}
 	}
 }
 

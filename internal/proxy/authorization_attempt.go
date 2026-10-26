@@ -124,9 +124,9 @@ func (a *grantAttempt) narrow(resp *http.Response, received time.Time, permitted
 // settle commits a grant for an eligible terminal response, or invalidates the
 // entry otherwise. It relies on narrow having run for the same hop, so the
 // deadline and authentication-state restrictions have already been applied.
-// Transient failures cannot establish a grant. This immutable path approves only
-// its upstream GET. Shared mutable authorization separately accepts tag HEADs
-// under the configured repository-wide pull policy.
+// Transient failures cannot establish a grant. This path establishes grants from
+// immutable GETs. With shared mutable caching enabled, eligible mutable GETs and
+// tag HEADs establish the same repository grant, also approving immutable hits.
 func (a *grantAttempt) settle(req *http.Request, resp *http.Response, received time.Time, permitted bool) {
 	if a == nil || isTransient(resp.StatusCode) {
 		return

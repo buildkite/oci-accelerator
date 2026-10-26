@@ -295,7 +295,9 @@ repository-wide pull permission is determined by the token,
 independently of cookies or other headers, rather than by object-specific access
 rules. It does not interpret token claims, check their scopes or expiry, or hold
 credentials of its own. Disable credentialed grants if your registry does not
-satisfy that assumption.
+satisfy that assumption by setting `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL=0s`.
+Object-specific pull ACLs are incompatible with repository-wide grants, even
+when shared mutable caching is disabled.
 
 ### Approval for immutable content
 
@@ -377,8 +379,10 @@ Invalidation fences out late successful requests, so they cannot restore an
 invalidated approval. `404`, `410`, and transient failures do not revoke a Bearer
 repository grant, unless authentication-state headers or other invalidating policy
 are present. An upstream failure is returned to Docker, never hidden by cached content.
-With shared mutable caching enabled, an observed mutable denial invalidates only
-the matching token's repository grant, preventing both mutable and immutable reuse.
+With shared mutable caching enabled, a mutable response invalidates the matching
+token's repository grant on `401` or `403`, authentication-state headers,
+nonreusable or freshness-zero `Cache-Control`, any `Pragma`, or `Vary: *` or
+`Vary: Authorization`. This prevents both mutable and immutable reuse.
 An immutable denial likewise prevents shared mutable reuse. Shared response bytes
 and other tokens' grants are not globally purged.
 
@@ -410,6 +414,10 @@ Only bodyless requests with unambiguous, unescaped paths qualify.
   and all other forwarded end-to-end headers with their exact values and order.
   Shared keys use a separate HMAC domain from anonymous exact-request keys.
   GET and HEAD remain separate, and no other request dimension is relaxed.
+  Sharing requires token-independent, byte-identical mutable metadata for otherwise
+  identical requests among tokens approved for the repository. Set
+  `OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=false` for token-filtered listings or
+  metadata. This does not make repository grants safe for object-specific pull ACLs.
 - **Exact-request fallback.** Catalog, anonymous, and non-Bearer requests match
   the outgoing method, exact URL and query, and every forwarded end-to-end
   header, including credentials. Empty, malformed, or multiple Bearer credentials
@@ -424,12 +432,14 @@ Only bodyless requests with unambiguous, unescaped paths qualify.
   TTL. `0s` disables mutable caching, and an authorization TTL of `0s` disables
   reuse for that class. Hits never create or renew grants or extend response
   expiry, and capture time never extends the deadline.
+  A longer mutable TTL means tags can remain stale longer.
 - **Explicit restrictions still apply.** Request cache restrictions remain
   honored, including freshness ceilings and directives that prevent reuse.
   Upstream `max-age`, `s-maxage`, `Date`, `Age`, and `Expires` do not shorten or
   extend mutable response expiry. Grant eligibility still obeys upstream
-  authorization freshness restrictions, so `max-age=0` can prevent a grant even
-  when the response could otherwise be captured for its configured lifetime.
+  authorization freshness restrictions, so `max-age=0` can prevent a grant or
+  revoke existing approval while response bytes remain available for their
+  configured lifetime to independently approved readers.
   Response `no-store`, `no-cache`, `private`, any `Pragma`,
   authentication state (`Set-Cookie`, `WWW-Authenticate`, `Authentication-Info`,
   `Proxy-Authentication-Info`), or `Vary: *` prevents reuse. `Vary: Authorization`
@@ -464,8 +474,8 @@ Only bodyless requests with unambiguous, unescaped paths qualify.
   cancellation cancels its fetch and followers retry upstream. A follower's
   cancellation does not cancel the leader.
 
-In shared mode, an independently observed denial revokes only the matching token's
-repository grant, affecting immutable reuse too. Immutable denials likewise block
+In shared mode, the [grant invalidation rules](#authorization-grants) apply to
+mutable responses too, affecting immutable reuse. Immutable denials likewise block
 shared mutable reuse. Neither shared bytes nor other tokens' grants are globally
 purged. In exact mode, an independently observed denial or nonreusable,
 nontransient response discards older approval for that exact request, including

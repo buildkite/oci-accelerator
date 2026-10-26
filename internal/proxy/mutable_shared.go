@@ -28,6 +28,10 @@ func (t registryTransport) sharedMutableRoundTrip(req *http.Request, approvalKey
 	if grant != nil && requestLifetime >= t.authorization.authorizationTTL {
 		var resp *http.Response
 		resp, entry, leader = t.mutable.acquire(req, key)
+		if resp == nil && entry == nil {
+			stats.admission = "mutable_capacity"
+		}
+
 		if resp != nil {
 			if req.Context().Err() == nil && t.authorization.valid(approval, grant) {
 				stats.cache = "hit"
@@ -48,7 +52,11 @@ func (t registryTransport) sharedMutableRoundTrip(req *http.Request, approvalKey
 	} else {
 		// Unapproved requests always authorize independently. Reserve an absent
 		// response only, without reading or joining another client's capture.
-		entry = t.mutable.reserve(key)
+		var refused bool
+		entry, refused = t.mutable.reserve(key)
+		if refused {
+			stats.admission = "mutable_capacity"
+		}
 	}
 
 	if err := req.Context().Err(); err != nil {
@@ -84,8 +92,9 @@ func (t registryTransport) sharedMutableRoundTrip(req *http.Request, approvalKey
 	return t.captureMutable(req, resp, entry, lifetime, received, stats), nil
 }
 
-// A denial revokes only this token's approval, not the shared response or other
-// readers' grants. Missing objects and transient failures alone prove no denial.
+// Denials and response reuse restrictions revoke this token's repository grant,
+// blocking both mutable and immutable reuse. Shared bytes and other tokens'
+// grants remain intact. Missing objects and transient failures alone do not revoke.
 func mutableGrantRevoked(resp *http.Response, limit time.Duration) bool {
 	return resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
 		authorizationLifetime(resp.Header, limit) <= 0 || headerHasToken(resp.Header, "Vary", "*") || headerHasToken(resp.Header, "Vary", "Authorization")

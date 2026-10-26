@@ -784,6 +784,10 @@ and the request and response headers that prevent a grant. Additionally:
   rotations, must obtain their own upstream approval and cannot join another token's pending
   mutable fetch without a live grant. A grant is never created or renewed on hits,
   persisted, or refreshed or coalesced in the background.
+- Repository-wide grants require repository-wide pull permission for each token,
+  independent of cookies or other headers. For object-specific pull ACLs, disable
+  credentialed grants with `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL=0s`.
+  Disabling shared mutable caching alone does not solve object-specific access.
 - Tokens are opaque, so revocation or expiry can take effect as late as the grant's original
   expiry.
 - Every redirect hop must be reusable. Only explicit `max-age` and `s-maxage` ceilings shorten a
@@ -819,8 +823,10 @@ the client: there is no failed-request fallback.
 Response restrictions on any redirect hop or the terminal response still invalidate,
 even when the request requires revalidation.
 Invalidation fences out late successful requests, so they cannot restore the invalidated grant.
-In shared mutable mode, an observed mutable denial revokes only the matching token's
-repository grant, preventing immutable reuse too. An immutable denial likewise prevents
+In shared mutable mode, a mutable response revokes the matching token's repository grant
+on `401` or `403`, authentication-state headers, nonreusable or freshness-zero
+`Cache-Control`, any `Pragma`, or `Vary: *` or `Vary: Authorization`, preventing immutable
+reuse too. An immutable denial likewise prevents
 shared mutable reuse. Shared response bytes and other tokens' grants are not globally purged.
 
 ## Cache storage
@@ -860,6 +866,9 @@ Only `Authorization` is omitted from the process-local HMAC key. The outgoing me
 URL with its exact query, and all other forwarded end-to-end headers retain their exact
 values and order. Shared keys use a separate HMAC domain from anonymous exact-request keys.
 Each reader needs its own live grant for the exact token, registry, and repository.
+Sharing requires token-independent, byte-identical mutable metadata for otherwise identical
+requests among tokens approved for the repository. Set
+`OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=false` for token-filtered listings or metadata.
 
 Catalog, anonymous, and non-Bearer requests retain exact-request matching, including
 credentials. Empty, malformed, or multiple Bearer credentials do not qualify for sharing.
@@ -870,7 +879,8 @@ Mutable data is never written to disk, advertised in peer inventories, or fetche
 peers. Only bodyless requests with unambiguous, unescaped paths qualify.
 
 `OCI_ACCELERATOR_CACHE_MUTABLE_TTL` defaults to `30s`, measured from upstream response
-header receipt, not capture completion or the last hit. Shared responses have a fixed
+header receipt, not capture completion or the last hit. A longer mutable TTL means tags
+can remain stale longer. Shared responses have a fixed
 lifetime independent of grants and can outlive the producer's approval. Every reader needs
 both a live grant and an unexpired response. Exact-mode response lifetime is capped by the
 credentialed or anonymous authorization TTL. An authorization TTL of `0s` disables mutable
@@ -880,7 +890,8 @@ renew a grant and never extend response expiry.
 Request cache restrictions are still honored. Upstream `max-age`, `s-maxage`, `Date`,
 `Age`, and `Expires` are ignored for mutable response expiry. Authorization freshness
 restrictions still apply to shared grants, so upstream `max-age=0` can prevent approval
-even when the response otherwise qualifies for capture with the configured lifetime.
+or revoke existing approval while response bytes remain available for their configured
+lifetime to independently approved readers.
 Responses with `no-store`, `no-cache`,
 `private`, any `Pragma`, authentication state, or `Vary: *` cannot be reused. Authentication
 state means `Set-Cookie`, `WWW-Authenticate`, `Authentication-Info`, or
@@ -914,8 +925,8 @@ Followers wait up to `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` (default `1s`).
 independent upstream request without competing cache publication. Leader cancellation
 cancels its fetch and followers retry. Follower cancellation does not affect the leader.
 
-In shared mode, an independently observed denial revokes only the matching token's
-repository grant, affecting immutable reuse too. Immutable denials likewise prevent shared
+In shared mode, the [grant invalidation rules](#authorization-grants) apply to mutable
+responses too, affecting immutable reuse. Immutable denials likewise prevent shared
 mutable reuse. Shared bytes and other tokens' grants are not globally purged. In exact mode,
 an independently observed denial or nonreusable, nontransient response discards older
 approval for that exact request and prevents older captures from publishing. Transient
@@ -1362,6 +1373,10 @@ Request completion records contain:
 | `upstream_body_bytes`                 | Bytes consumed from the upstream body, excluding transport read-ahead and a detached fill pump's bytes. Not a wire measurement |
 | `peer`, `peer_body_bytes`             | Peer source selection (`hit` or `unavailable`) and bytes consumed from a selected peer body |
 | `url`                                 | See below                                                                    |
+
+`admission=mutable_capacity` identifies mutable capture admission refused because the
+capture, entry-index, or accounted-memory limit could not accommodate it. Ordinary cache
+bypasses and requests that encounter an existing capture do not receive this value.
 
 The `url` field appears on completion records and upstream-failure warnings, including cache
 hits and rejected requests. It contains the intercepted registry's HTTPS authority and the

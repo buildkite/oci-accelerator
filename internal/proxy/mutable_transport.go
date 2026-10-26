@@ -23,6 +23,10 @@ func (t registryTransport) mutableRoundTrip(req *http.Request, lifetime time.Dur
 	}
 
 	resp, entry, leader := t.mutable.acquire(req, key)
+	if resp == nil && entry == nil {
+		stats.admission = "mutable_capacity"
+	}
+
 	if resp != nil {
 		stats.cache = "hit"
 		return resp, nil

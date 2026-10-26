@@ -74,16 +74,19 @@ func (c *mutableCache) acquire(req *http.Request, key [32]byte) (resp *http.Resp
 
 // reserve admits only an absent key. A request still obtaining its own approval
 // cannot borrow a response or wait for another client's pending capture.
-func (c *mutableCache) reserve(key [32]byte) *mutableEntry {
+// refused distinguishes capacity pressure from an already indexed response.
+func (c *mutableCache) reserve(key [32]byte) (entry *mutableEntry, refused bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.expireLocked()
 
 	if c.entries[key] != nil {
-		return nil
+		return nil, false
 	}
-	return c.reserveLocked(key)
+
+	entry = c.reserveLocked(key)
+	return entry, entry == nil
 }
 
 func (c *mutableCache) reserveLocked(key [32]byte) *mutableEntry {
