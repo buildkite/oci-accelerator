@@ -23,9 +23,11 @@ import (
 func TestCacheFillWaitCoalescesAuthorizedBlobAndManifest(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, media, path string
+		peer                    bool
 	}{
-		{"blob", "coalesced blob bytes", "application/octet-stream", ""},
-		{"oci-manifest", `{"schemaVersion":2,"coalesced":true}`, manifestMediaTypes[0], "manifest"},
+		{"blob", "coalesced blob bytes", "application/octet-stream", "", false},
+		{"oci-manifest", `{"schemaVersion":2,"coalesced":true}`, manifestMediaTypes[0], "manifest", false},
+		{"peer-blob", "coalesced peer bytes", "application/octet-stream", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			leaderHeaders := make(chan struct{})
@@ -57,6 +59,16 @@ func TestCacheFillWaitCoalescesAuthorizedBlobAndManifest(t *testing.T) {
 			accept := ""
 			if tc.path == "manifest" {
 				path, accept = manifestURL("team/image", tc.body), tc.media
+			}
+			var peer *peerEntryFixture
+			if tc.peer {
+				peer = newPeerEntryFixture(t, p, origin.URL+path, tc.body, tc.media, func(handler http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						<-release
+						handler.ServeHTTP(w, r)
+					})
+				})
+				p.SetPeerFetcher(peer.fetch)
 			}
 			type result struct {
 				resp *http.Response
@@ -95,7 +107,14 @@ func TestCacheFillWaitCoalescesAuthorizedBlobAndManifest(t *testing.T) {
 			}
 			awaitNoActiveRequests(t, p)
 			m := p.metrics.snapshot()
-			if m.upstream != 2 || m.cache["miss"] != 1 || m.cache["wait_hit"] != 1 || m.waits["complete"] != 1 || m.servedBytes["origin"] != uint64(len(tc.body)) || m.servedBytes["cache"] != uint64(len(tc.body)) || m.servedEntries["origin"] != 1 || m.servedEntries["cache"] != 1 {
+			source := "origin"
+			if tc.peer {
+				source = "peer"
+				if peer.requests.Load() != 1 || m.upstreamBytes != 0 || m.peerBytes != uint64(len(tc.body)) {
+					t.Fatalf("peer requests=%d metrics=%+v", peer.requests.Load(), m)
+				}
+			}
+			if m.upstream != 2 || m.cache["miss"] != 1 || m.cache["wait_hit"] != 1 || m.waits["complete"] != 1 || m.servedBytes[source] != uint64(len(tc.body)) || m.servedBytes["cache"] != uint64(len(tc.body)) || m.servedEntries[source] != 1 || m.servedEntries["cache"] != 1 {
 				t.Fatalf("coalesced metrics = %+v", m)
 			}
 		})

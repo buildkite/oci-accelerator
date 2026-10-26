@@ -18,13 +18,16 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
+	"github.com/buildkite/oci-accelerator/internal/cache"
 	"github.com/buildkite/oci-accelerator/internal/cache/cachetest"
 	"github.com/buildkite/oci-accelerator/internal/config"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
+	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
 func start(t *testing.T, cfg config.Config) (*Proxy, string) {
@@ -356,6 +359,69 @@ func waitFor(t *testing.T, ch <-chan struct{}, what string) {
 func safeRelease(ch chan struct{}) func() {
 	var once sync.Once
 	return func() { once.Do(func() { close(ch) }) }
+}
+
+type peerEntryFixture struct {
+	store    *cache.Store
+	server   *httptest.Server
+	client   *http.Client
+	requests atomic.Int32
+}
+
+func newPeerEntryFixture(t *testing.T, p *Proxy, url, content, media string, wrap func(http.Handler) http.Handler) *peerEntryFixture {
+	t.Helper()
+	store, err := cachetest.Open(filepath.Join(t.TempDir(), "peer-cache"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	request, _ := http.NewRequest(http.MethodGet, url, nil)
+	response := &http.Response{StatusCode: 200, ContentLength: int64(len(content)), Header: http.Header{"Content-Type": {media}}}
+	meta, ok := objectMetadata(request, response)
+	if !ok {
+		t.Fatal("fixture representation is not cacheable")
+	}
+	fill, err := store.Begin(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(fill, content); err != nil {
+		t.Fatal(err)
+	}
+	if err := fill.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	f := &peerEntryFixture{store: store}
+	handler := peering.NewEntryHandler("000000000001", store, time.Second)
+	if wrap != nil {
+		handler = wrap(handler)
+	}
+	serverTLS, clientTLS, err := p.signer.PeerTLSConfigs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.requests.Add(1)
+		if len(r.Header.Values("Authorization")) != 0 || len(r.Header.Values("Cookie")) != 0 {
+			t.Error("peer received registry credentials")
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	f.server.TLS = serverTLS
+	f.server.StartTLS()
+	t.Cleanup(f.server.Close)
+	f.client = peering.NewClient(clientTLS)
+	f.client.Timeout = 5 * time.Second
+	t.Cleanup(f.client.CloseIdleConnections)
+	return f
+}
+
+func (f *peerEntryFixture) fetch(ctx context.Context, meta cache.Metadata) (io.ReadCloser, error) {
+	return peering.FetchEntry(ctx, f.client, strings.TrimPrefix(f.server.URL, "https://"), "000000000001", meta)
 }
 
 // syncBuffer is a concurrency-safe log sink for asserting on structured logs.

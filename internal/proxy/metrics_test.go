@@ -21,7 +21,7 @@ func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {
 	m.upstream = 2
 	m.activeRequests = 6
 	m.activeWaits = 7
-	s := &requestStats{cache: "miss", fill: "stored", wait: "complete", fallback: "retry", reject: "vary", upstreamBytes: 3, immutable: true}
+	s := &requestStats{cache: "miss", fill: "stored", wait: "complete", fallback: "retry", reject: "vary", upstreamBytes: 3, immutable: true, peer: "unavailable"}
 	m.finish(s, "complete", http.StatusOK, 20*time.Millisecond, 4)
 	want := metricsSnapshot{
 		requests:        map[string]uint64{"complete": 1},
@@ -31,6 +31,7 @@ func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {
 		waits:           map[string]uint64{"complete": 1},
 		fallback:        map[string]uint64{"retry": 1},
 		rejects:         map[string]uint64{"vary": 1},
+		peers:           map[string]uint64{"unavailable": 1},
 		upstream:        2,
 		upstreamBytes:   3,
 		downstreamBytes: 4,
@@ -45,7 +46,7 @@ func TestMetricsSnapshotCopiesAllFieldsAndOwnsMaps(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("snapshot = %+v, want %+v", got, want)
 	}
-	for _, counts := range []map[string]uint64{got.requests, got.statuses, got.cache, got.fills, got.waits, got.fallback, got.rejects, got.servedBytes, got.servedEntries} {
+	for _, counts := range []map[string]uint64{got.requests, got.statuses, got.cache, got.fills, got.waits, got.fallback, got.rejects, got.peers, got.servedBytes, got.servedEntries} {
 		for key := range counts {
 			counts[key]++
 		}

@@ -80,6 +80,7 @@ func (t registryTransport) pumpRangeFill(fetch *rangeFetch, source *fillingBody)
 
 		t.metrics.mu.Lock()
 		t.metrics.upstreamBytes += uint64(source.stats.upstreamBytes)
+		t.metrics.peerBytes += uint64(source.stats.peerBytes)
 		t.metrics.fills[source.stats.fill]++
 		t.metrics.mu.Unlock()
 	}()

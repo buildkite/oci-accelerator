@@ -31,6 +31,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			fillWaitTimeout: p.cfg.Cache.FillWaitTimeout,
 			authorization:   p.authorization,
 			startRangeFetch: p.startRangeFetch,
+			fetchPeer:       p.fetchPeer,
 		},
 
 		// Retarget onto the upstream and strip proxy-revealing / hop-by-hop headers.
@@ -121,7 +122,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 			}
 			p.metrics.finish(stats, outcome, mw.status, time.Since(started), mw.bytes)
 			p.logger.Info("registry request", "registry", target.String(), "url", requestLogURL(target, r), "status", mw.status, "duration", time.Since(started), "bytes", mw.bytes, "outcome", outcome,
-				"cache", stats.cache, "fill", stats.fill, "admission", stats.admission, "wait", stats.wait, "fallback", stats.fallback, "reject", stats.reject, "upstream_body_bytes", stats.upstreamBytes)
+				"cache", stats.cache, "fill", stats.fill, "admission", stats.admission, "wait", stats.wait, "fallback", stats.fallback, "reject", stats.reject, "peer", stats.peer, "peer_body_bytes", stats.peerBytes, "upstream_body_bytes", stats.upstreamBytes)
 		}()
 
 		// Forward to the reverse proxy only if the request passes the intercept contract.

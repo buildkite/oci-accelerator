@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -25,6 +26,7 @@ type registryTransport struct {
 	fillWaitTimeout time.Duration                              // wait for another request's fill before one retry. Zero disables
 	authorization   *authorizationCache                        // exact-request grants (nil disables grant reuse)
 	startRangeFetch func(context.Context) (*rangeFetch, error) // registers a range fetch bounded by fill timeout and shutdown
+	fetchPeer       func(context.Context, cache.Metadata) (io.ReadCloser, error)
 }
 
 func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -47,21 +49,6 @@ func (t registryTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 		// Carry fetch on the context for resolveResponse (cache.go) to detach and pump the fill.
 		req = req.WithContext(context.WithValue(fetch.ctx, rangeFetchKey{}, fetch))
-	}
-
-	// Instrument GETs so every upstream connection acquisition bumps the metric.
-	if req.Method == http.MethodGet {
-		// Count every connection-acquisition attempt (transport retries plus
-		// DNS/dial/TLS failures before the GET). Requests rejected earlier don't
-		// count. Attach once so redirects and fill-wait retries inherit, not
-		// stack, the hook.
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
-			GetConn: func(string) {
-				t.metrics.mu.Lock()
-				t.metrics.upstream++
-				t.metrics.mu.Unlock()
-			},
-		}))
 	}
 
 	// Make our own authorized GET first. This attempt may then close its body
@@ -155,9 +142,22 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 	// Upstream path: follow redirect hops, then hand off to resolveResponse.
 	for hops := 0; ; hops++ {
 
+		// Scope origin instrumentation to this network request, so a peer
+		// request made with req.Context cannot inherit the origin trace.
+		networkRequest := current
+		if current.Method == http.MethodGet {
+			networkRequest = current.WithContext(httptrace.WithClientTrace(current.Context(), &httptrace.ClientTrace{
+				GetConn: func(string) {
+					t.metrics.mu.Lock()
+					t.metrics.upstream++
+					t.metrics.mu.Unlock()
+				},
+			}))
+		}
+
 		// Single network round trip for this hop via the shared stdlib transport
 		// (t.upstream). This registryTransport wraps it with retry, redirects, caching.
-		resp, err := t.upstream.RoundTrip(current)
+		resp, err := t.upstream.RoundTrip(networkRequest)
 		if err != nil {
 			return nil, false, err
 		}

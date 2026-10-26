@@ -36,8 +36,8 @@ send.
 A blob request with a `Range` header, such as a resumed layer download, is sent
 upstream as a request for the whole blob, so the upstream registry still approves every
 request. The accelerator then returns only the requested bytes, reading them
-from disk if the blob is cached or from the upstream stream while filling the
-cache. A ranged fill continues after Docker disconnects, until
+from disk if the blob is cached or from a full origin or peer stream while filling
+the cache. A ranged fill continues after Docker disconnects, until
 `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` expires. Ranged requests never use authorization grants. A
 manifest request with a `Range` header, or any request with an `If-*` header, is
 forwarded upstream unchanged and not cached.
@@ -58,7 +58,7 @@ intercepted registry, including redirects. Public hosts need no configuration,
 but a private or internal address is refused unless its host and port belong to
 a configured registry or are listed in `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`.
 
-### Peer discovery is separate from image delivery
+### Peer discovery and cache delivery
 
 You can enable a separate TLS listener for instances sharing the same CA. Mutual
 TLS verifies dedicated peer certificates against that CA on both sides. Possessing
@@ -115,8 +115,8 @@ Unverified non-seed candidates share a bounded, deduplicated queue and get three
 attempts followed by a five-minute cooldown. Later gossip can request a new budget
 after cooldown, but cannot reset an active budget or bypass backoff. Verification
 shares discovery's four outbound slots, with at most two used by candidates.
-Peer outages do not prevent readiness after the bounded startup check or affect
-image pulls once serving.
+Peer outages do not prevent readiness after the bounded startup check. Failed
+peer attempts before peer headers are accepted fall back to origin.
 
 Each instance also lists the hashed keys of its committed cache entries to
 authenticated peers. Startup and newly discovered node IDs trigger immediate
@@ -140,11 +140,32 @@ when a full scan successfully completes, not when it starts.
 
 The keys remain advisory, additive hints about which peer holds which object.
 Neither a full scan nor an empty listing removes stale claims. Hints grant no
-access, and pulls do not use them. See the [configuration reference](deployment.md#configuration)
+access. See the [configuration reference](deployment.md#configuration)
 for poll, full-scan, and attempt timeout settings.
 
+For an eligible digest-addressed blob or manifest GET, the proxy obtains upstream
+approval and checks its local cache first. If no entry or completed coalesced
+fill is available, it chooses one live hinted provider uniformly at random.
+It tries no second provider and does not refresh hints on the request path.
+The peer serves only an exact matching committed local entry. Opening it updates
+its recency and pins it against eviction until the reader closes.
+
+The proxy keeps the approved origin stream open until peer headers pass validation.
+A missing, busy, unreachable, or incompatible peer falls back to that origin
+stream without another GET. A matching-node `404` removes only that provider's
+unchanged hint observation. A later inventory observation can restore it.
+Once a peer stream is accepted, the origin body closes and peer bytes stream to
+Docker, optionally filling the local cache. Storage admission refusal or a cache
+write failure does not prevent peer delivery. Size and digest verification gate cache
+publication. Bytes stream before verification, but a failed final read is withheld
+so a full delivery cannot appear complete. A mid-stream failure aborts rather than
+splicing in origin bytes. Blob ranges select bytes from the same full-object stream.
+A selected range can finish before verification, but a failed tail is never cached.
+
 Peer destinations are unrestricted, unlike intercepted-registry egress. The
-protocol never shares cached content, credentials, or authorization grants.
+protocol shares cached content within the fleet, never registry credentials or
+authorization grants. The serving peer trusts fleet membership. The requesting
+proxy remains responsible for upstream authorization.
 See [peer discovery](deployment.md#peer-discovery) for configuration, trust, and
 retention details, and [cache key listing](deployment.md#cache-key-listing) for
 the listing protocol.
@@ -259,9 +280,13 @@ not read tokens, check their scopes or expiry, or hold credentials of its own.
 
 Without a reusable authorization grant, the accelerator sends Docker's cacheable
 `GET` upstream first, following any redirects. Only a cacheable `200 OK` counts as approval.
-The body then comes from disk if cached, or streams from upstream while filling
-the cache. Any other response, such as `401` or `404`, goes back to Docker
-unchanged. `HEAD`, `GET /v2/`, and tag requests approve nothing.
+The body then comes from disk if cached. On an eligible miss, it can stream
+from one hinted peer instead of origin. The original upstream response determines
+the cache key, metadata, authorization grant eligibility, and response headers.
+Neither a hint nor peer authentication replaces upstream approval, and no-store
+or otherwise uncacheable responses never trigger peer fetches. Any other response,
+such as `401` or `404`, goes back to Docker unchanged. `HEAD`, `GET /v2/`, and tag
+requests approve nothing.
 
 A cache hit without a reusable grant still sends the request upstream, including
 any redirects, though not the download, and may count toward registry rate limits.
@@ -284,6 +309,9 @@ the upstream registry on every delivery.
   classes share the `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound (10000 by default).
 - **Bytes are shared, approvals are not.** Any client the upstream registry approves can
   receive the cached copy, whoever filled it.
+
+A grant can serve only a present, verified local body. If that body is missing,
+the request needs fresh upstream approval before it can fetch from a peer.
 
 If you make a public repository private, an existing anonymous approval can still
 serve an identical request until it expires, up to 15 minutes by default.
@@ -321,7 +349,9 @@ repositories is stored twice.
 
 ### Filling
 
-On a cache miss, the accelerator streams the body to Docker while writing it to
+After upstream approval and local lookup, an eligible miss tries one random
+live hinted peer when peering is enabled. Otherwise it uses the approved origin
+body. An admitted fill streams the selected body to Docker while writing it to
 a temporary file. It publishes the entry, with an atomic rename, only after the
 full length and SHA-256 digest match. If the download fails, the client
 disconnects from a non-ranged request, or the digest doesn't match, the
@@ -330,8 +360,10 @@ temporary file is discarded, so a partial entry is never served.
 Only one request fills a given entry at a time. Other requests for the same
 object still get their own upstream approval, then wait up to
 `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` (1 second by default) for the fill to finish instead
-of downloading the body again. If it doesn't finish in time, each makes one
-fresh upstream request.
+of downloading the body again. This wait precedes peer selection and also works
+when the leader is fetching from a peer. A timeout, failed fill, or eviction
+causes one fresh upstream request, without waiting again. That request must
+independently pass approval before a peer or origin body can be used.
 
 ### Limits and eviction
 
@@ -340,7 +372,7 @@ fresh upstream request.
 | `OCI_ACCELERATOR_CACHE_MAX_BYTES`     | 32 GiB  | Total size, counting each body plus 4 KiB of metadata    |
 | `OCI_ACCELERATOR_CACHE_MAX_ENTRIES`   | 100000  | Number of entries                                      |
 | `OCI_ACCELERATOR_CACHE_MAX_FILLS`     | 16      | Concurrent fills. Further misses stream without caching |
-| `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`  | 10m     | How long a fill may take                                |
+| `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`  | 10m     | Cache-fill lifetime, ranged fetch deadline, and peer transfer budget |
 
 In-progress fills count toward these limits. The limits don't include filesystem
 block and inode overhead, so leave some headroom on the disk.
@@ -359,5 +391,6 @@ rebuilt from commit times.
 
 Each body is hashed again, in full, before it is first served after startup, so
 that first hit is slower. A missing or corrupt entry is treated as a miss and
-refilled from the upstream response. Don't edit or delete files in a live cache.
+refilled from origin or an eligible hinted peer after upstream approval.
+Don't edit or delete files in a live cache.
 To reset it, stop the accelerator and remove the whole directory.

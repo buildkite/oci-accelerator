@@ -74,12 +74,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen fu
 		defer func() { runErr = errors.Join(runErr, stopMetrics()) }()
 	}
 
-	peeringDone, stopPeering, err := startPeering(ctx, cfg, signer, store.KeyPage, logger, listen)
+	service, err := startPeering(ctx, cfg, signer, store, logger, listen)
 	if err != nil {
 		return err
 	}
-	if stopPeering != nil {
-		defer func() { runErr = errors.Join(runErr, stopPeering()) }()
+	var peeringDone <-chan struct{}
+	if service != nil {
+		defer func() { runErr = errors.Join(runErr, service.close()) }()
+		p.SetPeerFetcher(service.fetch)
+		peeringDone = service.done
 	}
 
 	logger.Info("proxy ready", "version", ociaccelerator.Version(), "listen", listener.Addr().String(), "ca_certificate", signer.CertificatePath(), "ca_sha256", signer.Fingerprint())
