@@ -40,10 +40,22 @@ steps:
     command: "bash .buildkite/image.sh check"
     timeout_in_minutes: 20
 
+  - label: ":go: Package Linux and macOS binaries"
+    key: binaries
+    command: "bash .buildkite/binaries.sh"
+    timeout_in_minutes: 20
+    plugins:
+      - docker#v5.14.0:
+          image: golang:1.27.1-bookworm
+          mount-buildkite-agent: true
+          environment:
+            - GOTOOLCHAIN=local
+            - CGO_ENABLED=0
+
   - block: ":docker: Publish images to Docker Hub?"
     key: approve-publish
     if: 'build.branch == "main" && build.tag == null && build.pull_request.id == null'
-    depends_on: [checks, tests, race, image]
+    depends_on: [checks, tests, race, image, binaries]
 
   - label: ":docker: Publish release, build, and latest tags to Docker Hub"
     key: publish
