@@ -8,52 +8,18 @@ import (
 	"testing"
 )
 
-// Git uses real local history. Only Docker and the Buildkite agent are replaced.
+// Git uses real local history. Docker, Buildkite, and GitHub are replaced.
 // These tests must never contact Docker Hub or retrieve a real credential.
 func TestImagePipeline(t *testing.T) {
-	requireCommands(t, "bash", "git")
+	requireCommands(t, "bash", "git", "jq", "sha256sum")
+
 	script, err := filepath.Abs("../.buildkite/image.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	git := func(dir string, args ...string) string {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	origin := t.TempDir()
-	git(origin, "init", "-b", "main")
-	git(origin, "commit", "--allow-empty", "-m", "before VERSION")
-	git(origin, "branch", "before-version")
-	git(origin, "checkout", "-b", "unprefixed")
-	writeFile(t, filepath.Join(origin, "VERSION"), "0.1.0\n", 0o600)
-	git(origin, "add", "VERSION")
-	git(origin, "commit", "-m", "unsupported version format")
-	git(origin, "checkout", "main")
-	writeFile(t, filepath.Join(origin, "VERSION"), "v0.1.0\n", 0o600)
-	git(origin, "add", "VERSION")
-	git(origin, "commit", "-m", "first release")
-	git(origin, "branch", "first-release")
-	writeFile(t, filepath.Join(origin, "VERSION"), "v0.1.9\n", 0o600)
-	git(origin, "commit", "-am", "previous version")
-	git(origin, "commit", "--allow-empty", "-m", "ordinary main")
-	git(origin, "branch", "older")
-	git(origin, "checkout", "-b", "release-pr")
-	writeFile(t, filepath.Join(origin, "VERSION"), "v0.1.10\n", 0o600)
-	git(origin, "commit", "-am", "bump version")
-	git(origin, "checkout", "main")
-	git(origin, "merge", "--no-ff", "release-pr", "-m", "merge release")
-	git(origin, "branch", "release")
-	git(origin, "commit", "--allow-empty", "-m", "later main")
-	git(origin, "checkout", "-b", "unmerged")
-	git(origin, "commit", "--allow-empty", "-m", "unmerged")
-	git(origin, "checkout", "main")
+
+	git := func(dir string, args ...string) string { return imagePipelineGit(t, dir, args...) }
+	origin := imagePipelineHistory(t)
 
 	for _, tc := range []struct {
 		name, mode, branch, tag, checkout, pr, failure string
@@ -152,57 +118,7 @@ func TestImagePipeline(t *testing.T) {
 					writeFile(t, filepath.Join(repo, ".git", "info", "exclude"), "internal/injected.go\n", 0o600)
 				}
 			}
-			bin := filepath.Join(root, "bin")
-			if err := os.Mkdir(bin, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			writeFile(t, filepath.Join(bin, "docker"), `#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "$IMAGE_TEST_ROOT/docker-calls"
-printf 'docker %s\n' "$*" >> "$IMAGE_TEST_ROOT/operations"
-printf '%s\n' "$DOCKER_CONFIG" > "$IMAGE_TEST_ROOT/docker-config"
-case "$1 $2" in
-  'login --username')
-    [[ "$*" == 'login --username buildkite --password-stdin docker.io' ]]
-    [[ $(cat) == fixture-token ]]
-    [[ "$IMAGE_TEST_FAILURE" != login ]]
-    ;;
-  'buildx imagetools')
-    [[ "$3" == inspect ]]
-    case "$IMAGE_TEST_FAILURE" in
-      published|published-tip) printf '%s %s' "$BUILDKITE_COMMIT" "$(cat VERSION)" ;;
-      conflict) printf 'different-commit %s' "$(cat VERSION)" ;;
-      no-metadata) printf ' ' ;;
-      unauthorized) echo 'ERROR: authorization failed' >&2; exit 1 ;;
-      timeout) echo 'ERROR: connection timed out' >&2; exit 1 ;;
-      unknown) echo 'ERROR: unexpected not found response' >&2; exit 1 ;;
-      *) echo "ERROR: $4: not found" >&2; exit 1 ;;
-    esac
-    ;;
-  'buildx build') [[ "$IMAGE_TEST_FAILURE" != build ]] ;;
-  'buildx create'|'buildx rm') ;;
-  *) exit 99 ;;
-esac
-`, 0o700)
-			writeFile(t, filepath.Join(bin, "buildkite-agent"), `#!/usr/bin/env bash
-set -euo pipefail
-case "$1" in
-  secret)
-    printf '%s\n' "$*" >> "$IMAGE_TEST_ROOT/secret-calls"
-    printf 'secret %s\n' "$*" >> "$IMAGE_TEST_ROOT/operations"
-    [[ "$*" == 'secret get --format default OCI_ACCELERATOR_DOCKER_HUB_TOKEN' ]]
-    [[ "$IMAGE_TEST_FAILURE" != secret ]]
-    printf fixture-token
-    ;;
-  annotate)
-    printf '%s\n' "$*" >> "$IMAGE_TEST_ROOT/annotate-calls"
-    printf 'annotate %s\n' "$*" >> "$IMAGE_TEST_ROOT/operations"
-    cat > "$IMAGE_TEST_ROOT/annotation-body"
-    [[ "$IMAGE_TEST_FAILURE" != annotation ]]
-    ;;
-  *) exit 99 ;;
-esac
-`, 0o700)
+			bin := installImagePipelineMocks(t, root)
 			mode := tc.mode
 			if mode == "" {
 				mode = "publish"
@@ -229,7 +145,7 @@ esac
 			cmd.Dir = repo
 			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
 				"BUILDKITE_BRANCH="+branch, "BUILDKITE_TAG="+tc.tag, "BUILDKITE_PULL_REQUEST="+pr, "BUILDKITE_COMMIT="+commit,
-				"BUILDKITE_BUILD_NUMBER="+number, "IMAGE_TEST_ROOT="+root, "IMAGE_TEST_FAILURE="+tc.failure)
+				"BUILDKITE_BUILD_NUMBER="+number, "BUILDKITE_BUILD_ID=fixture-build-id", "IMAGE_TEST_ROOT="+root, "IMAGE_TEST_FAILURE="+tc.failure)
 			out, err := cmd.CombinedOutput()
 			if (err != nil) != tc.wantError {
 				t.Fatalf("error = %v, want error %v: %s", err, tc.wantError, out)
@@ -243,6 +159,13 @@ esac
 			_, err = os.Stat(filepath.Join(root, "secret-calls"))
 			if (err == nil) != tc.wantSecret {
 				t.Fatalf("secret retrieved = %v, want %v", err == nil, tc.wantSecret)
+			}
+			if !tc.wantInspect {
+				secrets := readImageFixtureLog(t, root, "secret-calls")
+				operations := readImageFixtureLog(t, root, "operations")
+				if strings.Contains(secrets, "OCI_ACCELERATOR_GITHUB_RELEASE_TOKEN") || strings.Contains(operations, "artifact ") || readImageFixtureLog(t, root, "gh-calls") != "" {
+					t.Fatal("non-release build accessed GitHub release credentials, artifacts, or API")
+				}
 			}
 			calls, _ := os.ReadFile(filepath.Join(root, "docker-calls"))
 			if strings.Contains(string(calls), "buildx build ") != tc.wantBuild || strings.Contains(string(calls), "--push") != tc.wantPush {

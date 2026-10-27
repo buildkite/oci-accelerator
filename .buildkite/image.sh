@@ -126,6 +126,13 @@ if [[ "$mode" == publish ]]; then
   fi
 fi
 
+if [[ "$mode" == publish && "$release" == true ]]; then
+  # Docker's version preflight has succeeded. Stage the original build's binary
+  # artifacts before pushing images, and publish the GitHub release only after.
+  source "$(dirname "${BASH_SOURCE[0]}")/github-release.sh"
+  github_prepare
+fi
+
 if [[ "$mode" == check ]] || ((${#tags[@]} > 0)); then
   # Official BuildKit images bundle QEMU for the Alpine ARM64 runtime stage.
   docker buildx create --name "$builder" --driver docker-container --bootstrap
@@ -143,14 +150,17 @@ if [[ "$mode" == check ]] || ((${#tags[@]} > 0)); then
 fi
 
 if [[ "$mode" == publish && "$release" == true ]]; then
+  github_publish
   if ! buildkite-agent annotate --style success --context oci-accelerator-release <<EOF
 **$release_title**
 
 Image: \`$image:$version\`
 
-Platforms: \`linux/amd64\`, \`linux/arm64\`
+Image platforms: \`linux/amd64\`, \`linux/arm64\`
 
-[Docker Hub](https://hub.docker.com/r/buildkite/oci-accelerator/tags?name=$version) · [Source commit](https://github.com/buildkite/oci-accelerator/commit/$head)
+Binary platforms: \`linux/amd64\`, \`linux/arm64\`, \`darwin/amd64\`, \`darwin/arm64\`
+
+[GitHub release and downloads](https://github.com/buildkite/oci-accelerator/releases/tag/$version) · [Docker Hub](https://hub.docker.com/r/buildkite/oci-accelerator/tags?name=$version) · [Source commit](https://github.com/buildkite/oci-accelerator/commit/$head)
 
 \`\`\`sh
 docker pull $image:$version
