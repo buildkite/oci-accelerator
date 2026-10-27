@@ -18,10 +18,10 @@ import (
 	"testing"
 )
 
-// Build the real sources with Go and the real archive tools. Only artifact upload
-// is replaced, so these checks need neither credentials nor a Buildkite agent.
+// Build the real sources with Go and the real archive tools, then publish their
+// exact bytes with mocked Docker, GitHub, and Buildkite commands.
 func TestBinariesPipeline(t *testing.T) {
-	requireCommands(t, "bash", "go", "git", "tar", "gzip", "sha256sum")
+	requireCommands(t, "bash", "go", "git", "tar", "gzip", "sha256sum", "jq")
 
 	script, err := filepath.Abs("../.buildkite/binaries.sh")
 	if err != nil {
@@ -54,7 +54,8 @@ func TestBinariesPipeline(t *testing.T) {
 		}
 		return string(out)
 	}
-	git("init", "-q")
+	git("init", "-q", "-b", "main")
+	git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "before VERSION")
 	git("add", ".")
 	git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "binary sources")
 
@@ -128,6 +129,44 @@ exit 42
 				}
 			}
 			previous = hashes
+
+			if failure == "" {
+				// Deliver these exact packaging outputs through the release fixture.
+				// Do not regenerate the manifest or include the upload fixture marker.
+				root := t.TempDir()
+				artifacts := filepath.Join(root, "artifacts")
+				if err := os.Mkdir(artifacts, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				for name := range hashes {
+					data, err := os.ReadFile(filepath.Join(output, name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					writeFile(t, filepath.Join(artifacts, name), string(data), 0o600)
+				}
+
+				imagePipelineGit(t, root, "clone", "--bare", repo, "origin")
+				imagePipelineGit(t, repo, "remote", "add", "origin", filepath.Join(root, "origin"))
+				imageScript, err := filepath.Abs("../.buildkite/image.sh")
+				if err != nil {
+					t.Fatal(err)
+				}
+				imageBin := installImagePipelineMocks(t, root)
+				if out, err := runImagePipeline(t, imageScript, repo, root, imageBin, "", false); err != nil {
+					t.Fatalf("publication rejected real packaging outputs: %v:\n%s", err, out)
+				}
+
+				state := readGitHubReleaseFixture(t, root)
+				if state.Release == nil || state.Release.Draft || len(state.Assets) != len(hashes) {
+					t.Fatalf("real packaging outputs were not published: release %+v, assets %d", state.Release, len(state.Assets))
+				}
+				for _, asset := range state.Assets {
+					if hash, ok := hashes[asset.Name]; !ok || sha256.Sum256(asset.Bytes) != hash {
+						t.Fatalf("published bytes differ from packaging output: %s", asset.Name)
+					}
+				}
+			}
 		})
 	}
 }

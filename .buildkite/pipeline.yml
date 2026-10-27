@@ -15,7 +15,7 @@ steps:
 
   - label: ":go: Tests"
     key: tests
-    command: "go test -count=1 -timeout=10m ./..."
+    command: "apt-get update && apt-get install -y --no-install-recommends jq && go test -count=1 -timeout=10m ./..."
     timeout_in_minutes: 15
     plugins:
       - docker#v5.14.0:
@@ -26,7 +26,7 @@ steps:
 
   - label: ":go: Race tests"
     key: race
-    command: "go test -race -count=1 -timeout=10m ./..."
+    command: "apt-get update && apt-get install -y --no-install-recommends jq && go test -race -count=1 -timeout=10m ./..."
     timeout_in_minutes: 15
     plugins:
       - docker#v5.14.0:
@@ -52,16 +52,16 @@ steps:
             - GOTOOLCHAIN=local
             - CGO_ENABLED=0
 
-  - block: ":docker: Publish images to Docker Hub?"
+  - block: ":package: Publish to Docker Hub and GitHub?"
     key: approve-publish
     if: 'build.branch == "main" && build.tag == null && build.pull_request.id == null'
     depends_on: [checks, tests, race, image, binaries]
 
-  - label: ":docker: Publish release, build, and latest tags to Docker Hub"
+  - label: ":package: Publish images and versioned GitHub release"
     key: publish
     if: 'build.branch == "main" && build.tag == null && build.pull_request.id == null'
-    depends_on: [checks, tests, race, image, approve-publish]
+    depends_on: [checks, tests, race, image, binaries, approve-publish]
     command: "bash .buildkite/image.sh publish"
-    timeout_in_minutes: 20
+    timeout_in_minutes: 30
     concurrency: 1
     concurrency_group: "docker-hub/buildkite/oci-accelerator"

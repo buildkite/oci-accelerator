@@ -8,6 +8,9 @@ See [how it works](how-it-works.md) for the request flow and design.
 | Client or platform                                                        | Status        |
 | ------------------------------------------------------------------------- | ------------- |
 | Linux Docker Engine                                                       | Validated     |
+| Native macOS on Apple Silicon                                            | CLI, cache, and proxy tests passed |
+| macOS amd64 under Rosetta on Apple Silicon                               | CLI, cache, and proxy tests passed |
+| Native Intel macOS, Linux arm64 binaries                                 | Cross-built only, native runtime not validated |
 | Docker Desktop, Windows, containerd, BuildKit-specific integration        | Not validated |
 
 ## Security model
@@ -54,7 +57,7 @@ See [how it works](how-it-works.md) for the request flow and design.
 
 | Deployment | Requires                                                              |
 | ---------- | --------------------------------------------------------------------- |
-| Native     | Go 1.27.1 to build, and a service manager to supervise the process    |
+| Native     | A release binary or Go 1.27.1 to build, and a service manager to supervise the process |
 | Container  | Linux Docker daemon with Buildx, and Compose for the supplied service |
 
 Neither CA initialization nor proxy startup creates ancestor directories. Before first start, you must
@@ -64,10 +67,58 @@ provision the immediate parent of `OCI_ACCELERATOR_CA_DIR` and
 
 ### Run the binary
 
-From the repository root:
+#### Download a release
+
+[GitHub Releases](https://github.com/buildkite/oci-accelerator/releases) provides four
+unsigned archives per version: `linux/amd64`, `linux/arm64`, `darwin/amd64`, and
+`darwin/arm64`. Each `oci-accelerator-OS-ARCH-vX.Y.Z.tar.gz` contains only the executable
+`oci-accelerator`. The checksum manifest is `oci-accelerator-vX.Y.Z.SHA256SUMS`.
+
+Choose a published version and your platform (`darwin/arm64` for Apple Silicon,
+`darwin/amd64` for Intel macOS). For example:
+
+```sh
+version=v0.3.0
+os=linux
+arch=amd64
+archive="oci-accelerator-$os-$arch-$version.tar.gz"
+manifest="oci-accelerator-$version.SHA256SUMS"
+base="https://github.com/buildkite/oci-accelerator/releases/download/$version"
+curl --fail --location --output "$archive" "$base/$archive"
+curl --fail --location --output "$manifest" "$base/$manifest"
+awk -v file="$archive" '$2 == file' "$manifest" > selected.SHA256SUMS
+sha256sum --check selected.SHA256SUMS
+# On macOS, use instead: shasum -a 256 --check selected.SHA256SUMS
+```
+
+Continue only if verification succeeds. Extract into a new directory and check the version:
+
+```sh
+mkdir bin
+tar -xzf "$archive" -C bin
+bin/oci-accelerator --version
+```
+
+Checksums detect corruption, not publisher identity. Binaries are unsigned and macOS
+binaries are not notarized. macOS quarantine or Gatekeeper may block execution of downloaded
+files. Follow your organization's trust policy before approving a quarantined executable.
+CLI, cache, and proxy tests have passed on Apple Silicon, both natively and with
+amd64 execution under Rosetta. Native Intel hardware and Linux arm64 runtime behavior
+have not been validated. This does not validate Docker Desktop.
+
+#### Build from source
+
+Alternatively, from the repository root:
 
 ```sh
 go build -o bin/oci-accelerator ./cmd/oci-accelerator
+```
+
+#### Configure and start
+
+Use the repository's example configuration with either binary:
+
+```sh
 cp .env.example .env
 # Edit registries if needed, then validate:
 bin/oci-accelerator --env-file .env --check
@@ -280,7 +331,8 @@ docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
   an OCI output instead of `--load`.
 - Buildkite validates both architectures and, after manual approval, publishes successful current `main` builds to
   `buildkite/oci-accelerator:latest` and `buildkite/oci-accelerator:build-N`, where `N` is
-  the Buildkite build number. Version bumps also publish a version tag.
+  the Buildkite build number. Version bumps also publish a versioned Docker tag and a
+  GitHub release with binaries.
 
 #### Releasing images
 
@@ -292,29 +344,57 @@ CI validates its format and checks numeric increases against the PR's merge base
 are rejected, including changes that only add the prefix.
 
 After you merge the PR, the non-PR `main` build compares `VERSION` with its first parent.
-If the value changed, it publishes `buildkite/oci-accelerator:v0.1.1` for both `linux/amd64`
-and `linux/arm64`, after formatting, vet, build, tests, race tests, and the image check pass
-and you unblock the **Publish images to Docker Hub?** step in Buildkite. This approval is
-required for all image publication, including `latest` and `build-N` updates.
+If the value changed, it publishes a versioned Docker image and GitHub release after
+formatting, vet, build, tests, race tests, the image check, and binary packaging pass
+and you unblock **Publish to Docker Hub and GitHub?** in Buildkite. This approval is
+required for all publication, including Docker `latest` and `build-N` updates.
 Adding `VERSION` for the first time also triggers a release. Git tag builds do not publish.
 
+Release publication proceeds in this order:
+
+1. Stage the four binary archives and checksum manifest from the same Buildkite build's
+   `binaries` step as draft GitHub release assets. Publishing does not rebuild the binaries.
+2. Publish the versioned Docker image, such as `buildkite/oci-accelerator:v0.1.1`, for
+   `linux/amd64` and `linux/arm64`.
+3. Create or verify the Git tag named exactly by `VERSION`, such as `v0.1.1`, pointing to
+   the exact release commit, then publish the GitHub release with GitHub-generated notes.
+
+The Git tag is a source reference, distinct from the Docker tag in the image repository.
+GitHub publication uses `make_latest=legacy`, so approving a delayed older release does
+not replace a newer release as GitHub's latest release.
+
 Successful release publication adds a success annotation to the Buildkite build with
-the version, image, platforms, Docker Hub and source links, and a `docker pull` command.
+the version, image, platforms, GitHub release, Docker Hub and source links, and a `docker pull` command.
 Retries replace the same annotation and say when the version is already published from
 the same commit. Ordinary `build-N` and `latest` updates do not add release annotations.
 If writing the annotation fails, the job logs a warning but still succeeds because
 the release is published. Retry the original publishing job to restore the notice.
 
-The version tag identifies the merged commit, not whichever commit is newest when CI
+The versioned Docker tag identifies the merged commit, not whichever commit is newest when CI
 finishes. A release still publishes if `main` has advanced, but that older build does not
 update `latest` or `build-N`. Ordinary builds with unchanged versions publish only those
-two moving tags when their checkout is the current `main` tip at the publishing check.
+two Docker tags when their checkout is the current `main` tip at the publishing check.
+They do not publish Git tags or GitHub releases.
 
 If publication fails, retry the publishing job for the original release build. An existing
-version tag with matching source-revision and version metadata is left untouched. A tag
-with different or missing metadata fails the job, as do authentication and registry errors.
-You can retry a partially published build without replacing its version tag. A retry at
-the current `main` tip can still rebuild and publish `latest` and `build-N`.
+versioned Docker tag with matching source-revision and version metadata is left untouched.
+Matching assets and the exact-commit Git tag also remain intact, and missing draft assets
+are filled from the same build. Conflicting assets, Docker metadata, or Git tag targets fail
+the job, as does an incomplete already-published GitHub release. Authentication and registry
+errors also fail. There is no rollback across Docker Hub and GitHub. A failure can leave a
+draft release, published image, or Git tag in place for the retry. A retry at the current
+`main` tip can still rebuild and publish Docker `latest` and `build-N`.
+
+An interrupted GitHub upload can leave an incomplete asset in the draft. The job fails
+rather than replacing it. Inspect and remove that incomplete draft asset before retrying.
+Do not remove or replace assets from an already-published release.
+
+The hosted publishing agent needs `gh` and `jq` in addition to the existing Docker, Git,
+and Bash tools. Configure the Buildkite secret `OCI_ACCELERATOR_GITHUB_RELEASE_TOKEN` with
+a token scoped to this repository and **Contents: read and write** permission. Retrieve it
+only during approved publication, never during checks or binary packaging. Keep the existing
+`OCI_ACCELERATOR_DOCKER_HUB_TOKEN` secret for Docker Hub. Retain Buildkite binary artifacts
+long enough to cover manual approval delays and retries of the original build.
 
 Publishing jobs share one Buildkite concurrency group. Keep all writers to this image
 repository in that group. The check before pushing is not an atomic registry lock and does

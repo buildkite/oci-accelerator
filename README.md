@@ -85,8 +85,19 @@ select a dotenv file with `--env-file`. Process environment values override file
 including empty values. No file is discovered automatically or modified. See the
 [configuration guide](docs/deployment.md#configuration) for all variables and rules.
 
-To publish a versioned image, open a PR that increases `VERSION`. See the
-[release process](docs/deployment.md#releasing-images) for tags and retry behavior.
+Download unsigned Linux and macOS binaries for amd64 or arm64 from
+[GitHub Releases](https://github.com/buildkite/oci-accelerator/releases). Each
+`oci-accelerator-OS-ARCH-vX.Y.Z.tar.gz` archive contains one `oci-accelerator`
+executable. Verify it against `oci-accelerator-vX.Y.Z.SHA256SUMS` before
+extracting. See [binary installation](docs/deployment.md#download-a-release)
+for commands and macOS quarantine limitations.
+
+To publish binaries and a versioned Docker image, open a PR that increases
+`VERSION`, then approve **Publish to Docker Hub and GitHub?** in Buildkite after
+merging. Git tag builds do not publish. Ordinary `main` builds publish only
+Docker `latest` and `build-N` tags after approval. See the
+[release process](docs/deployment.md#releasing-images) for Git tags, Docker tags,
+and retry behavior.
 
 ## Quick start
 
