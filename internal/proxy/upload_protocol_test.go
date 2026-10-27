@@ -177,6 +177,7 @@ func TestWritesBypassCacheAndLeavePullGrantUnchanged(t *testing.T) {
 	}
 	deleted.Store(false)
 	request("GET", 200, content)
+	awaitNoActiveRequests(t, p)
 	before := p.cache.Stats()
 	var grantKey [32]byte
 	var expires time.Time
@@ -196,8 +197,11 @@ func TestWritesBypassCacheAndLeavePullGrantUnchanged(t *testing.T) {
 	denied.Store(true)
 	request("PUT", 403, "write denied\n")
 	request("GET", 200, content)
-	if writes.Load() != 9 || gets.Load() != 1 || p.cache.Stats() != before {
-		t.Fatalf("writes=%d gets=%d cache before=%+v after=%+v", writes.Load(), gets.Load(), before, p.cache.Stats())
+	// Receiving the full body does not guarantee the proxy has closed its cache reader.
+	awaitNoActiveRequests(t, p)
+	after := p.cache.Stats()
+	if writes.Load() != 9 || gets.Load() != 1 || after != before {
+		t.Fatalf("writes=%d gets=%d cache before=%+v after=%+v", writes.Load(), gets.Load(), before, after)
 	}
 	// Writes must neither renew this grant nor create approval for other identities.
 	p.authorization.mu.Lock()
