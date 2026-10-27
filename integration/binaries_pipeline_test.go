@@ -21,6 +21,10 @@ import (
 // Build the real sources with Go and the real archive tools, then publish their
 // exact bytes with mocked Docker, GitHub, and Buildkite commands.
 func TestBinariesPipeline(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires the Linux release environment and GNU tar")
+	}
+
 	requireCommands(t, "bash", "go", "git", "tar", "gzip", "sha256sum", "jq")
 
 	script, err := filepath.Abs("../.buildkite/binaries.sh")
