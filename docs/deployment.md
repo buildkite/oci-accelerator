@@ -389,9 +389,13 @@ An interrupted GitHub upload can leave an incomplete asset in the draft. The job
 rather than replacing it. Inspect and remove that incomplete draft asset before retrying.
 Do not remove or replace assets from an already-published release.
 
-The hosted publishing agent needs `gh` and `jq` in addition to the existing Docker, Git,
-and Bash tools. Configure the Buildkite secret `OCI_ACCELERATOR_GITHUB_RELEASE_TOKEN` with
-a token scoped to this repository and **Contents: read and write** permission. Retrieve it
+The publish step installs `gh` from GitHub's signed APT repository and installs `jq`
+before running the release script. It runs as root on Buildkite's Ubuntu hosted image,
+which provides APT, curl, Docker, Git, and Bash. Your publishing agent needs access to
+`cli.github.com` and its configured Ubuntu package repositories.
+
+Configure the Buildkite secret `OCI_ACCELERATOR_GITHUB_RELEASE_TOKEN` with a token scoped
+to this repository and **Contents: read and write** permission. Retrieve it
 only during approved publication, never during checks or binary packaging. Keep the existing
 `OCI_ACCELERATOR_DOCKER_HUB_TOKEN` secret for Docker Hub. Retain Buildkite binary artifacts
 long enough to cover manual approval delays and retries of the original build.
