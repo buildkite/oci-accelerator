@@ -78,7 +78,7 @@ Choose a published version and your platform (`darwin/arm64` for Apple Silicon,
 `darwin/amd64` for Intel macOS). For example:
 
 ```sh
-version=v0.3.1
+version=v0.3.2
 os=linux
 arch=amd64
 archive="oci-accelerator-$os-$arch-$version.tar.gz"
