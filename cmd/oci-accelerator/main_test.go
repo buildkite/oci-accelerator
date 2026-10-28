@@ -297,16 +297,22 @@ func TestRunRejectsUnusableCacheBeforeListen(t *testing.T) {
 	if err := os.Mkdir(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(root, "proxy.env")
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer occupied.Close()
+
 	config := "OCI_ACCELERATOR_LISTEN=" + occupied.Addr().String() + "\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=" + filepath.Join(root, "ca") + "\nOCI_ACCELERATOR_CACHE_DIR=" + cacheDir + "\n"
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
 	var errOut bytes.Buffer
 	err = run(context.Background(), []string{"--env-file", path}, &bytes.Buffer{}, &errOut, net.Listen)
 	if err == nil || err.Error() != "cache startup failed: unsafe cache state" {

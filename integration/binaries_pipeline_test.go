@@ -292,6 +292,28 @@ func checkPackagedBinary(t *testing.T, binary []byte, target, version, repo stri
 
 	path := filepath.Join(t.TempDir(), "oci-accelerator")
 	writeFile(t, path, string(binary), 0o700)
+
+	// The packaged example, not this test runner's application configuration,
+	// supplies settings for --check. Keep unrelated and acceptance-test controls.
+	example, err := os.ReadFile(filepath.Join(repo, ".env.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configSettings := make(map[string]bool)
+	for _, line := range strings.Split(string(example), "\n") {
+		name, _, assignment := strings.Cut(line, "=")
+		if assignment && strings.HasPrefix(name, "OCI_ACCELERATOR_") {
+			configSettings[name] = true
+		}
+	}
+	var environment []string
+	for _, assignment := range os.Environ() {
+		name, _, _ := strings.Cut(assignment, "=")
+		if !configSettings[name] {
+			environment = append(environment, assignment)
+		}
+	}
+
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -301,6 +323,7 @@ func checkPackagedBinary(t *testing.T, binary []byte, target, version, repo stri
 	} {
 		cmd := exec.Command(path, tc.args...)
 		cmd.Dir = repo
+		cmd.Env = environment
 		out, err := cmd.CombinedOutput()
 		if err != nil || string(out) != tc.want {
 			t.Fatalf("%s %v: %v: %q, want %q", target, tc.args, err, out, tc.want)

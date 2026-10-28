@@ -2,11 +2,36 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	// Clear only application settings before tests inject their own overrides.
+	// Other variables, including subprocess controls, must remain available.
+	contents, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	for _, line := range strings.Split(string(contents), "\n") {
+		name, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || !strings.HasPrefix(name, "OCI_ACCELERATOR_") {
+			continue
+		}
+
+		if err := os.Unsetenv(name); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+
+	os.Exit(m.Run())
+}
 
 func TestResolveConfigEnvFile(t *testing.T) {
 	root := t.TempDir()
