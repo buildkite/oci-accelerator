@@ -427,21 +427,27 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 	for _, scenario := range []string{"follower canceled", "leader canceled", "wait timeout", "waiting disabled"} {
 		t.Run(scenario, func(t *testing.T) {
 			var calls atomic.Int32
-			started, release := make(chan struct{}), make(chan struct{})
+			release := make(chan struct{})
 			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if calls.Add(1) == 1 {
 					w.Write([]byte("leader"))
 					w.(http.Flusher).Flush()
-					close(started)
-					select {
-					case <-release:
-					case <-r.Context().Done():
-					}
+					// Do not turn cancellation into a normal handler return and
+					// clean chunked EOF that can race the client's read error.
+					<-release
 					return
 				}
 				io.WriteString(w, "independent")
 			}))
 			defer origin.Close()
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+
 			tr := mutableTransportFixture(t, origin)
 			if scenario == "wait timeout" {
 				tr.fillWaitTimeout = 20 * time.Millisecond
@@ -452,9 +458,22 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 			req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "")
 			leaderCtx, cancelLeader := context.WithCancel(context.Background())
 			defer cancelLeader()
+			resp, err := tr.RoundTrip(req.Clone(leaderCtx))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			prefix := make([]byte, len("leader"))
+			if _, err := io.ReadFull(resp.Body, prefix); err != nil || string(prefix) != "leader" {
+				t.Fatalf("leader prefix = %q, err=%v", prefix, err)
+			}
+
 			leader := make(chan mutableResult, 1)
-			go func() { leader <- readMutable(tr, req.Clone(leaderCtx)) }()
-			waitFor(t, started, "leader headers")
+			go func() {
+				body, err := io.ReadAll(resp.Body)
+				leader <- mutableResult{body: string(prefix) + string(body), err: err}
+			}()
 
 			followerCtx, cancelFollower := context.WithCancel(context.Background())
 			defer cancelFollower()
@@ -478,11 +497,13 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 				t.Fatalf("fallback = %+v, calls=%d", got, calls.Load())
 			}
 
-			close(release)
+			if scenario != "leader canceled" {
+				close(release)
+			}
 			got = <-leader
 			if scenario == "leader canceled" {
-				if got.err == nil {
-					t.Fatal("canceled leader completed successfully")
+				if !errors.Is(got.err, context.Canceled) || got.body != "leader" {
+					t.Fatalf("canceled leader = %+v", got)
 				}
 
 				got = readMutable(tr, req)
