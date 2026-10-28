@@ -31,6 +31,9 @@ Use it to:
   over mutually authenticated TLS, without sharing credentials.
 - **Single binary.** It is one Go executable with no runtime dependencies.
 
+See [how it works](docs/how-it-works.md) for the request flow, authorization,
+and cache storage in detail.
+
 ## Commands reference
 
 ```sh
@@ -126,6 +129,10 @@ it, caching Docker Hub, GitHub Container Registry, and Amazon ECR Public.
    docker image rm alpine
    docker pull alpine
    ```
+
+To cache other registries, add them to `OCI_ACCELERATOR_REGISTRIES` and trust
+the CA for each one. See the [deployment guide](docs/deployment.md) to run OCI
+Accelerator as a service or container, or for remote Docker hosts.
 
 ## Configuration
 
@@ -290,3 +297,7 @@ every instance. Peers never share registry credentials or approvals.
 
 See [peer discovery](docs/deployment.md#peer-discovery) in the deployment guide
 for container setups, trust, and retention.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to build, test, and contribute changes.

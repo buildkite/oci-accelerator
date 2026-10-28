@@ -106,7 +106,7 @@ To publish binaries and a versioned Docker image, open a PR that increases
 `VERSION`, then approve **Publish to Docker Hub and GitHub?** in Buildkite after
 merging. Git tag builds do not publish. Ordinary `main` builds publish only
 Docker `latest` and `build-N` tags after approval. See the
-[release process](docs/deployment.md#releasing-images) for Git tags, Docker tags,
+[release process](RELEASING.md) for Git tags, Docker tags,
 and retry behavior.
 
 ## Quick start
