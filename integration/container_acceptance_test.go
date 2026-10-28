@@ -39,7 +39,7 @@ func TestContainerImageLifecycle(t *testing.T) {
 	if (!strings.HasPrefix(inspect, wantPrefixNull) && !strings.HasPrefix(inspect, wantPrefixEmpty)) || !strings.Contains(inspect, "wget") || !strings.Contains(inspect, "http://127.0.0.1:9090/readyz") {
 		t.Fatalf("container image execution contract is incomplete: %s", inspect)
 	}
-	for _, setting := range []string{"OCI_ACCELERATOR_LISTEN=0.0.0.0:3128", "OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090", "OCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca", "OCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache"} {
+	for _, setting := range []string{"OCI_ACCELERATOR_LISTEN=0.0.0.0:5128", "OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090", "OCI_ACCELERATOR_CA_DIR=/var/lib/oci-accelerator/ca", "OCI_ACCELERATOR_CACHE_DIR=/var/lib/oci-accelerator/cache"} {
 		if !strings.Contains(inspect, `"`+setting+`"`) {
 			t.Fatalf("image lacks default %s: %s", setting, inspect)
 		}
@@ -186,14 +186,14 @@ func startContainer(t *testing.T, name, image string, platform []string, identit
 	t.Helper()
 	args := append([]string{"run"}, platform...)
 	args = append(args, env...)
-	args = append(args, "-d", "--name", name, "--network", name, "--health-interval", "1s", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::3128", "-e", "SSL_CERT_FILE=/run/origin-ca.crt", "--mount", "type=volume,src="+cache+",dst=/var/lib/oci-accelerator/cache", "--mount", "type=volume,src="+identity+",dst=/var/lib/oci-accelerator", "--mount", "type=bind,src="+originCA+",dst=/run/origin-ca.crt,readonly", image)
+	args = append(args, "-d", "--name", name, "--network", name, "--health-interval", "1s", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::5128", "-e", "SSL_CERT_FILE=/run/origin-ca.crt", "--mount", "type=volume,src="+cache+",dst=/var/lib/oci-accelerator/cache", "--mount", "type=volume,src="+identity+",dst=/var/lib/oci-accelerator", "--mount", "type=bind,src="+originCA+",dst=/run/origin-ca.crt,readonly", image)
 	run(t, "docker", args...)
 }
 
 func containerPort(t *testing.T, name string) int {
 	t.Helper()
 	var port int
-	if _, err := fmt.Sscanf(strings.TrimSpace(run(t, "docker", "port", name, "3128/tcp")), "127.0.0.1:%d", &port); err != nil {
+	if _, err := fmt.Sscanf(strings.TrimSpace(run(t, "docker", "port", name, "5128/tcp")), "127.0.0.1:%d", &port); err != nil {
 		t.Fatal(err)
 	}
 	return port

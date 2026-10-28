@@ -3,6 +3,8 @@
 !go.mod
 !VERSION
 !version.go
+!starter.go
+!.env.example
 !cmd/
 !cmd/**
 !internal/

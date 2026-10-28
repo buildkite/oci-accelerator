@@ -31,14 +31,21 @@ func main() {
 	}
 }
 
-// run dispatches init-ca or starts the proxy and serves until ctx is cancelled.
+// run dispatches initialization commands or starts the proxy until ctx is cancelled.
 // It takes ownership of each listener returned by listen, which tests replace to
 // avoid binding real sockets. Deferred cleanup runs in reverse startup order
 // (peer service, metrics server, proxy listener, then cache), and its errors are joined with
 // any serving or shutdown error.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen func(string, string) (net.Listener, error)) (runErr error) {
-	if len(args) > 0 && args[0] == "init-ca" {
-		return runInitCA(args[1:], stdout)
+	if len(args) > 0 {
+		switch args[0] {
+		case "init":
+			return runInit(args[1:], stdout)
+		case "init-env":
+			return runInitEnv(args[1:], stdout)
+		case "init-ca":
+			return runInitCA(args[1:], stdout)
+		}
 	}
 
 	cfg, handled, err := resolveConfig(args, stdout)
@@ -105,6 +112,8 @@ func resolveConfig(args []string, stdout io.Writer) (cfg config.Config, handled 
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(stdout, "Usage: oci-accelerator [--env-file FILE] [--check]")
 			fmt.Fprintln(stdout, "       oci-accelerator --version")
+			fmt.Fprintln(stdout, "       oci-accelerator init")
+			fmt.Fprintln(stdout, "       oci-accelerator init-env [--output FILE]")
 			fmt.Fprintln(stdout, "       oci-accelerator init-ca --dir DIR")
 			return config.Config{}, true, nil
 		}

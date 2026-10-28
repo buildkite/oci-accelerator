@@ -259,7 +259,7 @@ Any client that can reach the accelerator's listener can download the public
 certificate over plain HTTP, without authentication:
 
 ```sh
-curl --noproxy '*' --fail --output ca.crt http://127.0.0.1:3128/ca.crt
+curl --noproxy '*' --fail --output ca.crt http://127.0.0.1:5128/ca.crt
 ```
 
 The endpoint serves only the public certificate, never the private key.

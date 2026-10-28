@@ -60,10 +60,10 @@ See [how it works](how-it-works.md) for the request flow and design.
 | Native     | A release binary or Go 1.27.1 to build, and a service manager to supervise the process |
 | Container  | Linux Docker daemon with Buildx, and Compose for the supplied service |
 
-Neither CA initialization nor proxy startup creates ancestor directories. Before first start, you must
-provision the immediate parent of `OCI_ACCELERATOR_CA_DIR` and
-`OCI_ACCELERATOR_CACHE_DIR` as the proxy's user (see
-[state directories](#state-directories)).
+For a native starter layout, `oci-accelerator init` creates the private state directories
+and CA before first start. For a custom layout, neither `init-ca` nor proxy startup creates
+ancestor directories. Provision the immediate parent of `OCI_ACCELERATOR_CA_DIR` and
+`OCI_ACCELERATOR_CACHE_DIR` as the proxy's user (see [state directories](#state-directories)).
 
 ### Run the binary
 
@@ -116,27 +116,77 @@ go build -o bin/oci-accelerator ./cmd/oci-accelerator
 
 #### Configure and start
 
-Use the repository's example configuration with either binary:
+Initialize a native starter layout with either binary. You do not need a copy of the
+repository's example file when using a downloaded binary:
 
 ```sh
-cp .env.example .env
-# Edit registries if needed, then validate:
+bin/oci-accelerator init
+# Edit .env registries if needed, then validate:
 bin/oci-accelerator --env-file .env --check
+bin/oci-accelerator --env-file .env
 ```
+
+`init` creates `.env`, private `data/`, `data/cache/`, and `data/peers/` directories
+with mode 0700, and a root CA in `data/ca/`. It prints the configuration
+path, CA certificate path and SHA-256 fingerprint, the startup command, and a reminder
+to configure Docker's CA trust and proxy. It does not start the proxy or change Docker.
+The peer directory is preparation only. `init` creates no peer identity or membership files.
+The generated `.env` sets `OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers`, but leaves
+`OCI_ACCELERATOR_PEER_LISTEN` and `OCI_ACCELERATOR_PEER_ADVERTISE` empty, so peering stays disabled.
+
+The generated file is the complete `.env.example` configuration, with native starter
+registries `registry-1.docker.io,ghcr.io,public.ecr.aws` and paths `./data/ca`,
+`./data/cache`, and `./data/peers`. These are examples written into the file, not runtime defaults.
+You must still pass `--env-file .env` when starting the proxy. No configuration file is
+discovered automatically, and process environment overrides still apply at startup.
 
 `--check` validates only the configuration. It does not inspect CA or cache state, bind
 listeners, or create directories.
 
-Create the state parent (`data` in the example) only if absent. If it exists, check its
-ownership and permissions. Optionally provision the CA ahead of time, then start:
+Then [configure Docker hosts](#configure-docker-hosts).
+
+#### Initialization options
+
+`init` accepts no options other than help and ignores ambient environment variables.
+It refuses an existing `.env` before creating any directories. Existing `data/`,
+`data/cache/`, and `data/peers/` directories are reused only if they are non-symlink
+directories owned by the current user with mode exactly 0700. Their contents are left
+untouched. The CA uses the existing
+[CA validation rules](#ca-directory-requirements). A valid existing CA is reused unchanged,
+and an invalid or incomplete CA fails without modifying it.
+
+If initialization fails, directories or a generated CA can remain. The diagnostic asks you
+to inspect them and retry. `.env` is created only after the directory layout and CA succeed.
+Do not delete an established CA to retry initialization.
+
+For configuration only, generate the same complete starter file without creating state
+directories or a CA:
 
 ```sh
-mkdir -m 0700 data
-bin/oci-accelerator init-ca --dir data/ca   # optional (startup creates it otherwise)
-bin/oci-accelerator --env-file .env
+bin/oci-accelerator init-env
+# Or select a different output path whose parent already exists:
+bin/oci-accelerator init-env --output proxy.env
 ```
 
-Then [configure Docker hosts](#configure-docker-hosts).
+`init-env` defaults to `.env`, refuses to overwrite an existing output, and does not create
+its output's parent directory. Like `init`, it ignores ambient environment variables.
+
+For a custom layout, use `init-env`, edit the generated registry and path settings, and
+create the immediate state parents as the proxy user. You can provision only the CA with
+`init-ca --dir DIR` before startup. For example, after setting `OCI_ACCELERATOR_CA_DIR=./state/ca`
+and `OCI_ACCELERATOR_CACHE_DIR=./state/cache` in `proxy.env`:
+
+```sh
+mkdir -m 0700 state
+bin/oci-accelerator init-ca --dir state/ca
+bin/oci-accelerator --env-file proxy.env --check
+bin/oci-accelerator --env-file proxy.env
+```
+
+If the parent already exists, check its ownership and permissions instead of recreating it.
+Leave the CA directory absent for generation. `init-ca` does not create configuration or
+cache directories, and startup can generate the CA instead if you omit this optional step.
+Use `init --help`, `init-env --help`, or `init-ca --help` for command-specific usage.
 
 ### Run under a service manager
 
@@ -162,7 +212,7 @@ The image sets four environment defaults that match its own layout:
 
 | Variable                         | Image default                    | Why                                              |
 | -------------------------------- | -------------------------------- | ------------------------------------------------ |
-| `OCI_ACCELERATOR_LISTEN`         | `0.0.0.0:3128`                   | A published port must reach the proxy             |
+| `OCI_ACCELERATOR_LISTEN`         | `0.0.0.0:5128`                   | A published port must reach the proxy             |
 | `OCI_ACCELERATOR_METRICS_LISTEN` | `127.0.0.1:9090`                 | The health check probes it                        |
 | `OCI_ACCELERATOR_CA_DIR`         | `/var/lib/oci-accelerator/ca`    | The image creates and owns its parent             |
 | `OCI_ACCELERATOR_CACHE_DIR`      | `/var/lib/oci-accelerator/cache` | The image creates and owns this directory         |
@@ -174,7 +224,7 @@ intercept for you.
 address, as in the examples below, limits how the host exposes it. Any container on the same
 Docker network can still connect to the proxy directly, so keep untrusted workloads off that
 network. With `--network host`, or with a port published on all host addresses, such as
-`-p 3128:3128`, the proxy accepts connections on every host interface. In those setups, set
+`-p 5128:5128`, the proxy accepts connections on every host interface. In those setups, set
 `OCI_ACCELERATOR_LISTEN` to a loopback or private address.
 
 How image defaults interact with other settings:
@@ -207,7 +257,7 @@ to unquoted literal `KEY=value` lines and full-line comments.
 The supplied `compose.yaml` service builds the local image from the repository root and:
 
 - requires `env_file: .env.container`
-- publishes only `127.0.0.1:3128`
+- publishes only `127.0.0.1:5128`
 - keeps the root filesystem read-only, drops all capabilities, and sets `no-new-privileges`
 - uses `restart: unless-stopped` and a 40-second stop grace period, allowing for the 15-second
   `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` and metrics cleanup (increase it if you raise
@@ -285,7 +335,7 @@ docker run --rm --read-only \
 docker run -d --name oci-accelerator --restart unless-stopped \
   --env-file .env.container \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --stop-timeout 40 -p 127.0.0.1:3128:3128 \
+  --stop-timeout 40 -p 127.0.0.1:5128:5128 \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
   --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
   oci-accelerator:local
@@ -303,7 +353,7 @@ registries:
 ```sh
 docker run -d --name oci-accelerator --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --stop-timeout 40 -p 127.0.0.1:3128:3128 \
+  --stop-timeout 40 -p 127.0.0.1:5128:5128 \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
   --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
   -e OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws \
@@ -416,7 +466,7 @@ and multi-platform index annotations so you can identify the exact source commit
 
 ### Serve remote Docker hosts
 
-The default `127.0.0.1:3128` listener serves Docker on the same host. To serve remote hosts:
+The default `127.0.0.1:5128` listener serves Docker on the same host. To serve remote hosts:
 
 1. Set `OCI_ACCELERATOR_LISTEN` to an explicit private-interface address.
 2. Restrict access with network access controls and a firewall (see [security model](#security-model)).
@@ -439,9 +489,12 @@ dotenv file are rejected.
 An unset variable retains the file value or default. A present empty variable is an explicit
 value. It disables `OCI_ACCELERATOR_METRICS_LISTEN` and clears
 `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`. Empty `OCI_ACCELERATOR_PEER_LISTEN` disables peering,
-provided `OCI_ACCELERATOR_PEER_ADVERTISE`, `OCI_ACCELERATOR_PEER_SEEDS`, and
-`OCI_ACCELERATOR_PEER_STATE_DIR` are also empty. Peer hint timings still accept overrides
-and are validated even when peering is disabled, using their defaults when unset.
+provided `OCI_ACCELERATOR_PEER_ADVERTISE` and `OCI_ACCELERATOR_PEER_SEEDS` are also empty.
+A nonempty `OCI_ACCELERATOR_PEER_LISTEN` enables peering. There is no separate enable flag.
+`OCI_ACCELERATOR_PEER_STATE_DIR` can remain configured while peering is disabled, but its
+path is still validated and must not equal, contain, or be contained by the CA or cache
+directories. Peer hint timings still accept overrides and are validated even when peering
+is disabled, using their defaults when unset.
 An empty `OCI_ACCELERATOR_PEER_SEEDS` is valid even when peering is enabled.
 Other empty values fail validation, including required
 registries and paths. `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`
@@ -495,7 +548,8 @@ You can configure private registries explicitly.
   absolute paths. There is no forwarding-only mode.
 - The CA directory must not be inside the cache directory, because the cache owns, and may
   remove, entries in its directory. You can place the cache directory inside the CA directory.
-- Before first start, create the immediate parent of each directory as the proxy's user,
+- `init` prepares the native `data/` layout. For other layouts, before first start, create
+  the immediate parent of each directory as the proxy's user,
   without group or other write access (for example `mkdir -m 0700 data`). The directories
   themselves are created at startup, but no ancestors are.
 - Configuration validation does not resolve symlinks or inspect state. Filesystem ownership and
@@ -507,7 +561,7 @@ You can configure private registries explicitly.
 
 | Environment variable   | Default          | Notes                                                                                    |
 | ---------------------- | ---------------- | ---------------------------------------------------------------------------------------- |
-| `OCI_ACCELERATOR_LISTEN` | `127.0.0.1:3128` | host:port with a nonzero numeric port. Empty or wildcard hosts bind all interfaces      |
+| `OCI_ACCELERATOR_LISTEN` | `127.0.0.1:5128` | host:port with a nonzero numeric port. Empty or wildcard hosts bind all interfaces      |
 | `OCI_ACCELERATOR_METRICS_LISTEN` | Disabled | host:port with a nonzero numeric port. Literal loopback IP required unless `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` |
 | `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` | `false` | Explicit boolean opt-in to non-loopback metrics and probe binding                       |
 
@@ -518,7 +572,7 @@ You can configure private registries explicitly.
 | `OCI_ACCELERATOR_PEER_LISTEN` | Disabled | Separate TLS listener, host:port with a nonzero numeric port |
 | `OCI_ACCELERATOR_PEER_ADVERTISE` | Empty | Required reachable host:port when peering is enabled |
 | `OCI_ACCELERATOR_PEER_SEEDS` | Empty | Optional comma-separated host:port bootstrap addresses |
-| `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled |
+| `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled. May remain configured while disabled. Native starter example: `./data/peers` |
 | `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` | `1m` | Positive overall duration per cache-key fetch attempt, excluding scheduler queueing. No unlimited value |
 | `OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL` | `1m` | At least `1s`. Poll delay after each attempt completes, with ±20% jitter |
 | `OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL` | `1h` | At least `1s`. Full-scan interval from successful full-scan completion, with ±20% jitter |
@@ -610,8 +664,9 @@ leaf certificates are used.
 
 ### Create the CA
 
-The CA is created on first startup, or ahead of time with `init-ca`. Both only create it when
-the CA directory is absent. Leave it absent initially and do not pre-create an empty directory.
+The CA is created on first startup, or ahead of time with `init` or `init-ca`. Each creates
+it only when the CA directory is absent. Leave it absent initially and do not pre-create
+an empty directory.
 
 ```sh
 bin/oci-accelerator init-ca --dir data/ca
@@ -637,9 +692,9 @@ winner. There is no persistent lock.
 
 ### CA directory requirements
 
-Proxy startup and `init-ca` apply the same checks. Provision the parent and ensure its
-durability first, so permissions do not depend on the umask and a crash cannot lose newly
-created ancestors.
+Proxy startup, `init`, and `init-ca` apply the same CA checks. For a custom layout,
+provision the parent and ensure its durability first, so permissions do not depend on the
+umask and a crash cannot lose newly created ancestors.
 
 | Path              | Type                    | Owner               | Mode                            |
 | ----------------- | ----------------------- | ------------------- | ------------------------------- |
@@ -705,7 +760,7 @@ Docker-owned credentials do not change.
    openssl x509 -in ca.crt -noout -fingerprint -sha256
    ```
 
-2. Compare the fingerprint with `ca_sha256` from `init-ca` or startup logs, obtained through a
+2. Compare the fingerprint with `ca_sha256` from `init`, `init-ca`, or startup logs, obtained through a
    trusted channel such as SSH or your deployment system. OpenSSL prints uppercase
    colon-separated hex, while the proxy logs lowercase hex without colons.
    **Do not install the certificate if they differ, or if you cannot obtain a trusted expected
@@ -743,7 +798,7 @@ Merge this into `/etc/docker/daemon.json` without replacing unrelated settings:
 ```json
 {
   "proxies": {
-    "https-proxy": "http://127.0.0.1:3128"
+    "https-proxy": "http://127.0.0.1:5128"
   }
 }
 ```
@@ -1078,9 +1133,9 @@ not a shared writable filesystem. Ordinary Docker clients receive only `ca.crt`.
 Add these settings to your existing configuration, substituting reachable addresses:
 
 ```sh
-OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:7443
-OCI_ACCELERATOR_PEER_ADVERTISE=accelerator-a.example:7443
-OCI_ACCELERATOR_PEER_SEEDS=accelerator-b.example:7443,accelerator-c.example:7443
+OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:5130
+OCI_ACCELERATOR_PEER_ADVERTISE=accelerator-a.example:5130
+OCI_ACCELERATOR_PEER_SEEDS=accelerator-b.example:5130,accelerator-c.example:5130
 OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 ```
 
@@ -1092,15 +1147,20 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 - Seeds are optional, not an allowlist. An instance with no seeds can wait for an incoming
   exchange. Ports are always explicit, including `:443`, and IPv6 uses `[address]:port`.
   Seed entries are whitespace-trimmed, canonicalized, deduplicated, and exclude self.
-- Create the immediate parent of the state directory as the process user without group or
-  other write access. Startup creates the state directory with mode 0700. It must not equal,
+- `init` prepares `data/` and `data/peers/` and sets the state path in `.env`, but leaves
+  peering disabled. To enable it, set the listener and reachable advertised address shown
+  above. The prepared state directory setting needs no edit. For other layouts, create
+  the immediate parent of the state directory as
+  the process user without group or other write access. Startup creates the state directory
+  with mode 0700 if absent. It must not equal,
   contain, or be contained by the CA or cache directories. Relative paths use the working
   directory. For the container layout, `/var/lib/oci-accelerator/peers` is a suitable sibling.
 - For Docker or Compose, explicitly publish the chosen peer port and persist peer state on a
   writable volume. The default container configuration leaves peering disabled.
 - Run `oci-accelerator --env-file FILE --check` to validate without opening listeners or state.
-  To disable peering, clear the listener, advertised address, seeds, and state directory settings.
-  You can leave valid hint timings configured. The existing address book remains on disk.
+  To disable peering, clear the listener, advertised address, and seeds.
+  You can retain the state directory setting and valid hint timings. The existing address book
+  remains on disk.
 
 ### Peer trust
 
@@ -1137,11 +1197,11 @@ rejected. The GET response and POST request and response have the same schema:
 
 ```json
 {
-  "address": "node-a.internal:7443",
+  "address": "node-a.internal:5130",
   "nodeId": "fzyaLmuBTQWo",
   "peers": {
-    "node-b.internal:7443": "K8r2_vN5xQpL",
-    "node-c.internal:7443": "mT4bY9-wH6sR"
+    "node-b.internal:5130": "K8r2_vN5xQpL",
+    "node-c.internal:5130": "mT4bY9-wH6sR"
   }
 }
 ```

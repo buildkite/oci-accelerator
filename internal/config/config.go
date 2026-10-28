@@ -125,7 +125,7 @@ func load(path string, lookup func(string) (string, bool)) (Config, error) {
 
 func defaults() rawConfig {
 	return rawConfig{
-		Listen: "127.0.0.1:3128",
+		Listen: "127.0.0.1:5128",
 
 		Cache: Cache{
 			MaxBytes:                  DefaultCacheMaxBytes,
