@@ -3,7 +3,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS build
 WORKDIR /src
 ENV GOTOOLCHAIN=local
 COPY go.mod ./
-COPY VERSION version.go ./
+COPY VERSION version.go starter.go .env.example ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 ARG TARGETOS

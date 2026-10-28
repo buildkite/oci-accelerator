@@ -60,10 +60,10 @@ See [how it works](how-it-works.md) for the request flow and design.
 | Native     | A release binary or Go 1.27.1 to build, and a service manager to supervise the process |
 | Container  | Linux Docker daemon with Buildx, and Compose for the supplied service |
 
-Neither CA initialization nor proxy startup creates ancestor directories. Before first start, you must
-provision the immediate parent of `OCI_ACCELERATOR_CA_DIR` and
-`OCI_ACCELERATOR_CACHE_DIR` as the proxy's user (see
-[state directories](#state-directories)).
+For a native starter layout, `oci-accelerator init` creates the private state directories
+and CA before first start. For a custom layout, neither `init-ca` nor proxy startup creates
+ancestor directories. Provision the immediate parent of `OCI_ACCELERATOR_CA_DIR` and
+`OCI_ACCELERATOR_CACHE_DIR` as the proxy's user (see [state directories](#state-directories)).
 
 ### Run the binary
 
@@ -116,27 +116,73 @@ go build -o bin/oci-accelerator ./cmd/oci-accelerator
 
 #### Configure and start
 
-Use the repository's example configuration with either binary:
+Initialize a native starter layout with either binary. You do not need a copy of the
+repository's example file when using a downloaded binary:
 
 ```sh
-cp .env.example .env
-# Edit registries if needed, then validate:
+bin/oci-accelerator init
+# Edit .env registries if needed, then validate:
 bin/oci-accelerator --env-file .env --check
+bin/oci-accelerator --env-file .env
 ```
+
+`init` creates `.env`, private `data/` and `data/cache/` directories with mode 0700,
+and a root CA in `data/ca/`. It prints the configuration
+path, CA certificate path and SHA-256 fingerprint, the startup command, and a reminder
+to configure Docker's CA trust and proxy. It does not start the proxy or change Docker.
+
+The generated file is the complete `.env.example` configuration, with native starter
+registries `registry-1.docker.io,ghcr.io,public.ecr.aws` and paths `./data/ca` and
+`./data/cache`. These are examples written into the file, not new runtime defaults.
+You must still pass `--env-file .env` when starting the proxy. No configuration file is
+discovered automatically, and process environment overrides still apply at startup.
 
 `--check` validates only the configuration. It does not inspect CA or cache state, bind
 listeners, or create directories.
 
-Create the state parent (`data` in the example) only if absent. If it exists, check its
-ownership and permissions. Optionally provision the CA ahead of time, then start:
+Then [configure Docker hosts](#configure-docker-hosts).
+
+#### Initialization options
+
+`init` accepts no options other than help and ignores ambient environment variables.
+It refuses an existing `.env` before creating any directories. Existing `data/` and
+`data/cache/` directories are reused only if they are non-symlink directories owned by
+the current user with mode exactly 0700. The CA uses the existing
+[CA validation rules](#ca-directory-requirements). A valid existing CA is reused unchanged,
+and an invalid or incomplete CA fails without modifying it.
+
+If initialization fails, directories or a generated CA can remain. The diagnostic asks you
+to inspect them and retry. `.env` is created only after the directory layout and CA succeed.
+Do not delete an established CA to retry initialization.
+
+For configuration only, generate the same complete starter file without creating state
+directories or a CA:
 
 ```sh
-mkdir -m 0700 data
-bin/oci-accelerator init-ca --dir data/ca   # optional (startup creates it otherwise)
-bin/oci-accelerator --env-file .env
+bin/oci-accelerator init-env
+# Or select a different output path whose parent already exists:
+bin/oci-accelerator init-env --output proxy.env
 ```
 
-Then [configure Docker hosts](#configure-docker-hosts).
+`init-env` defaults to `.env`, refuses to overwrite an existing output, and does not create
+its output's parent directory. Like `init`, it ignores ambient environment variables.
+
+For a custom layout, use `init-env`, edit the generated registry and path settings, and
+create the immediate state parents as the proxy user. You can provision only the CA with
+`init-ca --dir DIR` before startup. For example, after setting `OCI_ACCELERATOR_CA_DIR=./state/ca`
+and `OCI_ACCELERATOR_CACHE_DIR=./state/cache` in `proxy.env`:
+
+```sh
+mkdir -m 0700 state
+bin/oci-accelerator init-ca --dir state/ca
+bin/oci-accelerator --env-file proxy.env --check
+bin/oci-accelerator --env-file proxy.env
+```
+
+If the parent already exists, check its ownership and permissions instead of recreating it.
+Leave the CA directory absent for generation. `init-ca` does not create configuration or
+cache directories, and startup can generate the CA instead if you omit this optional step.
+Use `init --help`, `init-env --help`, or `init-ca --help` for command-specific usage.
 
 ### Run under a service manager
 
@@ -495,7 +541,8 @@ You can configure private registries explicitly.
   absolute paths. There is no forwarding-only mode.
 - The CA directory must not be inside the cache directory, because the cache owns, and may
   remove, entries in its directory. You can place the cache directory inside the CA directory.
-- Before first start, create the immediate parent of each directory as the proxy's user,
+- `init` prepares the native `data/` layout. For other layouts, before first start, create
+  the immediate parent of each directory as the proxy's user,
   without group or other write access (for example `mkdir -m 0700 data`). The directories
   themselves are created at startup, but no ancestors are.
 - Configuration validation does not resolve symlinks or inspect state. Filesystem ownership and
@@ -610,8 +657,9 @@ leaf certificates are used.
 
 ### Create the CA
 
-The CA is created on first startup, or ahead of time with `init-ca`. Both only create it when
-the CA directory is absent. Leave it absent initially and do not pre-create an empty directory.
+The CA is created on first startup, or ahead of time with `init` or `init-ca`. Each creates
+it only when the CA directory is absent. Leave it absent initially and do not pre-create
+an empty directory.
 
 ```sh
 bin/oci-accelerator init-ca --dir data/ca
@@ -637,9 +685,9 @@ winner. There is no persistent lock.
 
 ### CA directory requirements
 
-Proxy startup and `init-ca` apply the same checks. Provision the parent and ensure its
-durability first, so permissions do not depend on the umask and a crash cannot lose newly
-created ancestors.
+Proxy startup, `init`, and `init-ca` apply the same CA checks. For a custom layout,
+provision the parent and ensure its durability first, so permissions do not depend on the
+umask and a crash cannot lose newly created ancestors.
 
 | Path              | Type                    | Owner               | Mode                            |
 | ----------------- | ----------------------- | ------------------- | ------------------------------- |
@@ -705,7 +753,7 @@ Docker-owned credentials do not change.
    openssl x509 -in ca.crt -noout -fingerprint -sha256
    ```
 
-2. Compare the fingerprint with `ca_sha256` from `init-ca` or startup logs, obtained through a
+2. Compare the fingerprint with `ca_sha256` from `init`, `init-ca`, or startup logs, obtained through a
    trusted channel such as SSH or your deployment system. OpenSSL prints uppercase
    colon-separated hex, while the proxy logs lowercase hex without colons.
    **Do not install the certificate if they differ, or if you cannot obtain a trusted expected

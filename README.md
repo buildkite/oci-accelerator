@@ -69,6 +69,8 @@ never persisted, and never shared with peers.
 ```
 oci-accelerator [--env-file FILE] [--check]
 oci-accelerator --version
+oci-accelerator init
+oci-accelerator init-env [--output FILE]
 oci-accelerator init-ca --dir DIR
 ```
 
@@ -76,14 +78,22 @@ oci-accelerator init-ca --dir DIR
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `oci-accelerator [--env-file FILE]`     | Start using built-in defaults, the optional dotenv file, and process environment overrides.                                                 |
 | `oci-accelerator [--env-file FILE] --check` | Validate the same effective configuration without starting the proxy or touching the CA or cache directories.                          |
+| `oci-accelerator init`                 | Create a native starter `.env`, private `data/` and `data/cache/` directories, and a root CA in `data/ca/`. Prints the configuration path, CA certificate path and fingerprint, startup command, and Docker trust and proxy reminder. |
+| `oci-accelerator init-env [--output FILE]` | Write the complete native starter configuration without creating state directories or a CA. Defaults to `.env` and refuses to overwrite an existing file. |
 | `oci-accelerator init-ca --dir DIR`     | Create a root CA in `DIR`, or validate an existing one, without starting the proxy. It ignores environment configuration and prints the certificate path and its SHA-256 fingerprint. |
 | `oci-accelerator --version`            | Print the version compiled from the root `VERSION` file and exit, without configuration or startup.                                          |
-| `oci-accelerator --help`                | Print usage. `init-ca --help` describes `init-ca`.                                                                                           |
+| `oci-accelerator --help`                | Print usage. `init --help`, `init-env --help`, and `init-ca --help` describe each initialization command.                                      |
 
 Configuration uses `OCI_ACCELERATOR_*` environment variables only. You can explicitly
 select a dotenv file with `--env-file`. Process environment values override file values,
-including empty values. No file is discovered automatically or modified. See the
+including empty values. Startup never discovers or modifies a configuration file. See the
 [configuration guide](docs/deployment.md#configuration) for all variables and rules.
+
+`init` and `init-env` ignore ambient environment variables and generate the same complete
+configuration as `.env.example`. Its registry list and `./data` paths are native starter
+examples, not runtime defaults. `init` accepts no options other than help and refuses an
+existing `.env` before creating directories. For configuration only or a custom layout,
+use [the initialization options](docs/deployment.md#initialization-options).
 
 Download unsigned Linux and macOS binaries for amd64 or arm64 from
 [GitHub Releases](https://github.com/buildkite/oci-accelerator/releases). Each
@@ -104,19 +114,20 @@ and retry behavior.
 This builds the proxy and runs it on a Linux Docker Engine host, caching Docker
 Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
 
-1. From the repository root, build the proxy and create its private state
-   directory:
+1. From the repository root, build the proxy and initialize its native layout:
 
    ```sh
    go build -o bin/oci-accelerator ./cmd/oci-accelerator
-   cp .env.example .env
-   # Edit .env if you need different registries or paths.
-   mkdir -m 0700 data
+   bin/oci-accelerator init
+   # Edit .env if you need different registries.
    ```
 
-2. Start the proxy. The example listens on `127.0.0.1:3128`, creates its root CA
-   and cache under `data` on first start, and logs the CA's fingerprint as
-   `ca_sha256`:
+   Initialization creates `.env`, private `data/` and `data/cache/` directories,
+   and the CA in `data/ca/`. It prints the CA certificate path and fingerprint.
+   It does not start the proxy or configure Docker.
+
+2. Start the proxy. The example listens on `127.0.0.1:3128`, uses the initialized
+   CA and cache under `data`, and logs the CA's fingerprint as `ca_sha256`:
 
    ```sh
    bin/oci-accelerator --env-file .env
