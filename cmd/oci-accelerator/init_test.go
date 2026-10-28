@@ -77,7 +77,7 @@ func TestRunInitCreatesUsableLayoutAndReusesState(t *testing.T) {
 	}
 
 	// A peering-enabled startup can use the prepared directory to persist identity.
-	book, err := peering.OpenBook(context.Background(), "data/peers", "self.test:7443", nil, nil)
+	book, err := peering.OpenBook(context.Background(), "data/peers", "self.test:5130", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestRunInitCreatesUsableLayoutAndReusesState(t *testing.T) {
 		}
 	}
 
-	book, err = peering.OpenBook(context.Background(), "data/peers", "self.test:7443", nil, nil)
+	book, err = peering.OpenBook(context.Background(), "data/peers", "self.test:5130", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

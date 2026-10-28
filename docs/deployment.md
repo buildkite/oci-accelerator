@@ -1133,9 +1133,9 @@ not a shared writable filesystem. Ordinary Docker clients receive only `ca.crt`.
 Add these settings to your existing configuration, substituting reachable addresses:
 
 ```sh
-OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:7443
-OCI_ACCELERATOR_PEER_ADVERTISE=accelerator-a.example:7443
-OCI_ACCELERATOR_PEER_SEEDS=accelerator-b.example:7443,accelerator-c.example:7443
+OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:5130
+OCI_ACCELERATOR_PEER_ADVERTISE=accelerator-a.example:5130
+OCI_ACCELERATOR_PEER_SEEDS=accelerator-b.example:5130,accelerator-c.example:5130
 OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 ```
 
@@ -1197,11 +1197,11 @@ rejected. The GET response and POST request and response have the same schema:
 
 ```json
 {
-  "address": "node-a.internal:7443",
+  "address": "node-a.internal:5130",
   "nodeId": "fzyaLmuBTQWo",
   "peers": {
-    "node-b.internal:7443": "K8r2_vN5xQpL",
-    "node-c.internal:7443": "mT4bY9-wH6sR"
+    "node-b.internal:5130": "K8r2_vN5xQpL",
+    "node-c.internal:5130": "mT4bY9-wH6sR"
   }
 }
 ```

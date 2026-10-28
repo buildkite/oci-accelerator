@@ -77,7 +77,7 @@ func TestPeerDisabledStateDirectory(t *testing.T) {
 
 func TestPeerEnabledRequiresSettings(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "peer")
-	base := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", "PEER_LISTEN": "127.0.0.1:7443", "PEER_ADVERTISE": "peer.example:7443", "PEER_STATE_DIR": state}
+	base := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", "PEER_LISTEN": "127.0.0.1:5130", "PEER_ADVERTISE": "peer.example:5130", "PEER_STATE_DIR": state}
 	for _, field := range []string{"PEER_ADVERTISE", "PEER_STATE_DIR"} {
 		t.Run(field, func(t *testing.T) {
 			values := make(map[string]string, len(base))
@@ -99,19 +99,19 @@ func TestPeerRejectsListenerConflictsAndStateOverlap(t *testing.T) {
 	}{
 		{"proxy listener", "127.0.0.1:5128", filepath.Join(root, "ca"), filepath.Join(root, "cache"), filepath.Join(root, "peer"), []string{"PEER_LISTEN"}},
 		{"metrics listener", "127.0.0.1:9090", filepath.Join(root, "ca"), filepath.Join(root, "cache"), filepath.Join(root, "peer"), []string{"PEER_LISTEN"}},
-		{"equals CA", "127.0.0.1:7443", filepath.Join(root, "state"), filepath.Join(root, "cache"), filepath.Join(root, "state"), []string{"PEER_STATE_DIR", "CA_DIR"}},
-		{"contains cache", "127.0.0.1:7443", filepath.Join(root, "ca"), filepath.Join(root, "state", "cache"), filepath.Join(root, "state"), []string{"PEER_STATE_DIR", "CACHE_DIR"}},
-		{"inside cache", "127.0.0.1:7443", filepath.Join(root, "ca"), filepath.Join(root, "cache"), filepath.Join(root, "cache", "peer"), []string{"PEER_STATE_DIR", "CACHE_DIR"}},
+		{"equals CA", "127.0.0.1:5130", filepath.Join(root, "state"), filepath.Join(root, "cache"), filepath.Join(root, "state"), []string{"PEER_STATE_DIR", "CA_DIR"}},
+		{"contains cache", "127.0.0.1:5130", filepath.Join(root, "ca"), filepath.Join(root, "state", "cache"), filepath.Join(root, "state"), []string{"PEER_STATE_DIR", "CACHE_DIR"}},
+		{"inside cache", "127.0.0.1:5130", filepath.Join(root, "ca"), filepath.Join(root, "cache"), filepath.Join(root, "cache", "peer"), []string{"PEER_STATE_DIR", "CACHE_DIR"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": tt.ca, "CACHE_DIR": tt.cache, "METRICS_LISTEN": "127.0.0.1:9090", "PEER_LISTEN": tt.listen, "PEER_ADVERTISE": "peer.example:7443", "PEER_STATE_DIR": tt.state}
+			values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": tt.ca, "CACHE_DIR": tt.cache, "METRICS_LISTEN": "127.0.0.1:9090", "PEER_LISTEN": tt.listen, "PEER_ADVERTISE": "peer.example:5130", "PEER_STATE_DIR": tt.state}
 			_, err := load("", environmentLookup(values))
 			assertInvalidSetting(t, err, "", tt.settings...)
 		})
 	}
 
 	t.Run("valid siblings", func(t *testing.T) {
-		values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": filepath.Join(root, "ca"), "CACHE_DIR": filepath.Join(root, "cache"), "PEER_LISTEN": "127.0.0.1:7443", "PEER_ADVERTISE": "peer.example:7443", "PEER_STATE_DIR": filepath.Join(root, "peer")}
+		values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": filepath.Join(root, "ca"), "CACHE_DIR": filepath.Join(root, "cache"), "PEER_LISTEN": "127.0.0.1:5130", "PEER_ADVERTISE": "peer.example:5130", "PEER_STATE_DIR": filepath.Join(root, "peer")}
 		if _, err := load("", environmentLookup(values)); err != nil {
 			t.Fatal(err)
 		}

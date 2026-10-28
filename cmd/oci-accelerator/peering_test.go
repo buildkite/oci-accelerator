@@ -46,7 +46,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	signer := openPeerTestCA(t, filepath.Join(root, "ca"))
 	listener := newTestListener(t)
 	state := filepath.Join(root, "peer")
-	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state, HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: 100 * time.Millisecond}
+	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:5130", StateDir: state, HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: 100 * time.Millisecond}
 	service, err := startPeering(context.Background(), cfg, signer, newPeerTestStore(t), slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	peer.TLS = serverTLS
 	peer.StartTLS()
 	t.Cleanup(peer.Close)
-	want := peering.Message{Address: "self.test:7443", NodeID: string(selfID), Peers: map[string]string{}}
+	want := peering.Message{Address: "self.test:5130", NodeID: string(selfID), Peers: map[string]string{}}
 	client := peering.NewClient(clientTLS)
 	defer client.CloseIdleConnections()
 	got, err := peering.Exchange(context.Background(), client, listener.Addr().String(), peering.Message{Address: peerAddress, NodeID: peerID, Peers: map[string]string{}})
@@ -125,7 +125,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 	}
 	unauthTLS := clientTLS.Clone()
 	unauthTLS.GetClientCertificate = nil
-	if err := post(peering.NewClient(unauthTLS), "unauth.test:7443"); err != nil {
+	if err := post(peering.NewClient(unauthTLS), "unauth.test:5130"); err != nil {
 		t.Fatal(err)
 	}
 	foreign := openPeerTestCA(t, filepath.Join(root, "foreign-ca"))
@@ -134,7 +134,7 @@ func TestPeerHTTPSExchangeAuthenticationPersistenceAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	foreignTLS.RootCAs = clientTLS.RootCAs
-	if err := post(peering.NewClient(foreignTLS), "foreign.test:7443"); err != nil {
+	if err := post(peering.NewClient(foreignTLS), "foreign.test:5130"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -166,7 +166,7 @@ func TestPeerServesCacheKeysAndEntriesOnlyToAuthenticatedPeers(t *testing.T) {
 	first := commitPeerTestEntry(t, store, "first inventory entry")
 	second := commitPeerTestEntry(t, store, "second inventory entry")
 	keys := []string{first.Key, second.Key}
-	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:7443", StateDir: state, HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: 100 * time.Millisecond}
+	cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:5130", StateDir: state, HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: 100 * time.Millisecond}
 	cfg.Cache.FillTimeout = time.Second
 	service, err := startPeering(context.Background(), cfg, signer, store, slog.New(slog.NewTextHandler(io.Discard, nil)), listenForTest(listener))
 	if err != nil {
@@ -473,7 +473,7 @@ func TestRunPeerCheckAndBindFailure(t *testing.T) {
 	peerAddress := newTestListener(t).Addr().String()
 	state := filepath.Join(root, "peer-state")
 	path := filepath.Join(root, "proxy.env")
-	contents := fmt.Sprintf("OCI_ACCELERATOR_LISTEN=%s\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_PEER_LISTEN=%s\nOCI_ACCELERATOR_PEER_ADVERTISE=self.test:7443\nOCI_ACCELERATOR_PEER_SEEDS=unreachable.test:7443\nOCI_ACCELERATOR_PEER_STATE_DIR=%s\n", proxyListener.Addr(), filepath.Join(root, "ca"), filepath.Join(root, "cache"), peerAddress, state)
+	contents := fmt.Sprintf("OCI_ACCELERATOR_LISTEN=%s\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_PEER_LISTEN=%s\nOCI_ACCELERATOR_PEER_ADVERTISE=self.test:5130\nOCI_ACCELERATOR_PEER_SEEDS=unreachable.test:5130\nOCI_ACCELERATOR_PEER_STATE_DIR=%s\n", proxyListener.Addr(), filepath.Join(root, "ca"), filepath.Join(root, "cache"), peerAddress, state)
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
