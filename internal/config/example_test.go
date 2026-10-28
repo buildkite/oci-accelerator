@@ -70,9 +70,12 @@ func TestEnvironmentExampleMatchesRawDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"OCI_ACCELERATOR_REGISTRIES", "OCI_ACCELERATOR_CA_DIR", "OCI_ACCELERATOR_CACHE_DIR"} {
+
+	assertEqual(t, "example peer state path", values["OCI_ACCELERATOR_PEER_STATE_DIR"], "./data/peers")
+	for _, name := range []string{"OCI_ACCELERATOR_REGISTRIES", "OCI_ACCELERATOR_CA_DIR", "OCI_ACCELERATOR_CACHE_DIR", "OCI_ACCELERATOR_PEER_STATE_DIR"} {
 		delete(values, name)
 	}
+
 	want := defaults()
 	got := defaults()
 	if err := applyEnvironment(&got, func(name string) (string, bool) { value, ok := values[name]; return value, ok }); err != nil {

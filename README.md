@@ -124,9 +124,10 @@ Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
 
    Initialization creates `.env`, private `data/`, `data/cache/`, and `data/peers/`
    directories with mode 0700, and the CA in `data/ca/`. It prints the CA certificate
-   path and fingerprint. Peering stays disabled, with `OCI_ACCELERATOR_PEER_STATE_DIR`
-   empty in `.env`. It does not create peer identity or membership files, start the
-   proxy, or configure Docker.
+   path and fingerprint. The generated `.env` sets `OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers`
+   as a starter example, but leaves the peer listener and advertised address empty, so
+   peering stays disabled. It does not create peer identity or membership files, start
+   the proxy, or configure Docker.
 
 2. Start the proxy. The example listens on `127.0.0.1:3128`, uses the initialized
    CA and cache under `data`, and logs the CA's fingerprint as `ca_sha256`:

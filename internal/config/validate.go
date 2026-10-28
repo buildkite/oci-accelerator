@@ -154,11 +154,32 @@ func validate(raw rawConfig) (Config, error) {
 }
 
 func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string) (Peer, error) {
-	if raw.Listen == "" {
-		for _, setting := range []struct{ name, value string }{{"PEER_ADVERTISE", raw.Advertise}, {"PEER_STATE_DIR", raw.StateDir}} {
-			if setting.value != "" {
-				return Peer{}, invalid("must be empty when peer service is disabled", setting.name, "PEER_LISTEN")
+	if raw.StateDir != "" {
+		if err := validatePath("PEER_STATE_DIR", raw.StateDir); err != nil {
+			return Peer{}, err
+		}
+
+		stateDir, err := filepath.Abs(raw.StateDir)
+		if err != nil {
+			return Peer{}, invalid("cannot resolve directory path", "PEER_STATE_DIR")
+		}
+
+		for _, owned := range []struct{ name, path string }{{"CA_DIR", caPath}, {"CACHE_DIR", cachePath}} {
+			absolute, absErr := filepath.Abs(owned.path)
+			if absErr != nil {
+				return Peer{}, invalid("cannot resolve directory path", owned.name)
 			}
+			if pathsOverlap(stateDir, absolute) {
+				return Peer{}, invalid("directory paths must not equal or contain one another", "PEER_STATE_DIR", owned.name)
+			}
+		}
+
+		raw.StateDir = stateDir
+	}
+
+	if raw.Listen == "" {
+		if raw.Advertise != "" {
+			return Peer{}, invalid("must be empty when peer service is disabled", "PEER_ADVERTISE", "PEER_LISTEN")
 		}
 		if len(raw.Seeds) != 0 {
 			return Peer{}, invalid("must be empty when peer service is disabled", "PEER_SEEDS", "PEER_LISTEN")
@@ -186,22 +207,6 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 	if raw.StateDir == "" {
 		return Peer{}, invalid("must be set when peer service is enabled", "PEER_STATE_DIR")
 	}
-	if err := validatePath("PEER_STATE_DIR", raw.StateDir); err != nil {
-		return Peer{}, err
-	}
-	stateDir, err := filepath.Abs(raw.StateDir)
-	if err != nil {
-		return Peer{}, invalid("cannot resolve directory path", "PEER_STATE_DIR")
-	}
-	for _, owned := range []struct{ name, path string }{{"CA_DIR", caPath}, {"CACHE_DIR", cachePath}} {
-		absolute, absErr := filepath.Abs(owned.path)
-		if absErr != nil {
-			return Peer{}, invalid("cannot resolve directory path", owned.name)
-		}
-		if pathsOverlap(stateDir, absolute) {
-			return Peer{}, invalid("directory paths must not equal or contain one another", "PEER_STATE_DIR", owned.name)
-		}
-	}
 
 	seen := make(map[string]struct{}, len(raw.Seeds))
 	seeds := make([]string, 0, len(raw.Seeds))
@@ -226,7 +231,6 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 	raw.Listen = listen
 	raw.Advertise = advertise
 	raw.Seeds = seeds
-	raw.StateDir = stateDir
 	return raw, nil
 }
 

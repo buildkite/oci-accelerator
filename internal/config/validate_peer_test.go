@@ -34,11 +34,43 @@ func TestPeerConfiguration(t *testing.T) {
 }
 
 func TestPeerDisabledRejectsOtherSettings(t *testing.T) {
-	for _, field := range []string{"PEER_ADVERTISE", "PEER_SEEDS", "PEER_STATE_DIR"} {
+	for _, field := range []string{"PEER_ADVERTISE", "PEER_SEEDS"} {
 		t.Run(field, func(t *testing.T) {
 			values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", field: "nonempty"}
 			_, err := load("", environmentLookup(values))
 			assertInvalidSetting(t, err, "disabled", field, "PEER_LISTEN")
+		})
+	}
+}
+
+func TestPeerDisabledStateDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+
+	for _, tt := range []struct {
+		name, state string
+		settings    []string
+	}{
+		{"valid sibling", "./data/../peers", nil},
+		{"blank", " \t", []string{"PEER_STATE_DIR"}},
+		{"NUL", "peers\x00", []string{"PEER_STATE_DIR"}},
+		{"equals CA", "ca", []string{"PEER_STATE_DIR", "CA_DIR"}},
+		{"contains CA and cache", ".", []string{"PEER_STATE_DIR", "CA_DIR"}},
+		{"inside cache", "cache/peers", []string{"PEER_STATE_DIR", "CACHE_DIR"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			values := map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", "PEER_STATE_DIR": tt.state}
+			cfg, err := load("", environmentLookup(values))
+			if len(tt.settings) != 0 {
+				assertInvalidSetting(t, err, "", tt.settings...)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			assertEqual(t, "Peer.StateDir", cfg.Peer.StateDir, filepath.Join(root, "peers"))
+			assertEqual(t, "Peer.Listen", cfg.Peer.Listen, "")
 		})
 	}
 }

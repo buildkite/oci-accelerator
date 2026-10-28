@@ -131,12 +131,12 @@ with mode 0700, and a root CA in `data/ca/`. It prints the configuration
 path, CA certificate path and SHA-256 fingerprint, the startup command, and a reminder
 to configure Docker's CA trust and proxy. It does not start the proxy or change Docker.
 The peer directory is preparation only. `init` creates no peer identity or membership files.
-Peering stays disabled, and `OCI_ACCELERATOR_PEER_STATE_DIR` remains empty in the generated
-`.env`, as required when peering is disabled.
+The generated `.env` sets `OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers`, but leaves
+`OCI_ACCELERATOR_PEER_LISTEN` and `OCI_ACCELERATOR_PEER_ADVERTISE` empty, so peering stays disabled.
 
 The generated file is the complete `.env.example` configuration, with native starter
-registries `registry-1.docker.io,ghcr.io,public.ecr.aws` and paths `./data/ca` and
-`./data/cache`. These are examples written into the file, not new runtime defaults.
+registries `registry-1.docker.io,ghcr.io,public.ecr.aws` and paths `./data/ca`,
+`./data/cache`, and `./data/peers`. These are examples written into the file, not runtime defaults.
 You must still pass `--env-file .env` when starting the proxy. No configuration file is
 discovered automatically, and process environment overrides still apply at startup.
 
@@ -489,9 +489,12 @@ dotenv file are rejected.
 An unset variable retains the file value or default. A present empty variable is an explicit
 value. It disables `OCI_ACCELERATOR_METRICS_LISTEN` and clears
 `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`. Empty `OCI_ACCELERATOR_PEER_LISTEN` disables peering,
-provided `OCI_ACCELERATOR_PEER_ADVERTISE`, `OCI_ACCELERATOR_PEER_SEEDS`, and
-`OCI_ACCELERATOR_PEER_STATE_DIR` are also empty. Peer hint timings still accept overrides
-and are validated even when peering is disabled, using their defaults when unset.
+provided `OCI_ACCELERATOR_PEER_ADVERTISE` and `OCI_ACCELERATOR_PEER_SEEDS` are also empty.
+A nonempty `OCI_ACCELERATOR_PEER_LISTEN` enables peering. There is no separate enable flag.
+`OCI_ACCELERATOR_PEER_STATE_DIR` can remain configured while peering is disabled, but its
+path is still validated and must not equal, contain, or be contained by the CA or cache
+directories. Peer hint timings still accept overrides and are validated even when peering
+is disabled, using their defaults when unset.
 An empty `OCI_ACCELERATOR_PEER_SEEDS` is valid even when peering is enabled.
 Other empty values fail validation, including required
 registries and paths. `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`
@@ -569,7 +572,7 @@ You can configure private registries explicitly.
 | `OCI_ACCELERATOR_PEER_LISTEN` | Disabled | Separate TLS listener, host:port with a nonzero numeric port |
 | `OCI_ACCELERATOR_PEER_ADVERTISE` | Empty | Required reachable host:port when peering is enabled |
 | `OCI_ACCELERATOR_PEER_SEEDS` | Empty | Optional comma-separated host:port bootstrap addresses |
-| `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled |
+| `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled. May remain configured while disabled. Native starter example: `./data/peers` |
 | `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` | `1m` | Positive overall duration per cache-key fetch attempt, excluding scheduler queueing. No unlimited value |
 | `OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL` | `1m` | At least `1s`. Poll delay after each attempt completes, with ±20% jitter |
 | `OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL` | `1h` | At least `1s`. Full-scan interval from successful full-scan completion, with ±20% jitter |
@@ -1144,9 +1147,10 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 - Seeds are optional, not an allowlist. An instance with no seeds can wait for an incoming
   exchange. Ports are always explicit, including `:443`, and IPv6 uses `[address]:port`.
   Seed entries are whitespace-trimmed, canonicalized, deduplicated, and exclude self.
-- `init` prepares `data/` and `data/peers/` but leaves peering disabled. To enable it, set
-  `OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers` along with the listener and advertised address
-  shown above. For other layouts, create the immediate parent of the state directory as
+- `init` prepares `data/` and `data/peers/` and sets the state path in `.env`, but leaves
+  peering disabled. To enable it, set the listener and reachable advertised address shown
+  above. The prepared state directory setting needs no edit. For other layouts, create
+  the immediate parent of the state directory as
   the process user without group or other write access. Startup creates the state directory
   with mode 0700 if absent. It must not equal,
   contain, or be contained by the CA or cache directories. Relative paths use the working
@@ -1154,8 +1158,9 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 - For Docker or Compose, explicitly publish the chosen peer port and persist peer state on a
   writable volume. The default container configuration leaves peering disabled.
 - Run `oci-accelerator --env-file FILE --check` to validate without opening listeners or state.
-  To disable peering, clear the listener, advertised address, seeds, and state directory settings.
-  You can leave valid hint timings configured. The existing address book remains on disk.
+  To disable peering, clear the listener, advertised address, and seeds.
+  You can retain the state directory setting and valid hint timings. The existing address book
+  remains on disk.
 
 ### Peer trust
 
