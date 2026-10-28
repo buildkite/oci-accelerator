@@ -10,13 +10,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache/cachetest"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
@@ -643,44 +646,61 @@ func TestMutableObservedDenialFencesOlderSuccess(t *testing.T) {
 func TestMutableExpiryIsCappedByAuthorization(t *testing.T) {
 	for _, limiting := range []string{"mutable", "anonymous", "credentialed"} {
 		t.Run(limiting, func(t *testing.T) {
-			var calls atomic.Int32
-			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				io.WriteString(w, fmt.Sprint(calls.Add(1)))
-			}))
-			defer origin.Close()
-			tr := mutableTransportFixture(t, origin)
-			tr.mutable.ttl = time.Hour
-			tr.authorization = newAuthorizationCache(time.Hour, time.Hour, 10)
-			req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "")
-			const ttl = 200 * time.Millisecond
-			switch limiting {
-			case "mutable":
-				tr.mutable.ttl = ttl
-			case "anonymous":
-				tr.authorization.anonymousTTL = ttl
-			case "credentialed":
-				tr.authorization.authorizationTTL = ttl
-				req.Header.Set("Authorization", "Bearer a")
+			store, err := cachetest.Open(filepath.Join(t.TempDir(), "cache"), 1<<20)
+			if err != nil {
+				t.Fatal(err)
 			}
-
-			for range 2 {
-				got := readMutable(tr, req.Clone(req.Context()))
-				if got.err != nil || got.body != "1" {
-					t.Fatalf("initial reuse = %+v", got)
+			t.Cleanup(func() {
+				if err := store.Close(); err != nil {
+					t.Error(err)
 				}
-			}
+			})
 
-			canceled, cancel := context.WithCancel(req.Context())
-			cancel()
-			if got := readMutable(tr, req.Clone(canceled)); !errors.Is(got.err, context.Canceled) {
-				t.Fatalf("canceled request borrowed a cached response: %+v", got)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				var calls atomic.Int32
+				origin := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					io.WriteString(w, fmt.Sprint(calls.Add(1)))
+				}))
 
-			time.Sleep(2 * ttl)
-			got := readMutable(tr, req.Clone(req.Context()))
-			if got.err != nil || got.body != "2" || calls.Load() != 2 {
-				t.Fatalf("expired response was reused: %+v calls=%d", got, calls.Load())
-			}
+				upstream := origin.Client().Transport.(*http.Transport)
+				// The in-memory TLS dialer captures this config before Clone.
+				upstream.TLSClientConfig.InsecureSkipVerify = false
+				upstream.TLSClientConfig.ServerName = "example.com"
+				tr := registryTransport{upstream: upstream.Clone(), cache: store, metrics: newMetrics(),
+					mutable: newMutableCache(time.Hour), authorization: newAuthorizationCache(time.Hour, time.Hour, 10)}
+				defer tr.upstream.CloseIdleConnections()
+
+				req := authorizationRequest(t, "https://example.com/v2/team/image/manifests/latest", "")
+				const ttl = 200 * time.Millisecond
+				switch limiting {
+				case "mutable":
+					tr.mutable.ttl = ttl
+				case "anonymous":
+					tr.authorization.anonymousTTL = ttl
+				case "credentialed":
+					tr.authorization.authorizationTTL = ttl
+					req.Header.Set("Authorization", "Bearer a")
+				}
+
+				for range 2 {
+					got := readMutable(tr, req.Clone(req.Context()))
+					if got.err != nil || got.body != "1" {
+						t.Fatalf("initial reuse = %+v", got)
+					}
+				}
+
+				canceled, cancel := context.WithCancel(req.Context())
+				cancel()
+				if got := readMutable(tr, req.Clone(canceled)); !errors.Is(got.err, context.Canceled) {
+					t.Fatalf("canceled request borrowed a cached response: %+v", got)
+				}
+
+				time.Sleep(2 * ttl)
+				got := readMutable(tr, req.Clone(req.Context()))
+				if got.err != nil || got.body != "2" || calls.Load() != 2 {
+					t.Fatalf("expired response was reused: %+v calls=%d", got, calls.Load())
+				}
+			})
 		})
 	}
 }

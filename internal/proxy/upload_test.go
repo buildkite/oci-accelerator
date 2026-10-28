@@ -12,7 +12,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/buildkite/oci-accelerator/internal/config"
+	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
 func TestWriteBodiesStreamUpstream(t *testing.T) {
@@ -155,30 +159,46 @@ func TestUploadStopsOnStallDisconnectAndShutdown(t *testing.T) {
 }
 
 func TestUploadReadDeadlineRefreshes(t *testing.T) {
-	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil || string(body) != "01234567" {
-			t.Errorf("upload = %q, %v", body, err)
+	synctest.Test(t, func(t *testing.T) {
+		origin := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil || string(body) != "01234567" {
+				t.Errorf("upload = %q, %v", body, err)
+			}
+			w.WriteHeader(http.StatusCreated)
+		}))
+		originTransport := origin.Client().Transport.(*http.Transport)
+		originTransport.TLSClientConfig.InsecureSkipVerify = false
+		originTransport.TLSClientConfig.ServerName = "example.com"
+		p := New(config.Config{IdleTimeout: 500 * time.Millisecond}, nil, nil, nil)
+		p.transport = originTransport.Clone()
+		defer p.transport.CloseIdleConnections()
+		target, _ := hostport.Parse("example.com", "443")
+		proxy := httptest.NewTestServer(t, p.interceptHandler(target))
+		conn, err := proxy.Client().Transport.(*http.Transport).DialContext(context.Background(), "tcp", "example.com:80")
+		if err != nil {
+			t.Fatal(err)
 		}
-		w.WriteHeader(http.StatusCreated)
-	}))
-	defer origin.Close()
-	p, addr, client := interceptFixture(t, origin, nil, true)
-	p.cfg.IdleTimeout = 500 * time.Millisecond
-	conn, reader := uploadConnection(t, addr, client, origin.URL)
-	_, _ = fmt.Fprintf(conn, "PUT /upload HTTP/1.1\r\nHost: %s\r\nContent-Length: 8\r\n\r\n", strings.TrimPrefix(origin.URL, "https://"))
-	for _, b := range "01234567" {
-		_, _ = fmt.Fprintf(conn, "%c", b)
-		time.Sleep(100 * time.Millisecond)
-	}
-	resp, err := http.ReadResponse(reader, &http.Request{Method: "PUT"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("long but active upload = %d", resp.StatusCode)
-	}
+		defer conn.Close()
+		if _, err := io.WriteString(conn, "PUT /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 8\r\n\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range "01234567" {
+			if _, err := fmt.Fprintf(conn, "%c", b); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Wait()
+			time.Sleep(100 * time.Millisecond)
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPut})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("long but active upload = %d", resp.StatusCode)
+		}
+	})
 }
 
 func TestUploadContinueAndKeepAlive(t *testing.T) {

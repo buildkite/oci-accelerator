@@ -5,7 +5,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/config"
@@ -73,38 +75,60 @@ func TestUpstreamFINReachesClientWhileClientWriteRemainsOpen(t *testing.T) {
 	shutdown(t, p)
 }
 
-func TestOneWayTrafficWithBufferedCONNECTPayloadStaysActive(t *testing.T) {
-	origin := listen(t)
-	accepted := make(chan net.Conn, 1)
-	go func() { c, _ := origin.Accept(); accepted <- c }()
-	idle := 150 * time.Millisecond
-	p, addr := start(t, config.Config{MaxConnections: 2, DialTimeout: time.Second, ResponseHeaderTimeout: time.Second, IdleTimeout: idle})
-	client, _ := connectLifecycle(t, addr, origin.Addr().String(), []byte("initial"))
-	upstream := <-accepted
-	t.Cleanup(func() { upstream.Close() })
-	got := make(chan []byte, 1)
-	go func() {
-		b, _ := io.ReadAll(upstream)
-		got <- b
-	}()
-	for i := 0; i < 8; i++ {
-		time.Sleep(50 * time.Millisecond)
-		if _, err := client.Write([]byte("x")); err != nil {
-			t.Fatalf("write %d: %v", i, err)
+func TestOneWayTrafficWithBufferedPayloadStaysActive(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientSide, client := net.Pipe()
+		upstreamSide, upstream := net.Pipe()
+		defer client.Close()
+		defer upstream.Close()
+		buffered := bufio.NewReader(strings.NewReader("initial"))
+		if _, err := buffered.Peek(len("initial")); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if err := client.(*net.TCPConn).CloseWrite(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case b := <-got:
+
+		const idle = 150 * time.Millisecond
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			relay(clientSide, upstreamSide, buffered, idle)
+		}()
+		got := make(chan []byte, 1)
+		readDone := make(chan struct{})
+		go func() {
+			defer close(readDone)
+			b, err := io.ReadAll(upstream)
+			if err != nil {
+				t.Error(err)
+			}
+			got <- b
+		}()
+		defer func() {
+			client.Close()
+			upstream.Close()
+			<-done
+			<-readDone
+		}()
+		for i := range 8 {
+			time.Sleep(50 * time.Millisecond)
+			if _, err := client.Write([]byte("x")); err != nil {
+				t.Fatalf("write %d: %v", i, err)
+			}
+			synctest.Wait()
+		}
+		select {
+		case <-done:
+			t.Fatal("one-way activity did not keep both relay directions alive")
+		default:
+		}
+
+		// Once activity stops, the same idle timer must still close the relay.
+		time.Sleep(idle)
+		<-done
+		b := <-got
 		if string(b) != "initialxxxxxxxx" {
 			t.Fatalf("origin received %q", b)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("origin did not receive EOF")
-	}
-	shutdown(t, p)
+	})
 }
 
 func TestIdleTunnelExpiryClosesClientAndUpstream(t *testing.T) {
