@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/config"
@@ -144,34 +145,57 @@ func TestCONNECTRejectsAmbiguousWireSyntax(t *testing.T) {
 }
 
 func TestMaxConnectionsBoundsAcceptedMapBeforeHeaders(t *testing.T) {
-	p, addr := start(t, config.Config{MaxConnections: 2, ResponseHeaderTimeout: 2 * time.Second, IdleTimeout: time.Second})
-	first := dialLifecycle(t, addr)
-	second := dialLifecycle(t, addr)
-	eventuallyLifecycle(t, time.Second, func() bool { return lifecycleConnCount(p) == 2 }, "two accepted connections")
-	third := dialLifecycle(t, addr)
-	time.Sleep(100 * time.Millisecond)
-	if got := lifecycleConnCount(p); got != 2 {
-		t.Fatalf("accepted map has %d connections, want 2", got)
-	}
-	firstAddr := first.LocalAddr().String()
-	thirdAddr := third.LocalAddr().String()
-	first.Close()
-	eventuallyLifecycle(t, time.Second, func() bool {
+	synctest.Test(t, func(t *testing.T) {
+		queued := make(chan net.Conn, 3)
+		var clients, servers []net.Conn
+		for range 3 {
+			server, client := net.Pipe()
+			defer server.Close()
+			defer client.Close()
+			clients = append(clients, client)
+			servers = append(servers, server)
+			queued <- server
+		}
+		listener := &queuedConnectionListener{
+			oneConnListener: &oneConnListener{conn: servers[0], done: make(chan struct{})},
+			connections:     queued,
+		}
+		p := New(config.Config{MaxConnections: 2}, nil, nil, nil)
+		serveProxy(t, p, listener)
+		synctest.Wait()
+		if got := lifecycleConnCount(p); got != 2 || len(queued) != 1 {
+			t.Fatalf("accepted map = %d, queued = %d, want 2 and 1", got, len(queued))
+		}
+
+		clients[0].Close()
+		synctest.Wait()
 		p.mu.Lock()
-		defer p.mu.Unlock()
-		thirdAccepted := false
+		var accepted []net.Conn
 		for conn := range p.conns {
-			remote := conn.RemoteAddr().String()
-			if remote == firstAddr {
-				return false
-			}
-			if remote == thirdAddr {
-				thirdAccepted = true
+			accepted = append(accepted, conn.Conn)
+		}
+		p.mu.Unlock()
+		if len(accepted) != 2 || len(queued) != 0 {
+			t.Fatalf("accepted map = %d, queued = %d after slot release, want 2 and 0", len(accepted), len(queued))
+		}
+		for _, conn := range accepted {
+			if conn != servers[1] && conn != servers[2] {
+				t.Fatal("closed connection remained in the accepted map")
 			}
 		}
-		return len(p.conns) == 2 && thirdAccepted
-	}, "queued connection accepted after first slot release")
-	second.Close()
-	third.Close()
-	shutdown(t, p)
+	})
+}
+
+type queuedConnectionListener struct {
+	*oneConnListener
+	connections <-chan net.Conn
+}
+
+func (l *queuedConnectionListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.connections:
+		return conn, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
 }

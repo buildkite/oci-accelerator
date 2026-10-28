@@ -121,6 +121,8 @@ func TestRefusalClosesConnectionBeforeSecondCONNECT(t *testing.T) {
 	if second, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect}); err == nil {
 		second.Body.Close()
 		t.Fatalf("unexpected second response: %s", second.Status)
+	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatalf("refused connection was not closed: %v", err)
 	}
 	shutdown(t, p)
 }

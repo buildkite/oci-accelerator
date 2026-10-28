@@ -42,27 +42,16 @@ func TestBlockedStagingDoesNotBlockHitOrStatsAndDelaysClose(t *testing.T) {
 		t.Fatalf("staging claim accounting = %+v", st)
 	}
 	assertHitProgress(t, s, hot, "body")
+
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- s.Close() }()
-	closed := make(chan struct{})
-	go func() {
-		for {
-			s.mu.Lock()
-			isClosed := s.closed
-			s.mu.Unlock()
-			if isClosed {
-				close(closed)
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
-	awaitBarrier(t, closed, "Close to mark store closed")
+	awaitStoreClosed(t, s)
 	select {
 	case err := <-closeDone:
 		t.Fatalf("Close returned during staging: %v", err)
 	default:
 	}
+
 	close(release)
 	if err := awaitResult(t, beginDone, "blocked Begin shutdown"); err == nil {
 		t.Fatal("Begin succeeded after Close")
@@ -115,12 +104,14 @@ func TestCloseRetainsLockWhileInvalidReaderCleanupBlocked(t *testing.T) {
 	readerDone := make(chan error, 1)
 	go func() { readerDone <- r.Close() }()
 	awaitBarrier(t, entered, "invalid reader cleanup")
+
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- s.Close() }()
+	awaitStoreClosed(t, s)
 	select {
 	case err := <-closeDone:
 		t.Fatalf("Close released lock during cleanup: %v", err)
-	case <-time.After(20 * time.Millisecond):
+	default:
 	}
 	if other, err := OpenWithLimits(s.dir, Limits{MaxBytes: 1 << 20, MaxFills: 1, MaxEntries: 1, FillTimeout: time.Minute}); err == nil {
 		_ = other.Close()
@@ -128,6 +119,7 @@ func TestCloseRetainsLockWhileInvalidReaderCleanupBlocked(t *testing.T) {
 	} else if !errors.Is(err, ErrLockConflict) {
 		t.Fatalf("reopen = %v, want lock conflict", err)
 	}
+
 	close(release)
 	if err := awaitResult(t, readerDone, "invalid reader cleanup"); err != nil {
 		t.Fatal(err)
@@ -192,12 +184,14 @@ func TestPausedDeferredCleanupDoesNotBlockHitsAndDelaysClose(t *testing.T) {
 	if st := s.Stats(); st.CleanupBytes != failedCharge || st.CleanupSlots != 1 || st.Bytes != failedCharge+metadataReservation+int64(len("hot bytes")) {
 		t.Fatalf("paused cleanup accounting = %+v", st)
 	}
+
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- s.Close() }()
+	awaitStoreClosed(t, s)
 	select {
 	case err := <-closeDone:
 		t.Fatalf("Close returned during cleanup: %v", err)
-	case <-time.After(20 * time.Millisecond):
+	default:
 	}
 	if other, err := openDefault(s.dir, 1<<20); err == nil {
 		_ = other.Close()
@@ -205,6 +199,7 @@ func TestPausedDeferredCleanupDoesNotBlockHitsAndDelaysClose(t *testing.T) {
 	} else if !errors.Is(err, ErrLockConflict) {
 		t.Fatalf("reopen = %v, want lock conflict", err)
 	}
+
 	close(release)
 	_ = awaitResult(t, beginDone, "admission after cleanup")
 	if err := awaitResult(t, closeDone, "Close after cleanup"); err != nil {
@@ -268,12 +263,14 @@ func TestPausedBeginTombstoneCleanupDoesNotBlockHitsAndDelaysClose(t *testing.T)
 	if st := s.Stats(); st.Bytes != wantBytes || st.Entries != 2 {
 		t.Fatalf("paused supersession accounting = %+v", st)
 	}
+
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- s.Close() }()
+	awaitStoreClosed(t, s)
 	select {
 	case err := <-closeDone:
 		t.Fatalf("Close returned during supersession: %v", err)
-	case <-time.After(20 * time.Millisecond):
+	default:
 	}
 	if other, err := openDefault(s.dir, 1<<20); err == nil {
 		_ = other.Close()
@@ -281,6 +278,7 @@ func TestPausedBeginTombstoneCleanupDoesNotBlockHitsAndDelaysClose(t *testing.T)
 	} else if !errors.Is(err, ErrLockConflict) {
 		t.Fatalf("reopen = %v, want lock conflict", err)
 	}
+
 	close(release)
 	if err := awaitResult(t, beginDone, "superseding Begin shutdown"); err == nil {
 		t.Fatal("Begin succeeded after Close")
@@ -344,11 +342,13 @@ func TestPausedCommitTombstoneSupersessionDoesNotBlockHitsAndDelaysClose(t *test
 
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- s.Close() }()
+	awaitStoreClosed(t, s)
 	select {
 	case err := <-closeDone:
 		t.Fatalf("Close returned during Commit: %v", err)
-	case <-time.After(20 * time.Millisecond):
+	default:
 	}
+
 	close(release)
 	released = true
 	if err := awaitResult(t, commitDone, "Commit after tombstone release"); err != nil {
@@ -374,4 +374,27 @@ func TestPausedCommitTombstoneSupersessionDoesNotBlockHitsAndDelaysClose(t *test
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	read(t, reopened, fresh, "new exact bytes")
+}
+
+func awaitStoreClosed(t *testing.T, s *Store) {
+	t.Helper()
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			return
+		}
+
+		select {
+		case <-tick.C:
+		case <-timeout.C:
+			t.Fatal("timed out waiting for Close to mark store closed")
+		}
+	}
 }

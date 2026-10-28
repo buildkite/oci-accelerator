@@ -46,10 +46,7 @@ func TestShutdownClosesActiveTunnelAtDeadline(t *testing.T) {
 	if err := p.Shutdown(ctx); err != context.DeadlineExceeded {
 		t.Fatalf("Shutdown = %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err := conn.Read(make([]byte, 1)); err == nil {
-		t.Fatal("client remained open")
-	}
+	assertLifecycleClosed(t, conn, "client")
 	upstream.Close()
 }
 
@@ -195,16 +192,10 @@ func TestShutdownWaitsForHandlerAfterForcedClose(t *testing.T) {
 	}
 }
 
-// TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose reproduces review
-// finding #2: a cache-hit request in flight during a hard-timeout Shutdown must
-// have its *cache.Reader closed before the caller closes the store, otherwise
-// Store.Close fails with "cache has active readers".
-//
-// A large blob is served so the warm cache-hit response body cannot be copied
-// to a client that stops reading, keeping the reader pinned while Shutdown's
-// deadline fires. After Shutdown returns, closing the store must succeed.
+// A blocked cache-hit response must release its reader before Shutdown returns,
+// so the caller can immediately close the store.
 func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
-	body := strings.Repeat("cache-hit-payload", 1<<16) // ~1 MiB, exceeds socket buffers
+	body := strings.Repeat("cache-hit-payload", 1<<16)
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		blobHeaders(w, body)
 		w.WriteHeader(http.StatusOK)
@@ -220,8 +211,11 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// store is closed explicitly at the end, with no t.Cleanup close, so we control
-	// the ordering relative to Shutdown.
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 
 	u, _ := url.Parse(origin.URL)
 	registry, _ := hostport.Parse(u.Host, "443")
@@ -231,7 +225,6 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 		DialTimeout:           time.Second,
 		TLSHandshakeTimeout:   time.Second,
 		ResponseHeaderTimeout: time.Second,
-		IdleTimeout:           2 * time.Second,
 	}
 	p := New(cfg, signer, slog.New(slog.NewTextHandler(io.Discard, nil)), store)
 	l := listen(t)
@@ -268,15 +261,31 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 	if st := store.Stats(); st.Entries != 1 {
 		t.Fatalf("cache not warmed: %+v", st)
 	}
+	shutdown(t, p)
 
-	// Open a raw CONNECT+TLS request for the same blob (a cache hit) and read
-	// only the response headers, then stop. The large body cannot drain, so the
-	// proxy's copy blocks with the cache reader pinned.
-	conn, _ := connectLifecycle(t, addr, u.Host, nil)
+	// The restarted proxy serves a bufferless pipe. Reading only the headers
+	// cannot drain this body into kernel socket buffers and release its reader.
+	p = New(cfg, signer, slog.New(slog.NewTextHandler(io.Discard, nil)), store)
+	p.transport.TLSClientConfig.RootCAs = originRoots
+	serverConn, conn := net.Pipe()
+	listener := &oneConnListener{conn: serverConn, done: make(chan struct{})}
+	serveProxy(t, p, listener)
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(conn, "CONNECT "+u.Host+" HTTP/1.1\r\nHost: "+u.Host+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	connected, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connected.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d", connected.StatusCode)
+	}
+
 	tlsConn := tls.Client(conn, &tls.Config{ServerName: registry.Host(), RootCAs: clientRoots})
-	// Register cleanup up front so a mid-test t.Fatalf cannot leak the stalled
-	// client socket into sibling tests.
-	t.Cleanup(func() { _ = tlsConn.Close() })
 	if err := tlsConn.Handshake(); err != nil {
 		t.Fatal(err)
 	}
@@ -288,27 +297,16 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 	if stalled.StatusCode != http.StatusOK {
 		t.Fatalf("stalled cache hit status = %d", stalled.StatusCode)
 	}
-	// Do not read the body. Wait until a reader is pinned in the store.
-	deadline := time.Now().Add(3 * time.Second)
-	for store.Stats().Readers == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("cache reader never became active for the stalled cache hit")
-		}
-		time.Sleep(time.Millisecond)
+	if got := store.Stats().Readers; got != 1 {
+		t.Fatalf("stalled cache hit readers = %d, want 1", got)
 	}
 
-	// Hard-timeout Shutdown: the deadline fires while the reader is pinned. The
-	// fix requires Shutdown to wait for the interception handler to unwind (and
-	// thus close its cache reader) before returning, so that a store close
-	// immediately afterward - exactly as the CLI does via defer - never observes
-	// an active reader. Shutdown may report DeadlineExceeded (forced closure) or,
-	// if the stalled copy happens to drain first, nil. Either way the store must
-	// be closeable, which is the property under test.
+	// Forced shutdown must join the interception handler before returning.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	err = p.Shutdown(ctx)
 	cancel()
-	if err != nil && err != context.DeadlineExceeded {
-		t.Fatalf("Shutdown = %v, want nil or deadline exceeded", err)
+	if err != context.DeadlineExceeded {
+		t.Fatalf("Shutdown = %v, want deadline exceeded", err)
 	}
 
 	// Close the store the instant Shutdown returns, with no intervening work that
@@ -320,9 +318,6 @@ func TestHardTimeoutShutdownReleasesCacheReaderBeforeStoreClose(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatalf("store.Close after hard-timeout Shutdown: %v", err)
 	}
-	// Close the proxy listener so its Serve goroutine exits promptly. The stalled
-	// client is torn down by the registered cleanup above.
-	_ = l.Close()
 }
 
 func TestShutdownCancelsCacheFillLeaderAndWaitingFollower(t *testing.T) {

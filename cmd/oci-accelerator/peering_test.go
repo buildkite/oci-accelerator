@@ -555,14 +555,21 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 				if err := book.Close(); err != nil {
 					t.Fatal(err)
 				}
-				// Reuse the verified address without serving it, preserving an
-				// unreachable confirmed member for the readiness scenario.
-				fixture.Close()
-				unresponsive, err = net.ListenTCP("tcp", address)
+
+				// Duplicate the listening socket before stopping TLS, retaining
+				// the verified address without accepting new connections.
+				file, err := unresponsive.File()
 				if err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(func() { unresponsive.Close() })
+				retained, err := net.FileListener(file)
+				file.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { retained.Close() })
+				fixture.Close()
+				unresponsive = retained.(*net.TCPListener)
 			}
 			path := filepath.Join(root, "proxy.env")
 			contents := fmt.Sprintf("OCI_ACCELERATOR_LISTEN=%s\nOCI_ACCELERATOR_METRICS_LISTEN=%s\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_PEER_LISTEN=%s\nOCI_ACCELERATOR_PEER_ADVERTISE=%s\nOCI_ACCELERATOR_PEER_SEEDS=%s\nOCI_ACCELERATOR_PEER_STATE_DIR=%s\nOCI_ACCELERATOR_SHUTDOWN_TIMEOUT=100ms\n", proxyListener.Addr(), metricsListener.Addr(), filepath.Join(root, "ca"), filepath.Join(root, "cache"), peerListener.Addr(), peerListener.Addr(), unresponsive.Addr(), state)
