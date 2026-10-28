@@ -20,7 +20,7 @@ func runInit(args []string, stdout io.Writer) error {
 	flags.SetOutput(io.Discard)
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			_, err := fmt.Fprintln(stdout, "Usage: oci-accelerator init\n\nCreate .env, private data and data/cache directories, and a CA in data/ca.\nPaths are relative to the working directory. Environment overrides are ignored.\nExisting .env files are never replaced. Existing valid CAs are reused.\nNo Docker configuration or system trust is changed.")
+			_, err := fmt.Fprintln(stdout, "Usage: oci-accelerator init\n\nCreate .env, private data, data/cache and data/peers directories, and a CA in data/ca.\nPeering remains disabled until explicitly configured.\nPaths are relative to the working directory. Environment overrides are ignored.\nExisting .env files are never replaced. Existing valid CAs are reused.\nNo Docker configuration or system trust is changed.")
 			return err
 		}
 		return errors.New("invalid init command line")
@@ -34,7 +34,7 @@ func runInit(args []string, stdout io.Writer) error {
 		return errors.New("cannot initialize: .env already exists or cannot be inspected, no setup attempted")
 	}
 
-	for _, path := range []string{"data", "data/cache"} {
+	for _, path := range []string{"data", "data/cache", "data/peers"} {
 		if err := ensureStarterDirectory(path); err != nil {
 			return fmt.Errorf("initialization failed: %w. Existing files and directories are unchanged, newly created state may remain. Inspect data before retrying", err)
 		}

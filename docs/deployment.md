@@ -126,10 +126,13 @@ bin/oci-accelerator --env-file .env --check
 bin/oci-accelerator --env-file .env
 ```
 
-`init` creates `.env`, private `data/` and `data/cache/` directories with mode 0700,
-and a root CA in `data/ca/`. It prints the configuration
+`init` creates `.env`, private `data/`, `data/cache/`, and `data/peers/` directories
+with mode 0700, and a root CA in `data/ca/`. It prints the configuration
 path, CA certificate path and SHA-256 fingerprint, the startup command, and a reminder
 to configure Docker's CA trust and proxy. It does not start the proxy or change Docker.
+The peer directory is preparation only. `init` creates no peer identity or membership files.
+Peering stays disabled, and `OCI_ACCELERATOR_PEER_STATE_DIR` remains empty in the generated
+`.env`, as required when peering is disabled.
 
 The generated file is the complete `.env.example` configuration, with native starter
 registries `registry-1.docker.io,ghcr.io,public.ecr.aws` and paths `./data/ca` and
@@ -145,9 +148,10 @@ Then [configure Docker hosts](#configure-docker-hosts).
 #### Initialization options
 
 `init` accepts no options other than help and ignores ambient environment variables.
-It refuses an existing `.env` before creating any directories. Existing `data/` and
-`data/cache/` directories are reused only if they are non-symlink directories owned by
-the current user with mode exactly 0700. The CA uses the existing
+It refuses an existing `.env` before creating any directories. Existing `data/`,
+`data/cache/`, and `data/peers/` directories are reused only if they are non-symlink
+directories owned by the current user with mode exactly 0700. Their contents are left
+untouched. The CA uses the existing
 [CA validation rules](#ca-directory-requirements). A valid existing CA is reused unchanged,
 and an invalid or incomplete CA fails without modifying it.
 
@@ -1140,8 +1144,11 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 - Seeds are optional, not an allowlist. An instance with no seeds can wait for an incoming
   exchange. Ports are always explicit, including `:443`, and IPv6 uses `[address]:port`.
   Seed entries are whitespace-trimmed, canonicalized, deduplicated, and exclude self.
-- Create the immediate parent of the state directory as the process user without group or
-  other write access. Startup creates the state directory with mode 0700. It must not equal,
+- `init` prepares `data/` and `data/peers/` but leaves peering disabled. To enable it, set
+  `OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers` along with the listener and advertised address
+  shown above. For other layouts, create the immediate parent of the state directory as
+  the process user without group or other write access. Startup creates the state directory
+  with mode 0700 if absent. It must not equal,
   contain, or be contained by the CA or cache directories. Relative paths use the working
   directory. For the container layout, `/var/lib/oci-accelerator/peers` is a suitable sibling.
 - For Docker or Compose, explicitly publish the chosen peer port and persist peer state on a

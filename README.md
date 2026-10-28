@@ -78,7 +78,7 @@ oci-accelerator init-ca --dir DIR
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `oci-accelerator [--env-file FILE]`     | Start using built-in defaults, the optional dotenv file, and process environment overrides.                                                 |
 | `oci-accelerator [--env-file FILE] --check` | Validate the same effective configuration without starting the proxy or touching the CA or cache directories.                          |
-| `oci-accelerator init`                 | Create a native starter `.env`, private `data/` and `data/cache/` directories, and a root CA in `data/ca/`. Prints the configuration path, CA certificate path and fingerprint, startup command, and Docker trust and proxy reminder. |
+| `oci-accelerator init`                 | Create a native starter `.env`, private `data/`, `data/cache/`, and `data/peers/` directories, and a root CA in `data/ca/`. Prints the configuration path, CA certificate path and fingerprint, startup command, and Docker trust and proxy reminder. |
 | `oci-accelerator init-env [--output FILE]` | Write the complete native starter configuration without creating state directories or a CA. Defaults to `.env` and refuses to overwrite an existing file. |
 | `oci-accelerator init-ca --dir DIR`     | Create a root CA in `DIR`, or validate an existing one, without starting the proxy. It ignores environment configuration and prints the certificate path and its SHA-256 fingerprint. |
 | `oci-accelerator --version`            | Print the version compiled from the root `VERSION` file and exit, without configuration or startup.                                          |
@@ -122,9 +122,11 @@ Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
    # Edit .env if you need different registries.
    ```
 
-   Initialization creates `.env`, private `data/` and `data/cache/` directories,
-   and the CA in `data/ca/`. It prints the CA certificate path and fingerprint.
-   It does not start the proxy or configure Docker.
+   Initialization creates `.env`, private `data/`, `data/cache/`, and `data/peers/`
+   directories with mode 0700, and the CA in `data/ca/`. It prints the CA certificate
+   path and fingerprint. Peering stays disabled, with `OCI_ACCELERATOR_PEER_STATE_DIR`
+   empty in `.env`. It does not create peer identity or membership files, start the
+   proxy, or configure Docker.
 
 2. Start the proxy. The example listens on `127.0.0.1:3128`, uses the initialized
    CA and cache under `data`, and logs the CA's fingerprint as `ca_sha256`:

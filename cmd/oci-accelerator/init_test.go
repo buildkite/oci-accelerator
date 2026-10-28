@@ -13,9 +13,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/buildkite/oci-accelerator/internal/peering"
 )
 
-func TestRunInitCreatesUsableLayoutAndReusesCA(t *testing.T) {
+func TestRunInitCreatesUsableLayoutAndReusesState(t *testing.T) {
 	t.Chdir(t.TempDir())
 	out, err := runStarterCommand(t, []string{"init"})
 	if err != nil {
@@ -23,7 +25,8 @@ func TestRunInitCreatesUsableLayoutAndReusesCA(t *testing.T) {
 	}
 	for path, mode := range map[string]os.FileMode{
 		".env": 0o600, "data": 0o700, "data/cache": 0o700,
-		"data/ca": 0o700, "data/ca/ca.crt": 0o644, "data/ca/ca.key": 0o600,
+		"data/peers": 0o700,
+		"data/ca":    0o700, "data/ca/ca.crt": 0o644, "data/ca/ca.key": 0o600,
 	} {
 		info, err := os.Stat(path)
 		if err != nil || info.Mode().Perm() != mode {
@@ -68,6 +71,20 @@ func TestRunInitCreatesUsableLayoutAndReusesCA(t *testing.T) {
 	if !strings.Contains(stderr.String(), `"ca_sha256":"`+fingerprint+`"`) {
 		t.Fatalf("startup did not reuse the initialized CA: %s", stderr.String())
 	}
+	entries, err := os.ReadDir("data/peers")
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("init or disabled peering created peer state files: %v, %v", entries, err)
+	}
+
+	// A peering-enabled startup can use the prepared directory to persist identity.
+	book, err := peering.OpenBook(context.Background(), "data/peers", "self.test:7443", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeID := book.Snapshot().NodeID
+	if err := book.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// Removing only the generated config allows init to reuse existing state.
 	if err := os.Remove(".env"); err != nil {
@@ -81,6 +98,17 @@ func TestRunInitCreatesUsableLayoutAndReusesCA(t *testing.T) {
 		if err != nil || !bytes.Equal(got, want) {
 			t.Fatalf("reuse replaced %s: %v", path, err)
 		}
+	}
+
+	book, err = peering.OpenBook(context.Background(), "data/peers", "self.test:7443", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := book.Snapshot().NodeID; got != nodeID {
+		t.Errorf("init replaced peer identity: got %q, want %q", got, nodeID)
+	}
+	if err := book.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -105,7 +133,7 @@ func TestRunInitWithRestrictiveUmask(t *testing.T) {
 	if _, err := runStarterCommand(t, []string{"init"}); err != nil {
 		t.Fatal(err)
 	}
-	for path, want := range map[string]os.FileMode{".env": 0o600, "data": 0o700, "data/cache": 0o700} {
+	for path, want := range map[string]os.FileMode{".env": 0o600, "data": 0o700, "data/cache": 0o700, "data/peers": 0o700} {
 		info, err := os.Stat(path)
 		if err != nil || info.Mode().Perm() != want {
 			t.Fatalf("%s mode: %v, %v, want %o", path, info, err, want)
@@ -212,7 +240,7 @@ func TestRunInitRefusesExistingEnvBeforeCreatingState(t *testing.T) {
 }
 
 func TestRunInitRejectsUnsuitableState(t *testing.T) {
-	for _, kind := range []string{"public-data", "symlink-data", "file-cache", "empty-ca", "incomplete-ca"} {
+	for _, kind := range []string{"public-data", "symlink-data", "file-cache", "public-peers", "symlink-peers", "empty-ca", "incomplete-ca"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Chdir(t.TempDir())
 			if err := os.Mkdir("data", 0o700); err != nil {
@@ -228,6 +256,12 @@ func TestRunInitRejectsUnsuitableState(t *testing.T) {
 				}
 			case "file-cache":
 				err = os.WriteFile("data/cache", []byte("keep me"), 0o600)
+			case "public-peers":
+				err = os.Mkdir("data/peers", 0o755)
+			case "symlink-peers":
+				if err = os.Mkdir("target", 0o700); err == nil {
+					err = os.Symlink("../target", "data/peers")
+				}
 			case "empty-ca", "incomplete-ca":
 				err = os.Mkdir("data/ca", 0o700)
 				if err == nil && kind == "incomplete-ca" {
@@ -244,12 +278,16 @@ func TestRunInitRejectsUnsuitableState(t *testing.T) {
 				t.Fatalf("published config after failure: %v", err)
 			}
 			switch kind {
-			case "public-data":
-				info, err := os.Stat("data")
-				if err != nil || info.Mode().Perm() != 0o755 {
-					t.Fatalf("changed data permissions: %v, %v", info, err)
+			case "public-data", "public-peers":
+				path := "data"
+				if kind == "public-peers" {
+					path = "data/peers"
 				}
-			case "symlink-data":
+				info, err := os.Stat(path)
+				if err != nil || info.Mode().Perm() != 0o755 {
+					t.Fatalf("changed %s permissions: %v, %v", path, info, err)
+				}
+			case "symlink-data", "symlink-peers":
 				entries, err := os.ReadDir("target")
 				if err != nil || len(entries) != 0 {
 					t.Fatalf("modified symlink target: %v, %v", entries, err)
