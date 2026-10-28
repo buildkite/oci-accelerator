@@ -129,7 +129,7 @@ Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
    peering stays disabled. It does not create peer identity or membership files, start
    the proxy, or configure Docker.
 
-2. Start the proxy. The example listens on `127.0.0.1:3128`, uses the initialized
+2. Start the proxy. The example listens on `127.0.0.1:5128`, uses the initialized
    CA and cache under `data`, and logs the CA's fingerprint as `ca_sha256`:
 
    ```sh
@@ -140,7 +140,7 @@ Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
    fingerprint matches `ca_sha256`. OpenSSL prints it in uppercase with colons.
 
    ```sh
-   curl --noproxy '*' --fail --output ca.crt http://127.0.0.1:3128/ca.crt
+   curl --noproxy '*' --fail --output ca.crt http://127.0.0.1:5128/ca.crt
    openssl x509 -in ca.crt -noout -fingerprint -sha256
    ```
 
@@ -158,7 +158,7 @@ Hub, GitHub Container Registry, and Amazon ECR Public for that host's Docker.
    ```json
    {
      "proxies": {
-       "https-proxy": "http://127.0.0.1:3128"
+       "https-proxy": "http://127.0.0.1:5128"
      }
    }
    ```

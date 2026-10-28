@@ -97,7 +97,7 @@ func TestPeerRejectsListenerConflictsAndStateOverlap(t *testing.T) {
 		name, listen, ca, cache, state string
 		settings                       []string
 	}{
-		{"proxy listener", "127.0.0.1:3128", filepath.Join(root, "ca"), filepath.Join(root, "cache"), filepath.Join(root, "peer"), []string{"PEER_LISTEN"}},
+		{"proxy listener", "127.0.0.1:5128", filepath.Join(root, "ca"), filepath.Join(root, "cache"), filepath.Join(root, "peer"), []string{"PEER_LISTEN"}},
 		{"metrics listener", "127.0.0.1:9090", filepath.Join(root, "ca"), filepath.Join(root, "cache"), filepath.Join(root, "peer"), []string{"PEER_LISTEN"}},
 		{"equals CA", "127.0.0.1:7443", filepath.Join(root, "state"), filepath.Join(root, "cache"), filepath.Join(root, "state"), []string{"PEER_STATE_DIR", "CA_DIR"}},
 		{"contains cache", "127.0.0.1:7443", filepath.Join(root, "ca"), filepath.Join(root, "state", "cache"), filepath.Join(root, "state"), []string{"PEER_STATE_DIR", "CACHE_DIR"}},

@@ -19,7 +19,7 @@ func TestLoadDefaults(t *testing.T) {
 	}
 
 	wantCache := Cache{Dir: filepath.Join(root, "cache"), MaxBytes: DefaultCacheMaxBytes, MaxFills: DefaultCacheMaxFills, MaxEntries: DefaultCacheMaxEntries, FillTimeout: DefaultCacheFillTimeout, FillWaitTimeout: time.Second, MutableTTL: 30 * time.Second, MutableShared: true, AuthorizationTTL: 30 * time.Second, AnonymousAuthorizationTTL: 15 * time.Minute, MaxAuthorizationEntries: 10000}
-	assertEqual(t, "Listen", c.Listen, "127.0.0.1:3128")
+	assertEqual(t, "Listen", c.Listen, "127.0.0.1:5128")
 	assertEqual(t, "CADir", c.CADir, filepath.Join(root, "ca"))
 	assertEqual(t, "Cache", c.Cache, wantCache)
 	assertEqual(t, "Peer.HintRefreshTimeout", c.Peer.HintRefreshTimeout, time.Minute)

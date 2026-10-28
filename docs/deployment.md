@@ -212,7 +212,7 @@ The image sets four environment defaults that match its own layout:
 
 | Variable                         | Image default                    | Why                                              |
 | -------------------------------- | -------------------------------- | ------------------------------------------------ |
-| `OCI_ACCELERATOR_LISTEN`         | `0.0.0.0:3128`                   | A published port must reach the proxy             |
+| `OCI_ACCELERATOR_LISTEN`         | `0.0.0.0:5128`                   | A published port must reach the proxy             |
 | `OCI_ACCELERATOR_METRICS_LISTEN` | `127.0.0.1:9090`                 | The health check probes it                        |
 | `OCI_ACCELERATOR_CA_DIR`         | `/var/lib/oci-accelerator/ca`    | The image creates and owns its parent             |
 | `OCI_ACCELERATOR_CACHE_DIR`      | `/var/lib/oci-accelerator/cache` | The image creates and owns this directory         |
@@ -224,7 +224,7 @@ intercept for you.
 address, as in the examples below, limits how the host exposes it. Any container on the same
 Docker network can still connect to the proxy directly, so keep untrusted workloads off that
 network. With `--network host`, or with a port published on all host addresses, such as
-`-p 3128:3128`, the proxy accepts connections on every host interface. In those setups, set
+`-p 5128:5128`, the proxy accepts connections on every host interface. In those setups, set
 `OCI_ACCELERATOR_LISTEN` to a loopback or private address.
 
 How image defaults interact with other settings:
@@ -257,7 +257,7 @@ to unquoted literal `KEY=value` lines and full-line comments.
 The supplied `compose.yaml` service builds the local image from the repository root and:
 
 - requires `env_file: .env.container`
-- publishes only `127.0.0.1:3128`
+- publishes only `127.0.0.1:5128`
 - keeps the root filesystem read-only, drops all capabilities, and sets `no-new-privileges`
 - uses `restart: unless-stopped` and a 40-second stop grace period, allowing for the 15-second
   `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` and metrics cleanup (increase it if you raise
@@ -335,7 +335,7 @@ docker run --rm --read-only \
 docker run -d --name oci-accelerator --restart unless-stopped \
   --env-file .env.container \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --stop-timeout 40 -p 127.0.0.1:3128:3128 \
+  --stop-timeout 40 -p 127.0.0.1:5128:5128 \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
   --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
   oci-accelerator:local
@@ -353,7 +353,7 @@ registries:
 ```sh
 docker run -d --name oci-accelerator --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --stop-timeout 40 -p 127.0.0.1:3128:3128 \
+  --stop-timeout 40 -p 127.0.0.1:5128:5128 \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
   --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
   -e OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws \
@@ -466,7 +466,7 @@ and multi-platform index annotations so you can identify the exact source commit
 
 ### Serve remote Docker hosts
 
-The default `127.0.0.1:3128` listener serves Docker on the same host. To serve remote hosts:
+The default `127.0.0.1:5128` listener serves Docker on the same host. To serve remote hosts:
 
 1. Set `OCI_ACCELERATOR_LISTEN` to an explicit private-interface address.
 2. Restrict access with network access controls and a firewall (see [security model](#security-model)).
@@ -561,7 +561,7 @@ You can configure private registries explicitly.
 
 | Environment variable   | Default          | Notes                                                                                    |
 | ---------------------- | ---------------- | ---------------------------------------------------------------------------------------- |
-| `OCI_ACCELERATOR_LISTEN` | `127.0.0.1:3128` | host:port with a nonzero numeric port. Empty or wildcard hosts bind all interfaces      |
+| `OCI_ACCELERATOR_LISTEN` | `127.0.0.1:5128` | host:port with a nonzero numeric port. Empty or wildcard hosts bind all interfaces      |
 | `OCI_ACCELERATOR_METRICS_LISTEN` | Disabled | host:port with a nonzero numeric port. Literal loopback IP required unless `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` |
 | `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` | `false` | Explicit boolean opt-in to non-loopback metrics and probe binding                       |
 
@@ -798,7 +798,7 @@ Merge this into `/etc/docker/daemon.json` without replacing unrelated settings:
 ```json
 {
   "proxies": {
-    "https-proxy": "http://127.0.0.1:3128"
+    "https-proxy": "http://127.0.0.1:5128"
   }
 }
 ```

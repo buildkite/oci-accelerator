@@ -273,7 +273,7 @@ func validatePath(setting, value string) error {
 // canonicalBindAddress validates a host:port bind address and returns its
 // canonical form, or a fixed reason when the address is invalid. The port is
 // parsed once, range-checked, and re-emitted without leading zeros. An empty
-// host (":3128") and a wildcard host ("0.0.0.0"/"[::]") are preserved verbatim
+// host (":5128") and a wildcard host ("0.0.0.0"/"[::]") are preserved verbatim
 // so they remain valid net.Listen targets. Any other host is validated and
 // canonicalized by hostport.Canonicalize, but a trailing DNS dot is preserved
 // to keep the lookup absolute. When loopback is true the address must bind an

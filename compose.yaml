@@ -3,7 +3,7 @@ services:
     build: .
     image: oci-accelerator:local
     ports:
-      - "127.0.0.1:3128:3128"
+      - "127.0.0.1:5128:5128"
     read_only: true
     cap_drop:
       - ALL

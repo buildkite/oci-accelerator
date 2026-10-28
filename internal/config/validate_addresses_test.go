@@ -3,7 +3,7 @@ package config
 import "testing"
 
 func TestListenerCanonicalization(t *testing.T) {
-	for input, want := range map[string]string{"EXAMPLE.com.:03128": "example.com.:3128", "[2001:0DB8::1]:3128": "[2001:db8::1]:3128", "127.0.0.1:03128": "127.0.0.1:3128", ":3128": ":3128", "0.0.0.0:3128": "0.0.0.0:3128", "[::]:3128": "[::]:3128"} {
+	for input, want := range map[string]string{"EXAMPLE.com.:05128": "example.com.:5128", "[2001:0DB8::1]:5128": "[2001:db8::1]:5128", "127.0.0.1:05128": "127.0.0.1:5128", ":5128": ":5128", "0.0.0.0:5128": "0.0.0.0:5128", "[::]:5128": "[::]:5128"} {
 		t.Run(input, func(t *testing.T) {
 			c, err := load("", environmentLookup(map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", "LISTEN": input}))
 			if err != nil {
@@ -15,7 +15,7 @@ func TestListenerCanonicalization(t *testing.T) {
 }
 
 func TestListenerRejectsInvalidAddresses(t *testing.T) {
-	for _, input := range []string{"Host_Underscore:3128", "a..b:3128", "example.com..:3128", "bad host:3128", "127.0.0.1:99999", "127.0.0.1:"} {
+	for _, input := range []string{"Host_Underscore:5128", "a..b:5128", "example.com..:5128", "bad host:5128", "127.0.0.1:99999", "127.0.0.1:"} {
 		t.Run(input, func(t *testing.T) {
 			_, err := load("", environmentLookup(map[string]string{"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache", "LISTEN": input}))
 			assertInvalidSetting(t, err, "", "LISTEN")
