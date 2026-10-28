@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -62,7 +63,7 @@ func TestUpstreamFailureLogsAreRedacted(t *testing.T) {
 			logs := &syncBuffer{}
 			p.logger = slog.New(slog.NewTextHandler(logs, nil))
 			if reason == "tls_certificate" {
-				p.transport.TLSClientConfig.RootCAs = nil
+				p.transport.TLSClientConfig.RootCAs = x509.NewCertPool()
 			}
 			if reason == "timeout" {
 				p.transport.ResponseHeaderTimeout = 20 * time.Millisecond

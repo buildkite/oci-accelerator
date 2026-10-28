@@ -34,7 +34,7 @@ func TestInterceptTrustFailures(t *testing.T) {
 		}
 	})
 	t.Run("origin certificate is untrusted", func(t *testing.T) {
-		_, _, client := interceptFixtureWithOriginTrust(t, origin, true, nil)
+		_, _, client := interceptFixtureWithOriginTrust(t, origin, true, x509.NewCertPool())
 		resp, err := client.Get(origin.URL + "/v2/")
 		if err != nil {
 			t.Fatal(err)

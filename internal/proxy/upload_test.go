@@ -121,6 +121,10 @@ func TestUploadStopsOnStallDisconnectAndShutdown(t *testing.T) {
 			}))
 			defer origin.Close()
 			p, addr, client := interceptFixture(t, origin, nil, true)
+			if stop == "stall" {
+				p.cfg.IdleTimeout = 150 * time.Millisecond
+			}
+
 			conn, _ := uploadConnection(t, addr, client, origin.URL)
 			_, _ = fmt.Fprintf(conn, "PATCH /upload HTTP/1.1\r\nHost: %s\r\nContent-Length: 10000\r\n\r\nx", strings.TrimPrefix(origin.URL, "https://"))
 			select {

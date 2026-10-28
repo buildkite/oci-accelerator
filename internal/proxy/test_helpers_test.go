@@ -104,13 +104,22 @@ func interceptFixtureWithOriginTrustAndLogs(t *testing.T, origin *httptest.Serve
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	u, _ := url.Parse(origin.URL)
 	registry, err := hostport.Parse(u.Host, "443")
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, addr := startSignedProxy(t, config.Config{Registries: []hostport.HostPort{registry}, MaxConnections: 32, DialTimeout: time.Second, TLSHandshakeTimeout: time.Second, ResponseHeaderTimeout: 300 * time.Millisecond, IdleTimeout: 150 * time.Millisecond}, signer, logs)
+
+	// Deadline tests set their own budgets. DialTimeout cannot be disabled with
+	// zero, so let the test runner's deadline bound dialing when one exists.
+	dialTimeout := time.Duration(1<<63 - 1)
+	if deadline, ok := t.Deadline(); ok {
+		dialTimeout = time.Until(deadline)
+	}
+	p, addr := startSignedProxy(t, config.Config{Registries: []hostport.HostPort{registry}, MaxConnections: 32, DialTimeout: dialTimeout}, signer, logs)
 	p.transport.TLSClientConfig.RootCAs = originRoots
+
 	clientRoots := x509.NewCertPool()
 	if trustClient {
 		pemBytes, err := os.ReadFile(signer.CertificatePath())
@@ -121,10 +130,11 @@ func interceptFixtureWithOriginTrustAndLogs(t *testing.T, origin *httptest.Serve
 			t.Fatal("append proxy CA")
 		}
 	}
+
 	proxyURL, _ := url.Parse("http://" + addr)
 	tr := &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: clientRoots}, DisableKeepAlives: true}
 	t.Cleanup(tr.CloseIdleConnections)
-	return p, proxyAddress{addr}, &http.Client{Transport: tr, Timeout: 2 * time.Second}
+	return p, proxyAddress{addr}, &http.Client{Transport: tr}
 }
 
 // routeDefaultPort makes the proxy reach server as https://example.com on the

@@ -402,6 +402,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = service.close() })
 		done, cleanup := service.done, service.close
 		close(failure)
 		select {
@@ -422,12 +423,13 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 	t.Run("incomplete TLS handshake", func(t *testing.T) {
 		root := t.TempDir()
 		signer := openPeerTestCA(t, filepath.Join(root, "ca"))
-		listener := newTestListener(t)
+		listener := &nextAcceptListener{Listener: newTestListener(t), nextAccept: make(chan struct{})}
 		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state"), HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: 10 * time.Millisecond}
 		service, err := startPeering(context.Background(), cfg, signer, newPeerTestStore(t), slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = service.close() })
 		cleanup := service.close
 		conn, err := net.Dial("tcp", listener.Addr().String())
 		if err != nil {
@@ -437,6 +439,15 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		if _, err := conn.Write([]byte{0x16}); err != nil {
 			t.Fatal(err)
 		}
+
+		// net/http registers StateNew before accepting another connection.
+		// A client write alone does not prove that the server owns the socket.
+		select {
+		case <-listener.nextAccept:
+		case <-time.After(time.Second):
+			t.Fatal("server did not register the stalled TLS connection")
+		}
+
 		if err := cleanup(); err == nil || !strings.Contains(err.Error(), "peer server cleanup failed") {
 			t.Fatalf("cleanup error = %v, want deadline failure", err)
 		}
@@ -445,6 +456,8 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		}
 		if _, err := conn.Read(make([]byte, 1)); err == nil {
 			t.Fatal("stalled TLS connection remained open")
+		} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			t.Fatalf("stalled TLS connection timed out instead of closing: %v", err)
 		}
 		book, err := peering.OpenBook(context.Background(), cfg.Peer.StateDir, cfg.Peer.Advertise, nil, nil)
 		if err != nil {
@@ -628,6 +641,21 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 			}
 		})
 	}
+}
+
+type nextAcceptListener struct {
+	net.Listener
+	nextAccept chan struct{}
+	calls      int
+}
+
+func (l *nextAcceptListener) Accept() (net.Conn, error) {
+	if l.calls == 1 {
+		close(l.nextAccept)
+	}
+	l.calls++
+
+	return l.Listener.Accept()
 }
 
 func newPeerTestStore(t *testing.T) *cache.Store {

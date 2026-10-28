@@ -189,12 +189,28 @@ func TestMetricsCountsAutomaticTransportRetries(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		t.Run(method, func(t *testing.T) {
 			var calls atomic.Int32
+			var mu sync.Mutex
+			var firstRemote string
 			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get("Authorization") != "Bearer retry-token" {
 					t.Error("retry lost authorization")
 				}
-				if calls.Add(1) == 2 {
-					// The GET on a reused upstream connection is received but
+
+				n := calls.Add(1)
+				mu.Lock()
+				if n == 1 {
+					firstRemote = r.RemoteAddr
+				}
+				reused := r.RemoteAddr == firstRemote
+				mu.Unlock()
+
+				if n == 2 {
+					if !reused {
+						t.Error("second request did not reuse the upstream connection")
+						return
+					}
+
+					// The request on a reused upstream connection is received but
 					// gets no response. Transport must replay it on a new one.
 					conn, _, err := w.(http.Hijacker).Hijack()
 					if err != nil {
@@ -204,6 +220,7 @@ func TestMetricsCountsAutomaticTransportRetries(t *testing.T) {
 					conn.Close()
 					return
 				}
+
 				io.WriteString(w, "retry body")
 			}))
 			defer origin.Close()
@@ -225,6 +242,7 @@ func TestMetricsCountsAutomaticTransportRetries(t *testing.T) {
 					t.Fatalf("status=%d body=%q err=%v", resp.StatusCode, body, err)
 				}
 			}
+
 			awaitNoActiveRequests(t, p)
 			wantAttempts := uint64(3)
 			if method == http.MethodHead {

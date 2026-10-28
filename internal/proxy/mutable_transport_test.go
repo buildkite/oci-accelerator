@@ -399,6 +399,9 @@ func TestMutableCoalescesCompleteResponses(t *testing.T) {
 		io.WriteString(w, "unexpected duplicate")
 	}))
 	defer origin.Close()
+	releaseCapture := safeRelease(release)
+	defer releaseCapture()
+
 	tr := mutableTransportFixture(t, origin)
 
 	req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "Bearer shared")
@@ -411,7 +414,7 @@ func TestMutableCoalescesCompleteResponses(t *testing.T) {
 	}
 	waitMutableWaiters(t, tr, 8)
 
-	close(release)
+	releaseCapture()
 	for range 9 {
 		got := <-results
 		if got.err != nil || got.body != "first complete" {
@@ -440,13 +443,8 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 				io.WriteString(w, "independent")
 			}))
 			defer origin.Close()
-			defer func() {
-				select {
-				case <-release:
-				default:
-					close(release)
-				}
-			}()
+			releaseCapture := safeRelease(release)
+			defer releaseCapture()
 
 			tr := mutableTransportFixture(t, origin)
 			if scenario == "wait timeout" {
@@ -498,7 +496,7 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 			}
 
 			if scenario != "leader canceled" {
-				close(release)
+				releaseCapture()
 			}
 			got = <-leader
 			if scenario == "leader canceled" {
@@ -602,6 +600,10 @@ func TestMutableObservedDenialFencesOlderSuccess(t *testing.T) {
 				io.WriteString(w, "fresh upstream decision")
 			}))
 			defer origin.Close()
+			finishLeader, finishSecond := safeRelease(releaseLeader), safeRelease(releaseSecond)
+			defer finishLeader()
+			defer finishSecond()
+
 			tr := mutableTransportFixture(t, origin)
 			tr.fillWaitTimeout = 0
 
@@ -614,18 +616,18 @@ func TestMutableObservedDenialFencesOlderSuccess(t *testing.T) {
 			go func() { second <- readMutable(tr, req.Clone(req.Context())) }()
 			waitFor(t, secondStarted, "independent upstream check")
 			if tc.afterComplete {
-				close(releaseLeader)
+				finishLeader()
 				if got := <-leader; got.err != nil || got.body != "older approval" {
 					t.Fatalf("older delivery = %+v", got)
 				}
 			}
 
-			close(releaseSecond)
+			finishSecond()
 			if got := <-second; got.err != nil || got.body != "fresh upstream decision" {
 				t.Fatalf("independent check = %+v", got)
 			}
 			if !tc.afterComplete {
-				close(releaseLeader)
+				finishLeader()
 				if got := <-leader; got.err != nil || got.body != "older approval" {
 					t.Fatalf("older delivery = %+v", got)
 				}
@@ -696,6 +698,9 @@ func TestMutableExpiryStartsAtHeadersNotBodyCompletion(t *testing.T) {
 		io.WriteString(w, "fresh")
 	}))
 	defer origin.Close()
+	releaseCapture := safeRelease(release)
+	defer releaseCapture()
+
 	tr := mutableTransportFixture(t, origin)
 	tr.mutable.ttl = 20 * time.Millisecond
 
@@ -706,7 +711,7 @@ func TestMutableExpiryStartsAtHeadersNotBodyCompletion(t *testing.T) {
 	}
 
 	time.Sleep(60 * time.Millisecond)
-	close(release)
+	releaseCapture()
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil || string(body) != "slow" {
@@ -735,6 +740,9 @@ func TestMutableCoalescingDoesNotShareUncacheableResponses(t *testing.T) {
 				io.WriteString(w, "independently approved")
 			}))
 			defer origin.Close()
+			releaseCapture := safeRelease(release)
+			defer releaseCapture()
+
 			tr := mutableTransportFixture(t, origin)
 			req := authorizationRequest(t, origin.URL+"/v2/_catalog", "")
 			leader, follower := make(chan mutableResult, 1), make(chan mutableResult, 1)
@@ -743,7 +751,7 @@ func TestMutableCoalescingDoesNotShareUncacheableResponses(t *testing.T) {
 			go func() { follower <- readMutable(tr, req.Clone(req.Context())) }()
 			waitMutableWaiters(t, tr, 1)
 
-			close(release)
+			releaseCapture()
 			if got := <-leader; got.err != nil || got.body != "first request only" {
 				t.Fatalf("leading response = %+v", got)
 			}

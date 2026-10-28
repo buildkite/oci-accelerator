@@ -382,7 +382,9 @@ func TestInterceptUpstreamIdleBodyStallErrors(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer origin.Close()
-	_, _, client := interceptFixture(t, origin, nil, true)
+	p, _, client := interceptFixture(t, origin, nil, true)
+	p.cfg.IdleTimeout = 150 * time.Millisecond
+
 	start := time.Now()
 	resp, err := client.Get(origin.URL + "/stalled")
 	if err != nil {
