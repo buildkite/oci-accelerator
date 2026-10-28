@@ -257,20 +257,27 @@ func TestProcessStopsOwnedDescendants(t *testing.T) {
 	pidfile := filepath.Join(t.TempDir(), "child.pid")
 	p := startProcess(t, fmt.Sprintf("sh -c %s", shell("trap 'wait; exit' TERM; sleep 60 & echo $! >"+shell(pidfile)+"; wait")))
 	deadline := time.Now().Add(time.Second)
+	var child int
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(pidfile); err == nil {
-			break
+		b, err := os.ReadFile(pidfile)
+		if err == nil {
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(b)))
+			if parseErr == nil && pid > 1 {
+				child = pid
+				break
+			}
+		}
+		select {
+		case <-p.done:
+			t.Fatalf("process exited before child PID handshake: %v: %s", p.waitErr, p.diagnostics())
+		default:
 		}
 		time.Sleep(time.Millisecond)
 	}
-	b, err := os.ReadFile(pidfile)
-	if err != nil {
-		t.Fatal(err)
+	if child == 0 {
+		t.Fatalf("process did not publish a valid child PID: %s", p.diagnostics())
 	}
-	child, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	p.Stop(t)
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

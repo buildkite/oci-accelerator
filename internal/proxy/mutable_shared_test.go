@@ -5,10 +5,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/buildkite/oci-accelerator/internal/cache/cachetest"
 )
 
 func TestMutableSharedResponsesRequireIndependentRepositoryApproval(t *testing.T) {
@@ -178,44 +182,60 @@ func TestMutableSharedApprovalServesImmutableLocalObjects(t *testing.T) {
 func TestMutableSharedResponseAndGrantHaveIndependentExpiry(t *testing.T) {
 	for _, expires := range []string{"grant", "response"} {
 		t.Run(expires, func(t *testing.T) {
-			var calls atomic.Int32
-			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				io.WriteString(w, fmt.Sprint(calls.Add(1)))
-			}))
-			defer origin.Close()
-			tr := mutableTransportFixture(t, origin)
-			tr.mutableShared = true
-			tr.mutable.ttl = time.Minute
-			tr.authorization.authorizationTTL = time.Minute
-			if expires == "grant" {
-				tr.authorization.authorizationTTL = 500 * time.Millisecond
-			} else {
-				tr.mutable.ttl = 500 * time.Millisecond
+			store, err := cachetest.Open(filepath.Join(t.TempDir(), "cache"), 1<<20)
+			if err != nil {
+				t.Fatal(err)
 			}
+			t.Cleanup(func() {
+				if err := store.Close(); err != nil {
+					t.Error(err)
+				}
+			})
 
-			req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "Bearer reader")
-			if got := readMutable(tr, req); got.err != nil || got.body != "1" {
-				t.Fatalf("initial capture: %+v", got)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				var calls atomic.Int32
+				origin := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					io.WriteString(w, fmt.Sprint(calls.Add(1)))
+				}))
 
-			time.Sleep(300 * time.Millisecond)
-			if got := readMutable(tr, req); got.err != nil || got.body != "1" || calls.Load() != 1 {
-				t.Fatalf("early hit: %+v calls=%d", got, calls.Load())
-			}
+				upstream := origin.Client().Transport.(*http.Transport)
+				// The in-memory TLS dialer captures this config before Clone.
+				upstream.TLSClientConfig.InsecureSkipVerify = false
+				upstream.TLSClientConfig.ServerName = "example.com"
+				tr := registryTransport{upstream: upstream.Clone(), cache: store, metrics: newMetrics(), mutableShared: true,
+					mutable: newMutableCache(time.Minute), authorization: newAuthorizationCache(time.Minute, time.Minute, 100)}
+				defer tr.upstream.CloseIdleConnections()
 
-			time.Sleep(300 * time.Millisecond)
-			if got := readMutable(tr, req); got.err != nil || got.body != "2" || calls.Load() != 2 {
-				t.Fatalf("hit renewed %s expiry: %+v calls=%d", expires, got, calls.Load())
-			}
+				if expires == "grant" {
+					tr.authorization.authorizationTTL = 500 * time.Millisecond
+				} else {
+					tr.mutable.ttl = 500 * time.Millisecond
+				}
 
-			// Reauthorization does not replace a still-fresh shared response.
-			want := "2"
-			if expires == "grant" {
-				want = "1"
-			}
-			if got := readMutable(tr, req); got.err != nil || got.body != want || calls.Load() != 2 {
-				t.Fatalf("independent %s expiry: %+v calls=%d", expires, got, calls.Load())
-			}
+				req := authorizationRequest(t, "https://example.com/v2/team/image/manifests/latest", "Bearer reader")
+				if got := readMutable(tr, req); got.err != nil || got.body != "1" {
+					t.Fatalf("initial capture: %+v", got)
+				}
+
+				time.Sleep(300 * time.Millisecond)
+				if got := readMutable(tr, req); got.err != nil || got.body != "1" || calls.Load() != 1 {
+					t.Fatalf("early hit: %+v calls=%d", got, calls.Load())
+				}
+
+				time.Sleep(300 * time.Millisecond)
+				if got := readMutable(tr, req); got.err != nil || got.body != "2" || calls.Load() != 2 {
+					t.Fatalf("hit renewed %s expiry: %+v calls=%d", expires, got, calls.Load())
+				}
+
+				// Reauthorization does not replace a still-fresh shared response.
+				want := "2"
+				if expires == "grant" {
+					want = "1"
+				}
+				if got := readMutable(tr, req); got.err != nil || got.body != want || calls.Load() != 2 {
+					t.Fatalf("independent %s expiry: %+v calls=%d", expires, got, calls.Load())
+				}
+			})
 		})
 	}
 }

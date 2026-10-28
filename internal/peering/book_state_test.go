@@ -66,7 +66,11 @@ func TestOpenBookRejectsInvalidState(t *testing.T) {
 func TestOpenBookRejectsUnsafeAndUnknownFiles(t *testing.T) {
 	for name, setup := range map[string]func(string) error{
 		"state permissions": func(dir string) error {
-			return os.WriteFile(filepath.Join(dir, bookStateName), []byte(`{"version":3,"peers":{}}`), 0o644)
+			path := filepath.Join(dir, bookStateName)
+			if err := os.WriteFile(path, []byte(`{"version":3,"peers":{}}`), 0o600); err != nil {
+				return err
+			}
+			return os.Chmod(path, 0o644)
 		},
 		"state symlink": func(dir string) error { return os.Symlink("missing", filepath.Join(dir, bookStateName)) },
 		"unknown":       func(dir string) error { return os.WriteFile(filepath.Join(dir, "other"), nil, 0o600) },

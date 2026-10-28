@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/ca"
@@ -361,18 +362,31 @@ func TestEntryHandlerBoundsTransfersAndReleasesPinsOnCancellation(t *testing.T) 
 	store, meta := entryTestStore(t, []byte("blocked entry"))
 	handler := NewEntryHandler(testIDA, store, time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	started := make(chan struct{}, 8)
 	finished := make(chan any, 8)
+	var workers sync.WaitGroup
+	var writers []*entryBlockingWriter
+	t.Cleanup(func() {
+		cancel()
+		for _, w := range writers {
+			_ = w.SetWriteDeadline(time.Now())
+		}
+		workers.Wait()
+	})
+
 	for range 8 {
 		w := &entryBlockingWriter{ResponseRecorder: httptest.NewRecorder(), started: started, canceled: make(chan struct{})}
+		writers = append(writers, w)
 		r := httptest.NewRequest(http.MethodPost, entryPath, bytes.NewReader(entryTestJSON(t, meta))).WithContext(ctx)
 		r.Header.Set("Content-Type", "application/json")
+		workers.Add(1)
 		go func() {
+			defer workers.Done()
 			defer func() { finished <- recover() }()
 			handler.ServeHTTP(w, r)
 		}()
 	}
+
 	for range 8 {
 		select {
 		case <-started:
@@ -383,6 +397,7 @@ func TestEntryHandlerBoundsTransfersAndReleasesPinsOnCancellation(t *testing.T) 
 	if got := store.Stats().Readers; got != 8 {
 		t.Fatalf("pinned readers = %d", got)
 	}
+
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, entryPath, bytes.NewReader(entryTestJSON(t, meta)))
 	r.Header.Set("Content-Type", "application/json")
@@ -390,6 +405,7 @@ func TestEntryHandlerBoundsTransfersAndReleasesPinsOnCancellation(t *testing.T) 
 	if w.Code != 503 || w.Header().Get(entryNodeHeader) != testIDA || w.Header().Get("Connection") != "close" {
 		t.Fatalf("busy = %d, %v", w.Code, w.Header())
 	}
+
 	cancel()
 	for range 8 {
 		select {
@@ -404,6 +420,7 @@ func TestEntryHandlerBoundsTransfersAndReleasesPinsOnCancellation(t *testing.T) 
 	if got := store.Stats().Readers; got != 0 {
 		t.Fatalf("leaked readers = %d", got)
 	}
+
 	// Slots are reusable, and data connections are explicitly closed.
 	server := httptest.NewTLSServer(handler)
 	defer server.Close()
@@ -419,27 +436,47 @@ func TestEntryHandlerBoundsTransfersAndReleasesPinsOnCancellation(t *testing.T) 
 }
 
 func TestEntryHandlerDeadlineReleasesBlockedReader(t *testing.T) {
-	store, meta := entryTestStore(t, []byte("deadline entry"))
-	handler := NewEntryHandler(testIDA, store, 50*time.Millisecond)
-	w := &entryBlockingWriter{ResponseRecorder: httptest.NewRecorder(), started: make(chan struct{}, 1), canceled: make(chan struct{})}
-	r := httptest.NewRequest(http.MethodPost, entryPath, bytes.NewReader(entryTestJSON(t, meta)))
-	r.Header.Set("Content-Type", "application/json")
-	finished := make(chan any, 1)
-	go func() {
-		defer func() { finished <- recover() }()
-		handler.ServeHTTP(w, r)
-	}()
-	select {
-	case recovered := <-finished:
-		if recovered != http.ErrAbortHandler {
-			t.Fatalf("deadline abort = %v", recovered)
+	synctest.Test(t, func(t *testing.T) {
+		store, meta := entryTestStore(t, []byte("deadline entry"))
+		handler := NewEntryHandler(testIDA, store, 50*time.Millisecond)
+		started := make(chan struct{}, 1)
+		w := &entryBlockingWriter{ResponseRecorder: httptest.NewRecorder(), started: started, canceled: make(chan struct{})}
+		ctx, cancel := context.WithCancel(context.Background())
+		r := httptest.NewRequest(http.MethodPost, entryPath, bytes.NewReader(entryTestJSON(t, meta))).WithContext(ctx)
+		r.Header.Set("Content-Type", "application/json")
+		finished := make(chan any, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer func() { finished <- recover() }()
+			handler.ServeHTTP(w, r)
+		}()
+		t.Cleanup(func() {
+			cancel()
+			_ = w.SetWriteDeadline(time.Now())
+			<-done
+		})
+
+		select {
+		case <-started:
+		case recovered := <-finished:
+			t.Fatalf("handler returned before blocking write: %v", recovered)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("deadline did not release blocked writer")
-	}
-	if got := store.Stats().Readers; got != 0 {
-		t.Fatalf("readers after deadline = %d", got)
-	}
+
+		time.Sleep(50 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case recovered := <-finished:
+			if recovered != http.ErrAbortHandler {
+				t.Fatalf("deadline abort = %v", recovered)
+			}
+		default:
+			t.Fatal("deadline did not release blocked writer")
+		}
+		if got := store.Stats().Readers; got != 0 {
+			t.Fatalf("readers after deadline = %d", got)
+		}
+	})
 }
 
 func TestEntryHandlerOverridesControlWriteDeadline(t *testing.T) {

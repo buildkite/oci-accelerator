@@ -659,6 +659,8 @@ func TestDiscoveryInboundMoveRequiresVerification(t *testing.T) {
 		id1, id5 := testNodeID(1), testNodeID(5)
 		var log requestLog
 		release := make(chan struct{})
+		moveStarted := make(chan struct{})
+		releaseMove := make(chan struct{})
 		d := cooldownDiscovery(t, func(r *http.Request) (*http.Response, error) {
 			log.add(r.URL.Host)
 			switch r.URL.Host {
@@ -672,6 +674,12 @@ func TestDiscoveryInboundMoveRequiresVerification(t *testing.T) {
 			case "x.test:1":
 				return nil, context.DeadlineExceeded
 			case "w.test:4":
+				close(moveStarted)
+				select {
+				case <-releaseMove:
+				case <-r.Context().Done():
+					return nil, r.Context().Err()
+				}
 				return messageResponse(Message{Address: "w.test:4", NodeID: id1}), nil
 			}
 			return nil, fmt.Errorf("unexpected request to %s", r.URL.Host)
@@ -691,10 +699,12 @@ func TestDiscoveryInboundMoveRequiresVerification(t *testing.T) {
 		if response := cooldownRequest(d, Message{Address: "w.test:4", NodeID: id1}); response.Code != http.StatusOK {
 			t.Fatalf("inbound move status = %d", response.Code)
 		}
+		<-moveStarted
 		want := map[string]string{"a.test:5": id5, "w.test:4": id1}
 		if got := d.book.Snapshot().Peers; !reflect.DeepEqual(got, original) {
 			t.Fatalf("unverified inbound move changed membership: %v", got)
 		}
+		close(releaseMove)
 		synctest.Wait()
 		if got := d.book.Snapshot().Peers; !reflect.DeepEqual(got, want) {
 			t.Fatalf("verified move = %v, want %v", got, want)
@@ -806,16 +816,18 @@ func TestDiscoveryVerificationStateBoundedUnderChurn(t *testing.T) {
 				t.Fatalf("failed probes changed book to %v", got)
 			}
 			d.mu.Lock()
-			if len(d.pending) != MaxPeers || len(d.known) != MaxPeers+len(original) {
-				t.Fatalf("pending = %d, known = %d, want %d and %d", len(d.pending), len(d.known), MaxPeers, MaxPeers+len(original))
-			}
+			pending, known := len(d.pending), len(d.known)
 			d.mu.Unlock()
+			if pending != MaxPeers || known != MaxPeers+len(original) {
+				t.Fatalf("pending = %d, known = %d, want %d and %d", pending, known, MaxPeers, MaxPeers+len(original))
+			}
+
 			// Exhaust the three-attempt budget and let the five-minute
 			// cooldown expire, releasing the queue without fresh gossip.
 			time.Sleep(8 * time.Minute)
 			synctest.Wait()
 			d.mu.Lock()
-			pending, known := len(d.pending), len(d.known)
+			pending, known = len(d.pending), len(d.known)
 			d.mu.Unlock()
 			if pending != 0 || known != len(original) {
 				t.Fatalf("expired failed hints retained pending=%d known=%d", pending, known)
@@ -840,8 +852,8 @@ func TestDiscoveryMTLSNodesConvergeAfterRelocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := func(dir string) *mtlsNode {
-		n := &mtlsNode{dir: dir, server: httptest.NewUnstartedServer(nil)}
+	start := func(dir string, server *httptest.Server) *mtlsNode {
+		n := &mtlsNode{dir: dir, server: server}
 		n.address = n.server.Listener.Addr().String()
 		if n.book, err = OpenBook(context.Background(), dir, n.address, nil, nil); err != nil {
 			t.Fatal(err)
@@ -863,7 +875,9 @@ func TestDiscoveryMTLSNodesConvergeAfterRelocation(t *testing.T) {
 		t.Cleanup(n.stop)
 		return n
 	}
-	a, b, c := start(bookTestDir(t)), start(bookTestDir(t)), start(bookTestDir(t))
+	a := start(bookTestDir(t), httptest.NewUnstartedServer(nil))
+	b := start(bookTestDir(t), httptest.NewUnstartedServer(nil))
+	c := start(bookTestDir(t), httptest.NewUnstartedServer(nil))
 	if _, err := a.book.AddSeeds([]string{b.address}); err != nil {
 		t.Fatal(err)
 	}
@@ -892,8 +906,10 @@ func TestDiscoveryMTLSNodesConvergeAfterRelocation(t *testing.T) {
 	// C restarts at a new address with its persisted identity and contacts
 	// only A. B must replace C's unreachable old address with the new one.
 	oldAddress := c.address
+	replacement := httptest.NewUnstartedServer(nil)
+	t.Cleanup(replacement.Close)
 	c.stop()
-	moved := start(c.dir)
+	moved := start(c.dir, replacement)
 	ids[moved] = ids[c]
 	if moved.address == oldAddress {
 		t.Fatalf("relocated node reused address %s", oldAddress)

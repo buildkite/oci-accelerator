@@ -2,11 +2,24 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	// Clear only application settings before tests inject their own overrides.
+	for _, setting := range environmentSettings(&rawConfig{}) {
+		if err := os.Unsetenv(environmentPrefix + setting.name); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+
+	os.Exit(m.Run())
+}
 
 func environmentLookup(values map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) {

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -228,44 +229,54 @@ func TestOpenBookPrioritizesKnownCollisionAddresses(t *testing.T) {
 func TestOpenBookBootstrapBudgetAndCancellation(t *testing.T) {
 	for _, cancelParent := range []bool{false, true} {
 		t.Run(map[bool]string{false: "budget", true: "shutdown"}[cancelParent], func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			var active atomic.Int32
-			var calls atomic.Int32
-			var deadline time.Time
-			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				active.Add(1)
-				defer active.Add(-1)
-				if calls.Add(1) == 1 {
-					deadline, _ = r.Context().Deadline()
-					if cancelParent {
-						cancel()
+			dir := bookTestDir(t)
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var active atomic.Int32
+				var calls atomic.Int32
+				var started, deadline time.Time
+				client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					active.Add(1)
+					defer active.Add(-1)
+					if calls.Add(1) == 1 {
+						started = time.Now()
+						deadline, _ = r.Context().Deadline()
+						if cancelParent {
+							cancel()
+						}
+					}
+					<-r.Context().Done()
+					if !cancelParent && !errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+						t.Errorf("bootstrap request ended without timing out: %v", r.Context().Err())
+					}
+					return nil, r.Context().Err()
+				})}
+
+				book, err := OpenBook(ctx, dir, "self.test:1", []string{"a.test:1", "b.test:1", "c.test:1", "d.test:1", "e.test:1"}, client)
+				if book != nil {
+					defer book.Close()
+				}
+				if active.Load() != 0 || calls.Load() == 0 || calls.Load() > 4 {
+					t.Fatalf("requests not bounded and joined: active=%d, total=%d", active.Load(), calls.Load())
+				}
+
+				if cancelParent {
+					if !errors.Is(err, context.Canceled) || book != nil {
+						t.Fatalf("canceled startup = %v, %v", book, err)
+					}
+				} else {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if budget := deadline.Sub(started); budget != 5*time.Second {
+						t.Fatalf("request deadline = %v from first request", budget)
+					}
+					if elapsed := time.Since(started); elapsed != 5*time.Second {
+						t.Fatalf("bootstrap completion = %v from first request", elapsed)
 					}
 				}
-				<-r.Context().Done()
-				return nil, r.Context().Err()
-			})}
-			started := time.Now()
-			book, err := OpenBook(ctx, bookTestDir(t), "self.test:1", []string{"a.test:1", "b.test:1", "c.test:1", "d.test:1", "e.test:1"}, client)
-			if cancelParent {
-				if !errors.Is(err, context.Canceled) || book != nil {
-					t.Fatalf("canceled startup = %v, %v", book, err)
-				}
-			} else {
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer book.Close()
-				if elapsed := time.Since(started); elapsed > 6*time.Second {
-					t.Fatalf("bootstrap exceeded overall budget: %v", elapsed)
-				}
-				if budget := deadline.Sub(started); budget < 4*time.Second || budget > 6*time.Second {
-					t.Fatalf("request deadline = %v from startup", budget)
-				}
-			}
-			if active.Load() != 0 || calls.Load() > 4 {
-				t.Fatalf("requests not bounded and joined: active=%d, total=%d", active.Load(), calls.Load())
-			}
+			})
 		})
 	}
 }

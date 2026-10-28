@@ -10,13 +10,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/buildkite/oci-accelerator/internal/cache"
+	"github.com/buildkite/oci-accelerator/internal/cache/cachetest"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
@@ -399,6 +402,9 @@ func TestMutableCoalescesCompleteResponses(t *testing.T) {
 		io.WriteString(w, "unexpected duplicate")
 	}))
 	defer origin.Close()
+	releaseCapture := safeRelease(release)
+	defer releaseCapture()
+
 	tr := mutableTransportFixture(t, origin)
 
 	req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "Bearer shared")
@@ -411,7 +417,7 @@ func TestMutableCoalescesCompleteResponses(t *testing.T) {
 	}
 	waitMutableWaiters(t, tr, 8)
 
-	close(release)
+	releaseCapture()
 	for range 9 {
 		got := <-results
 		if got.err != nil || got.body != "first complete" {
@@ -427,21 +433,22 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 	for _, scenario := range []string{"follower canceled", "leader canceled", "wait timeout", "waiting disabled"} {
 		t.Run(scenario, func(t *testing.T) {
 			var calls atomic.Int32
-			started, release := make(chan struct{}), make(chan struct{})
+			release := make(chan struct{})
 			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if calls.Add(1) == 1 {
 					w.Write([]byte("leader"))
 					w.(http.Flusher).Flush()
-					close(started)
-					select {
-					case <-release:
-					case <-r.Context().Done():
-					}
+					// Do not turn cancellation into a normal handler return and
+					// clean chunked EOF that can race the client's read error.
+					<-release
 					return
 				}
 				io.WriteString(w, "independent")
 			}))
 			defer origin.Close()
+			releaseCapture := safeRelease(release)
+			defer releaseCapture()
+
 			tr := mutableTransportFixture(t, origin)
 			if scenario == "wait timeout" {
 				tr.fillWaitTimeout = 20 * time.Millisecond
@@ -452,9 +459,22 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 			req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "")
 			leaderCtx, cancelLeader := context.WithCancel(context.Background())
 			defer cancelLeader()
+			resp, err := tr.RoundTrip(req.Clone(leaderCtx))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			prefix := make([]byte, len("leader"))
+			if _, err := io.ReadFull(resp.Body, prefix); err != nil || string(prefix) != "leader" {
+				t.Fatalf("leader prefix = %q, err=%v", prefix, err)
+			}
+
 			leader := make(chan mutableResult, 1)
-			go func() { leader <- readMutable(tr, req.Clone(leaderCtx)) }()
-			waitFor(t, started, "leader headers")
+			go func() {
+				body, err := io.ReadAll(resp.Body)
+				leader <- mutableResult{body: string(prefix) + string(body), err: err}
+			}()
 
 			followerCtx, cancelFollower := context.WithCancel(context.Background())
 			defer cancelFollower()
@@ -478,11 +498,13 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 				t.Fatalf("fallback = %+v, calls=%d", got, calls.Load())
 			}
 
-			close(release)
+			if scenario != "leader canceled" {
+				releaseCapture()
+			}
 			got = <-leader
 			if scenario == "leader canceled" {
-				if got.err == nil {
-					t.Fatal("canceled leader completed successfully")
+				if !errors.Is(got.err, context.Canceled) || got.body != "leader" {
+					t.Fatalf("canceled leader = %+v", got)
 				}
 
 				got = readMutable(tr, req)
@@ -581,6 +603,10 @@ func TestMutableObservedDenialFencesOlderSuccess(t *testing.T) {
 				io.WriteString(w, "fresh upstream decision")
 			}))
 			defer origin.Close()
+			finishLeader, finishSecond := safeRelease(releaseLeader), safeRelease(releaseSecond)
+			defer finishLeader()
+			defer finishSecond()
+
 			tr := mutableTransportFixture(t, origin)
 			tr.fillWaitTimeout = 0
 
@@ -593,18 +619,18 @@ func TestMutableObservedDenialFencesOlderSuccess(t *testing.T) {
 			go func() { second <- readMutable(tr, req.Clone(req.Context())) }()
 			waitFor(t, secondStarted, "independent upstream check")
 			if tc.afterComplete {
-				close(releaseLeader)
+				finishLeader()
 				if got := <-leader; got.err != nil || got.body != "older approval" {
 					t.Fatalf("older delivery = %+v", got)
 				}
 			}
 
-			close(releaseSecond)
+			finishSecond()
 			if got := <-second; got.err != nil || got.body != "fresh upstream decision" {
 				t.Fatalf("independent check = %+v", got)
 			}
 			if !tc.afterComplete {
-				close(releaseLeader)
+				finishLeader()
 				if got := <-leader; got.err != nil || got.body != "older approval" {
 					t.Fatalf("older delivery = %+v", got)
 				}
@@ -620,44 +646,61 @@ func TestMutableObservedDenialFencesOlderSuccess(t *testing.T) {
 func TestMutableExpiryIsCappedByAuthorization(t *testing.T) {
 	for _, limiting := range []string{"mutable", "anonymous", "credentialed"} {
 		t.Run(limiting, func(t *testing.T) {
-			var calls atomic.Int32
-			origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				io.WriteString(w, fmt.Sprint(calls.Add(1)))
-			}))
-			defer origin.Close()
-			tr := mutableTransportFixture(t, origin)
-			tr.mutable.ttl = time.Hour
-			tr.authorization = newAuthorizationCache(time.Hour, time.Hour, 10)
-			req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "")
-			const ttl = 200 * time.Millisecond
-			switch limiting {
-			case "mutable":
-				tr.mutable.ttl = ttl
-			case "anonymous":
-				tr.authorization.anonymousTTL = ttl
-			case "credentialed":
-				tr.authorization.authorizationTTL = ttl
-				req.Header.Set("Authorization", "Bearer a")
+			store, err := cachetest.Open(filepath.Join(t.TempDir(), "cache"), 1<<20)
+			if err != nil {
+				t.Fatal(err)
 			}
-
-			for range 2 {
-				got := readMutable(tr, req.Clone(req.Context()))
-				if got.err != nil || got.body != "1" {
-					t.Fatalf("initial reuse = %+v", got)
+			t.Cleanup(func() {
+				if err := store.Close(); err != nil {
+					t.Error(err)
 				}
-			}
+			})
 
-			canceled, cancel := context.WithCancel(req.Context())
-			cancel()
-			if got := readMutable(tr, req.Clone(canceled)); !errors.Is(got.err, context.Canceled) {
-				t.Fatalf("canceled request borrowed a cached response: %+v", got)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				var calls atomic.Int32
+				origin := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					io.WriteString(w, fmt.Sprint(calls.Add(1)))
+				}))
 
-			time.Sleep(2 * ttl)
-			got := readMutable(tr, req.Clone(req.Context()))
-			if got.err != nil || got.body != "2" || calls.Load() != 2 {
-				t.Fatalf("expired response was reused: %+v calls=%d", got, calls.Load())
-			}
+				upstream := origin.Client().Transport.(*http.Transport)
+				// The in-memory TLS dialer captures this config before Clone.
+				upstream.TLSClientConfig.InsecureSkipVerify = false
+				upstream.TLSClientConfig.ServerName = "example.com"
+				tr := registryTransport{upstream: upstream.Clone(), cache: store, metrics: newMetrics(),
+					mutable: newMutableCache(time.Hour), authorization: newAuthorizationCache(time.Hour, time.Hour, 10)}
+				defer tr.upstream.CloseIdleConnections()
+
+				req := authorizationRequest(t, "https://example.com/v2/team/image/manifests/latest", "")
+				const ttl = 200 * time.Millisecond
+				switch limiting {
+				case "mutable":
+					tr.mutable.ttl = ttl
+				case "anonymous":
+					tr.authorization.anonymousTTL = ttl
+				case "credentialed":
+					tr.authorization.authorizationTTL = ttl
+					req.Header.Set("Authorization", "Bearer a")
+				}
+
+				for range 2 {
+					got := readMutable(tr, req.Clone(req.Context()))
+					if got.err != nil || got.body != "1" {
+						t.Fatalf("initial reuse = %+v", got)
+					}
+				}
+
+				canceled, cancel := context.WithCancel(req.Context())
+				cancel()
+				if got := readMutable(tr, req.Clone(canceled)); !errors.Is(got.err, context.Canceled) {
+					t.Fatalf("canceled request borrowed a cached response: %+v", got)
+				}
+
+				time.Sleep(2 * ttl)
+				got := readMutable(tr, req.Clone(req.Context()))
+				if got.err != nil || got.body != "2" || calls.Load() != 2 {
+					t.Fatalf("expired response was reused: %+v calls=%d", got, calls.Load())
+				}
+			})
 		})
 	}
 }
@@ -675,6 +718,9 @@ func TestMutableExpiryStartsAtHeadersNotBodyCompletion(t *testing.T) {
 		io.WriteString(w, "fresh")
 	}))
 	defer origin.Close()
+	releaseCapture := safeRelease(release)
+	defer releaseCapture()
+
 	tr := mutableTransportFixture(t, origin)
 	tr.mutable.ttl = 20 * time.Millisecond
 
@@ -685,7 +731,7 @@ func TestMutableExpiryStartsAtHeadersNotBodyCompletion(t *testing.T) {
 	}
 
 	time.Sleep(60 * time.Millisecond)
-	close(release)
+	releaseCapture()
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil || string(body) != "slow" {
@@ -714,6 +760,9 @@ func TestMutableCoalescingDoesNotShareUncacheableResponses(t *testing.T) {
 				io.WriteString(w, "independently approved")
 			}))
 			defer origin.Close()
+			releaseCapture := safeRelease(release)
+			defer releaseCapture()
+
 			tr := mutableTransportFixture(t, origin)
 			req := authorizationRequest(t, origin.URL+"/v2/_catalog", "")
 			leader, follower := make(chan mutableResult, 1), make(chan mutableResult, 1)
@@ -722,7 +771,7 @@ func TestMutableCoalescingDoesNotShareUncacheableResponses(t *testing.T) {
 			go func() { follower <- readMutable(tr, req.Clone(req.Context())) }()
 			waitMutableWaiters(t, tr, 1)
 
-			close(release)
+			releaseCapture()
 			if got := <-leader; got.err != nil || got.body != "first request only" {
 				t.Fatalf("leading response = %+v", got)
 			}

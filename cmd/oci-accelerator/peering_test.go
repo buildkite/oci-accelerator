@@ -402,6 +402,7 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = service.close() })
 		done, cleanup := service.done, service.close
 		close(failure)
 		select {
@@ -422,12 +423,13 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 	t.Run("incomplete TLS handshake", func(t *testing.T) {
 		root := t.TempDir()
 		signer := openPeerTestCA(t, filepath.Join(root, "ca"))
-		listener := newTestListener(t)
+		listener := &nextAcceptListener{Listener: newTestListener(t), nextAccept: make(chan struct{})}
 		cfg := config.Config{Peer: config.Peer{Listen: listener.Addr().String(), Advertise: "self.test:1", StateDir: filepath.Join(root, "state"), HintRefreshTimeout: time.Minute, HintRefreshInterval: time.Minute, HintFullRefreshInterval: time.Hour}, ShutdownTimeout: 10 * time.Millisecond}
 		service, err := startPeering(context.Background(), cfg, signer, newPeerTestStore(t), slog.Default(), listenForTest(listener))
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = service.close() })
 		cleanup := service.close
 		conn, err := net.Dial("tcp", listener.Addr().String())
 		if err != nil {
@@ -437,6 +439,15 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		if _, err := conn.Write([]byte{0x16}); err != nil {
 			t.Fatal(err)
 		}
+
+		// net/http registers StateNew before accepting another connection.
+		// A client write alone does not prove that the server owns the socket.
+		select {
+		case <-listener.nextAccept:
+		case <-time.After(time.Second):
+			t.Fatal("server did not register the stalled TLS connection")
+		}
+
 		if err := cleanup(); err == nil || !strings.Contains(err.Error(), "peer server cleanup failed") {
 			t.Fatalf("cleanup error = %v, want deadline failure", err)
 		}
@@ -445,6 +456,8 @@ func TestPeerServeFailureAndStalledHandshakeCleanup(t *testing.T) {
 		}
 		if _, err := conn.Read(make([]byte, 1)); err == nil {
 			t.Fatal("stalled TLS connection remained open")
+		} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			t.Fatalf("stalled TLS connection timed out instead of closing: %v", err)
 		}
 		book, err := peering.OpenBook(context.Background(), cfg.Peer.StateDir, cfg.Peer.Advertise, nil, nil)
 		if err != nil {
@@ -542,14 +555,21 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 				if err := book.Close(); err != nil {
 					t.Fatal(err)
 				}
-				// Reuse the verified address without serving it, preserving an
-				// unreachable confirmed member for the readiness scenario.
-				fixture.Close()
-				unresponsive, err = net.ListenTCP("tcp", address)
+
+				// Duplicate the listening socket before stopping TLS, retaining
+				// the verified address without accepting new connections.
+				file, err := unresponsive.File()
 				if err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(func() { unresponsive.Close() })
+				retained, err := net.FileListener(file)
+				file.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { retained.Close() })
+				fixture.Close()
+				unresponsive = retained.(*net.TCPListener)
 			}
 			path := filepath.Join(root, "proxy.env")
 			contents := fmt.Sprintf("OCI_ACCELERATOR_LISTEN=%s\nOCI_ACCELERATOR_METRICS_LISTEN=%s\nOCI_ACCELERATOR_REGISTRIES=example.com\nOCI_ACCELERATOR_CA_DIR=%s\nOCI_ACCELERATOR_CACHE_DIR=%s\nOCI_ACCELERATOR_PEER_LISTEN=%s\nOCI_ACCELERATOR_PEER_ADVERTISE=%s\nOCI_ACCELERATOR_PEER_SEEDS=%s\nOCI_ACCELERATOR_PEER_STATE_DIR=%s\nOCI_ACCELERATOR_SHUTDOWN_TIMEOUT=100ms\n", proxyListener.Addr(), metricsListener.Addr(), filepath.Join(root, "ca"), filepath.Join(root, "cache"), peerListener.Addr(), peerListener.Addr(), unresponsive.Addr(), state)
@@ -628,6 +648,21 @@ func TestRunPeerOutageDoesNotAffectReadinessAndListenerFailureStopsRun(t *testin
 			}
 		})
 	}
+}
+
+type nextAcceptListener struct {
+	net.Listener
+	nextAccept chan struct{}
+	calls      int
+}
+
+func (l *nextAcceptListener) Accept() (net.Conn, error) {
+	if l.calls == 1 {
+		close(l.nextAccept)
+	}
+	l.calls++
+
+	return l.Listener.Accept()
 }
 
 func newPeerTestStore(t *testing.T) *cache.Store {

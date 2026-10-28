@@ -301,6 +301,7 @@ func TestDiscoveryReportsNewPeers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); d.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
 	eventually(t, 3*time.Second, func() bool { return len(snapshot()) == 1 })
 	cancel()
 	<-done

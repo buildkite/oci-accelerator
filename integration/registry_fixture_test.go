@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -30,6 +31,9 @@ type registryCounts struct {
 	active   int
 	badAuth  int
 	requests int
+
+	// chunkGate optionally pauses large responses after each flushed chunk.
+	chunkGate <-chan struct{}
 }
 
 func (c *registryCounts) waitIdle(t *testing.T) {
@@ -181,6 +185,13 @@ func registryReply(c *registryCounts, w http.ResponseWriter, r *http.Request, bo
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
+			if c.chunkGate != nil {
+				select {
+				case <-c.chunkGate:
+				case <-r.Context().Done():
+					return
+				}
+			}
 			time.Sleep(time.Millisecond)
 		}
 	}
@@ -206,6 +217,8 @@ func TestRegistryBodyCountersExcludeHEAD(t *testing.T) {
 
 func TestRegistryStreamingCancellationCountsWrittenBytes(t *testing.T) {
 	c := &registryCounts{authed: map[string]int{}, bytes: map[string]int64{}, tags: map[string]int{}}
+	// Keep the handler at the first chunk until the request is canceled.
+	c.chunkGate = make(chan struct{})
 	body := deterministicLargePayload()
 	done := make(chan struct{})
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +227,7 @@ func TestRegistryStreamingCancellationCountsWrittenBytes(t *testing.T) {
 	}))
 	defer s.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL+"/large", nil)
 	if err != nil {
@@ -225,10 +238,15 @@ func TestRegistryStreamingCancellationCountsWrittenBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	buf := make([]byte, 64<<10)
+	defer resp.Body.Close()
+	buf := make([]byte, 32<<10)
 	if _, err := io.ReadFull(resp.Body, buf); err != nil {
 		t.Fatal(err)
 	}
+	if !bytes.Equal(buf, body[:len(buf)]) {
+		t.Fatal("streamed prefix does not match the response body")
+	}
+
 	cancel()
 	_ = resp.Body.Close()
 	select {
@@ -237,7 +255,7 @@ func TestRegistryStreamingCancellationCountsWrittenBytes(t *testing.T) {
 		t.Fatal("streaming handler did not observe cancellation")
 	}
 	a, b, bad, _ := c.snapshot()
-	if a["/large"] != 1 || b["/large"] <= 0 || b["/large"] >= int64(len(body))/2 || bad != 0 {
+	if a["/large"] != 1 || b["/large"] != int64(len(buf)) || bad != 0 {
 		t.Fatalf("canceled stream requests=%d bytes=%d body=%d badAuth=%d", a["/large"], b["/large"], len(body), bad)
 	}
 }
