@@ -182,8 +182,8 @@ protocol shares cached content within the fleet, never registry credentials or
 authorization grants. The serving peer trusts fleet membership. The requesting
 proxy remains responsible for upstream authorization.
 See [peer discovery](deployment.md#peer-discovery) for configuration, trust, and
-retention details, and [cache key listing](deployment.md#cache-key-listing) for
-the listing protocol.
+limits, and the [peer protocol](peer-protocol.md) for the discovery, listing,
+and transfer protocol.
 
 ### Play-by-play example
 
@@ -344,13 +344,17 @@ the upstream registry on every delivery.
   must obtain upstream approval themselves and cannot borrow another token's grant.
 - **Other requests match exactly.** Other authentication and anonymous grants
   retain the exact canonical URL and every forwarded end-to-end header identity.
+  Transport-managed fields such as `Host` and `User-Agent` use their forwarded form.
   Empty, malformed, or multiple Bearer credentials do not receive repository-wide reuse.
-  Anonymous approvals cannot serve requests carrying `Authorization`.
+  Anonymous approvals cannot serve requests carrying `Authorization`, even when
+  `Connection` strips that header before forwarding.
 - **Fixed lifetime.** It starts at approval, never exceeds the configured TTL, and
-  hits don't extend it. A shorter `max-age` or `s-maxage` on the request or any
-  response shortens it. A request ceiling below the configured credentialed TTL
-  always requires fresh upstream approval instead of reusing a Bearer repository
-  grant, even if that grant was just established.
+  hits don't extend it. Nothing refreshes a grant in the background. A shorter
+  `max-age` or `s-maxage` on the request or any response shortens it. `Age`,
+  `Date`, and `Expires` are ignored, so a grant can last its full TTL even when
+  the upstream response was already old. A request ceiling below the configured
+  credentialed TTL always requires fresh upstream approval instead of reusing a
+  Bearer repository grant, even if that grant was just established.
 - **Memory only.** Grants are never persisted, are cleared on restart, and both
   classes share the `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound (10000 by default).
 - **Bytes are shared, approvals are not.** Any client the upstream registry approves can
@@ -559,7 +563,8 @@ finds files it doesn't recognize, rather than deleting them. Recency order is
 rebuilt from commit times.
 
 Each body is hashed again, in full, before it is first served after startup, so
-that first hit is slower. A missing or corrupt entry is treated as a miss and
+that first hit is slower. Later reads check only the file size and rely on the
+cache directory's private permissions to prevent tampering. A missing or corrupt entry is treated as a miss and
 refilled from origin or an eligible hinted peer after its own upstream approval,
 even with a live Bearer repository grant.
 Don't edit or delete files in a live cache.

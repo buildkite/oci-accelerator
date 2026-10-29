@@ -220,7 +220,44 @@ OCI_ACCELERATOR_DOCKER_LOAD_REPORT="$reports/docker.json" \
 
 ## Running acceptance in an Amp orb
 
-For orb Docker setup, see [Amp orbs](deployment.md#appendix-amp-orbs).
+Amp runs `.agents/setup` when preparing a fresh orb. It installs
+checksum-verified Go 1.27.1, C build tools for race-enabled tests, and Docker
+Engine, Buildx, and Compose if missing, and downloads Go module dependencies.
+You can safely re-run it:
+
+```sh
+.agents/setup
+
+go version
+```
+
+Start Docker as a supervised service, not from setup or a background shell:
+
+```sh
+amp orb services ensure
+
+sudo docker info
+```
+
+- Use `sudo docker` for daemon operations. If the daemon isn't ready, inspect
+  `amp orb service logs docker-daemon`.
+- The daemon uses only a local Unix socket. Don't expose it or the proxy
+  through an Amp portal.
+- Amp supervises the daemon across CLI updates and orb pause and resume, so you
+  don't need a custom resume hook.
+- Never put registry credentials in the setup script or a shared orb snapshot.
+  Setup doesn't install a proxy CA into Docker's trust store.
+
+To run the proxy itself as an orb service:
+
+```sh
+amp orb service start registry-proxy \
+  --command './bin/oci-accelerator --env-file .env'
+
+amp orb service logs registry-proxy
+
+amp orb service stop registry-proxy
+```
 
 In an Amp orb, run the entire test runner as a supervised service so its child processes survive
 CLI updates. The wrapper stays alive after the one-shot test to prevent the service supervisor
