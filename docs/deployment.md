@@ -247,7 +247,7 @@ Use `init --help`, `init-env --help`, or `init-ca --help` for command-specific u
 
 Run the process under the host's service manager. It stops gracefully on SIGINT or SIGTERM
 (see [shutdown](#shutdown)). For Amp orbs, see the
-[testing guide](testing.md#running-acceptance-in-an-amp-orb).
+[testing guide](testing.md#run-the-proxy-as-a-service).
 
 ### Run in a container
 
@@ -1112,8 +1112,7 @@ responses affect an existing grant.
   egress ([no client authentication](#no-client-authentication)).
 - Peering tries one provider per miss, with no shared filesystem, coordinated
   eviction, or prefetch. After a peer stream is accepted, a failure can't
-  switch to origin, so the client must retry. No multi-node Docker peer
-  acceptance suite is provided.
-- No Kubernetes manifests, and no automated container runtime acceptance in CI.
-- Fault tests cover process termination and private tmpfs exhaustion, not power
-  loss or faulty devices. See the [testing guide](testing.md).
+  switch to origin, so the client must retry.
+- No Kubernetes manifests are provided.
+- See the [testing guide](testing.md#current-limitations) for what the tests
+  don't cover.
