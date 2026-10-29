@@ -600,7 +600,7 @@ advertised address. For example, if A knows B and B knows C, A learns about C
 through B but doesn't advertise C until it contacts C itself.
 
 Membership expires after a fixed time without successful outbound contact
-([limits](peer-protocol.md#retries-and-limits)). Gossip and inbound contact
+([expiry](peer-protocol.md#capacity-and-expiry)). Gossip and inbound contact
 don't extend it, and expired peers aren't advertised or chosen as providers. A
 returning peer can contact a live member, which probes it back before restoring
 membership.

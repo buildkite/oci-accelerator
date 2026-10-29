@@ -876,16 +876,25 @@ from the destination.
 
 ### Limits and state
 
-The [peer protocol](peer-protocol.md#retries-and-limits) describes membership,
-connection, transfer, and hint limits.
+The [peer protocol](peer-protocol.md#limits) lists membership, connection,
+transfer, and hint limits.
 
 - Keep a reachable seed or another live peer so separated groups can find each
   other after a partition.
 - The state directory holds `node-id` and `peers.json`. Don't edit them while
   the instance runs, and never copy them to another instance, because that
   duplicates its node ID.
-- To reset membership, stop the instance, back up the state directory, and
-  remove only `peers.json` ([state files](peer-protocol.md#state-files)).
+
+To reset membership, for example after startup rejects `peers.json`
+([state files](peer-protocol.md#state-files)):
+
+1. Stop the instance.
+2. Back up its peer state directory.
+3. Remove only `peers.json`. Keep `node-id` to preserve the instance's
+   identity.
+4. Configure a reachable seed, so verified outbound exchanges can rebuild
+   membership.
+5. Start the instance.
 
 Listing traffic grows as O(N²) across an N-node fleet because each node polls
 the others. As an illustrative upper-tail body estimate, a terminal page of
