@@ -195,8 +195,7 @@ accelerator.
 
 The accelerator creates the root CA on first startup, when the directory
 specified by `OCI_ACCELERATOR_CA_DIR` doesn't exist yet, or with
-`oci-accelerator init-ca --dir <dir>`. It stores the CA there as `ca.crt` and
-`ca.key`.
+`init` or `init-ca`. It stores the CA there as `ca.crt` and `ca.key`.
 
 A root CA the accelerator creates is valid for 10 years. The accelerator
 reuses it on every later startup, so Docker hosts only need to install it once,
@@ -393,11 +392,11 @@ back to Docker and is never hidden by cached content.
 Other requests, such as HEAD requests for digests and digest GETs with a query
 string, aren't cached either.
 
-Only `no-store` on the request or response, a `Vary` the accelerator can't key
-on, or a digest mismatch keeps a digest-addressed `200` off disk. A response
-marked `private` or `no-cache`, or carrying `Pragma` or an authentication
-header, is still cached. Later clients can receive it after their own upstream
-approval.
+`no-store`, an unsupported `Vary`, a digest mismatch, an encoded or
+unknown-length body, trailers, or an unsupported media type keeps a
+digest-addressed `200` off disk. A response marked `private` or `no-cache`, or
+carrying `Pragma` or an authentication header, is still cached. Later clients
+can receive it after their own upstream approval.
 
 See [mutable response caching](#mutable-response-caching) for how responses
 are kept briefly in memory.

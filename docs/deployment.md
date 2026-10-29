@@ -1068,8 +1068,8 @@ You can configure private registries explicitly.
   neither startup nor `init-ca` creates ancestors. `init` does this for the
   native `data/` layout.
 - Ownership and layout are checked at startup. See the
-  [CA](#ca-directory-requirements) and [cache](#capacity-and-eviction)
-  requirements.
+  [CA](#ca-directory-requirements) and
+  [cache](how-it-works.md#disk-cache-storage) requirements.
 
 ### Settings
 

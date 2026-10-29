@@ -21,8 +21,8 @@ Use it to:
 - **No image renaming.** Docker keeps its usual image names and `docker login`,
   so you don't rewrite references or configure registry mirrors.
 - **Private images stay private.** The upstream registry must approve each
-  client before it receives cached content, so the cache never serves an image
-  to someone who couldn't pull it directly.
+  client before it receives cached content, though
+  [approvals are reused briefly](docs/deployment.md#authorization-of-cached-content).
 - **No shared credentials.** Each client authenticates with its own credentials,
   and the proxy never stores or forwards them to other hosts.
 - **Plugs in as an HTTPS proxy.** Docker Engine sends registry traffic through
@@ -188,7 +188,7 @@ Some of the most useful metrics:
 | `oci_accelerator_served_bytes_total{source}` | counter | Image content bytes sent to clients, by `cache`, `origin`, or `peer` |
 | `oci_accelerator_cache_total{outcome}` | counter | Cache lookups, by `hit`, `wait_hit`, `miss`, or `bypass` |
 | `oci_accelerator_upstream_body_bytes_total` | counter | Response body bytes read from upstream registries |
-| `oci_accelerator_cache_bytes` | gauge | Bytes stored in the cache |
+| `oci_accelerator_cache_bytes` | gauge | Cached bytes, excluding filesystem overhead |
 | `oci_accelerator_cache_evictions_total` | counter | Entries evicted to stay within limits |
 | `oci_accelerator_request_duration_seconds` | histogram | Request duration |
 
@@ -288,7 +288,7 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 ```
 
 Instances discover each other through their seeds and the peers those seeds
-know about, so each one needs only one reachable seed to join.
+know about, and join once others can reach their advertised address.
 
 Peers authenticate each other with mutual TLS using certificates signed by the
 shared CA. Any holder of the CA key can join the fleet and read its cached

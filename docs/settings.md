@@ -105,6 +105,6 @@ Total process memory isn't capped. `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` and
 `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound only their in-memory
 indexes, so size them to the memory you have.
 
-Immutable bodies stream through without being buffered in memory. The
-[mutable response cache](deployment.md#mutable-response-cache) has fixed
-internal limits that you can't configure.
+Immutable bodies stream through without being buffered in memory. The mutable
+response cache has [fixed internal limits](deployment.md#built-in-limits) that
+you can't configure.
