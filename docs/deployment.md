@@ -299,8 +299,8 @@ trigger a restart. Readiness does not check upstream connectivity or disk capaci
 
 `.env.container-example` holds the container settings: `OCI_ACCELERATOR_REGISTRIES` and a
 copy of the four image defaults. Copy it to `.env.container`, which Git ignores, and edit
-the copy. Values in the copy override the image defaults. See `.env.example` for every other
-setting and its default.
+the copy. Values in the copy override the image defaults. See the
+[settings reference](settings.md) for every other setting and its default.
 
 Docker and Compose read this file with their own dotenv syntax, not the application's. Keep it
 to unquoted literal `KEY=value` lines and full-line comments.
@@ -603,31 +603,8 @@ pprof endpoint.
   independent of `OCI_ACCELERATOR_MAX_CONNECTIONS`. In Kubernetes, you can use
   local exec probes with a loopback bind.
 
-All metric names start with `oci_accelerator_`, which the table omits:
-
-| Metric | Type | Notes |
-| --- | --- | --- |
-| `requests_total{outcome}` | Counter | Requests by outcome |
-| `request_status_total{class}` | Counter | Responses by status class |
-| `request_duration_seconds` | Histogram | Request duration |
-| `active_requests`, `active_connections` | Gauge | In-flight requests and accepted client connections |
-| `cache_total`, `fills_total`, `waits_total`, `fallbacks_total` | Counter | Cache, fill, wait, and fallback outcomes, labeled by `outcome`. For a detached range fill, `fills_total` updates when the fill finishes |
-| `active_waits` | Gauge | Requests waiting for another request's fill or mutable capture |
-| `cache_admissions_total{reason}` | Counter | Disk cache admission results |
-| `cache_rejections_total{reason}` | Counter | `vary` and `digest_mismatch` rejections. Other policy checks can also prevent caching |
-| `cache_entries`, `cache_bytes`, `cache_reserved_bytes`, `cache_readers`, `cache_fills` | Gauge | Disk cache occupancy. Bytes are logical and exclude filesystem overhead. `cache_fills` includes reservations still staging |
-| `cache_evictions_total` | Counter | Disk cache evictions |
-| `store_fill_success_total`, `store_fill_failure_total`, `store_fill_abort_total`, `store_fill_expiry_total` | Counter | Disk fill results, counted by the store |
-| `upstream_get_attempts_total` | Counter | Connection attempts for upstream GETs, including retries and DNS, dial, or TLS failures. Not an exact count of requests the registry received |
-| `upstream_body_bytes_total`, `peer_body_bytes_total`, `downstream_bytes_total` | Counter | Body bytes read from upstream and peers, and written to clients. For a detached range fill, the upstream and peer counters update when it finishes |
-| `peer_fetches_total{outcome}` | Counter | Peer source selection. `unavailable` covers no live hint, full outbound capacity, and failed requests. `hit` means headers were accepted, not that the stream completed or verified |
-| `served_bytes_total{source}`, `served_entries_total{source}` | Counter | Digest-addressed deliveries by source. See [cache delivery ratios](#cache-delivery-ratios) |
-| `heap_alloc_bytes`, `goroutines` | Gauge | Go heap allocation, not RSS, and goroutine count |
-
-- Labels are fixed enums and never contain clients, repositories, paths,
-  digests, tokens, or URLs.
-- Counters reset on restart. Request body counters update when each request
-  completes.
+See the [metrics reference](metrics.md) for every metric, its labels, and
+notes on interpreting it.
 
 ### Cache delivery ratios
 
@@ -1003,9 +980,9 @@ environment variables. There is no automatic file discovery,
 
 `OCI_ACCELERATOR_REGISTRIES`, `OCI_ACCELERATOR_CA_DIR`, and
 `OCI_ACCELERATOR_CACHE_DIR` are required. The container [image](#image)
-supplies the two directories. See [`.env.example`](../.env.example) for every
-setting and its default. Its registries and `./data` paths are examples, not
-built-in defaults.
+supplies the two directories. See the [settings reference](settings.md) for
+every setting and its default. The registries and `./data` paths in
+[`.env.example`](../.env.example) are examples, not built-in defaults.
 
 `--check` validates this same combined configuration without inspecting state,
 binding listeners, or creating directories. Unknown process environment
@@ -1092,109 +1069,8 @@ You can configure private registries explicitly.
 
 ### Settings
 
-The groups below follow the sections of [`.env.example`](../.env.example).
-
-**Required**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_REGISTRIES` | Required | Nonempty list of distinct [authorities](#registry-authorities) to intercept |
-| `OCI_ACCELERATOR_CA_DIR` | Required | Private persistent CA directory |
-| `OCI_ACCELERATOR_CACHE_DIR` | Required | Private persistent cache directory |
-
-**Proxy**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_LISTEN` | `127.0.0.1:5128` | host:port with a nonzero numeric port. Empty or wildcard hosts bind all interfaces |
-
-**Peering**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_PEER_LISTEN` | Disabled | Separate TLS listener, host:port with a nonzero numeric port |
-| `OCI_ACCELERATOR_PEER_ADVERTISE` | Empty | Required reachable host:port when peering is enabled |
-| `OCI_ACCELERATOR_PEER_SEEDS` | Empty | Optional comma-separated host:port bootstrap addresses |
-| `OCI_ACCELERATOR_PEER_STATE_DIR` | Empty | Required private persistent directory when peering is enabled. May remain configured while disabled. Native starter example: `./data/peers` |
-
-**Peering hints**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` | `1m` | Positive overall duration per cache-key fetch attempt, excluding scheduler queueing. No unlimited value |
-| `OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL` | `1m` | At least `1s`. Poll delay after each attempt completes, with ±20% jitter |
-| `OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL` | `1h` | At least `1s`. Full-scan interval from successful full-scan completion, with ±20% jitter |
-
-**Metrics**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_METRICS_LISTEN` | Disabled | host:port with a nonzero numeric port. Literal loopback IP required unless `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` |
-| `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` | `false` | Explicit boolean opt-in to non-loopback metrics and probe binding |
-
-**Registry redirects**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_REDIRECT_ALLOWLIST` | Empty | Private HTTPS storage [authorities](#registry-authorities). Does not enable interception |
-
-**Cache storage**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_CACHE_MAX_BYTES` | 32 GiB | Includes body, metadata, and fill reservations |
-| `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` | 100000 | Entry slots, including fills and pending cleanup |
-| `OCI_ACCELERATOR_CACHE_MAX_FILLS` | 16 | Concurrent storage writers. Excess misses stream uncached |
-| `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` | `10m` | Bounds ranged fetches from request start and peer transfers. Ends ordinary full-GET cache admission |
-| `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` | `1s` | Wait for an existing immutable fill or mutable capture. `0s` disables waiting, not caching |
-
-**Mutable cache**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_CACHE_MUTABLE_TTL` | `30s` | Fixed mutable response lifetime from upstream headers. Shared expiry is independent of grants. Exact mode is capped by the applicable authorization TTL. `0s` disables |
-| `OCI_ACCELERATOR_CACHE_MUTABLE_SHARED` | `true` | Share repository mutable responses across independently approved Bearer tokens. `false` uses exact mutable matching and authorization TTL caps, with no mutable grant creation. Immutable caching is unchanged |
-
-**Cache authorization**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL` | `30s` | Fixed approval lifetime for requests with Authorization, including empty. `0s` disables that class |
-| `OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` | `15m` | Fixed approval lifetime for requests without Authorization. `0s` disables that class |
-| `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` | 10000 | Positive shared bound on both classes of in-memory authorization grants |
-
-**Connections and limits**
-
-| Environment variable | Default | Notes |
-| --- | --- | --- |
-| `OCI_ACCELERATOR_DIAL_TIMEOUT` | `10s` | |
-| `OCI_ACCELERATOR_TLS_HANDSHAKE_TIMEOUT` | `10s` | |
-| `OCI_ACCELERATOR_RESPONSE_HEADER_TIMEOUT` | `30s` | Also bounds incoming request headers |
-| `OCI_ACCELERATOR_IDLE_TIMEOUT` | `2m` | Idle tunnels and I/O |
-| `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` | `15s` | Drain deadline |
-| `OCI_ACCELERATOR_MAX_CONNECTIONS` | 256 | Accepted client connections, including incomplete CONNECTs |
-| `OCI_ACCELERATOR_MAX_LEAF_CERTIFICATES` | 256 | Cached interception certificates |
-
-Timeout behavior:
-
-- `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` is a total deadline that doesn't reset
-  on progress. It bounds blob range requests from before the first upstream
-  GET, including their background fills, and peer downloads, including headers
-  and body. It applies whether or not the body is cached. A serving peer
-  applies its own fill timeout to its side of the transfer.
-- All other transfers, including cached deliveries and uploads, have only
-  idle-I/O deadlines (`OCI_ACCELERATOR_IDLE_TIMEOUT`), with no total time
-  limit.
-- Filesystem calls can't be interrupted, so a stalled disk can delay fill
-  expiry and shutdown.
-
-Total process memory isn't capped. `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` and
-`OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` bound only their in-memory
-indexes, so size them to the memory you have.
-
-Immutable bodies stream through without being buffered in memory. The
-[mutable response cache](#mutable-response-cache) has fixed internal limits
-that you can't configure.
+See the [settings reference](settings.md) for every environment variable, its
+default, and how timeouts and memory limits behave.
 
 ### Built-in limits
 

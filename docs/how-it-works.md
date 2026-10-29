@@ -153,7 +153,7 @@ when a full scan successfully completes, not when it starts.
 
 The keys remain advisory, additive hints about which peer holds which object.
 Neither a full scan nor an empty listing removes stale claims. Hints grant no
-access. See the [configuration reference](deployment.md#configuration)
+access. See [peering hints](settings.md#peering-hints) in the settings reference
 for poll, full-scan, and attempt timeout settings.
 
 For an eligible digest-addressed blob or manifest GET, the proxy obtains upstream

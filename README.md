@@ -157,8 +157,8 @@ OCI_ACCELERATOR_LISTEN=127.0.0.1:5128
 OCI_ACCELERATOR_CACHE_MAX_BYTES=34359738368
 ```
 
-See [`.env.example`](./.env.example) for every setting, including peering,
-metrics, and cache and authorization limits.
+See the [settings reference](docs/settings.md) for every setting, including
+peering, metrics, and cache and authorization limits.
 
 ## Metrics
 
