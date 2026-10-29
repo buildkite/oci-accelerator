@@ -699,7 +699,7 @@ covers the 15-second default either way.
 The CA is `ca.crt` and `ca.key` in `OCI_ACCELERATOR_CA_DIR`: `data/ca/` on the host in the native example, or
 `ca/` in the `oci-accelerator-ca` volume for containers. See
 [trusting the accelerator's certificate](how-it-works.md#trusting-the-accelerators-certificate)
-and [per-registry certificates](how-it-works.md#per-registry-certificates) for how the CA and
+and [per-host certificates](how-it-works.md#per-host-certificates) for how the CA and
 leaf certificates are used.
 
 ### Create the CA
@@ -785,7 +785,7 @@ To clean up:
 ## Cache storage
 
 This section covers cache settings and operations. See
-[cache storage and eviction](how-it-works.md#cache-storage-and-eviction) for
+[disk cache storage](how-it-works.md#disk-cache-storage) for
 how entries are stored, filled, and evicted.
 
 ### Immutable disk cache
@@ -846,6 +846,10 @@ matching, expiry, memory limits, and invalidation.
   on unrecognized files rather than deleting them.
 - Each body is rehashed on its first use after startup, so that first hit is
   slower. Recency order is rebuilt from commit times.
+- If the cache no longer fits its limits, startup deletes the oldest entries
+  until it does. Lowering `OCI_ACCELERATOR_CACHE_MAX_BYTES` or
+  `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` therefore deletes cached content at the
+  next start.
 - Don't edit or delete live cache files. Use [metrics](#metrics) to inspect
   resource use.
 
