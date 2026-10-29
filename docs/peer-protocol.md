@@ -6,6 +6,15 @@ served over HTTPS on the peer listener and requires fleet mutual TLS. See
 [how it works](how-it-works.md#peer-discovery-and-cache-delivery) for an
 overview and [peer discovery](deployment.md#peer-discovery) to set up peering.
 
+## Peer certificates
+
+Both sides require TLS 1.3 and dedicated, short-lived peer certificates signed
+by the local CA. Each instance generates its own peer key and renews its
+certificate before expiry. Certificates can't outlive the CA. Interception
+certificates aren't accepted as peer certificates, the public CA download
+grants no peer access, and the CA private key is never sent over the peer
+protocol.
+
 ## Discovery
 
 ### Endpoint
@@ -89,16 +98,15 @@ four outbound exchange slots, with at most two used for verification-only
 addresses so regular discovery cannot be starved by conflicting gossip.
 Verification is asynchronous and does not delay inbound responses. Its queue
 deduplicates addresses and retains up to 1,024 pending or cooling-down probes.
-Excess claims are dropped with a `peer verification queue full` warning and can
-be submitted by later gossip. Exhausted candidates release their queue slots
-after cooldown. Configured seeds keep their normal retries indefinitely, even
-when unverified. Each instance permits 32 accepted peer connections, including
-incomplete TLS handshakes. Incoming headers, request bodies, control-response
-writes, and idle connections also have five-second deadlines. [Entry response
-streams](#entry-transfers) use a separate write budget. Discovery JSON
-messages are limited to 512 KiB and 1,024 peer mappings. Unknown fields,
-duplicate JSON keys, invalid IDs, and contradictory spellings of the same
-canonical address are rejected.
+Excess claims are dropped and can be submitted by later gossip. Exhausted
+candidates release their queue slots after cooldown. Configured seeds keep their
+normal retries indefinitely, even when unverified. Each instance permits 32
+accepted peer connections, including incomplete TLS handshakes. Incoming
+headers, request bodies, control-response writes, and idle connections also have
+five-second deadlines. [Entry response streams](#entry-transfers) use a separate
+write budget. Discovery JSON messages are limited to 512 KiB and 1,024 peer
+mappings. Unknown fields, duplicate JSON keys, invalid IDs, and contradictory
+spellings of the same canonical address are rejected.
 
 Each instance retains up to 1,024 confirmed members, excluding itself, and
 separately keeps up to 1,024 configured seed targets. Unverified seed targets do
@@ -109,10 +117,9 @@ extra membership slot. New unrelated members still require a free slot.
 Confirmed members expire after 30 minutes without successful outbound contact.
 They disappear from advertisements and provider selection immediately at expiry,
 and discovery removes their durable mappings. At capacity, new unrelated members
-are rejected with a `peer address book full` warning, but verified identity
-replacements still work. Verifying a node at a new address removes its previous
-mapping. Losing a node's identity state gives it a new ID, and its unreachable
-old mapping expires normally.
+are rejected, but verified identity replacements still work. Verifying a node at
+a new address removes its previous mapping. Losing a node's identity state gives
+it a new ID, and its unreachable old mapping expires normally.
 
 ### Persistence
 
@@ -173,8 +180,7 @@ Give each instance its own persistent peer state volume. Do not clone this state
 into another instance, because doing so duplicates its identity. The ID is not a
 secret or authentication credential. Persisted IDs are never automatically
 rotated. After startup, direct claims that conflict with this instance's own ID
-or address still fail the exchange and log `peer identity collision`. Fix the
-advertised address or duplicated state. Two other nodes sharing one ID can
+or address still fail the exchange. Two other nodes sharing one ID can
 repeatedly replace each other's records. There is no ongoing collision recovery.
 
 ### State files
@@ -193,16 +199,15 @@ State files must be regular, process-owned, mode 0600 files. Startup takes an
 exclusive process lock, removes recognized abandoned staging files, and rejects
 corrupt state, unsafe files, or unknown files without replacing the book. Bind
 or state startup failures prevent startup. Runtime persistence failures fail the
-exchange and log `peer address book update failed` while the proxy continues
-serving. If replacement succeeded but directory sync failed, the book retains
-the replaced state and retries persistence before acknowledging another
-exchange. Expiry persistence failures log `peer membership expiry persistence
-failed` once per failure episode. Discovery keeps retrying and logs `peer
-membership expiry persistence recovered` once when expiry persistence succeeds
-again. Expired members stay hidden even while persistence fails. A peer-listener
-failure stops the process rather than leaving an enabled service silently
-unavailable. Outage and recovery logs include the peer address but no raw
-network errors or credentials.
+exchange while the proxy continues serving. If replacement succeeded but
+directory sync failed, the book retains the replaced state and retries
+persistence before acknowledging another exchange. Discovery keeps retrying
+failed expiry persistence, and expired members stay hidden meanwhile. A
+peer-listener failure stops the process rather than leaving an enabled service
+silently unavailable. Outage and recovery logs include the peer address but no
+raw network errors or credentials. See [limits and
+state](deployment.md#limits-and-state) for the log messages and what to do about
+them.
 
 ## Cache key listing
 
@@ -247,10 +252,10 @@ within an open cache, even if the wall clock does. The request must have no body
 or other query parameters. Invalid cursors fail with `400`. An inventory with
 invalid or duplicate keys fails with `500`. Responses are capped at 512 KiB.
 
-Cache keys are SHA-256 hashes of each entry's registry, repository, digest,
-object kind, `Accept` values, and `Content-Type`. An authenticated peer that can
-guess those inputs can confirm whether your instance has cached that object.
-This matches the fleet trust model in [peer trust](deployment.md#peer-trust).
+Cache keys are the [entry keys](how-it-works.md#entries) of committed entries.
+An authenticated peer that can guess an entry's inputs can confirm whether your
+instance has cached that object. This matches the fleet trust model in [peer
+trust](deployment.md#peer-trust).
 
 ### Hint fetching
 
@@ -266,14 +271,14 @@ holds which key:
   another address. An ID that leaves the book and returns is fetched again.
 - Fetches run in the background, with four concurrent fetches total and at most
   one per peer. They do not block startup, readiness, or discovery on network
-  requests. Shutdown cancels and joins the workers. Ordinary failures log `peer
-  cache keys refresh failed` at warning level with the peer's `node_id`.
-  Expected cursor rejections log at debug level. Both keep earlier hints and
-  successfully applied pages.
+  requests. Shutdown cancels and joins the workers. Ordinary failures log a
+  warning with the peer's `node_id`, and expected cursor rejections log at debug
+  level. Both keep earlier hints and successfully applied pages.
 - After each attempt completes, whether successful or not, the next poll waits
-  `OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL` (default `1m`) with ±20% jitter.
-  This nominal interval excludes fetch duration and waiting for worker capacity,
-  so it provides no wall-clock freshness guarantee.
+  `OCI_ACCELERATOR_PEER_HINT_REFRESH_INTERVAL` with ±20% jitter. See [peering
+  hints](settings.md#peering-hints) for the defaults. This nominal interval
+  excludes fetch duration and waiting for worker capacity, so it provides no
+  wall-clock freshness guarantee.
 
 Each peer retains its last validated nonterminal cursor in memory. Incremental
 polls resume from that cursor, replaying the terminal tail so recent hits and
@@ -286,26 +291,26 @@ count. An explicit invalid-cursor response clears the checkpoint immediately and
 also waits for the next normally delayed poll. There is no absolute scan-age
 reset.
 
-When `OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL` (default `1h`) has
-elapsed since a successful full scan completed, with ±20% jitter, the next
-attempt starts from the beginning instead of doing incremental work. An
-interrupted full scan resumes from its validated progress on later polls until
-it completes, subject to the same recovery rules. Its interval is measured from
-successful completion, not from scan start or from a failed attempt.
+When `OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL` has elapsed since a
+successful full scan completed, with ±20% jitter, the next attempt starts from
+the beginning instead of doing incremental work. An interrupted full scan
+resumes from its validated progress on later polls until it completes, subject
+to the same recovery rules. Its interval is measured from successful completion,
+not from scan start or from a failed attempt.
 
 A fetch checks that every page comes from the node ID the address book maps to
 that address and requires full pages while more follow. Each validated page
 immediately adds that peer to each listed key's providers, without clearing
 earlier claims. There is no key-count fetch cutoff.
-`OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` (default `1m`) bounds each fetch
-attempt, starting when its worker begins. The existing five-second per-request
-timeout also applies. Expiry reports an incomplete refresh and retains applied
-pages and validated progress, subject to the stuck-checkpoint recovery above.
-Full scans remain additive, not reconciliation. Neither a full scan nor an empty
-listing removes hints for keys that have disappeared. All peers share a FIFO of
-200,000 distinct keys. Repeated claims, additional providers, and lookups never
-move a retained key. Eviction removes a whole key and all of its providers, so
-one large peer can displace others. Provider counts do not consume key slots, so
+`OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` bounds each fetch attempt, starting
+when its worker begins. The existing five-second per-request timeout also
+applies. Expiry reports an incomplete refresh and retains applied pages and
+validated progress, subject to the stuck-checkpoint recovery above. Full scans
+remain additive, not reconciliation. Neither a full scan nor an empty listing
+removes hints for keys that have disappeared. All peers share a FIFO of 200,000
+distinct keys. Repeated claims, additional providers, and lookups never move a
+retained key. Eviction removes a whole key and all of its providers, so one
+large peer can displace others. Provider counts do not consume key slots, so
 this is not a byte-memory bound. Lookups exclude IDs absent from your current
 address book, but their retained claims become visible if they rejoin. Hints can
 still be stale despite periodic refresh and grant no access by themselves. An

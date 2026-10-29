@@ -181,20 +181,9 @@ The endpoints have no authentication, so the address must be loopback unless you
 also set `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE=true`. Only expose them on a
 private network.
 
-Some of the most useful metrics:
-
-| Metric | Type | Description |
-| ------ | ---- | ----------- |
-| `oci_accelerator_served_bytes_total{source}` | counter | Image content bytes sent to clients, by `cache`, `origin`, or `peer` |
-| `oci_accelerator_cache_total{outcome}` | counter | Cache lookups, by `hit`, `wait_hit`, `miss`, or `bypass` |
-| `oci_accelerator_upstream_body_bytes_total` | counter | Response body bytes read from upstream registries |
-| `oci_accelerator_cache_bytes` | gauge | Cached bytes, excluding filesystem overhead |
-| `oci_accelerator_cache_evictions_total` | counter | Entries evicted to stay within limits |
-| `oci_accelerator_request_duration_seconds` | histogram | Request duration |
-
-See the [metrics reference](docs/metrics.md) for every metric, and
-[metrics](docs/deployment.md#metrics) in the deployment guide for how to
-interpret them, including example cache hit ratio queries.
+See the [metrics reference](docs/metrics.md) for every metric and example cache
+hit ratio queries, and [metrics](docs/deployment.md#metrics) in the deployment
+guide for the listener and its health endpoints.
 
 ## Cached endpoints
 
@@ -235,6 +224,10 @@ cached in memory only, for 30 seconds by default. Set
 
 These endpoints are forwarded upstream and never cached.
 
+Some requests to cached endpoints, such as digest HEAD requests and ranges, are
+handled differently. See [what gets
+cached](docs/how-it-works.md#what-gets-cached) for the exceptions.
+
 ## Trusting a private CA
 
 To cache a registry's HTTPS traffic, OCI Accelerator decrypts it with a
@@ -270,33 +263,9 @@ it from the upstream registry if no peer can serve it. The instance still gets
 the upstream registry's approval before fetching from a peer, so peering never
 bypasses registry authorization.
 
-Peering is disabled by default. To enable it, give every instance the same
-`ca.crt` and `ca.key`, then add these settings to each instance's configuration:
-
-```sh
-# Address for the peer listener, separate from the proxy and metrics listeners
-OCI_ACCELERATOR_PEER_LISTEN=0.0.0.0:5130
-
-# This instance's own address, as other instances reach it
-OCI_ACCELERATOR_PEER_ADVERTISE=accelerator-a.example:5130
-
-# Other instances to contact at startup (optional)
-OCI_ACCELERATOR_PEER_SEEDS=accelerator-b.example:5130,accelerator-c.example:5130
-
-# Private, persistent directory for this instance's peer identity and address book
-OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
-```
-
-Instances discover each other through their seeds and the peers those seeds
-know about, and join once others can reach their advertised address.
-
-Peers authenticate each other with mutual TLS using certificates signed by the
-shared CA. Any holder of the CA key can join the fleet and read its cached
-content, so restrict network access to the peer port and protect `ca.key` on
-every instance. Peers never share registry credentials or approvals.
-
-See [peer discovery](docs/deployment.md#peer-discovery) in the deployment guide
-for container setups, trust, and retention.
+Peering is disabled by default. See
+[peer discovery](docs/deployment.md#peer-discovery) in the deployment guide to
+set it up and secure it.
 
 ## Contributing
 

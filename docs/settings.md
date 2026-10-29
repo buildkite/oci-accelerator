@@ -4,6 +4,7 @@ This reference lists every OCI Accelerator environment variable and its
 default, grouped like [`.env.example`](../.env.example). See
 [configuration](deployment.md#configuration) in the deployment guide for how
 values are loaded, dotenv syntax, value formats, and state directory rules.
+The container [image](deployment.md#image) overrides some of these defaults.
 
 ## Required
 

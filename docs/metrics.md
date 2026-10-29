@@ -25,9 +25,58 @@ when each request completes.
 | Metric | Type | Description |
 | ------ | ---- | ----------- |
 | `cache_total{outcome}` | counter | Cache lookups, by `hit`, `wait_hit`, `miss`, or `bypass` |
-| `served_bytes_total{source}` | counter | Image content bytes sent to clients, by `cache`, `origin`, or `peer`. See [cache delivery ratios](deployment.md#cache-delivery-ratios) |
+| `served_bytes_total{source}` | counter | Image content bytes sent to clients, by `cache`, `origin`, or `peer`. See [cache delivery ratios](#cache-delivery-ratios) |
 | `served_entries_total{source}` | counter | Completed image content deliveries, by `cache`, `origin`, or `peer` |
 | `downstream_bytes_total` | counter | Response body bytes sent to clients |
+
+### Cache delivery ratios
+
+`served_bytes_total` and `served_entries_total` measure how much
+digest-addressed content clients received from the local cache, the upstream
+registry, or a peer.
+
+- **Scope.** Only `200` responses to query-free `GET`s for a full, unescaped
+  SHA-256 blob or manifest digest, without `Range` or `If-*` headers. Errors,
+  `HEAD`, tags, ranges, conditional requests, queries, and tunnels are
+  excluded.
+- **Bytes** count what the client actually accepted, including partial
+  deliveries. **Entries** increment only when a delivery completes. They count
+  deliveries, not unique digests, cache fills, or integrity checks.
+- **Source** is where the body came from. `cache` covers ordinary hits, grant
+  hits, and responses served after waiting for another request's fill.
+  `origin` covers cold fills and responses that bypassed storage because of
+  `no-store`, capacity, or unsupported metadata. `peer` covers accepted peer
+  streams, even when storage admission fails. Upstream authorization GETs don't
+  affect attribution.
+- The `cache` and `origin` series start at zero, and `peer` appears on first
+  delivery. They measure application deliveries, not wire bandwidth or
+  bandwidth savings.
+
+This query shows the cache's share of delivered bytes over five minutes, across
+all instances. Apply `rate` before aggregating, and drop a zero-traffic
+denominator so dashboards show N/A instead of zero:
+
+```promql
+(
+  100 * sum(rate(oci_accelerator_served_bytes_total{source="cache"}[5m]))
+    / sum(rate(oci_accelerator_served_bytes_total[5m]))
+)
+and on () (sum(rate(oci_accelerator_served_bytes_total[5m])) > 0)
+```
+
+This query shows the cache's share of completed deliveries:
+
+```promql
+(
+  100 * sum(rate(oci_accelerator_served_entries_total{source="cache"}[5m]))
+    / sum(rate(oci_accelerator_served_entries_total[5m]))
+)
+and on () (sum(rate(oci_accelerator_served_entries_total[5m])) > 0)
+```
+
+For the origin percentage, replace `source="cache"` with `source="origin"`, and
+use `source="peer"` for the peer percentage. Subtracting the cache percentage
+from 100 combines origin and peer delivery.
 
 ## Upstream
 

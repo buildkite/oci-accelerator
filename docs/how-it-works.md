@@ -151,9 +151,9 @@ sequenceDiagram
    token has no grant yet. If the registry's response allows it, the
    accelerator records a grant for that token and repository.
 5. `GET …/sha256:…`, steps 5 to 8: While the grant is live, digest requests
-   are served from disk without contacting the registry. Once it expires, 30
-   seconds by default, the next request goes upstream for approval and starts a
-   new grant, but the body still comes from disk.
+   are served from disk without contacting the registry. Once it expires, the
+   next request goes upstream for approval and starts a new grant, but the body
+   still comes from disk.
 
 ### Redirects
 
@@ -165,7 +165,9 @@ other final response goes back to Docker unchanged.
 If the request or any redirect forbids caching, for example with `no-store`,
 the accelerator still follows the redirects but doesn't cache the result. If
 the chain runs past five hops, loops, or points to an unsafe or malformed
-target, such as a non-HTTPS URL, Docker gets `502 Bad Gateway`.
+target, Docker gets `502 Bad Gateway`. Unsafe targets include non-HTTPS URLs,
+URLs with userinfo or a fragment, unbracketed IPv6 addresses, and non-ASCII
+hostnames. Internationalized names must use punycode (`xn--`).
 
 Redirects for every other request, including mutable requests, go back to
 Docker unchanged and are never cached.
@@ -233,9 +235,9 @@ get a certificate.
   final hour, because renewing it can't extend its lifetime. If the root CA
   isn't currently valid, no certificate is signed or reused.
 - **Memory only.** Certificates and their private keys are never written to
-  disk. The accelerator keeps up to `OCI_ACCELERATOR_MAX_LEAF_CERTIFICATES`
-  (256 by default) and evicts the least recently used. Each use or renewal
-  counts as recent.
+  disk. The accelerator keeps up to
+  [`OCI_ACCELERATOR_MAX_LEAF_CERTIFICATES`](settings.md#connections-and-limits)
+  and evicts the least recently used. Each use or renewal counts as recent.
 
 ## Authorizing intercepted requests
 
@@ -248,9 +250,9 @@ decides pull permission per repository from the token alone, not from cookies,
 other headers, or rules for individual objects. The accelerator doesn't read
 token claims, scopes, or expiry.
 
-If your registry doesn't fit, for example because it uses object-specific pull
-ACLs, set `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL=0s`. Turning off shared
-mutable caching isn't enough.
+A registry that doesn't fit, for example because it uses object-specific pull
+ACLs, needs credentialed grants turned off. See
+[authorization grants](deployment.md#authorization-grants).
 
 ### Approval before every delivery
 
@@ -281,11 +283,11 @@ registry rate limits.
 
 ### Authorization grants
 
-A grant lets the accelerator reuse a recent upstream approval without
-contacting the registry. Grants are kept in memory only, are cleared on
-restart, and share the `OCI_ACCELERATOR_CACHE_MAX_AUTHORIZATION_ENTRIES` limit,
-10000 by default. Cached bytes are shared, but approvals aren't. Any client the
-registry approves can receive a cached copy, whoever filled it.
+A grant lets the accelerator reuse a recent upstream approval without contacting
+the registry. Grants are kept in memory only, are cleared on restart, and share
+the [authorization entry limit](settings.md#cache-authorization). Cached bytes
+are shared, but approvals aren't. Any client the registry approves can receive a
+cached copy, whoever filled it.
 
 #### What creates a grant
 
@@ -329,12 +331,12 @@ that filled it.
 
 #### How long it lasts
 
-`OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL`, 15 minutes by default,
-sets the lifetime for requests without `Authorization`.
-`OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL`, 30 seconds by default, sets it for
-requests with `Authorization`, even an empty one. Set either to `0s` to turn
-off reuse for that kind of request. Setting both to `0s` also turns off the
-mutable response cache.
+`OCI_ACCELERATOR_CACHE_ANONYMOUS_AUTHORIZATION_TTL` sets the lifetime for
+requests without `Authorization`. `OCI_ACCELERATOR_CACHE_AUTHORIZATION_TTL`
+sets it for requests with `Authorization`, even an empty one. See
+[cache authorization](settings.md#cache-authorization) for the defaults. A
+value of `0s` turns off reuse for that kind of request, and `0s` for both also
+turns off the mutable response cache.
 
 A grant's lifetime is measured from the earliest response headers in the
 redirect chain. Hits don't extend it, and nothing refreshes it in the
@@ -358,6 +360,8 @@ response has any of the following, even for a request that had to revalidate:
 - headers that would prevent a grant, such as `no-store`, `private`, `Pragma`,
   or `max-age=0`, or a malformed `max-age` or `s-maxage`
 - a `Vary` the accelerator can't key on, or a digest mismatch
+
+A later successful response can't restore a revoked grant.
 
 For tag and listing responses in shared mode, only `Vary: *` or
 `Vary: Authorization` counts, and there's no digest check. A `404`, `410`, or
@@ -408,14 +412,24 @@ upstream as a request for the whole blob. Docker still gets only the bytes it
 asked for. They come from disk if the blob is cached, or otherwise from the
 origin or peer stream that fills the cache.
 
-The fill continues after Docker disconnects, until
-`OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` expires.
+A cache hit supports single, suffix, and multipart ranges. Before the blob is
+cached, a single range is cut from the full stream and returned as `206`, and a
+request for more than one range gets the full `200`.
+
+The fill continues after the range ends or Docker disconnects, until
+`OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` expires. A range can finish before the
+digest is checked, but a fill that fails later is never cached or retried from
+origin.
 
 Only Bearer repository grants apply to ranges. See
 [what a grant covers](#what-a-grant-covers).
 
-A manifest request with a `Range` header, or any request with an `If-*` header,
-is forwarded upstream unchanged and not cached.
+These requests are forwarded upstream unchanged and not cached:
+
+- a manifest request with a `Range` header
+- any request with an `If-*` header, including `If-Range`
+- a `no-store` request
+- a request whose `Connection` header names `Range`
 
 ### Mutable response caching
 
@@ -439,15 +453,15 @@ including credentials. So GET and HEAD, and each listing page or filter, are
 separate entries.
 
 Sharing assumes your registry returns the same metadata to every token approved
-for the repository. If it filters tag lists or other metadata per token, set
-`OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=false` so every request uses
-exact-request entries.
+for the repository. `OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=false` makes every
+request use exact-request entries, for registries that filter metadata per
+token. See [stale mutable metadata](deployment.md#stale-mutable-metadata).
 
 #### Lifetime
 
-`OCI_ACCELERATOR_CACHE_MUTABLE_TTL` sets how long an entry lasts, 30 seconds by
-default, from when the upstream response headers arrive. Set it to `0s` to turn
-off mutable caching. Hits never extend an entry.
+[`OCI_ACCELERATOR_CACHE_MUTABLE_TTL`](settings.md#mutable-cache) sets how long
+an entry lasts, from when the upstream response headers arrive. A value of `0s`
+turns off mutable caching. Hits never extend an entry.
 
 An exact-request entry is also capped by the matching authorization TTL.
 
@@ -475,27 +489,23 @@ doesn't affect the response. HEAD entries store headers only.
 
 #### Limits and waiting
 
-Captures and stored responses share a 32 MiB limit, with at most 1 MiB of body
-and 64 KiB of headers per response, 16 captures at once, and 1,024 entries
-including captures in progress. Each capture counts as full size until it
-finishes. These limits don't bound the process's total memory use.
+Captures and stored responses share fixed limits on total memory, body and
+header size per response, concurrent captures, and entries including captures
+in progress. See [built-in limits](deployment.md#built-in-limits) for the
+values. Each capture counts as full size until it finishes. These limits don't
+bound the process's total memory use.
 
 An [approved](#what-a-grant-covers) request can wait up to
-`OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT`, 1 second by default, for a matching
-capture in progress instead of fetching upstream. After a timeout or failed
-capture, it fetches upstream without trying to cache. Setting the timeout to
-`0s` turns off waiting, not caching.
+[`OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT`](settings.md#cache-storage) for a
+matching capture in progress instead of fetching upstream. After a timeout or
+failed capture, it fetches upstream without trying to cache. Setting the timeout
+to `0s` turns off waiting, not caching.
 
 ## Disk cache storage
 
-The disk cache lives in `OCI_ACCELERATOR_CACHE_DIR`, which the accelerator
-creates if it doesn't exist. The directory must be mode `0700` and owned by the
-accelerator's user. Its parent must also be owned by that user and not
-writable by group or others. A lock file lets only one accelerator process use
-the cache at a time, so a second process fails to start.
-
-See [cache storage](deployment.md#cache-storage) for settings, operations, and
-how to reset the cache.
+The disk cache lives in `OCI_ACCELERATOR_CACHE_DIR`. See
+[cache storage](deployment.md#cache-storage) for its directory requirements,
+settings, operations, and how to reset the cache.
 
 ### Entries
 
@@ -536,12 +546,14 @@ Only one request fills an entry at a time. Others for the same object still
 get their own upstream approval, then wait up to
 `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` for the fill instead of downloading
 again. After a timeout, failed fill, or eviction, they retry once upstream. If
-the first fill is still running, the retry downloads without caching.
+the first fill is still running, the retry downloads without caching. A waiting
+request that disconnects doesn't affect the fill.
 
 ### Limits and eviction
 
 [`OCI_ACCELERATOR_CACHE_MAX_BYTES`, `OCI_ACCELERATOR_CACHE_MAX_ENTRIES`, and
-`OCI_ACCELERATOR_CACHE_MAX_FILLS`](settings.md) limit the cache. Fills in
+`OCI_ACCELERATOR_CACHE_MAX_FILLS`](settings.md) limit the cache. Each entry
+counts its body plus 4 KiB of metadata toward the byte limit. Fills in
 progress, and entries whose removal failed, count toward these limits.
 
 When a new entry doesn't fit, the accelerator evicts approximately
@@ -587,10 +599,11 @@ candidate becomes a member only after this instance successfully contacts its
 advertised address. For example, if A knows B and B knows C, A learns about C
 through B but doesn't advertise C until it contacts C itself.
 
-Membership expires after 30 minutes without successful outbound contact.
-Gossip and inbound contact don't extend it, and expired peers aren't
-advertised or chosen as providers. A returning peer can contact a live member,
-which probes it back before restoring membership.
+Membership expires after a fixed time without successful outbound contact
+([limits](peer-protocol.md#retries-and-limits)). Gossip and inbound contact
+don't extend it, and expired peers aren't advertised or chosen as providers. A
+returning peer can contact a live member, which probes it back before restoring
+membership.
 
 ### Cache key hints
 
@@ -608,7 +621,8 @@ settings.
 Hints are advisory and grant no access. They record which peer claimed which
 object. Neither a full scan nor an empty listing removes a claim. A claim is
 removed only when that peer answers `404` for the object, or when the hint
-index, shared by all peers, passes 200,000 keys and drops the oldest.
+index, shared by all peers, fills and drops the oldest
+([details](peer-protocol.md#hint-fetching)).
 
 ### Fetching from a peer
 
@@ -620,9 +634,8 @@ accelerator:
 2. Uses a local entry, or waits for a fill already in progress.
 3. Otherwise, picks one live hinted peer at random and tries no other.
 
-The peer serves only a committed entry with the same registry, repository,
-digest, media type, and `Accept` header. A layer cached under another
-repository isn't shared.
+The peer serves only a committed entry with the same [cache key](#entries). A
+layer cached under another repository isn't shared.
 
 Until the peer's response headers pass validation, the approved origin stream
 stays open. A missing, busy, unreachable, or incompatible peer falls back to it

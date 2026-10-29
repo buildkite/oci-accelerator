@@ -18,8 +18,7 @@ See [how it works](how-it-works.md) for the request flow and design.
 ### No client authentication
 
 Anyone who can reach the listener can open opaque CONNECT tunnels to arbitrary
-hosts and ports, which cannot be inspected or restricted to image pulls. The
-proxy's redirect checks protect only fetches it makes itself, not tunnels.
+hosts and ports, which cannot be inspected or restricted to image pulls.
 
 Keep the default loopback bind, or bind a private interface behind network
 access controls and a firewall. Never expose the proxy through an Amp portal.
@@ -29,8 +28,9 @@ access controls and a firewall. Never expose the proxy through an Amp portal.
 The CA can sign any server identity. Protect `ca.key`, never give it to Docker
 clients or bake it into an image, and scope client trust to each intercepted
 registry rather than system-wide. [Peering](#peer-discovery) requires securely
-provisioning the same CA key to each trusted accelerator instance, and anyone
-holding it can impersonate any peer ([peer trust](#peer-trust)).
+provisioning the same CA key to each trusted accelerator instance. Anyone
+holding it can impersonate registries and peers
+([details](how-it-works.md#trusting-the-accelerators-certificate)).
 
 The CA download is unauthenticated, so verify its fingerprint through a trusted
 channel before installing it ([details](#trust-the-ca)).
@@ -55,11 +55,15 @@ By default, grants last up to 15 minutes for requests without an
 can still be served from cache until they expire. Set both
 [authorization TTLs](#authorization-grants) to `0s` to check every delivery.
 
+A cache hit without a live grant still sends the request upstream for
+approval, which may count toward registry rate limits
+([details](how-it-works.md#approval-before-every-delivery)).
+
 ### Stale mutable metadata
 
-Tag manifests, tag lists, referrer lists, and catalog responses are cached in
-memory for 30 seconds by default, even after a push, tag move, or access
-revocation. Set `OCI_ACCELERATOR_CACHE_MUTABLE_TTL=0s` to disable this cache
+Tag manifests, tag lists, referrer lists, and catalog responses are cached
+briefly in memory, even after a push, tag move, or access revocation. Set
+`OCI_ACCELERATOR_CACHE_MUTABLE_TTL=0s` to disable this cache
 ([details](#mutable-response-cache)).
 
 Bearer tokens approved for a repository share its cached metadata. Set
@@ -544,9 +548,9 @@ Docker push uses the same proxy and CA configuration as pull.
   time or size limit.
 - Writes don't invalidate [authorization grants](#authorization-grants) or
   [mutable responses](#mutable-response-cache), so a moved tag or deleted image
-  can still be served until they expire. Set both authorization TTLs to `0s` to
-  check every delivery, or `OCI_ACCELERATOR_CACHE_MUTABLE_TTL=0s` to disable
-  only mutable reuse.
+  can still be served until they expire. See
+  [authorization of cached content](#authorization-of-cached-content) and
+  [stale mutable metadata](#stale-mutable-metadata) to turn off reuse.
 
 ## Monitoring
 
@@ -603,58 +607,8 @@ pprof endpoint.
   independent of `OCI_ACCELERATOR_MAX_CONNECTIONS`. In Kubernetes, you can use
   local exec probes with a loopback bind.
 
-See the [metrics reference](metrics.md) for every metric, its labels, and
-notes on interpreting it.
-
-### Cache delivery ratios
-
-`oci_accelerator_served_bytes_total{source="cache|origin|peer"}` and
-`oci_accelerator_served_entries_total{source="cache|origin|peer"}` measure how
-much digest-addressed content clients received from the local cache, the
-upstream registry, or a peer.
-
-- **Scope.** Only `200` responses to query-free `GET`s for a full, unescaped
-  SHA-256 blob or manifest digest, without `Range` or `If-*` headers. Errors,
-  `HEAD`, tags, ranges, conditional requests, queries, and tunnels are
-  excluded.
-- **Bytes** count what the client actually accepted, including partial
-  deliveries. **Entries** increment only when a delivery completes. They count
-  deliveries, not unique digests, cache fills, or integrity checks.
-- **Source** is where the body came from. `cache` covers ordinary hits, grant
-  hits, and responses served after waiting for another request's fill.
-  `origin` covers cold fills and responses that bypassed storage because of
-  `no-store`, capacity, or unsupported metadata. `peer` covers accepted peer
-  streams, even when storage admission fails. Upstream authorization GETs don't
-  affect attribution.
-- The `cache` and `origin` series start at zero, and `peer` appears on first
-  delivery. All update when each request ends. They measure application
-  deliveries, not wire bandwidth or bandwidth savings.
-
-This query shows the cache's share of delivered bytes over five minutes, across
-all instances. Apply `rate` before aggregating, and drop a zero-traffic
-denominator so dashboards show N/A instead of zero:
-
-```promql
-(
-  100 * sum(rate(oci_accelerator_served_bytes_total{source="cache"}[5m]))
-    / sum(rate(oci_accelerator_served_bytes_total[5m]))
-)
-and on () (sum(rate(oci_accelerator_served_bytes_total[5m])) > 0)
-```
-
-This query shows the cache's share of completed deliveries:
-
-```promql
-(
-  100 * sum(rate(oci_accelerator_served_entries_total{source="cache"}[5m]))
-    / sum(rate(oci_accelerator_served_entries_total[5m]))
-)
-and on () (sum(rate(oci_accelerator_served_entries_total[5m])) > 0)
-```
-
-For the origin percentage, replace `source="cache"` with `source="origin"`, and
-use `source="peer"` for the peer percentage. Subtracting the cache percentage
-from 100 combines origin and peer delivery.
+See the [metrics reference](metrics.md) for every metric, its labels, notes on
+interpreting it, and example cache hit ratio queries.
 
 ## Lifecycle
 
@@ -788,16 +742,19 @@ This section covers cache settings and operations. See
 [disk cache storage](how-it-works.md#disk-cache-storage) for
 how entries are stored, filled, and evicted.
 
+### Cache directory requirements
+
+The directory in `OCI_ACCELERATOR_CACHE_DIR` must be mode `0700` and owned by
+the proxy's user. Its parent must also be owned by that user and not writable by
+group or others. Startup creates the directory if it doesn't exist. A lock file
+lets only one proxy process use the cache at a time, so a second process fails
+to start.
+
 ### Immutable disk cache
 
-- Cached on disk: query-free SHA-256 blob GETs, including image configuration
-  blobs, and digest manifests in supported OCI and Docker schema-2 media types.
-  Eligible blob ranges can fill the same full-body entry.
-- Not cached on disk: mutable metadata, HEAD requests, ranged manifests,
-  conditional and non-identity-encoded responses, unknown-length bodies,
-  no-store traffic, and unsupported `Vary` dimensions.
-
-How it works lists the [entry fields and cache keys](how-it-works.md#entries).
+Digest-addressed blobs and manifests are cached on disk. See
+[what gets cached](how-it-works.md#what-gets-cached) for the exceptions, and
+[entries](how-it-works.md#entries) for the stored fields and cache keys.
 
 ### Mutable response cache
 
@@ -810,7 +767,7 @@ This separate in-memory cache reuses successful `200` responses for:
 
 Entries live only in memory and are never shared with peers. They expire after
 `OCI_ACCELERATOR_CACHE_MUTABLE_TTL`, 30 seconds by default, so a longer value
-means tags can stay stale longer. Set it to `0s` to turn the cache off.
+means tags can stay stale longer.
 
 By default, Bearer tokens approved for a repository share its cached responses,
 and each reader still needs its own live grant. Set
@@ -822,23 +779,14 @@ matching, expiry, memory limits, and invalidation.
 
 ### Capacity and eviction
 
-- `OCI_ACCELERATOR_CACHE_MAX_BYTES` counts each body plus 4 KiB of metadata,
-  including active fills. Leave filesystem headroom for blocks, directories,
-  and inodes beyond it.
-- Eviction removes approximately least-recently-used entries, skips entries
-  being read, and makes at most eight removals per new entry. Objects that
-  still don't fit stream to Docker without being cached.
-
-### Concurrent disk fills
-
-- Every client is authorized upstream on its own. One request fills a given
-  entry, and others for the same object wait up to
-  `OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT` for it. A timeout, failed fill, or
-  eviction causes one fresh authorized GET.
-- Cancelling an ordinary full-GET leader aborts its fill. Cancelling a follower
-  doesn't affect the leader. Ranged fills can continue in the background
-  ([range requests](#range-requests)).
-- An entry is published only after its full length and digest are verified.
+- `OCI_ACCELERATOR_CACHE_MAX_BYTES` counts each body plus a fixed
+  [metadata charge](#built-in-limits) per entry, including active fills. Leave
+  filesystem headroom for blocks, directories, and inodes beyond it.
+- When the cache is full, older entries are evicted, and objects that still
+  don't fit stream to Docker without being cached. See
+  [limits and eviction](how-it-works.md#limits-and-eviction) and
+  [filling](how-it-works.md#filling) for how eviction and concurrent fills
+  work.
 
 ### Startup recovery
 
@@ -913,19 +861,12 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 
 ### Peer trust
 
-Both sides require TLS 1.3 and dedicated, short-lived peer certificates signed
-by the local CA. Each instance generates its own peer key and renews its
-certificate before expiry. Certificates can't outlive the CA. Interception
-certificates aren't accepted as peer certificates, the public CA download
-grants no peer access, and the CA private key is never sent over the peer
-protocol.
-
-This establishes fleet membership, not trusted individual identities. Anyone
-holding the shared CA key can impersonate any peer, so compromising one
-instance compromises the whole fleet, and you can't revoke a single node while
-it holds that key. Node IDs are self-asserted, not authenticated. Fleet members
-can fetch cached content without registry credentials, but each requester gets
-its own upstream approval first, and peers never receive tokens or grants.
+Peer authentication establishes fleet membership, not trusted individual
+identities. Anyone holding the shared CA key can impersonate any peer, so
+compromising one instance compromises the whole fleet, and you can't revoke a
+single node while it holds that key. See
+[trust and membership](how-it-works.md#trust-and-membership) for the reasoning
+and [peer certificates](peer-protocol.md#peer-certificates) for the TLS rules.
 
 Peers can make your instance connect to any host and port they name. Mutual TLS
 rejects non-peers but can't prevent those connection attempts, so restrict
@@ -935,24 +876,16 @@ from the destination.
 
 ### Limits and state
 
-- Each instance keeps up to 1,024 confirmed members and, separately, up to
-  1,024 configured seeds. Members expire after 30 minutes without successful
-  outbound contact. Keep a reachable seed or another live peer so separated
-  groups can find each other after a partition.
-- Another instance admits your node only after it connects to your advertised
-  address. If NAT or firewall rules block that, your node can learn members but
-  won't become one.
-- Each instance accepts 32 peer connections and runs up to eight incoming and
-  eight outgoing entry transfers. Key hints for all peers share a FIFO of
-  200,000 keys.
-- The state directory holds `node-id` and `peers.json`, both process-owned
-  with mode 0600. Don't edit them while the instance runs, and never copy them
-  to another instance, because that duplicates its node ID. To reset
-  membership, stop the instance, back up the directory, and remove only
-  `peers.json`.
-- Startup checks for node ID collisions before readiness, within a five-second
-  network budget. The check is best-effort, and unreachable peers don't block
-  startup.
+The [peer protocol](peer-protocol.md#retries-and-limits) describes membership,
+connection, transfer, and hint limits.
+
+- Keep a reachable seed or another live peer so separated groups can find each
+  other after a partition.
+- The state directory holds `node-id` and `peers.json`. Don't edit them while
+  the instance runs, and never copy them to another instance, because that
+  duplicates its node ID.
+- To reset membership, stop the instance, back up the state directory, and
+  remove only `peers.json` ([state files](peer-protocol.md#state-files)).
 
 Listing traffic grows as O(N²) across an N-node fleet because each node polls
 the others. As an illustrative upper-tail body estimate, a terminal page of
@@ -1069,7 +1002,7 @@ You can configure private registries explicitly.
   native `data/` layout.
 - Ownership and layout are checked at startup. See the
   [CA](#ca-directory-requirements) and
-  [cache](how-it-works.md#disk-cache-storage) requirements.
+  [cache](#cache-directory-requirements) directory requirements.
 
 ### Settings
 
@@ -1113,37 +1046,18 @@ affect your deployment.
 
 ### Range requests
 
-Eligible range requests are unconditional SHA-256 blob GETs with a `Range`
-header.
-
-- A live Bearer repository grant can serve a verified local hit without an
-  upstream GET. Every miss goes upstream as a full GET. Ranges with other
-  credentials, or none, need upstream approval each time.
-- A cache hit supports single, suffix, and multipart ranges.
-- Until the body is cached, a single range is cut from the full origin or peer
-  stream and returned as `206`, and multiple ranges get the full `200`. An
-  admitted fill keeps reading after the range ends or the client disconnects,
-  bounded by `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`. A range can finish before
-  the digest is verified, but a failed tail is never cached or retried from
-  origin.
-- Ranged manifests, `If-Range` and other conditional requests, no-store
-  requests, and a `Range` header named by `Connection` pass through.
+Resumed blob downloads with a `Range` header can be served from the cache and
+can fill it. A fill keeps downloading the whole blob after the client
+disconnects, until `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`. See
+[ranges and conditional requests](how-it-works.md#ranges-and-conditional-requests)
+for which ranges qualify and how they're served.
 
 ### Redirects
 
-The proxy follows up to five redirects, only for eligible query-free SHA-256
-blob and digest manifest GETs.
-
-- Every hop must use verified HTTPS and pass destination checks. Userinfo,
-  fragments, loops, unbracketed IPv6 addresses, non-ASCII hostnames, and
-  implicit private, link-local, or loopback destinations are rejected. Use
-  punycode (`xn--`) for internationalized names, and add private storage hosts
-  to `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`.
-- The target's host and port are sent exactly as written, so presigned URLs
-  that sign the `Host` header stay valid.
-- Cross-origin redirects keep only `Accept`, `Accept-Encoding`, and
-  `User-Agent`, never credentials or cookies.
-- These checks don't apply to tunnels ([limitations](#current-limitations)).
+The proxy follows up to five redirects for digest-addressed GETs and checks
+the destination of each hop. Add private storage hosts, such as an internal
+CDN, to `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`. See
+[redirects](how-it-works.md#redirects) for the rules.
 
 ### Authorization grants
 
@@ -1159,21 +1073,8 @@ created, matched, and expire. For your deployment:
 - Grant hits return `Cache-Control: private, no-store`, so downstream caches
   can't extend a grant's lifetime.
 
-Upstream outcomes affect an existing grant as follows. A failed upstream
-request always reaches Docker and never falls back to cached content.
-
-| Upstream outcome | Matching grant |
-| --- | --- |
-| `401`, `403`, or an authoritative reuse-forbidden response | Invalidated |
-| Any response with `Set-Cookie`, `Authentication-Info`, `Proxy-Authentication-Info`, or `WWW-Authenticate` | Invalidated |
-| Otherwise unrestricted terminal `200` or `304` for a conditional request or one whose request restrictions forbid grant creation | Bearer repository grant kept until its original expiry, not created or renewed |
-| `404` or `410` without other invalidating headers or policy | Bearer repository grant kept. Exact-request grant invalidated |
-| Timeout, DNS or TLS failure, `408`, `429`, or `5xx` without invalidating headers or policy | Kept until its original expiry |
-
-Invalidating responses on any redirect hop count, and a late successful request
-can't restore an invalidated grant. In shared mutable mode, mutable responses
-can also revoke a token's grant. See
-[how it works](how-it-works.md#authorization-grants) for details.
+See [what revokes it](how-it-works.md#what-revokes-it) for how upstream
+responses affect an existing grant.
 
 ## Troubleshooting
 
@@ -1190,7 +1091,7 @@ can also revoke a token's grant. See
 | Docker reports an unknown certificate authority | The CA isn't installed under the exact `certs.d/<host[:port]>` directory. [Trust the CA](#trust-the-ca) for that authority |
 | Private registry fails with a TLS error | The proxy doesn't trust the registry's real CA. Add it to the proxy's system trust store. Never disable verification |
 | Pulls work but no request records show the registry | The registry is missing from `OCI_ACCELERATOR_REGISTRIES` (the port must match), listed in `no-proxy`, or Docker wasn't restarted. Fix the registry list or [Docker's proxy configuration](#point-docker-at-the-proxy) |
-| Revoked access, a moved tag, or a deleted image still appears briefly | A live [grant](#authorization-grants) or [mutable response](#mutable-response-cache) is still in use. Wait for expiry, or set both authorization TTLs to `0s`. Set `OCI_ACCELERATOR_CACHE_MUTABLE_TTL=0s` to disable only mutable reuse |
+| Revoked access, a moved tag, or a deleted image still appears briefly | A live [grant](#authorization-grants) or [mutable response](#mutable-response-cache) is still in use. Wait for expiry, or turn off reuse ([authorization of cached content](#authorization-of-cached-content), [stale mutable metadata](#stale-mutable-metadata)) |
 | The first pull from cache after a restart is slow | Each body is rehashed on first use. This is expected, and later hits skip the rehash |
 | Peers don't form a fleet, or peer warnings appear in logs | Usually an unreachable advertised address, NAT, or a node ID collision. Check `OCI_ACCELERATOR_PEER_ADVERTISE` and [limits and state](#limits-and-state), including its log message table |
 | `.ca-init-*` directories in the CA parent | A crash or SIGKILL interrupted CA initialization. [Clean up staging directories](#clean-up-staging-directories) |
@@ -1198,8 +1099,8 @@ can also revoke a token's grant. See
 
 ## Current limitations
 
-- Redirect checks don't constrain tunnel egress
-  ([no client authentication](#no-client-authentication)).
+- Redirect checks protect only fetches the proxy makes itself, not tunnel
+  egress ([no client authentication](#no-client-authentication)).
 - Peering tries one provider per miss, with no shared filesystem, coordinated
   eviction, or prefetch. After a peer stream is accepted, a failure can't
   switch to origin, so the client must retry. No multi-node Docker peer
