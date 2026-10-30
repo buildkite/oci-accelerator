@@ -218,8 +218,6 @@ OCI_ACCELERATOR_DOCKER_LOAD_REPORT="$reports/docker.json" \
   failed run leaves any existing report untouched, so use a fresh report
   directory and rely on the test exit status.
 - Resource peaks are periodic samples, not guaranteed maxima.
-- See [cache benchmarks](../internal/cache/benchmarks.md) for isolated
-  admission contention checks.
 
 ## Run acceptance in an Amp orb
 
