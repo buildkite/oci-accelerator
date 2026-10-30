@@ -34,8 +34,7 @@ last.
 ## Request flow
 
 The examples below follow a cold pull and then a warm pull of the same image
-through the accelerator. The subsections after them cover how the accelerator
-follows redirects and checks upstream addresses.
+through the accelerator.
 
 This is `docker pull alpine:latest` on a Docker host with an empty image store,
 using the example configuration, which lists `registry-1.docker.io` in
@@ -105,9 +104,9 @@ sequenceDiagram
 ```
 
 4. `HEAD …/manifests/latest`: Docker resolves the tag to an index digest. The
-   accelerator forwards the first request. An eligible `200` can establish this
-   token's repository approval and briefly cache the HEAD response for
-   independently approved tokens.
+   accelerator forwards the first request. An eligible `200` records a
+   [grant](#authorization-grants) for this token and repository, and the
+   response is cached briefly.
 5. `GET …/manifests/sha256:<index>`: Docker fetches the image index. The
    accelerator streams it to Docker while writing it to disk, publishing after
    verifying length and digest.
@@ -225,13 +224,12 @@ get a certificate.
   the current one is within an hour of expiry, or isn't currently valid, for
   example after the system clock moves backwards.
 - **Never outlive the root CA.** A certificate's validity is capped at the root
-  CA's expiry. One that already expires with the root CA is reused even in its
-  final hour, because renewing it can't extend its lifetime. If the root CA
-  isn't currently valid, no certificate is signed or reused.
+  CA's expiry. If the root CA isn't currently valid, no certificate is signed
+  or reused.
 - **Memory only.** Certificates and their private keys are never written to
   disk. The accelerator keeps up to
   [`OCI_ACCELERATOR_MAX_LEAF_CERTIFICATES`](settings.md#connections-and-limits)
-  and evicts the least recently used. Each use or renewal counts as recent.
+  and evicts the least recently used.
 
 ## Authorizing intercepted requests
 
@@ -277,10 +275,9 @@ registry rate limits.
 
 ### Authorization grants
 
-A grant lets the accelerator reuse a recent upstream approval without contacting
-the registry. Grants are kept in memory only, are cleared on restart, and share
-the [authorization entry limit](settings.md#cache-authorization). Cached bytes
-are shared, but approvals aren't. Any client the registry approves can receive a
+Grants are kept in memory only, are cleared on restart, and share the
+[authorization entry limit](settings.md#cache-authorization). Cached bytes are
+shared, but approvals aren't. Any client the registry approves can receive a
 cached copy, whoever filled it.
 
 #### What creates a grant
@@ -314,10 +311,9 @@ for which responses are still written to disk.
 | Repository | A request with a single valid, nonempty Bearer token | That token, registry, and repository: digest manifests, blobs including ranges, and shared mutable entries |
 | Exact-request | Every other request, including anonymous requests and empty, malformed, or multiple Bearer credentials | Only a request with the same URL and forwarded headers. The same applies to exact-request mutable entries and waiting for them. Ranged requests always go upstream |
 
-Other forwarded headers don't change which repository grant applies. A new or
-rotated token must get its own upstream approval and can't use another token's
-grant. An anonymous grant never serves a request carrying `Authorization`, even
-if `Connection` strips that header before forwarding.
+Other forwarded headers don't change which repository grant applies. An
+anonymous grant never serves a request carrying `Authorization`, even if
+`Connection` strips that header before forwarding.
 
 Every reader of a shared mutable entry needs its own grant, including to wait
 for a capture in progress, so an entry can outlive the approval of the token
@@ -350,9 +346,8 @@ A Bearer repository grant is revoked when any redirect hop or the final
 response has any of the following, even for a request that had to revalidate:
 
 - a `401` or `403`
-- an authentication header
-- headers that would prevent a grant, such as `no-store`, `private`, `Pragma`,
-  or `max-age=0`, or a malformed `max-age` or `s-maxage`
+- any header on the [no-grant list](#what-creates-a-grant), or a malformed
+  `max-age` or `s-maxage`
 - a `Vary` the accelerator can't key on, or a digest mismatch
 
 A later successful response can't restore a revoked grant.
@@ -371,8 +366,7 @@ exact-request mutable entry, even one still being captured.
 Tokens are opaque to the accelerator, so an expired or revoked token keeps its
 grant until the grant expires. Revoking a repository grant stops both immutable
 and [mutable](#mutable-response-caching) reuse for that token, but doesn't
-purge cached bytes or other tokens' grants. An upstream failure always goes
-back to Docker and is never hidden by cached content.
+purge cached bytes or other tokens' grants.
 
 ## What gets cached
 
@@ -396,9 +390,6 @@ digest-addressed `200` off disk. A response marked `private` or `no-cache`, or
 carrying `Pragma` or an authentication header, is still cached. Later clients
 can receive it after their own upstream approval.
 
-See [mutable response caching](#mutable-response-caching) for how responses
-are kept briefly in memory.
-
 ### Ranges and conditional requests
 
 A blob request with a `Range` header, such as a resumed layer download, goes
@@ -414,9 +405,6 @@ The fill continues after the range ends or Docker disconnects, until
 `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` expires. A range can finish before the
 digest is checked, but a fill that fails later is never cached or retried from
 origin.
-
-Only Bearer repository grants apply to ranges. See
-[what a grant covers](#what-a-grant-covers).
 
 These requests are forwarded upstream unchanged and not cached:
 
@@ -483,11 +471,9 @@ doesn't affect the response. HEAD entries store headers only.
 
 #### Limits and waiting
 
-Captures and stored responses share fixed limits on total memory, body and
-header size per response, concurrent captures, and entries including captures
-in progress. See [built-in limits](deployment.md#built-in-limits) for the
-values. Each capture counts as full size until it finishes. These limits don't
-bound the process's total memory use.
+Mutable caching has fixed limits on memory, response size, concurrent
+captures, and entries. See [built-in limits](deployment.md#built-in-limits)
+for the values.
 
 An [approved](#what-a-grant-covers) request can wait up to
 [`OCI_ACCELERATOR_CACHE_FILL_WAIT_TIMEOUT`](settings.md#cache-storage) for a
@@ -503,26 +489,11 @@ settings, operations, and how to reset the cache.
 
 ### Entries
 
-Each cached object is stored as a body file and a small JSON metadata file:
-
-| Field | Contents |
-| --- | --- |
-| `Key` | SHA-256 of the registry, repository, object kind, digest, `Accept`, and `Content-Type`, as 64 hex characters |
-| `Digest` | The object's `sha256:` digest |
-| `Size` | Body length in bytes |
-| `MediaType` | The response's `Content-Type` |
-| `RequestKey` | SHA-256 of the registry, repository, object kind, digest, and ordered `Accept` values, as 64 hex characters |
-| `committed` | Commit time, in Unix nanoseconds |
-
-Both keys are hashes, so the metadata file stores no raw request headers or
-credentials. Because the key covers the registry, repository, `Accept`, and
-`Content-Type`, the same layer can be stored more than once. That happens when
-two repositories use it, or when clients send different `Accept` headers.
-
-`RequestKey` leaves out `Content-Type`, which isn't known until the response
-arrives. It lets a live [repository grant](#what-a-grant-covers) find a local
-entry without an upstream request. If more than one entry matches, the request
-goes upstream as usual.
+Each cached object is stored as a body file and a small metadata file. Entries
+are keyed by a hash of the registry, repository, object kind, digest, `Accept`,
+and `Content-Type`, so metadata stores no raw request headers or credentials.
+The same layer can therefore be stored more than once: when two repositories
+use it, or when clients send different `Accept` headers.
 
 ### Filling
 
@@ -591,10 +562,8 @@ advertised address. For example, if A knows B and B knows C, A learns about C
 through B but doesn't advertise C until it contacts C itself.
 
 Membership expires after a fixed time without successful outbound contact
-([expiry](peer-protocol.md#capacity-and-expiry)). Gossip and inbound contact
-don't extend it, and expired peers aren't advertised or chosen as providers. A
-returning peer can contact a live member, which probes it back before restoring
-membership.
+([expiry](peer-protocol.md#capacity-and-expiry)). Expired peers aren't
+advertised or chosen as providers.
 
 ### Cache key hints
 
@@ -605,15 +574,11 @@ authenticated peers. Other instances poll those listings in the background:
 - incremental polls about once a minute
 - a full rescan about once an hour
 
-See [hint fetching](peer-protocol.md#hint-fetching) for the polling and
-recovery rules, and [peering hints](settings.md#peering-hints) for the timing
-settings.
-
-Hints are advisory and grant no access. They record which peer claimed which
-object. Neither a full scan nor an empty listing removes a claim. A claim is
-removed only when that peer answers `404` for the object, or when the hint
-index, shared by all peers, fills and drops the oldest
-([details](peer-protocol.md#hint-fetching)).
+Hints are advisory, grant no access, and can be stale. A peer's claim is
+removed when it answers `404` for the object, or when the shared hint index
+fills and drops the oldest key. See
+[hint fetching](peer-protocol.md#hint-fetching) for the rules and
+[peering hints](settings.md#peering-hints) for the timing settings.
 
 ### Fetching from a peer
 
