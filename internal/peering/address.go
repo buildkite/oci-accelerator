@@ -9,6 +9,7 @@ import (
 
 // MaxPeers bounds confirmed members excluding self, configured seeds, pending
 // verifications, and peer records in exchange messages and persisted state.
+// The value is arbitrary, chosen to cap background peering chatter.
 const MaxPeers = 32
 
 var errInvalidMessage = errors.New("invalid peer message")

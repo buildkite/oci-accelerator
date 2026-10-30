@@ -482,6 +482,9 @@ also fill its own cache:
 
 ## Limits
 
+The 32-peer ceiling is an arbitrary cap on background peering chatter, not a
+measured scalability threshold.
+
 | Limit | Value |
 | --- | --- |
 | Outbound discovery and listing requests | 5 seconds each |
