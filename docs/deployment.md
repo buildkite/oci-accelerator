@@ -186,14 +186,10 @@ bin/oci-accelerator --env-file .env
 configuration path, the CA certificate path and SHA-256 fingerprint, and the
 startup command. It does not start the proxy or change Docker.
 
-The generated file is the complete `.env.example` configuration, with native starter
-registries `registry-1.docker.io,ghcr.io,public.ecr.aws` and paths `./data/ca`,
-`./data/cache`, and `./data/peers`. These are examples written into the file, not runtime defaults.
-You must still pass `--env-file .env` when starting the proxy. No configuration file is
-discovered automatically, and process environment overrides still apply at startup.
-
-`--check` validates only the configuration. It does not inspect CA or cache state, bind
-listeners, or create directories.
+The generated `.env` is the complete `.env.example` with native starter
+registries and `./data` paths. Always pass `--env-file .env` when starting the
+proxy. See [configuration](#configuration) for how values are loaded and what
+`--check` validates.
 
 Then [configure Docker hosts](#configure-docker-hosts).
 
@@ -231,6 +227,8 @@ and `OCI_ACCELERATOR_CACHE_DIR=./state/cache` in `proxy.env`:
 
 ```sh
 mkdir -m 0700 state
+
+# Optional: provision the CA before first start.
 bin/oci-accelerator init-ca --dir state/ca
 
 bin/oci-accelerator --env-file proxy.env --check
@@ -238,9 +236,6 @@ bin/oci-accelerator --env-file proxy.env --check
 bin/oci-accelerator --env-file proxy.env
 ```
 
-If the parent already exists, check its ownership and permissions instead of recreating it.
-Leave the CA directory absent for generation. `init-ca` does not create configuration or
-cache directories, and startup can generate the CA instead if you omit this optional step.
 Use `init --help`, `init-env --help`, or `init-ca --help` for command-specific usage.
 
 ### Run under a service manager
@@ -291,9 +286,8 @@ How image defaults interact with other settings:
 - Image defaults are process environment variables. They therefore override an application
   `--env-file` passed after the image name. Configure containers through Docker or Compose
   instead.
-- You cannot unset an image default, only replace it. An empty value counts as set: an empty
-  `OCI_ACCELERATOR_METRICS_LISTEN` disables metrics, and an empty `OCI_ACCELERATOR_LISTEN`,
-  `OCI_ACCELERATOR_CA_DIR`, or `OCI_ACCELERATOR_CACHE_DIR` fails validation.
+- You can't unset an image default, only replace it, and an empty value counts
+  as set ([empty values](#configuration)).
 
 The health check needs the metrics listener at `127.0.0.1:9090`. Keep it there or override
 the health check when changing it. An unhealthy result is diagnostic and does not itself
@@ -316,9 +310,8 @@ The supplied `compose.yaml` service builds the local image from the repository r
 - requires `env_file: .env.container`
 - publishes only `127.0.0.1:5128`
 - keeps the root filesystem read-only, drops all capabilities, and sets `no-new-privileges`
-- uses `restart: unless-stopped` and a 40-second stop grace period, allowing for the 15-second
-  `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT` and metrics cleanup (increase it if you raise
-  `OCI_ACCELERATOR_SHUTDOWN_TIMEOUT`)
+- uses `restart: unless-stopped` and a 40-second stop grace period
+  ([shutdown](#shutdown))
 
 | Source                             | Mount point                      | Access   |
 | ---------------------------------- | -------------------------------- | -------- |
@@ -332,8 +325,7 @@ Volume notes:
   provision host directories or use a root entrypoint. The CA volume remains writable at runtime.
 - Existing valid CA files are reused, not replaced.
 - Run only one proxy against these volumes at a time. The names match the
-  [`docker run`](#docker-run) example. Compose warns when reusing volumes created by
-  `docker run` because it does not own them.
+  [`docker run`](#docker-run) example.
 - These examples do not migrate existing host bind-mounted data. If you start with new volumes,
   the proxy creates a new CA, and you must redistribute client trust.
 
@@ -368,8 +360,9 @@ You can put literal values in this mapping, or use Compose interpolation such as
 `OCI_ACCELERATOR_CACHE_MAX_BYTES: "${OCI_ACCELERATOR_CACHE_MAX_BYTES}"`. The latter requires
 you to set the host variable before running Compose.
 
-`--check` does not inspect the mounted CA or cache state. First startup generates the CA. Then
-[configure Docker hosts](#configure-docker-hosts), installing only the public certificate.
+First startup generates the CA. Then
+[configure Docker hosts](#configure-docker-hosts), installing only the public
+certificate.
 
 | Command                                   | Effect on volumes                                      |
 | ----------------------------------------- | ------------------------------------------------------ |
@@ -377,8 +370,7 @@ you to set the host variable before running Compose.
 | `docker volume rm oci-accelerator-cache`  | Deletes only the cache ([reset the cache](#reset-the-cache)) |
 | **`docker compose down -v`**              | **Deletes both, including the signing CA**             |
 
-Preserve the CA volume independently of the replaceable cache. Deleting it makes the next
-startup generate a new identity and requires redistributing client trust.
+Preserve the CA volume independently of the replaceable cache.
 
 #### docker run
 
@@ -438,15 +430,13 @@ docker buildx build --platform linux/amd64 --load -t oci-accelerator:amd64 .
 docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
 ```
 
-- Building or running the arm64 image requires a native arm64 host or configured emulation: Go
-  compilation runs on the builder's architecture, but Alpine's runtime setup executes on the
-  target architecture.
-- For a multi-platform OCI archive, use a Buildx builder with the `docker-container` driver and
-  an OCI output instead of `--load`.
-- Buildkite validates both architectures and, after manual approval, publishes successful current `main` builds to
-  `buildkite/oci-accelerator:latest` and `buildkite/oci-accelerator:build-N`, where `N` is
-  the Buildkite build number. Version bumps also publish a versioned Docker tag and a
-  GitHub release with binaries. See [releasing](../RELEASING.md) for the release process.
+- Building or running the arm64 image requires a native arm64 host or
+  configured emulation.
+- For a multi-platform OCI archive, use a Buildx builder with the
+  `docker-container` driver and an OCI output instead of `--load`.
+- Prebuilt images are published as `buildkite/oci-accelerator:latest`,
+  `:build-N` for each approved `main` build, and a version tag for each
+  release. See [releasing](../RELEASING.md).
 
 ### Serve remote Docker hosts
 
@@ -675,9 +665,7 @@ Concurrent initializers are safe: one wins and the others reuse its CA.
 
 ### CA directory requirements
 
-Proxy startup, `init`, and `init-ca` apply the same checks. For a custom
-layout, create the parent on durable storage before first start, so its
-permissions don't depend on the umask.
+Proxy startup, `init`, and `init-ca` apply the same checks.
 
 | Path | Type | Mode |
 | --- | --- | --- |
@@ -733,9 +721,12 @@ To clean up:
 
 ## Cache storage
 
-This section covers cache settings and operations. See
-[disk cache storage](how-it-works.md#disk-cache-storage) for
-how entries are stored, filled, and evicted.
+This section covers cache settings and operations. Digest-addressed blobs and
+manifests are cached on disk. See
+[disk cache storage](how-it-works.md#disk-cache-storage) for how entries are
+stored, filled, and evicted, [entries](how-it-works.md#entries) for how
+entries are keyed, and [what gets cached](how-it-works.md#what-gets-cached)
+for the exceptions.
 
 ### Cache directory requirements
 
@@ -744,12 +735,6 @@ the proxy's user. Its parent must also be owned by that user and not writable by
 group or others. Startup creates the directory if it doesn't exist. A lock file
 lets only one proxy process use the cache at a time, so a second process fails
 to start.
-
-### Immutable disk cache
-
-Digest-addressed blobs and manifests are cached on disk. See
-[what gets cached](how-it-works.md#what-gets-cached) for the exceptions, and
-[entries](how-it-works.md#entries) for the stored fields and cache keys.
 
 ### Mutable response cache
 
@@ -763,11 +748,6 @@ This separate in-memory cache reuses successful `200` responses for:
 Entries live only in memory and are never shared with peers. They expire after
 `OCI_ACCELERATOR_CACHE_MUTABLE_TTL`, 30 seconds by default, so a longer value
 means tags can stay stale longer.
-
-By default, Bearer tokens approved for a repository share its cached responses,
-and each reader still needs its own live grant. Set
-`OCI_ACCELERATOR_CACHE_MUTABLE_SHARED=false` if your registry returns different
-metadata for different tokens.
 
 See [mutable response caching](how-it-works.md#mutable-response-caching) for
 matching, expiry, memory limits, and invalidation.
@@ -815,11 +795,9 @@ before removing the volume, then start it again as in [docker run](#docker-run).
 
 ## Peer discovery
 
-Peering lets instances that share a CA download cached content from each other.
-Each instance lists its cache keys to authenticated peers. An authorized,
-eligible miss can download from one randomly chosen peer that holds the object
-before falling back to origin. Registry credentials and authorization grants
-are never shared. See
+Peering lets instances that share a CA download cached content from each
+other on a miss, after upstream approval. Registry credentials and
+authorization grants are never shared. See
 [how it works](how-it-works.md#peer-discovery-and-cache-delivery) for an
 overview and the [peer protocol](peer-protocol.md) for wire-level details.
 
@@ -848,9 +826,8 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
 - Seeds are optional bootstrap addresses, not an allowlist. Ports are always
   explicit, including `:443`, and IPv6 uses `[address]:port`.
 - `init` already prepares `data/peers/`. For containers, publish the peer port
-  and use a writable volume such as `/var/lib/oci-accelerator/peers`. Startup
-  creates the state directory but not its parent, and the directory must not
-  overlap the CA or cache directories ([state directories](#state-directories)).
+  and use a writable volume such as `/var/lib/oci-accelerator/peers`
+  ([state directories](#state-directories)).
 - Validate with `--check`. To disable peering, clear the listener, advertised
   address, and seeds. The address book stays on disk.
 
@@ -891,12 +868,9 @@ To reset membership, for example after startup rejects `peers.json`
    membership.
 5. Start the instance.
 
-Listing traffic grows as O(N²) across an N-node fleet because each node polls
-the others. As an illustrative upper-tail body estimate, a terminal page of
-4,096 keys is 274,476 bytes. At one such page from each of 1,024 remote peers
-per node per nominal minute, that is about 268 MiB per node per minute,
-excluding protocol overhead and full scans. This is not a measured benchmark, a
-throughput guarantee, or a wall-clock freshness guarantee.
+Listing traffic grows with the square of fleet size, because each node polls
+every other node. In a full 1,024-member fleet, polling can reach about 270 MiB
+per node per minute.
 
 Watch for these log messages:
 
@@ -923,7 +897,8 @@ environment variables. There is no automatic file discovery,
 `OCI_ACCELERATOR_REGISTRIES`, `OCI_ACCELERATOR_CA_DIR`, and
 `OCI_ACCELERATOR_CACHE_DIR` are required. The container [image](#image)
 supplies the two directories. See the [settings reference](settings.md) for
-every setting and its default. The registries and `./data` paths in
+every setting, its default, and how timeouts and memory limits behave. The
+registries and `./data` paths in
 [`.env.example`](../.env.example) are examples, not built-in defaults.
 
 `--check` validates this same combined configuration without inspecting state,
@@ -944,14 +919,7 @@ string is an explicit value:
 - Any other empty value fails validation, including the required registries
   and paths.
 
-Peer settings are validated even while peering is disabled. A configured peer
-state directory must not equal, contain, or be contained by the CA or cache
-directories.
-
-`OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST` are
-comma-separated [authority](#registry-authorities) lists. Entries are
-whitespace-trimmed, empty entries are rejected, and a list replaces the file
-value as a whole.
+Peer settings are validated even while peering is disabled.
 
 Use exactly `true` or `false` for booleans, decimal integers without a sign or leading zeros
 for numbers, and Go duration strings such as `500ms`, `30s`, or `2m` for durations. Relative
@@ -961,7 +929,6 @@ internally to absolute paths.
 For example, process environment values can override a native dotenv file:
 
 ```sh
-OCI_ACCELERATOR_CACHE_MAX_BYTES=68719476736 bin/oci-accelerator --env-file .env --check
 OCI_ACCELERATOR_CACHE_MAX_BYTES=68719476736 bin/oci-accelerator --env-file .env
 ```
 
@@ -983,6 +950,8 @@ OCI_ACCELERATOR_CACHE_MAX_BYTES=68719476736 bin/oci-accelerator --env-file .env
 Each `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST` entry is an
 authority: `host` or `host:port`, with
 no scheme or path. An omitted port means 443, and matching includes the port.
+Both settings take comma-separated lists. Entries are whitespace-trimmed, empty
+entries are rejected, and a list replaces the file value as a whole.
 
 | Entry                   | Matches                  |
 | ----------------------- | ------------------------ |
@@ -1000,19 +969,17 @@ You can configure private registries explicitly.
   its own directory. The cache directory may be inside the CA directory. These
   checks compare paths as written and don't follow symlinks. Both directories
   are required, so there is no forwarding-only mode.
-- Before first start, create the immediate parent of each directory as the
-  proxy's user, with no group or other write access, for example
-  `mkdir -m 0700 data`. Startup creates the directories themselves, but
-  neither startup nor `init-ca` creates ancestors. `init` does this for the
-  native `data/` layout.
+- A configured peer state directory must not equal, contain, or be contained
+  by the CA or cache directories.
+- Before first start, create the immediate parent of each directory on
+  durable storage as the proxy user, with no group or other write access,
+  for example `mkdir -m 0700 data`. If the parent already exists, check its
+  ownership and permissions instead. Startup creates the directories
+  themselves, but neither startup nor `init-ca` creates ancestors. `init`
+  does this for the native `data/` layout.
 - Ownership and layout are checked at startup. See the
   [CA](#ca-directory-requirements) and
   [cache](#cache-directory-requirements) directory requirements.
-
-### Settings
-
-See the [settings reference](settings.md) for every environment variable, its
-default, and how timeouts and memory limits behave.
 
 ### Built-in limits
 
@@ -1027,7 +994,6 @@ default, and how timeouts and memory limits behave.
 | Mutable captures and retained response memory | 32 MiB accounted, not process RSS |
 | Mutable response body and retained headers   | 1 MiB body, 64 KiB headers         |
 | Mutable concurrent captures and indexed entries | 16 captures, 1,024 entries      |
-| CA PEM file size                             | 64 KiB each                        |
 | Root CA validity                             | 10 years                           |
 | Leaf certificate validity                    | At most 24 hours                   |
 | Intercepted protocols                        | TLS 1.2 or newer, HTTP/1.1         |
@@ -1048,14 +1014,6 @@ affect your deployment.
 | Tag manifest GET and HEAD, tag lists, referrer lists, `_catalog` | Eligible for the separate mutable response cache |
 | GET, HEAD, or OPTIONS with a body | Denied |
 | Upgrades, other methods, authority conflicts, non-origin-form targets | Denied |
-
-### Range requests
-
-Resumed blob downloads with a `Range` header can be served from the cache and
-can fill it. A fill keeps downloading the whole blob after the client
-disconnects, until `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT`. See
-[ranges and conditional requests](how-it-works.md#ranges-and-conditional-requests)
-for which ranges qualify and how they're served.
 
 ### Redirects
 
@@ -1092,7 +1050,7 @@ responses affect an existing grant.
 | Second proxy fails to start on the same cache | Each cache directory allows one process. Give each process its own cache and CA directories. Peers can use copies of the same CA files |
 | `--check` rejects the metrics listener | The address isn't loopback and `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE` isn't `true`. Use a loopback address, or opt in ([metrics](#metrics)) |
 | Startup fails binding metrics | The metrics address is invalid or in use. Fix `OCI_ACCELERATOR_METRICS_LISTEN` or free the address |
-| Container health is `unhealthy` | The metrics listener isn't at `127.0.0.1:9090`, or the proxy isn't ready. Restore the listener or override the health check ([image](#image)). An unhealthy status doesn't restart the container |
+| Container health is `unhealthy` | The metrics listener isn't at `127.0.0.1:9090`, or the proxy isn't ready. Restore the listener or override the health check ([image](#image)) |
 | Docker reports an unknown certificate authority | The CA isn't installed under the exact `certs.d/<host[:port]>` directory. [Trust the CA](#trust-the-ca) for that authority |
 | Private registry fails with a TLS error | The proxy doesn't trust the registry's real CA. Add it to the proxy's system trust store. Never disable verification |
 | Pulls work but no request records show the registry | The registry is missing from `OCI_ACCELERATOR_REGISTRIES` (the port must match), listed in `no-proxy`, or Docker wasn't restarted. Fix the registry list or [Docker's proxy configuration](#point-docker-at-the-proxy) |
