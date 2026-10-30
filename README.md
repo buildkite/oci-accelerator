@@ -275,3 +275,7 @@ set it up and secure it.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to build, test, and contribute changes.
+
+## License
+
+This project is licensed under the [MIT license](LICENSE).
