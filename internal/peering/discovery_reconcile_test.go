@@ -637,7 +637,7 @@ func TestDiscoveryVerificationBacklogDoesNotStarveRegularPeers(t *testing.T) {
 		go d.Run(ctx)
 		synctest.Wait()
 		claims := make(map[string]string)
-		for i := range 64 {
+		for i := range MaxPeers - 1 {
 			claims[fmt.Sprintf("unreachable-%02d.test:1", i)] = testNodeID(7)
 		}
 		if response := cooldownRequest(d, Message{Address: "sender.test:5", NodeID: testNodeID(5), Peers: claims}); response.Code != http.StatusOK {
@@ -648,7 +648,7 @@ func TestDiscoveryVerificationBacklogDoesNotStarveRegularPeers(t *testing.T) {
 		if count := log.count("regular.test:1"); count != 2 {
 			t.Fatalf("regular peer requests = %d, want 2 despite slow verification backlog", count)
 		}
-		if count := log.count("unreachable-63.test:1"); count != 0 {
+		if count := log.count(fmt.Sprintf("unreachable-%02d.test:1", MaxPeers-2)); count != 0 {
 			t.Fatal("fixture failed to maintain a verification backlog")
 		}
 	})

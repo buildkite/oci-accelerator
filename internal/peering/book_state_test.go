@@ -2,10 +2,13 @@ package peering
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenBookValidatesSelfBeforeFilesystem(t *testing.T) {
@@ -15,6 +18,51 @@ func TestOpenBookValidatesSelfBeforeFilesystem(t *testing.T) {
 	}
 	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
 		t.Fatalf("directory was touched: %v", err)
+	}
+}
+
+func TestOpenBookPeerLimit(t *testing.T) {
+	for _, count := range []int{32, 33} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			peers := make(map[string]bookRecord, count)
+			for i := range count {
+				peers[fmt.Sprintf("p%02d.test:1", i)] = bookRecord{NodeID: testNodeID(i), LastSuccess: time.Now()}
+			}
+			raw, err := json.Marshal(bookState{Version: 3, Peers: peers})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			dir := bookTestDir(t)
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, bookStateName)
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			book, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
+			if book != nil {
+				defer book.Close()
+			}
+			if count > 32 {
+				if err == nil {
+					t.Fatal("OpenBook accepted oversized membership")
+				}
+				got, readErr := os.ReadFile(path)
+				if readErr != nil || string(got) != string(raw) {
+					t.Fatalf("rejected state changed: %q, %v", got, readErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := book.Snapshot().Peers; len(got) != count {
+				t.Fatalf("peer count = %d, want %d", len(got), count)
+			}
+		})
 	}
 }
 

@@ -57,7 +57,9 @@ members. An empty book sends `"peers": {}`.
 
 Messages with unknown fields, duplicate JSON keys, invalid IDs, or
 contradictory spellings of the same canonical address are rejected. See
-[limits](#limits) for message size limits.
+[limits](#limits) for message size limits. Oversized messages are rejected,
+including larger messages from nodes using a higher peer limit. The sender's
+own identity is separate from the peer mappings.
 
 ### Membership
 
@@ -210,8 +212,9 @@ accepts only version 3 `peers.json` state. Each record must have:
 - a nonzero last-success timestamp
 
 Unsupported versions and records without IDs are rejected without replacing the
-file. See [limits and state](deployment.md#limits-and-state) to reset
-membership.
+file. A book exceeding the [peer-record limit](#limits) also prevents startup
+without truncating or replacing the file. See
+[limits and state](deployment.md#limits-and-state) to reset membership.
 
 State files must be regular, process-owned files with mode 0600. Startup takes
 an exclusive process lock and removes recognized abandoned staging files. It
@@ -485,10 +488,11 @@ also fill its own cache:
 | Incoming headers, request bodies, control-response writes, and idle connections | 5 seconds each |
 | Accepted peer connections | 32, including incomplete TLS handshakes |
 | Outbound exchange slots | 4, shared by discovery and verification, with at most 2 for verification-only addresses |
-| Verification queue | 1,024 pending or cooling-down probes |
-| Discovery message | 512 KiB and 1,024 peer mappings |
-| Confirmed members | 1,024, excluding the instance itself |
-| Configured seed targets | 1,024, separate from members |
+| Verification queue | 32 pending or cooling-down probes |
+| Discovery message | 512 KiB and 32 peer mappings |
+| Confirmed members | 32, excluding the instance itself |
+| Persisted peer records | 32 |
+| Configured seed targets | 32, separate from members |
 | Keys per listing page | 4,096 |
 | Listing response | 512 KiB |
 | Concurrent listing fetches | 4 in total, at most 1 per peer |

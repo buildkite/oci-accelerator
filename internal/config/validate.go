@@ -225,7 +225,7 @@ func validatePeer(raw Peer, proxyListen, metricsListen, caPath, cachePath string
 		seeds = append(seeds, canonical)
 	}
 	if len(seeds) > peering.MaxPeers {
-		return Peer{}, invalid("must contain at most 1024 unique addresses", "PEER_SEEDS")
+		return Peer{}, invalid(fmt.Sprintf("must contain at most %d unique addresses", peering.MaxPeers), "PEER_SEEDS")
 	}
 
 	raw.Listen = listen

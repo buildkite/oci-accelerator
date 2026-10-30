@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,6 +32,32 @@ func TestPeerConfiguration(t *testing.T) {
 	assertEqual(t, "Peer.HintFullRefreshInterval", c.Peer.HintFullRefreshInterval, 2*time.Hour)
 	if want := []string{"[2001:db8::1]:443", "seed.example:443"}; !reflect.DeepEqual(c.Peer.Seeds, want) {
 		t.Errorf("Peer.Seeds = %v, want %v", c.Peer.Seeds, want)
+	}
+}
+
+func TestPeerSeedLimit(t *testing.T) {
+	for _, count := range []int{32, 33} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			seeds := []string{"self.test:443", "P00.TEST.:0443"}
+			for i := range count {
+				seeds = append(seeds, fmt.Sprintf("p%02d.test:443", i))
+			}
+			values := map[string]string{
+				"REGISTRIES": "example.com", "CA_DIR": "ca", "CACHE_DIR": "cache",
+				"PEER_LISTEN": "127.0.0.1:5130", "PEER_ADVERTISE": "self.test:443",
+				"PEER_STATE_DIR": filepath.Join(t.TempDir(), "peer"), "PEER_SEEDS": strings.Join(seeds, ","),
+			}
+
+			cfg, err := load("", environmentLookup(values))
+			if count > 32 {
+				assertInvalidSetting(t, err, "at most 32 unique addresses", "PEER_SEEDS")
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertEqual(t, "Peer.Seeds count", len(cfg.Peer.Seeds), count)
+		})
 	}
 }
 
