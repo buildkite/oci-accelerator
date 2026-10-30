@@ -35,12 +35,9 @@ advertised address to a node ID.
 
 ### Endpoint
 
-`/v1/peers` accepts only the exact path, with no query, and only GET and POST:
-
-- `GET /v1/peers` returns a read-only snapshot of the address book, including
-  the responder's own identity. It accepts no joining identity and doesn't
-  change the receiver's mappings.
-- `POST /v1/peers` exchanges identities and peer mappings.
+`/v1/peers` accepts only the exact path, with no query, and only GET and POST.
+A GET snapshot includes the responder's own identity and accepts no joining
+identity.
 
 The GET response and the POST request and response share one schema:
 
@@ -148,9 +145,8 @@ cooldowns, and retry timing are held only in memory and reset on restart.
 
 ### Capacity and expiry
 
-Each instance retains a limited number of confirmed members, excluding itself,
-and separately keeps its configured seed targets ([limits](#limits)).
-Unverified seed targets don't use membership slots.
+Each instance retains a limited number of confirmed members, excluding itself
+([limits](#limits)).
 
 At capacity, new unrelated members are rejected, but verified identity
 replacements still work:
@@ -170,22 +166,20 @@ unreachable, expires normally.
 ### Persistence
 
 `peers.json` in the peer state directory holds versioned membership and the
-local time of each member's last successful contact. You may read it to inspect
-known addresses, but don't edit live state.
+local time of each member's last successful contact.
 
 - The file is atomically replaced as soon as membership changes.
 - Timestamps are local observations, never accepted from another instance.
 - Startup also rewrites the file to durably remove records for this instance's
   own address or ID.
 
-Saved timestamps keep restarts from renewing dead membership. Stale gossip can
-request limited probing, but can't restore membership without successful
-direct contact.
+Saved timestamps keep restarts from renewing dead membership.
 
 #### Configured seeds
 
 Startup reads configured seeds from configuration into a separate in-memory
-retry set. They're never saved as unverified members.
+retry set. They're never saved as unverified members, and unverified seed
+targets don't use membership slots.
 
 Seeds remain bootstrap targets after their membership expires, but aren't
 advertised until verified. Removing a seed from configuration removes its
@@ -193,24 +187,45 @@ indefinite retry exemption.
 
 #### Checkpoint writes
 
-Successful renewals update exact freshness in memory, but rewrite the file only
-when a member's timestamp has advanced at least 7 minutes 30 seconds beyond its
-saved checkpoint. Each rewrite saves all current timestamps, so peers can share
-a checkpoint write. This isn't a global limit on write frequency.
-
-While saving succeeds, a saved timestamp trails the latest accepted success by
-less than 7 minutes 30 seconds. A restart can therefore expire membership up to
-that much earlier than its in-memory lifetime, never later.
+Renewals update freshness in memory, but a member's saved timestamp is
+rewritten only after it falls 7 minutes 30 seconds behind. A restart can
+therefore expire membership up to that much earlier than in memory, never
+later.
 
 #### Clock changes
 
 Saved timestamps are compared with wall-clock time when loaded after a restart.
 Moving the clock backwards can keep restored members longer, and moving it
-forwards can expire them early or all at once. Expired members need direct
-verification before they're admitted again.
+forwards can expire them early or all at once.
 
 Timestamps recorded since the process started aren't affected by clock
 changes.
+
+### State files
+
+Peer exchanges require the current identity-aware wire format, and startup
+accepts only version 3 `peers.json` state. Each record must have:
+
+- a valid, nonempty node ID, unique within the book
+- a nonzero last-success timestamp
+
+Unsupported versions and records without IDs are rejected without replacing the
+file. See [limits and state](deployment.md#limits-and-state) to reset
+membership.
+
+State files must be regular, process-owned files with mode 0600. Startup takes
+an exclusive process lock and removes recognized abandoned staging files. It
+rejects corrupt state, unsafe files, or unknown files without replacing the
+book.
+
+#### Failure handling
+
+- A peer listener bind or state failure at startup stops startup.
+- If syncing the directory fails after a successful replacement, the book keeps
+  the replaced state and retries saving before acknowledging another exchange.
+
+See [limits and state](deployment.md#limits-and-state) for runtime failures,
+their log messages, and what to do about them.
 
 ### Node IDs
 
@@ -246,32 +261,6 @@ address still fail the exchange. There is no ongoing collision recovery, so two
 other nodes sharing one ID can repeatedly replace each other's records. See
 [limits and state](deployment.md#limits-and-state) to avoid duplicating an
 identity.
-
-### State files
-
-Peer exchanges require the current identity-aware wire format, and startup
-accepts only version 3 `peers.json` state. Each record must have:
-
-- a valid, nonempty node ID, unique within the book
-- a nonzero last-success timestamp
-
-Unsupported versions and records without IDs are rejected without replacing the
-file. See [limits and state](deployment.md#limits-and-state) to reset
-membership.
-
-State files must be regular, process-owned files with mode 0600. Startup takes
-an exclusive process lock and removes recognized abandoned staging files. It
-rejects corrupt state, unsafe files, or unknown files without replacing the
-book.
-
-#### Failure handling
-
-- A peer listener bind or state failure at startup stops startup.
-- If syncing the directory fails after a successful replacement, the book keeps
-  the replaced state and retries saving before acknowledging another exchange.
-
-See [limits and state](deployment.md#limits-and-state) for runtime failures,
-their log messages, and what to do about them.
 
 ## Cache key listing
 
@@ -331,8 +320,7 @@ The request must have no body and no query parameters other than `after`.
 | `400` without that header | The request or cursor is malformed |
 | `500` | The inventory had invalid or duplicate keys |
 
-The client recognizes a cursor rejection only when the response has both the
-`400` status and the header, regardless of the body. See
+The client ignores the response body. See
 [recovering from failures](#recovering-from-failures) for how it reacts.
 
 ## Hint fetching
@@ -357,8 +345,7 @@ The refresh interval excludes fetch time and waiting for a free worker, so it
 doesn't guarantee how fresh hints are on the wall clock.
 
 Fetches have limited concurrency ([limits](#limits)). They never block
-startup, readiness, or discovery on network requests. Shutdown cancels the
-fetches and waits for them to finish.
+startup, readiness, or discovery on network requests.
 
 ### Incremental and full scans
 
@@ -372,11 +359,7 @@ from the start.
 
 When `OCI_ACCELERATOR_PEER_HINT_FULL_REFRESH_INTERVAL`, with ±20% jitter, has
 passed since a full scan completed successfully, the next attempt starts from
-the beginning instead. The interval is measured from successful completion,
-not from when a scan started or failed.
-
-An interrupted full scan resumes from its validated progress on later polls
-until it completes, subject to the same recovery rules.
+the beginning instead.
 
 ### Recovering from failures
 
@@ -400,13 +383,12 @@ earlier claims. There is no cutoff on the number of keys a fetch reads.
 `OCI_ACCELERATOR_PEER_HINT_REFRESH_TIMEOUT` bounds each fetch attempt, starting
 when its worker begins. The per-request deadline also applies
 ([limits](#limits)). When the timeout expires, the refresh is reported
-incomplete. Applied pages and validated progress are kept, subject to the
-[recovery rules](#recovering-from-failures).
+incomplete under the same [recovery rules](#recovering-from-failures).
 
 ### Hint storage
 
-Full scans add hints but don't reconcile them. Neither a full scan nor an empty
-listing removes hints for keys that have disappeared.
+Neither a full scan nor an empty listing removes hints for keys that have
+disappeared.
 
 All peers share one first-in, first-out index of distinct keys
 ([limits](#limits)):
@@ -424,8 +406,9 @@ claims become visible again if they rejoin. Hints can be stale despite periodic
 refresh, and grant no access by themselves.
 
 An entry fetch that gets a `404` from the expected node removes that provider's
-claim, unless a newer observation has replaced it. Other providers' claims
-remain, and later listings can restore the removed claim.
+claim, unless a newer observation has replaced it. Other failures don't,
+because an unavailable endpoint isn't proof that a hint is stale. The remaining
+providers' claims stay, and later listings can restore the removed claim.
 
 ## Entry transfers
 
@@ -473,21 +456,16 @@ origin or another peer to satisfy a request. Opening the entry refreshes its
 local recency and pins it against eviction until the transfer ends.
 
 The requester never follows redirects. It checks the expected node ID, the
-length, unencoded full-body framing, and the streamed SHA-256 digest. Docker
-gets the registry's approved response headers, never the peer's.
-
-Only a valid `404` from the expected node retires the matching hint
-observation. An unavailable endpoint isn't proof that a hint is stale.
+length, unencoded full-body framing, and the streamed SHA-256 digest.
 
 ### Connections and timeouts
 
 Data connections close after each request, so they never sit idle in the
 shared peer connection budget ([limits](#limits)).
 
-Entry downloads keep the short dial, handshake, and response-header deadlines,
-but `OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` bounds the complete transfer. The
-sender uses the same setting to bound verification and body writes. This
-replaces the listener's normal write deadline for entry hits only.
+For entry hits, the sender bounds verification and body writes with
+`OCI_ACCELERATOR_CACHE_FILL_TIMEOUT` instead of the listener's normal write
+deadline.
 
 ### Streaming
 
@@ -498,9 +476,6 @@ also fill its own cache:
   delivery.
 - A transfer failure or digest mismatch never publishes an incomplete cache
   entry.
-- Bytes stream before the digest is verified, so a late failure can't
-  transparently fall back to origin.
-- Cancellation and shutdown close streams and release readers.
 
 ## Limits
 
