@@ -279,10 +279,22 @@ func TestColdRangesShareOneFullFill(t *testing.T) {
 	}))
 	defer func() { release(); origin.Close() }()
 	p, client := cacheFixture(t, origin, 1<<20, nil)
-	p.cfg.IdleTimeout = 5 * time.Second
-	p.cfg.Cache.FillWaitTimeout = time.Second
+
+	// This tests successful coalescing, not timeout fallback. Let the test
+	// runner bound the wait and I/O rather than racing a busy host's scheduler.
+	timeout := time.Duration(1<<63 - 1)
+	if deadline, ok := t.Deadline(); ok {
+		timeout = time.Until(deadline)
+	}
+	p.cfg.IdleTimeout = timeout
+	p.cfg.Cache.FillWaitTimeout = timeout
+
 	url := origin.URL + blobURL(body)
-	requestRange(t, client, url, "leader", "bytes=1-3")
+	resp, leader := requestRange(t, client, url, "leader", "bytes=1-3")
+	if resp.StatusCode != 206 || leader != "123" {
+		t.Fatalf("leader status=%d body=%q", resp.StatusCode, leader)
+	}
+
 	type result struct {
 		body   string
 		status int
@@ -302,11 +314,11 @@ func TestColdRangesShareOneFullFill(t *testing.T) {
 		resp.Body.Close()
 		done <- result{body: string(b), status: resp.StatusCode, err: err}
 	}()
-	eventuallyLifecycle(t, time.Second, func() bool { return p.metrics.snapshot().activeWaits == 1 }, "authorized range follower")
+	eventuallyLifecycle(t, timeout, func() bool { return p.metrics.snapshot().activeWaits == 1 }, "authorized range follower")
 	release()
 	r := <-done
 	if r.err != nil || r.status != 206 || r.body != "def" {
-		t.Fatalf("follower=%+v", r)
+		t.Fatalf("follower status=%d body=%q error=%v GETs=%d metrics=%+v", r.status, r.body, r.err, gets.Load(), p.metrics.snapshot())
 	}
 	shutdown(t, p)
 	s, m := p.cache.Stats(), p.metrics.snapshot()
