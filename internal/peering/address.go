@@ -7,8 +7,10 @@ import (
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
-// MaxPeers is the maximum number of peer records in an exchange message.
-const MaxPeers = 1024
+// MaxPeers bounds confirmed members excluding self, configured seeds, pending
+// verifications, and peer records in exchange messages and persisted state.
+// The value is arbitrary, chosen to cap background peering chatter.
+const MaxPeers = 32
 
 var errInvalidMessage = errors.New("invalid peer message")
 

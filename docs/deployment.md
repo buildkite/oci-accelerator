@@ -846,6 +846,8 @@ OCI_ACCELERATOR_PEER_STATE_DIR=./data/peers
   hostname, or a shared load-balanced endpoint.
 - Seeds are optional bootstrap addresses, not an allowlist. Ports are always
   explicit, including `:443`, and IPv6 uses `[address]:port`.
+  Configuration rejects more than 32 addresses after canonicalization,
+  deduplication, and exclusion of self.
 - `init` already prepares `data/peers/`. For containers, publish the peer port
   and use a writable volume such as `/var/lib/oci-accelerator/peers`
   ([state directories](#state-directories)).
@@ -890,15 +892,17 @@ To reset membership, for example after startup rejects `peers.json`
 5. Start the instance.
 
 Listing traffic grows with the square of fleet size, because each node polls
-every other node. In a full 1,024-member fleet, polling can reach about 270 MiB
-per node per minute.
+every other node. As an illustrative body estimate, polling one terminal page
+of 4,096 keys (274,476 bytes) from each of 32 remote peers per nominal minute
+uses about 8.38 MiB per node per minute. This excludes protocol overhead and
+full scans and isn't a measured benchmark or a freshness guarantee.
 
 Watch for these log messages:
 
 | Message | Meaning |
 | --- | --- |
 | `peer identity collision` | Another node claims this instance's node ID or address. Fix the advertised address or duplicated state |
-| `peer address book full` | The 1,024-member limit is reached, so new unrelated members are rejected |
+| `peer address book full` | The 32-member limit is reached, so new unrelated members are rejected |
 | `peer verification queue full` | Too many unverified candidates. Excess claims are dropped until later gossip resubmits them |
 | `peer address book update failed` | Saving `peers.json` failed. The exchange fails, but the proxy keeps serving |
 | `peer membership expiry persistence failed` and `…recovered` | Saving expired members failed, then recovered. Expired members stay hidden meanwhile |
