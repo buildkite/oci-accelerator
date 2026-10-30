@@ -21,8 +21,7 @@ Use it to:
 - **No image renaming.** Docker keeps its usual image names and `docker login`,
   so you don't rewrite references or configure registry mirrors.
 - **Private images stay private.** The upstream registry must approve each
-  client before it receives cached content, though
-  [approvals are reused briefly](docs/deployment.md#authorization-of-cached-content).
+  client before it receives cached content.
 - **No shared credentials.** Each client authenticates with its own credentials,
   and the proxy never stores or forwards them to other hosts.
 - **Plugs in as an HTTPS proxy.** Docker Engine sends registry traffic through
@@ -34,41 +33,22 @@ Use it to:
 See [how it works](docs/how-it-works.md) for the request flow, authorization,
 and cache storage in detail.
 
-## Commands reference
-
-```sh
-# Start the proxy, reading configuration from an optional dotenv file and the environment
-oci-accelerator [--env-file FILE]
-
-# Validate the configuration without starting the proxy
-oci-accelerator [--env-file FILE] --check
-
-# Create a starter .env, the data/ directories, and a root CA in data/ca/
-oci-accelerator init
-
-# Write only the starter configuration, to .env by default
-oci-accelerator init-env [--output FILE]
-
-# Create a root CA in DIR, or validate an existing one
-oci-accelerator init-ca --dir DIR
-
-# Print the version and exit
-oci-accelerator --version
-
-# Print usage. Each init command also accepts --help
-oci-accelerator --help
-```
-
 ## Quick start
 
-These steps run OCI Accelerator on a Linux laptop and point its Docker Engine at
-it, caching Docker Hub, GitHub Container Registry, and Amazon ECR Public.
+These steps run OCI Accelerator on Linux and point Docker Engine at it,
+caching Docker Hub, GitHub Container Registry, and Amazon ECR Public.
 
-1. Create a new directory, then download and extract the release into it:
+1. Create a new directory, then install OCI Accelerator into it. This needs
+   Go 1.21 or later, which downloads the Go version the project requires:
    ```sh
    mkdir oci-accelerator && cd oci-accelerator
-   curl -fL https://github.com/buildkite/oci-accelerator/releases/download/v0.3.2/oci-accelerator-linux-amd64-v0.3.2.tar.gz | tar -xz
+   GOBIN=$PWD go install github.com/buildkite/oci-accelerator/cmd/oci-accelerator@main
    ```
+
+   Without Go, download a prebuilt binary for your platform from
+   [GitHub Releases](https://github.com/buildkite/oci-accelerator/releases)
+   and extract it into the directory instead. See
+   [download a release](docs/deployment.md#download-a-release) to verify it.
 
 2. Create a starter configuration, cache directory, and root CA:
    ```sh
@@ -133,6 +113,31 @@ it, caching Docker Hub, GitHub Container Registry, and Amazon ECR Public.
 To cache other registries, add them to `OCI_ACCELERATOR_REGISTRIES` and trust
 the CA for each one. See the [deployment guide](docs/deployment.md) to run OCI
 Accelerator as a service or container, or for remote Docker hosts.
+
+## Commands reference
+
+```sh
+# Start the proxy, reading configuration from an optional dotenv file and the environment
+oci-accelerator [--env-file FILE]
+
+# Validate the configuration without starting the proxy
+oci-accelerator [--env-file FILE] --check
+
+# Create a starter .env, the data/ directories, and a root CA in data/ca/
+oci-accelerator init
+
+# Write only the starter configuration, to .env by default
+oci-accelerator init-env [--output FILE]
+
+# Create a root CA in DIR, or validate an existing one
+oci-accelerator init-ca --dir DIR
+
+# Print the version and exit
+oci-accelerator --version
+
+# Print usage. Each init command also accepts --help
+oci-accelerator --help
+```
 
 ## Configuration
 
