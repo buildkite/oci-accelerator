@@ -100,50 +100,50 @@ contains only the executable `oci-accelerator`. The checksum manifest is
 `oci-accelerator-vX.Y.Z.SHA256SUMS`.
 
 Download and verify the archive for your platform. These examples use
-`v0.3.2`. Replace it with the published version you want.
+`v0.3.3`. Replace it with the published version you want.
 
 Linux amd64:
 
 ```sh
-base=https://github.com/buildkite/oci-accelerator/releases/download/v0.3.2
-archive=oci-accelerator-linux-amd64-v0.3.2.tar.gz
+base=https://github.com/buildkite/oci-accelerator/releases/download/v0.3.3
+archive=oci-accelerator-linux-amd64-v0.3.3.tar.gz
 
-curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.3.2.SHA256SUMS"
+curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.3.3.SHA256SUMS"
 
-grep " $archive\$" oci-accelerator-v0.3.2.SHA256SUMS | sha256sum --check -
+grep " $archive\$" oci-accelerator-v0.3.3.SHA256SUMS | sha256sum --check -
 ```
 
 Linux arm64:
 
 ```sh
-base=https://github.com/buildkite/oci-accelerator/releases/download/v0.3.2
-archive=oci-accelerator-linux-arm64-v0.3.2.tar.gz
+base=https://github.com/buildkite/oci-accelerator/releases/download/v0.3.3
+archive=oci-accelerator-linux-arm64-v0.3.3.tar.gz
 
-curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.3.2.SHA256SUMS"
+curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.3.3.SHA256SUMS"
 
-grep " $archive\$" oci-accelerator-v0.3.2.SHA256SUMS | sha256sum --check -
+grep " $archive\$" oci-accelerator-v0.3.3.SHA256SUMS | sha256sum --check -
 ```
 
 macOS on Apple Silicon:
 
 ```sh
-base=https://github.com/buildkite/oci-accelerator/releases/download/v0.3.2
-archive=oci-accelerator-darwin-arm64-v0.3.2.tar.gz
+base=https://github.com/buildkite/oci-accelerator/releases/download/v0.3.3
+archive=oci-accelerator-darwin-arm64-v0.3.3.tar.gz
 
-curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.3.2.SHA256SUMS"
+curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.3.3.SHA256SUMS"
 
-grep " $archive\$" oci-accelerator-v0.3.2.SHA256SUMS | shasum -a 256 --check -
+grep " $archive\$" oci-accelerator-v0.3.3.SHA256SUMS | shasum -a 256 --check -
 ```
 
 macOS on Intel:
 
 ```sh
-base=https://github.com/buildkite/oci-accelerator/releases/download/v0.3.2
-archive=oci-accelerator-darwin-amd64-v0.3.2.tar.gz
+base=https://github.com/buildkite/oci-accelerator/releases/download/v0.3.3
+archive=oci-accelerator-darwin-amd64-v0.3.3.tar.gz
 
-curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.3.2.SHA256SUMS"
+curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.3.3.SHA256SUMS"
 
-grep " $archive\$" oci-accelerator-v0.3.2.SHA256SUMS | shasum -a 256 --check -
+grep " $archive\$" oci-accelerator-v0.3.3.SHA256SUMS | shasum -a 256 --check -
 ```
 
 Continue only if verification succeeds. Extract into a new directory and check

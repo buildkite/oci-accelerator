@@ -42,7 +42,7 @@ caching Docker Hub, GitHub Container Registry, and Amazon ECR Public.
    Go 1.21 or later, which downloads the Go version the project requires:
    ```sh
    mkdir oci-accelerator && cd oci-accelerator
-   GOBIN=$PWD go install github.com/buildkite/oci-accelerator/cmd/oci-accelerator@main
+   GOBIN=$PWD go install github.com/buildkite/oci-accelerator/cmd/oci-accelerator@v0.3.3
    ```
 
    Without Go, download a prebuilt binary for your platform from
