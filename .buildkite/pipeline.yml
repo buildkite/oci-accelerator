@@ -8,7 +8,7 @@ steps:
     timeout_in_minutes: 10
     plugins:
       - docker#v5.14.0:
-          image: golang:1.27.1-bookworm
+          image: golang:1.27.3-bookworm
           environment:
             - GOTOOLCHAIN=local
             - CGO_ENABLED=1
@@ -19,7 +19,7 @@ steps:
     timeout_in_minutes: 15
     plugins:
       - docker#v5.14.0:
-          image: golang:1.27.1-bookworm
+          image: golang:1.27.3-bookworm
           environment:
             - GOTOOLCHAIN=local
             - CGO_ENABLED=1
@@ -30,7 +30,7 @@ steps:
     timeout_in_minutes: 15
     plugins:
       - docker#v5.14.0:
-          image: golang:1.27.1-bookworm
+          image: golang:1.27.3-bookworm
           environment:
             - GOTOOLCHAIN=local
             - CGO_ENABLED=1
@@ -46,7 +46,7 @@ steps:
     timeout_in_minutes: 20
     plugins:
       - docker#v5.14.0:
-          image: golang:1.27.1-bookworm
+          image: golang:1.27.3-bookworm
           mount-buildkite-agent: true
           environment:
             - GOTOOLCHAIN=local

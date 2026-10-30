@@ -82,7 +82,7 @@ opted in.
 
 | Deployment | Requires |
 | --- | --- |
-| Native | A release binary or Go 1.27.1 to build, and a service manager to supervise the process |
+| Native | A release binary or Go 1.27.3 to build, and a service manager to supervise the process |
 | Container | Linux Docker daemon with Buildx, and Compose for the supplied service |
 
 For a native starter layout, `oci-accelerator init` creates the private state
