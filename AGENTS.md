@@ -135,6 +135,57 @@
 - In user-facing documentation, address the reader as "you". Refer to the
   person deploying the proxy as "the user" in code comments, not "the
   operator". Prefer "use" or "deploy" over "operate".
+- Use American spelling and plain words. Prefer "who created it" over
+  "provenance" and "isn't" over "is not" in user-facing prose.
+
+## Documentation structure
+
+- Keep each fact in one place and link to it elsewhere. `docs/deployment.md`
+  covers setup, settings, operations, and troubleshooting.
+  `docs/how-it-works.md` explains mechanics and security reasoning.
+  `docs/peer-protocol.md` holds peer wire formats and protocol rules.
+  `docs/settings.md` lists every environment variable, and `docs/metrics.md`
+  lists every metric.
+- Before deleting a duplicate, check whether it holds details the other copy
+  lacks. Move those details to the canonical place instead of dropping them.
+- Keep internal implementation detail, such as buffer handling or logical
+  clocks, out of user documentation unless it changes what the reader sees or
+  must do. State the operational effect instead.
+- Order the deployment guide by the reader's path: security model, getting
+  started, running and maintaining the proxy, then reference material,
+  troubleshooting, and limitations. Order settings tables like `.env.example`.
+- When moving, renaming, or removing a heading, update every incoming link in
+  `docs/` and `README.md`, and check that all relative links and anchors
+  resolve.
+
+## Documentation formatting
+
+- Wrap prose and list items at 80 columns. Code, tables, and long URLs are
+  exempt.
+- Keep paragraphs short. Split a paragraph that covers more than one idea or
+  runs past about six lines. Prefer subheadings with short paragraphs over
+  long bold-led bullets.
+- Merge bullets that make the same point, and give each bullet one idea. Lead
+  with the instruction or outcome, then the detail.
+- Use compact table syntax (`| --- |`) without column padding. Use real names
+  in tables, such as log fields, metric names, and environment variables.
+  Drop a column whose value is the same in every row, and state it once in
+  prose.
+- Make code blocks copy-pasteable. Give each platform its own block rather than
+  one block with platform variables. Separate logical steps inside a block with
+  blank lines, and keep a comment attached to the command it describes.
+- Never place a line of `=` or `-` directly under prose, because Markdown turns
+  the preceding line into a heading.
+
+## Documentation accuracy
+
+- Verify every behavior claim against the code before writing or rewording it,
+  including limits, defaults, field names, metric names, and error behavior.
+  Test commands and examples when you can.
+- Do not overstate guarantees, especially security ones. Scope a claim to the
+  component it applies to, such as startup rather than every command.
+- Mark third-party behavior you can't verify, such as Docker's, as tentative
+  or link to its documentation.
 
 ## Commit messages
 
