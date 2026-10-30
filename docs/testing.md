@@ -34,12 +34,8 @@ GOTOOLCHAIN=local CGO_ENABLED=1 bash .buildkite/check.sh
 | `internal/hostport` | Host and port parsing |
 | `internal/peering` | Discovery, membership, persistence, node IDs, key listing, hint fetching, and entry transfers |
 | `internal/proxy` | Interception, forwarding, authorization grants, disk and mutable caching, ranges, uploads, peer-sourced delivery, and shutdown |
-| `cmd/oci-accelerator` | Commands, startup, signals, metrics, and peering in a running service |
+| `cmd/oci-accelerator` | Commands, startup, signals, metrics, and peering in a running service, including restart |
 | `integration` | Test fixtures, process supervision, and release pipeline scripts. Acceptance suites skip unless opted in |
-
-Peering tests use local TLS clients and in-process production services, so
-they cover entry transfers after discovery, periodic hint refresh, and restart
-without Docker or external peers.
 
 ### Platform support
 
@@ -72,8 +68,7 @@ The Docker, fault, and load suites:
 - build the current binary and use their own Docker state, processes, and CA
   trust, with private registry fixtures for local checks
 - never run pulled images or install host CA trust
-- run privileged fixtures inside private PID and mount namespaces, not network
-  namespaces
+- run privileged fixtures inside private PID and mount namespaces
 - stop and reap the processes they own, including daemonized descendants,
   before removing their private directories
 - keep only the first 64 KiB of each diagnostic log
@@ -116,10 +111,6 @@ sudo env PATH="$PATH" OCI_ACCELERATOR_CONTAINER_IMAGE=oci-accelerator:arm64 \
   go test -count=1 -timeout=5m -v ./integration -run '^TestContainer'
 ```
 
-A dedicated test network keeps the proxy reachable, but doesn't protect the
-host from the `docker0` effect described in
-[before you run them](#before-you-run-them).
-
 ### Docker pull
 
 Checks cold, warm, and restarted-proxy pulls through the compiled proxy. Needs
@@ -144,9 +135,8 @@ verified pull proves the bodies came from the proxy's cache, not Docker's local
 cache. The test also covers tag moves and access to the old digest.
 
 Manifests don't prove cache hits in this test. Docker reorders `Accept` values
-across requests, which intentionally creates separate cache entries, so
-manifest bodies still come from the registry. Manifest delivery is a
-compatibility check.
+across requests, which creates separate cache entries, so manifest bodies come
+from the registry.
 
 ### Push
 
