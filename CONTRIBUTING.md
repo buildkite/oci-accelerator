@@ -2,7 +2,7 @@
 
 ## Develop and test locally
 
-You need Go 1.27.1 and a C compiler for race tests. The standard checks need no
+You need Go 1.27.3 and a C compiler for race tests. The standard checks need no
 network access or Docker:
 
 ```sh

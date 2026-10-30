@@ -5,7 +5,7 @@ needs. A skipped opt-in check isn't a pass.
 
 ## Standard checks
 
-You need Go 1.27.1 and a C compiler for race tests. These deterministic checks
+You need Go 1.27.3 and a C compiler for race tests. These deterministic checks
 use local registry, authentication, and CDN fixtures, and need no network
 access or Docker:
 
@@ -227,7 +227,7 @@ the host and keep test processes alive across CLI updates.
 ### Prepare the orb
 
 Amp runs `.agents/setup` when preparing a fresh orb. It installs
-checksum-verified Go 1.27.1, C build tools for race-enabled tests, and Docker
+checksum-verified Go 1.27.3, C build tools for race-enabled tests, and Docker
 Engine, Buildx, and Compose if missing, and downloads Go module dependencies.
 You can safely re-run it:
 
