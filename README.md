@@ -1,6 +1,6 @@
 # OCI Accelerator
 
-OCI Accelerator is a specialised pull-through caching proxy for Docker and OCI
+OCI Accelerator is a specialized pull-through caching proxy for Docker and OCI
 image registries. It intercepts OCI Distribution API read requests to the
 registries you configure and caches their responses to speed up image pulls and
 reduce upstream bandwidth.
@@ -171,11 +171,11 @@ OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090
 
 The listener serves three endpoints:
 
-| Endpoint       | Purpose                                           |
-| -------------- | ------------------------------------------------- |
-| `GET /metrics` | Prometheus metrics                                |
-| `GET /livez`   | Liveness: the process is responsive               |
-| `GET /readyz`  | Readiness: initialized, serving, and not stopping |
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /metrics` | Prometheus metrics |
+| `GET /livez` | Liveness: the process is responsive |
+| `GET /readyz` | Readiness: initialized, serving, and not stopping |
 
 The endpoints have no authentication, so the address must be loopback unless you
 also set `OCI_ACCELERATOR_METRICS_ALLOW_REMOTE=true`. Only expose them on a
@@ -193,9 +193,9 @@ below. Traffic to any other host passes through without being decrypted.
 
 ### Immutable endpoints
 
-| Endpoint                                   | Purpose                            |
-| ------------------------------------------ | ---------------------------------- |
-| `GET /v2/<name>/blobs/sha256:<digest>`     | Layer or image config              |
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /v2/<name>/blobs/sha256:<digest>` | Layer or image config |
 | `GET /v2/<name>/manifests/sha256:<digest>` | Manifest or image index, by digest |
 
 These endpoints address content by digest, so the response never changes. They
@@ -204,12 +204,12 @@ stay within the cache's size limits.
 
 ### Mutable endpoints
 
-| Endpoint                                  | Purpose                              |
-| ----------------------------------------- | ------------------------------------ |
-| `GET`, `HEAD /v2/<name>/manifests/<tag>`  | Manifest by tag                      |
-| `GET /v2/<name>/tags/list`                | Repository's tags                    |
-| `GET /v2/<name>/referrers/<digest>`       | Referrers, including filter variants |
-| `GET /v2/_catalog`                        | Registry catalog                     |
+| Endpoint | Purpose |
+| --- | --- |
+| `GET`, `HEAD /v2/<name>/manifests/<tag>` | Manifest by tag |
+| `GET /v2/<name>/tags/list` | Repository's tags |
+| `GET /v2/<name>/referrers/<digest>` | Referrers, including filter variants |
+| `GET /v2/_catalog` | Registry catalog |
 
 The responses of these endpoints can change upstream at any time. They are
 cached in memory only, for 30 seconds by default. Set
@@ -217,10 +217,10 @@ cached in memory only, for 30 seconds by default. Set
 
 ### Uncached endpoints
 
-| Endpoint                         | Purpose                              |
-| -------------------------------- | ------------------------------------ |
-| `GET /v2/`                       | API version and authentication check |
-| `PUT`, `PATCH`, `POST`, `DELETE` | Pushes and deletions                 |
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /v2/` | API version and authentication check |
+| `PUT`, `PATCH`, `POST`, `DELETE` | Pushes and deletions |
 
 These endpoints are forwarded upstream and never cached.
 

@@ -1,17 +1,17 @@
 # Deploying and using OCI Accelerator
 
-OCI Accelerator is an HTTP CONNECT proxy. It intercepts configured HTTPS registries and caches
-verified SHA-256 blobs and digest manifests on disk, plus mutable metadata briefly in memory.
-All other destinations are tunneled unmodified.
-See [how it works](how-it-works.md) for the request flow and design.
+OCI Accelerator is an HTTP CONNECT proxy. It intercepts configured HTTPS
+registries and caches verified SHA-256 blobs and digest manifests on disk, plus
+mutable metadata briefly in memory. All other destinations are tunneled
+unmodified. See [how it works](how-it-works.md) for the request flow and design.
 
-| Client or platform                                                        | Status        |
-| ------------------------------------------------------------------------- | ------------- |
-| Linux Docker Engine                                                       | Validated     |
-| Native macOS on Apple Silicon                                            | CLI, cache, and proxy tests passed |
-| macOS amd64 under Rosetta on Apple Silicon                               | CLI, cache, and proxy tests passed |
-| Native Intel macOS, Linux arm64 binaries                                 | Cross-built only, native runtime not validated |
-| Docker Desktop, Windows, containerd, BuildKit-specific integration        | Not validated |
+| Client or platform | Status |
+| --- | --- |
+| Linux Docker Engine | Validated |
+| Native macOS on Apple Silicon | CLI, cache, and proxy tests passed |
+| macOS amd64 under Rosetta on Apple Silicon | CLI, cache, and proxy tests passed |
+| Native Intel macOS, Linux arm64 binaries | Cross-built only, native runtime not validated |
+| Docker Desktop, Windows, containerd, BuildKit-specific integration | Not validated |
 
 ## Security model
 
@@ -50,9 +50,9 @@ GET or with a recent approval, called a grant, for the same request or for the
 same Bearer token and repository. A failed upstream request never falls back
 to cached content.
 
-By default, grants last up to 15 minutes for requests without an
-`Authorization` header and 30 seconds for requests with one, so revoked access
-can still be served from cache until they expire. Set both
+By default, grants last up to 15 minutes for requests without an `Authorization`
+header and 30 seconds for requests with one, so revoked access can still be
+served from cache until they expire. Set both
 [authorization TTLs](#authorization-grants) to `0s` to check every delivery.
 
 A cache hit without a live grant still sends the request upstream for
@@ -80,10 +80,10 @@ opted in.
 
 ### Prerequisites
 
-| Deployment | Requires                                                              |
-| ---------- | --------------------------------------------------------------------- |
-| Native     | A release binary or Go 1.27.1 to build, and a service manager to supervise the process |
-| Container  | Linux Docker daemon with Buildx, and Compose for the supplied service |
+| Deployment | Requires |
+| --- | --- |
+| Native | A release binary or Go 1.27.1 to build, and a service manager to supervise the process |
+| Container | Linux Docker daemon with Buildx, and Compose for the supplied service |
 
 For a native starter layout, `oci-accelerator init` creates the private state
 directories and CA before first start. For a custom layout, create the parent
@@ -93,10 +93,11 @@ directories yourself (see [state directories](#state-directories)).
 
 #### Download a release
 
-[GitHub Releases](https://github.com/buildkite/oci-accelerator/releases) provides four
-unsigned archives per version: `linux/amd64`, `linux/arm64`, `darwin/amd64`, and
-`darwin/arm64`. Each `oci-accelerator-OS-ARCH-vX.Y.Z.tar.gz` contains only the executable
-`oci-accelerator`. The checksum manifest is `oci-accelerator-vX.Y.Z.SHA256SUMS`.
+[GitHub Releases](https://github.com/buildkite/oci-accelerator/releases)
+provides four unsigned archives per version: `linux/amd64`, `linux/arm64`,
+`darwin/amd64`, and `darwin/arm64`. Each `oci-accelerator-OS-ARCH-vX.Y.Z.tar.gz`
+contains only the executable `oci-accelerator`. The checksum manifest is
+`oci-accelerator-vX.Y.Z.SHA256SUMS`.
 
 Download and verify the archive for your platform. These examples use
 `v0.3.2`. Replace it with the published version you want.
@@ -145,7 +146,8 @@ curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.3.2.SHA256
 grep " $archive\$" oci-accelerator-v0.3.2.SHA256SUMS | shasum -a 256 --check -
 ```
 
-Continue only if verification succeeds. Extract into a new directory and check the version:
+Continue only if verification succeeds. Extract into a new directory and check
+the version:
 
 ```sh
 mkdir bin
@@ -169,8 +171,8 @@ go build -o bin/oci-accelerator ./cmd/oci-accelerator
 
 #### Configure and start
 
-Initialize a native starter layout with either binary. You do not need a copy of the
-repository's example file when using a downloaded binary:
+Initialize a native starter layout with either binary. You do not need a copy of
+the repository's example file when using a downloaded binary:
 
 ```sh
 bin/oci-accelerator init
@@ -203,12 +205,13 @@ directories only if they are non-symlink directories that you own with mode
 0700. An existing CA is reused unchanged if it meets the
 [CA directory requirements](#ca-directory-requirements). Otherwise it fails.
 
-If initialization fails, directories or a generated CA can remain. The diagnostic asks you
-to inspect them and retry. `.env` is created only after the directory layout and CA succeed.
-Do not delete an established CA to retry initialization.
+If initialization fails, directories or a generated CA can remain. The
+diagnostic asks you to inspect them and retry. `.env` is created only after the
+directory layout and CA succeed. Do not delete an established CA to retry
+initialization.
 
-For configuration only, generate the same complete starter file without creating state
-directories or a CA:
+For configuration only, generate the same complete starter file without creating
+state directories or a CA:
 
 ```sh
 bin/oci-accelerator init-env
@@ -217,13 +220,15 @@ bin/oci-accelerator init-env
 bin/oci-accelerator init-env --output proxy.env
 ```
 
-`init-env` defaults to `.env`, refuses to overwrite an existing output, and does not create
-its output's parent directory. Like `init`, it ignores ambient environment variables.
+`init-env` defaults to `.env`, refuses to overwrite an existing output, and does
+not create its output's parent directory. Like `init`, it ignores ambient
+environment variables.
 
-For a custom layout, use `init-env`, edit the generated registry and path settings, and
-create the immediate state parents as the proxy user. You can provision only the CA with
-`init-ca --dir DIR` before startup. For example, after setting `OCI_ACCELERATOR_CA_DIR=./state/ca`
-and `OCI_ACCELERATOR_CACHE_DIR=./state/cache` in `proxy.env`:
+For a custom layout, use `init-env`, edit the generated registry and path
+settings, and create the immediate state parents as the proxy user. You can
+provision only the CA with `init-ca --dir DIR` before startup. For example,
+after setting `OCI_ACCELERATOR_CA_DIR=./state/ca` and
+`OCI_ACCELERATOR_CACHE_DIR=./state/cache` in `proxy.env`:
 
 ```sh
 mkdir -m 0700 state
@@ -236,12 +241,13 @@ bin/oci-accelerator --env-file proxy.env --check
 bin/oci-accelerator --env-file proxy.env
 ```
 
-Use `init --help`, `init-env --help`, or `init-ca --help` for command-specific usage.
+Use `init --help`, `init-env --help`, or `init-ca --help` for command-specific
+usage.
 
 ### Run under a service manager
 
-Run the process under the host's service manager. It stops gracefully on SIGINT or SIGTERM
-(see [shutdown](#shutdown)). For Amp orbs, see the
+Run the process under the host's service manager. It stops gracefully on SIGINT
+or SIGTERM (see [shutdown](#shutdown)). For Amp orbs, see the
 [testing guide](testing.md#run-the-proxy-as-a-service).
 
 ### Run in a container
@@ -250,26 +256,26 @@ Run the process under the host's service manager. It stops gracefully on SIGINT 
 
 The root `Dockerfile` builds a static Go binary into an Alpine-based image.
 
-| Property          | Value                                           |
-| ----------------- | ----------------------------------------------- |
-| Local tag         | `oci-accelerator:local`                         |
-| User and group    | `10001:10001`                                   |
-| Entrypoint        | `/usr/local/bin/oci-accelerator`                |
-| Default arguments | None                                            |
-| Health check      | `wget` of `http://127.0.0.1:9090/readyz`        |
+| Property | Value |
+| --- | --- |
+| Local tag | `oci-accelerator:local` |
+| User and group | `10001:10001` |
+| Entrypoint | `/usr/local/bin/oci-accelerator` |
+| Default arguments | None |
+| Health check | `wget` of `http://127.0.0.1:9090/readyz` |
 | State directories | `/var/lib/oci-accelerator` and its `cache/`, UID/GID 10001, mode 0700 (`ca/` is left absent) |
 
 The image sets four environment defaults that match its own layout:
 
-| Variable                         | Image default                    | Why                                              |
-| -------------------------------- | -------------------------------- | ------------------------------------------------ |
-| `OCI_ACCELERATOR_LISTEN`         | `0.0.0.0:5128`                   | A published port must reach the proxy             |
-| `OCI_ACCELERATOR_METRICS_LISTEN` | `127.0.0.1:9090`                 | The health check probes it                        |
-| `OCI_ACCELERATOR_CA_DIR`         | `/var/lib/oci-accelerator/ca`    | The image creates and owns its parent             |
-| `OCI_ACCELERATOR_CACHE_DIR`      | `/var/lib/oci-accelerator/cache` | The image creates and owns this directory         |
+| Variable | Image default | Why |
+| --- | --- | --- |
+| `OCI_ACCELERATOR_LISTEN` | `0.0.0.0:5128` | A published port must reach the proxy |
+| `OCI_ACCELERATOR_METRICS_LISTEN` | `127.0.0.1:9090` | The health check probes it |
+| `OCI_ACCELERATOR_CA_DIR` | `/var/lib/oci-accelerator/ca` | The image creates and owns its parent |
+| `OCI_ACCELERATOR_CACHE_DIR` | `/var/lib/oci-accelerator/cache` | The image creates and owns this directory |
 
-You must still set `OCI_ACCELERATOR_REGISTRIES`, so the image never chooses which hosts to
-intercept for you.
+You must still set `OCI_ACCELERATOR_REGISTRIES`, so the image never chooses
+which hosts to intercept for you.
 
 **The image listens on all container interfaces.** Any container on the same
 Docker network can connect to the proxy, so keep untrusted workloads off that
@@ -281,53 +287,60 @@ Publish the port only on a trusted host address, as the examples below do.
 
 How image defaults interact with other settings:
 
-- Docker `-e`, Docker `--env-file`, and Compose `environment` or `env_file` values override
-  image defaults.
-- Image defaults are process environment variables. They therefore override an application
-  `--env-file` passed after the image name. Configure containers through Docker or Compose
-  instead.
+- Docker `-e`, Docker `--env-file`, and Compose `environment` or `env_file`
+  values override image defaults.
+- Image defaults are process environment variables. They therefore override an
+  application `--env-file` passed after the image name. Configure containers
+  through Docker or Compose instead.
 - You can't unset an image default, only replace it, and an empty value counts
   as set ([empty values](#configuration)).
 
-The health check needs the metrics listener at `127.0.0.1:9090`. Keep it there or override
-the health check when changing it. An unhealthy result is diagnostic and does not itself
-trigger a restart. Readiness does not check upstream connectivity or disk capacity.
+The health check needs the metrics listener at `127.0.0.1:9090`. Keep it there
+or override the health check when changing it. An unhealthy result is diagnostic
+and does not itself trigger a restart. Readiness does not check upstream
+connectivity or disk capacity.
 
 #### Container environment file
 
-`.env.container-example` holds the container settings: `OCI_ACCELERATOR_REGISTRIES` and a
-copy of the four image defaults. Copy it to `.env.container`, which Git ignores, and edit
-the copy. Values in the copy override the image defaults. See the
-[settings reference](settings.md) for every other setting and its default.
+`.env.container-example` holds the container settings:
+`OCI_ACCELERATOR_REGISTRIES` and a copy of the four image defaults. Copy it to
+`.env.container`, which Git ignores, and edit the copy. Values in the copy
+override the image defaults. See the [settings reference](settings.md) for every
+other setting and its default.
 
-Docker and Compose read this file with their own dotenv syntax, not the application's. Keep it
-to unquoted literal `KEY=value` lines and full-line comments.
+Docker and Compose read this file with their own dotenv syntax, not the
+application's. Keep it to unquoted literal `KEY=value` lines and full-line
+comments.
 
 #### Compose
 
-The supplied `compose.yaml` service builds the local image from the repository root and:
+The supplied `compose.yaml` service builds the local image from the repository
+root and:
 
 - requires `env_file: .env.container`
 - publishes only `127.0.0.1:5128`
-- keeps the root filesystem read-only, drops all capabilities, and sets `no-new-privileges`
+- keeps the root filesystem read-only, drops all capabilities, and sets
+  `no-new-privileges`
 - uses `restart: unless-stopped` and a 40-second stop grace period
   ([shutdown](#shutdown))
 
-| Source                             | Mount point                      | Access   |
-| ---------------------------------- | -------------------------------- | -------- |
-| `oci-accelerator-ca` volume        | `/var/lib/oci-accelerator`       | Writable |
-| `oci-accelerator-cache` volume     | `/var/lib/oci-accelerator/cache` | Writable |
+| Source | Mount point | Access |
+| --- | --- | --- |
+| `oci-accelerator-ca` volume | `/var/lib/oci-accelerator` | Writable |
+| `oci-accelerator-cache` volume | `/var/lib/oci-accelerator/cache` | Writable |
 
 Volume notes:
 
-- The CA volume mounts the parent so startup can atomically create its `ca/` child. Docker
-  copies the image's ownership and permissions into fresh volumes, so you don't need to
-  provision host directories or use a root entrypoint. The CA volume remains writable at runtime.
+- The CA volume mounts the parent so startup can atomically create its `ca/`
+  child. Docker copies the image's ownership and permissions into fresh volumes,
+  so you don't need to provision host directories or use a root entrypoint. The
+  CA volume remains writable at runtime.
 - Existing valid CA files are reused, not replaced.
 - Run only one proxy against these volumes at a time. The names match the
   [`docker run`](#docker-run) example.
-- These examples do not migrate existing host bind-mounted data. If you start with new volumes,
-  the proxy creates a new CA, and you must redistribute client trust.
+- These examples do not migrate existing host bind-mounted data. If you start
+  with new volumes, the proxy creates a new CA, and you must redistribute client
+  trust.
 
 Build, validate, and start:
 
@@ -344,9 +357,10 @@ docker compose run --rm --no-deps oci-accelerator init-ca --dir /var/lib/oci-acc
 docker compose up -d
 ```
 
-Compose does not automatically pass exported host variables into the container. To override
-settings, edit `.env.container`, or add an `environment` mapping to the service in a local
-Compose override file. Compose `environment` values override `env_file` values:
+Compose does not automatically pass exported host variables into the container.
+To override settings, edit `.env.container`, or add an `environment` mapping to
+the service in a local Compose override file. Compose `environment` values
+override `env_file` values:
 
 ```yaml
 services:
@@ -357,18 +371,18 @@ services:
 ```
 
 You can put literal values in this mapping, or use Compose interpolation such as
-`OCI_ACCELERATOR_CACHE_MAX_BYTES: "${OCI_ACCELERATOR_CACHE_MAX_BYTES}"`. The latter requires
-you to set the host variable before running Compose.
+`OCI_ACCELERATOR_CACHE_MAX_BYTES: "${OCI_ACCELERATOR_CACHE_MAX_BYTES}"`. The
+latter requires you to set the host variable before running Compose.
 
 First startup generates the CA. Then
 [configure Docker hosts](#configure-docker-hosts), installing only the public
 certificate.
 
-| Command                                   | Effect on volumes                                      |
-| ----------------------------------------- | ------------------------------------------------------ |
-| `docker compose down`                     | Preserves both                                         |
-| `docker volume rm oci-accelerator-cache`  | Deletes only the cache ([reset the cache](#reset-the-cache)) |
-| **`docker compose down -v`**              | **Deletes both, including the signing CA**             |
+| Command | Effect on volumes |
+| --- | --- |
+| `docker compose down` | Preserves both |
+| `docker volume rm oci-accelerator-cache` | Deletes only the cache ([reset the cache](#reset-the-cache)) |
+| **`docker compose down -v`** | **Deletes both, including the signing CA** |
 
 Preserve the CA volume independently of the replaceable cache.
 
@@ -399,12 +413,13 @@ docker logs oci-accelerator
 docker inspect --format '{{.State.Health.Status}}' oci-accelerator
 ```
 
-Stop it with `docker stop oci-accelerator`. Removing the container preserves both named volumes.
+Stop it with `docker stop oci-accelerator`. Removing the container preserves
+both named volumes.
 
-Docker's `--env-file` appears before the image name, so Docker injects the values into the
-container. Add `-e` to override individual values. Docker applies `-e` after `--env-file`.
-Because the image supplies the other container defaults, you can instead pass only the
-registries:
+Docker's `--env-file` appears before the image name, so Docker injects the
+values into the container. Add `-e` to override individual values. Docker
+applies `-e` after `--env-file`. Because the image supplies the other container
+defaults, you can instead pass only the registries:
 
 ```sh
 docker run -d --name oci-accelerator --restart unless-stopped \
@@ -416,10 +431,11 @@ docker run -d --name oci-accelerator --restart unless-stopped \
   oci-accelerator:local
 ```
 
-Docker exposes the proxy only on the host's loopback address. Metrics stay on container
-loopback for the image health check and are not published. The UID 10001 state volumes and
-isolation flags match the Compose example. Exported host variables are not implicit container
-overrides. Use `-e`, `--env-file`, or a Compose `environment` mapping.
+Docker exposes the proxy only on the host's loopback address. Metrics stay on
+container loopback for the image health check and are not published. The UID
+10001 state volumes and isolation flags match the Compose example. Exported host
+variables are not implicit container overrides. Use `-e`, `--env-file`, or a
+Compose `environment` mapping.
 
 #### Multi-architecture images
 
@@ -440,11 +456,14 @@ docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
 
 ### Serve remote Docker hosts
 
-The default `127.0.0.1:5128` listener serves Docker on the same host. To serve remote hosts:
+The default `127.0.0.1:5128` listener serves Docker on the same host. To serve
+remote hosts:
 
 1. Set `OCI_ACCELERATOR_LISTEN` to an explicit private-interface address.
-2. Restrict access with network access controls and a firewall (see [security model](#security-model)).
-3. Use the proxy's private address in each host's [Docker proxy configuration](#point-docker-at-the-proxy).
+2. Restrict access with network access controls and a firewall (see
+   [security model](#security-model)).
+3. Use the proxy's private address in each host's
+   [Docker proxy configuration](#point-docker-at-the-proxy).
 
 ## Configure Docker hosts
 
@@ -635,11 +654,12 @@ covers the 15-second default either way.
 
 ## CA management
 
-The CA is `ca.crt` and `ca.key` in `OCI_ACCELERATOR_CA_DIR`: `data/ca/` on the host in the native example, or
-`ca/` in the `oci-accelerator-ca` volume for containers. See
+The CA is `ca.crt` and `ca.key` in `OCI_ACCELERATOR_CA_DIR`: `data/ca/` on the
+host in the native example, or `ca/` in the `oci-accelerator-ca` volume for
+containers. See
 [trusting the accelerator's certificate](how-it-works.md#trusting-the-accelerators-certificate)
-and [per-host certificates](how-it-works.md#per-host-certificates) for how the CA and
-leaf certificates are used.
+and [per-host certificates](how-it-works.md#per-host-certificates) for how the
+CA and leaf certificates are used.
 
 ### Create the CA
 
@@ -688,9 +708,9 @@ Proxy startup, `init`, and `init-ca` apply the same checks.
 
 ### Back up and replace the CA
 
-Preserve `OCI_ACCELERATOR_CA_DIR` across restarts, back up both CA files securely, and use one proxy process
-per CA directory. Rotation is not automatic. **Never delete an established CA to repair
-startup.**
+Preserve `OCI_ACCELERATOR_CA_DIR` across restarts, back up both CA files
+securely, and use one proxy process per CA directory. Rotation is not automatic.
+**Never delete an established CA to repair startup.**
 
 To replace a CA:
 
@@ -714,10 +734,11 @@ print or copy their contents.
 
 To clean up:
 
-1. Stop every process that can initialize a CA in that parent, and keep them stopped.
+1. Stop every process that can initialize a CA in that parent, and keep them
+   stopped.
 2. Inspect only that trusted parent.
-3. Remove each orphaned `.ca-init-*` directory by its exact path. Never use a wildcard deletion
-   or remove the configured CA directory.
+3. Remove each orphaned `.ca-init-*` directory by its exact path. Never use a
+   wildcard deletion or remove the configured CA directory.
 
 ## Cache storage
 
@@ -895,11 +916,11 @@ environment variables. There is no automatic file discovery,
 `OCI_ACCELERATOR_CONFIG` variable, or hot reload.
 
 `OCI_ACCELERATOR_REGISTRIES`, `OCI_ACCELERATOR_CA_DIR`, and
-`OCI_ACCELERATOR_CACHE_DIR` are required. The container [image](#image)
-supplies the two directories. See the [settings reference](settings.md) for
-every setting, its default, and how timeouts and memory limits behave. The
-registries and `./data` paths in
-[`.env.example`](../.env.example) are examples, not built-in defaults.
+`OCI_ACCELERATOR_CACHE_DIR` are required. The container [image](#image) supplies
+the two directories. See the [settings reference](settings.md) for every
+setting, its default, and how timeouts and memory limits behave. The registries
+and `./data` paths in [`.env.example`](../.env.example) are examples, not
+built-in defaults.
 
 `--check` validates this same combined configuration without inspecting state,
 binding listeners, or creating directories. Unknown process environment
@@ -921,10 +942,10 @@ string is an explicit value:
 
 Peer settings are validated even while peering is disabled.
 
-Use exactly `true` or `false` for booleans, decimal integers without a sign or leading zeros
-for numbers, and Go duration strings such as `500ms`, `30s`, or `2m` for durations. Relative
-paths from all sources are resolved from the process working directory and converted
-internally to absolute paths.
+Use exactly `true` or `false` for booleans, decimal integers without a sign or
+leading zeros for numbers, and Go duration strings such as `500ms`, `30s`, or
+`2m` for durations. Relative paths from all sources are resolved from the
+process working directory and converted internally to absolute paths.
 
 For example, process environment values can override a native dotenv file:
 
@@ -947,20 +968,20 @@ OCI_ACCELERATOR_CACHE_MAX_BYTES=68719476736 bin/oci-accelerator --env-file .env
 
 ### Registry authorities
 
-Each `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST` entry is an
-authority: `host` or `host:port`, with
-no scheme or path. An omitted port means 443, and matching includes the port.
-Both settings take comma-separated lists. Entries are whitespace-trimmed, empty
-entries are rejected, and a list replaces the file value as a whole.
+Each `OCI_ACCELERATOR_REGISTRIES` and `OCI_ACCELERATOR_REDIRECT_ALLOWLIST` entry
+is an authority: `host` or `host:port`, with no scheme or path. An omitted port
+means 443, and matching includes the port. Both settings take comma-separated
+lists. Entries are whitespace-trimmed, empty entries are rejected, and a list
+replaces the file value as a whole.
 
-| Entry                   | Matches                  |
-| ----------------------- | ------------------------ |
-| `ghcr.io`               | `ghcr.io:443`            |
-| `registry.example:5000` | `registry.example:5000`  |
-| `[2001:db8::1]:5000`    | IPv6 with a port (bracketed) |
+| Entry | Matches |
+| --- | --- |
+| `ghcr.io` | `ghcr.io:443` |
+| `registry.example:5000` | `registry.example:5000` |
+| `[2001:db8::1]:5000` | IPv6 with a port (bracketed) |
 
-Entries differing only in case, a trailing dot, or `:443` are duplicates and are rejected.
-You can configure private registries explicitly.
+Entries differing only in case, a trailing dot, or `:443` are duplicates and are
+rejected. You can configure private registries explicitly.
 
 ### State directories
 
@@ -978,25 +999,25 @@ You can configure private registries explicitly.
   themselves, but neither startup nor `init-ca` creates ancestors. `init`
   does this for the native `data/` layout.
 - Ownership and layout are checked at startup. See the
-  [CA](#ca-directory-requirements) and
-  [cache](#cache-directory-requirements) directory requirements.
+  [CA](#ca-directory-requirements) and [cache](#cache-directory-requirements)
+  directory requirements.
 
 ### Built-in limits
 
-| Limit                                        | Value                              |
-| -------------------------------------------- | ---------------------------------- |
-| CONNECT request and upstream response headers | 64 KiB                            |
-| Upstream connections per destination         | 16                                 |
-| Idle upstream connections                    | 32 globally, 8 per destination     |
-| Redirects followed                           | 5                                  |
-| Disk cache metadata charge                   | 4 KiB per entry                    |
-| Disk eviction removal attempts per admission | 8                                  |
+| Limit | Value |
+| --- | --- |
+| CONNECT request and upstream response headers | 64 KiB |
+| Upstream connections per destination | 16 |
+| Idle upstream connections | 32 globally, 8 per destination |
+| Redirects followed | 5 |
+| Disk cache metadata charge | 4 KiB per entry |
+| Disk eviction removal attempts per admission | 8 |
 | Mutable captures and retained response memory | 32 MiB accounted, not process RSS |
-| Mutable response body and retained headers   | 1 MiB body, 64 KiB headers         |
-| Mutable concurrent captures and indexed entries | 16 captures, 1,024 entries      |
-| Root CA validity                             | 10 years                           |
-| Leaf certificate validity                    | At most 24 hours                   |
-| Intercepted protocols                        | TLS 1.2 or newer, HTTP/1.1         |
+| Mutable response body and retained headers | 1 MiB body, 64 KiB headers |
+| Mutable concurrent captures and indexed entries | 16 captures, 1,024 entries |
+| Root CA validity | 10 years |
+| Leaf certificate validity | At most 24 hours |
+| Intercepted protocols | TLS 1.2 or newer, HTTP/1.1 |
 
 ## Request handling
 
