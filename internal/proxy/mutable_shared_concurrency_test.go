@@ -39,6 +39,7 @@ func TestMutableSharedCoalescesIndependentlyApprovedTokens(t *testing.T) {
 	defer releaseCapture()
 	tr := mutableTransportFixture(t, origin)
 	tr.mutableShared = true
+	tr.fillWaitTimeout = mutableWaitTimeout(t)
 
 	for _, token := range []string{"a", "b", "c"} {
 		req := authorizationRequest(t, origin.URL+"/v2/team/image/tags/list?seed="+token, "Bearer "+token)
@@ -56,7 +57,7 @@ func TestMutableSharedCoalescesIndependentlyApprovedTokens(t *testing.T) {
 		req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "Bearer "+token)
 		go func() { results <- readMutable(tr, req) }()
 	}
-	waitMutableWaiters(t, tr, 2)
+	waitMutableWaiters(t, tr, 2, tr.fillWaitTimeout)
 	if calls.Load() != 1 || seeds.Load() != 3 {
 		t.Fatalf("pending capture: target calls=%d seeds=%d", calls.Load(), seeds.Load())
 	}
@@ -204,7 +205,7 @@ func TestMutableSharedRechecksWaitingTokenGrant(t *testing.T) {
 				follower := make(chan mutableResult, 1)
 				go func() { follower <- readMutable(tr, followerReq) }()
 				synctest.Wait()
-				waitMutableWaiters(t, tr, 1)
+				waitMutableWaiters(t, tr, 1, time.Second)
 
 				denyFollower.Store(true)
 				if scenario == "revoked" {
@@ -219,7 +220,7 @@ func TestMutableSharedRechecksWaitingTokenGrant(t *testing.T) {
 					time.Sleep(time.Second)
 				}
 
-				waitMutableWaiters(t, tr, 1)
+				waitMutableWaiters(t, tr, 1, time.Second)
 				releaseCapture()
 				if got := <-leader; got.err != nil || got.body != "shared body" {
 					t.Fatalf("leader = %+v", got)

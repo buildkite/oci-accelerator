@@ -406,6 +406,7 @@ func TestMutableCoalescesCompleteResponses(t *testing.T) {
 	defer releaseCapture()
 
 	tr := mutableTransportFixture(t, origin)
+	tr.fillWaitTimeout = mutableWaitTimeout(t)
 
 	req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "Bearer shared")
 	results := make(chan mutableResult, 9)
@@ -415,7 +416,7 @@ func TestMutableCoalescesCompleteResponses(t *testing.T) {
 	for range 8 {
 		go func() { results <- readMutable(tr, req.Clone(req.Context())) }()
 	}
-	waitMutableWaiters(t, tr, 8)
+	waitMutableWaiters(t, tr, 8, tr.fillWaitTimeout)
 
 	releaseCapture()
 	for range 9 {
@@ -454,6 +455,8 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 				tr.fillWaitTimeout = 20 * time.Millisecond
 			} else if scenario == "waiting disabled" {
 				tr.fillWaitTimeout = 0
+			} else {
+				tr.fillWaitTimeout = mutableWaitTimeout(t)
 			}
 
 			req := authorizationRequest(t, origin.URL+"/v2/team/image/manifests/latest", "")
@@ -478,11 +481,13 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 
 			followerCtx, cancelFollower := context.WithCancel(context.Background())
 			defer cancelFollower()
+			followerStats := &requestStats{}
+			followerCtx = context.WithValue(followerCtx, statsKey{}, followerStats)
 			follower := make(chan mutableResult, 1)
 			go func() { follower <- readMutable(tr, req.Clone(followerCtx)) }()
 
 			if scenario == "follower canceled" || scenario == "leader canceled" {
-				waitMutableWaiters(t, tr, 1)
+				waitMutableWaiters(t, tr, 1, tr.fillWaitTimeout)
 			}
 			if scenario == "follower canceled" {
 				cancelFollower()
@@ -491,11 +496,14 @@ func TestMutableCancellationAndTimeout(t *testing.T) {
 			}
 			got := <-follower
 			if scenario == "follower canceled" {
-				if !errors.Is(got.err, context.Canceled) || calls.Load() != 1 {
-					t.Fatalf("canceled follower = %+v, calls=%d", got, calls.Load())
+				if !errors.Is(got.err, context.Canceled) || calls.Load() != 1 || followerStats.wait != "canceled" {
+					t.Fatalf("canceled follower = %+v, calls=%d wait=%q", got, calls.Load(), followerStats.wait)
 				}
 			} else if got.err != nil || got.body != "independent" || calls.Load() != 2 {
 				t.Fatalf("fallback = %+v, calls=%d", got, calls.Load())
+			}
+			if scenario == "leader canceled" && followerStats.wait != "complete" {
+				t.Fatalf("leader cancellation wait=%q, want complete", followerStats.wait)
 			}
 
 			if scenario != "leader canceled" {
@@ -764,19 +772,23 @@ func TestMutableCoalescingDoesNotShareUncacheableResponses(t *testing.T) {
 			defer releaseCapture()
 
 			tr := mutableTransportFixture(t, origin)
+			tr.fillWaitTimeout = mutableWaitTimeout(t)
 			req := authorizationRequest(t, origin.URL+"/v2/_catalog", "")
 			leader, follower := make(chan mutableResult, 1), make(chan mutableResult, 1)
 			go func() { leader <- readMutable(tr, req.Clone(req.Context())) }()
 			waitFor(t, started, "leading request")
-			go func() { follower <- readMutable(tr, req.Clone(req.Context())) }()
-			waitMutableWaiters(t, tr, 1)
+			followerStats := &requestStats{}
+			followerCtx := context.WithValue(req.Context(), statsKey{}, followerStats)
+			go func() { follower <- readMutable(tr, req.Clone(followerCtx)) }()
+			waitMutableWaiters(t, tr, 1, tr.fillWaitTimeout)
 
 			releaseCapture()
 			if got := <-leader; got.err != nil || got.body != "first request only" {
 				t.Fatalf("leading response = %+v", got)
 			}
-			if got := <-follower; got.err != nil || got.body != "independently approved" || calls.Load() != 2 {
-				t.Fatalf("uncacheable result shared: %+v calls=%d", got, calls.Load())
+			got := <-follower
+			if got.err != nil || got.body != "independently approved" || calls.Load() != 2 || followerStats.wait != "complete" {
+				t.Fatalf("uncacheable result shared: %+v calls=%d wait=%q", got, calls.Load(), followerStats.wait)
 			}
 		})
 	}
@@ -814,9 +826,20 @@ func readMutable(tr registryTransport, req *http.Request) mutableResult {
 	return mutableResult{body: string(body), err: err}
 }
 
-func waitMutableWaiters(t *testing.T, tr registryTransport, want int64) {
+// Wall-clock coalescing and cancellation tests should be bounded by the runner,
+// not race a short fill timeout. Timeout and fake-time tests use explicit budgets.
+func mutableWaitTimeout(t *testing.T) time.Duration {
 	t.Helper()
-	if !waitUntil(time.Second, func() bool { return tr.metrics.snapshot().activeWaits == want }) {
+	if deadline, ok := t.Deadline(); ok {
+		return time.Until(deadline)
+	}
+
+	return time.Duration(1<<63 - 1)
+}
+
+func waitMutableWaiters(t *testing.T, tr registryTransport, want int64, timeout time.Duration) {
+	t.Helper()
+	if !waitUntil(timeout, func() bool { return tr.metrics.snapshot().activeWaits == want }) {
 		t.Fatalf("mutable waiters did not reach %d", want)
 	}
 }
