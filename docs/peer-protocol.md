@@ -266,17 +266,12 @@ book.
 
 #### Failure handling
 
-| Failure | Effect |
-| --- | --- |
-| Peer listener bind or state failure at startup | Startup fails |
-| Saving `peers.json` during an exchange | The exchange fails, and the proxy keeps serving |
-| Directory sync after a successful replacement | The book keeps the replaced state and retries saving before acknowledging another exchange |
-| Saving expired members | Discovery keeps retrying, and expired members stay hidden meanwhile |
-| Peer listener failure while running | The process stops rather than leaving an enabled service silently unavailable |
+- A peer listener bind or state failure at startup stops startup.
+- If syncing the directory fails after a successful replacement, the book keeps
+  the replaced state and retries saving before acknowledging another exchange.
 
-Outage and recovery logs include the peer address but no raw network errors or
-credentials. See [limits and state](deployment.md#limits-and-state) for the log
-messages and what to do about them.
+See [limits and state](deployment.md#limits-and-state) for runtime failures,
+their log messages, and what to do about them.
 
 ## Cache key listing
 

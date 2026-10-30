@@ -195,28 +195,22 @@ CA. Docker rejects that certificate unless it trusts the root CA, so each
 Docker host must install the CA certificate before pulling through the
 accelerator.
 
-The accelerator creates the root CA on first startup, when the directory
-specified by `OCI_ACCELERATOR_CA_DIR` doesn't exist yet, or with
-`init` or `init-ca`. It stores the CA there as `ca.crt` and `ca.key`.
-
-A root CA the accelerator creates is valid for 10 years. The accelerator
-reuses it on every later startup, so Docker hosts only need to install it once,
-and never replaces it automatically. If the directory exists but either file is
-missing, or the files or directories have unsafe ownership or permissions, the
-accelerator fails to start. See
-[CA directory requirements](deployment.md#ca-directory-requirements).
+The accelerator creates the root CA in `OCI_ACCELERATOR_CA_DIR` on first
+startup, or with `init` or `init-ca`, and reuses it on every later startup. It
+never replaces the CA automatically, so Docker hosts install it once. See
+[CA management](deployment.md#ca-management).
 
 The same CA signs the certificates instances use to authenticate each other
 when [peering](#peer-discovery-and-cache-delivery) is enabled. Anyone holding
 `ca.key` can impersonate any registry to Docker hosts that trust the CA, and
 any peer to the fleet. See [peer trust](deployment.md#peer-trust).
 
-Any client that can reach the accelerator's listener can download the public
-certificate from `/ca.crt` over plain HTTP, without authentication. The
-endpoint serves only the public certificate, never the private key. Because
-the download is unauthenticated, verify the certificate's fingerprint through a
-trusted channel before installing it. See
-[trust the CA](deployment.md#trust-the-ca) for the steps.
+Anyone who can reach the listener can fetch the exact path `/ca.crt` with `GET`
+or `HEAD` over plain HTTP, without credentials. It serves only the running
+process's public certificate, never the private key. Other methods return
+`405`, and each response closes its connection. Because the download is
+unauthenticated, Docker hosts must
+[verify its fingerprint](deployment.md#trust-the-ca) before installing it.
 
 ### Per-host certificates
 
@@ -564,11 +558,8 @@ gone.
 
 ### Restarts and integrity
 
-On startup, the accelerator removes abandoned temporary files, incomplete
-entries, and entries whose body file has the wrong type, mode, owner, or size.
-It refuses to start on an unknown file, or an entry directory or metadata file
-with the wrong mode or owner. If the remaining entries don't fit the current
-limits, it deletes the oldest until they do.
+Startup removes incomplete or unsafe entries and evicts the oldest if the
+cache no longer fits. See [startup recovery](deployment.md#startup-recovery).
 
 Each body is fully hashed on its first read after startup. Later reads check
 only the file size and rely on the directory's private permissions. A failed

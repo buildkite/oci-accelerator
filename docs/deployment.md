@@ -473,11 +473,6 @@ and Docker-owned credentials don't change.
    openssl x509 -in ca.crt -noout -fingerprint -sha256
    ```
 
-   Anyone who can reach the listener can fetch the exact path `/ca.crt` with
-   `GET` or `HEAD`, without credentials. It serves only the running process's
-   public certificate, never the private key. Other methods return `405`, and
-   each response closes its connection.
-
 2. Compare the fingerprint with `ca_sha256` from `init`, `init-ca`, or the
    startup logs, obtained through a trusted channel such as SSH or your
    deployment system. OpenSSL prints uppercase hex with colons, and the proxy
@@ -790,10 +785,10 @@ matching, expiry, memory limits, and invalidation.
 
 ### Startup recovery
 
-- Startup removes abandoned fills and incomplete entries, and refuses to start
-  on unrecognized files rather than deleting them.
-- Each body is rehashed on its first use after startup, so that first hit is
-  slower. Recency order is rebuilt from commit times.
+- Startup removes abandoned fills, incomplete entries, and entries whose body
+  file has the wrong type, mode, owner, or size. It refuses to start on an
+  unknown file, or an entry directory or metadata file with the wrong mode or
+  owner, rather than deleting it.
 - If the cache no longer fits its limits, startup deletes the oldest entries
   until it does. Lowering `OCI_ACCELERATOR_CACHE_MAX_BYTES` or
   `OCI_ACCELERATOR_CACHE_MAX_ENTRIES` therefore deletes cached content at the
@@ -914,8 +909,9 @@ Watch for these log messages:
 | `peer membership expiry persistence failed` and `…recovered` | Saving expired members failed, then recovered. Expired members stay hidden meanwhile |
 | `peer cache keys refresh failed` | Fetching a peer's key listing failed. Earlier hints are kept |
 
-A peer listener failure stops the process rather than leaving peering silently
-unavailable.
+These logs include the peer address but never raw network errors or
+credentials. A peer listener failure stops the process rather than leaving
+peering silently unavailable.
 
 ## Configuration
 
