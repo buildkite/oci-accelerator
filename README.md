@@ -89,7 +89,7 @@ it, caching Docker Hub, GitHub Container Registry, and Amazon ECR Public.
    done
    ```
 
-   Only Docker trusts the CA, and only for these registries. See
+   Only Docker trusts the CA, and only for these registries' connections. See
    [Trusting a private CA](#trusting-a-private-ca) for why this is safe.
 
    <details>

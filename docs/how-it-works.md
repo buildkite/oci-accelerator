@@ -350,7 +350,8 @@ response has any of the following, even for a request that had to revalidate:
   `max-age` or `s-maxage`
 - a `Vary` the accelerator can't key on, or a digest mismatch
 
-A later successful response can't restore a revoked grant.
+A successful request already in flight when a grant is revoked can't restore
+it. A new request can establish a fresh grant after upstream approval.
 
 For tag and listing responses in shared mode, only `Vary: *` or
 `Vary: Authorization` counts, and there's no digest check. A `404`, `410`, or
