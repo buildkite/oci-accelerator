@@ -18,7 +18,6 @@ func TestImagePipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	git := func(dir string, args ...string) string { return imagePipelineGit(t, dir, args...) }
 	origin := imagePipelineHistory(t)
 
 	for _, tc := range []struct {
@@ -76,6 +75,9 @@ func TestImagePipeline(t *testing.T) {
 		{name: "annotation failure is nonfatal", checkout: "release", failure: "annotation", wantSecret: true, wantBuild: true, wantPush: true, wantInspect: true, wantTags: []string{"v0.1.10"}, annotationVersion: "v0.1.10", annotationHeading: "**Published oci-accelerator v0.1.10**"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			git := func(dir string, args ...string) string { return imagePipelineGit(t, dir, args...) }
 			root := t.TempDir()
 			checkout := tc.checkout
 			if checkout == "" {

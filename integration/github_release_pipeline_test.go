@@ -53,6 +53,8 @@ func TestGitHubReleasePipeline(t *testing.T) {
 		{name: "lost publish response then read only retry", failure: "lost-publish", wantError: true, wantBuild: true, retry: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			root := t.TempDir()
 			imagePipelineGit(t, root, "clone", "--bare", origin, "origin")
 			branch := "release"
