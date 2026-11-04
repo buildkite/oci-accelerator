@@ -257,28 +257,32 @@ approval, and what happens without one, depends on the content.
 | Tag manifests, tag lists, and referrer lists, for a Bearer token in shared mode | The token has a live repository grant and a matching entry is cached | The request goes upstream, and Docker gets the fresh response |
 | Other mutable requests, including the catalog | An identical earlier request, including its credentials, is still cached | The request goes upstream, and Docker gets the fresh response |
 
-Immutable content can come from the cache after a fresh approval, because a
+Immutable content can come from the cache after a recent approval, because a
 digest always refers to the same bytes. Mutable content without approval never
 comes from the cache, because a tag can move.
 
-For digest-addressed content, the accelerator sends Docker's `GET` upstream
-first, following any redirects. Only a cacheable `200 OK` counts as approval.
-Any other response, such as `401` or `404`, goes back to Docker unchanged.
-`GET /v2/` approves nothing.
+For digest-addressed content, a live grant and local body can satisfy the
+request without contacting the registry. Otherwise, the accelerator sends
+Docker's `GET` upstream first, following any redirects. Only a cacheable
+`200 OK` counts as approval. Any other response, such as `401` or `404`, goes
+back to Docker unchanged. `GET /v2/` approves nothing.
 
-After approval, the body can come from disk or a
-[peer](#fetching-from-a-peer), but the upstream response always sets the cache
-key, metadata, response headers, and whether a grant is created. A disk hit
-without a reusable grant still sends the request upstream, including any
-redirects, but doesn't download the body. These requests may count toward
-registry rate limits.
+On this upstream path, the body can come from disk or a
+[peer](#fetching-from-a-peer), but the upstream response sets the cache key,
+metadata, response headers, and whether a grant is created. A disk hit without
+a reusable grant still sends the request upstream, including any redirects,
+but doesn't download the body. These requests may count toward registry rate
+limits.
 
 ### Authorization grants
 
 Grants are kept in memory only, are cleared on restart, and share the
 [authorization entry limit](settings.md#cache-authorization). Cached bytes are
-shared, but approvals aren't. Any client the registry approves can receive a
-cached copy, whoever filled it.
+shared. Approvals match either an exact request or a Bearer token's access to
+a particular registry and repository. They aren't tied to individual client
+connections, so clients presenting the same request or token can reuse a
+matching approval. A matching approval lets a client receive a cached copy,
+whoever filled it.
 
 #### What creates a grant
 

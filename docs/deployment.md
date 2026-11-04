@@ -40,15 +40,17 @@ channel before installing it ([details](#trust-the-ca)).
 Upstream TLS is always verified using the proxy process's system trust store.
 There is no insecure mode.
 
-Credentials stay with Docker. Never put credentials in proxy configuration.
+Docker manages registry credentials. The proxy can read credentials sent to
+intercepted registries and forwards them upstream. Never put credentials in
+proxy configuration.
 Cross-origin redirects never forward credentials or cookies.
 
 ### Authorization of cached content
 
-The upstream registry authorizes every cached delivery, either with an upstream
-GET or with a recent approval, called a grant, for the same request or for the
-same Bearer token and repository. A failed upstream request never falls back
-to cached content.
+Every cached delivery requires upstream approval, either from a new GET or
+from a recent approval called a grant. A grant matches either the exact
+request or the Bearer token's access to that registry and repository. A failed
+upstream request never falls back to cached content.
 
 By default, grants last up to 15 minutes for requests without an `Authorization`
 header and 30 seconds for requests with one, so revoked access can still be

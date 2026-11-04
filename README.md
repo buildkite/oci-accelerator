@@ -20,8 +20,9 @@ Use it to:
   Distribution API, not only Docker Hub.
 - **No image renaming.** Docker keeps its usual image names and `docker login`,
   so you don't rewrite references or configure registry mirrors.
-- **Private images stay private.** The upstream registry must approve each
-  client before it receives cached content.
+- **Private images stay private.** Cached content requires a recent upstream
+  approval matching either the exact request or the Bearer token's access to
+  that registry and repository.
 - **No shared credentials.** Each client uses its own credentials. The proxy can
   read them and forwards them to the intended upstream registry, but doesn't
   share them with other clients or cache peers.
@@ -252,9 +253,9 @@ that risk in two ways:
   and Docker trusts it only for the registries you list.
 - **The proxy never trusts its own CA upstream.** OCI Accelerator verifies every
   upstream registry against its host's system trust store, never its own CA.
-  Even if the CA key leaked, a certificate signed with it could not impersonate
-  an upstream registry to the proxy, so Docker hosts that pull through the
-  proxy still reach the real registry.
+  This protects the proxy's upstream connection. It doesn't protect Docker
+  from someone using a stolen CA key to impersonate a registry if Docker
+  bypasses the proxy and makes a direct connection.
 
 This relies on the connection between Docker and the proxy being trusted, such
 as loopback or a private network, and on the CA not being added to the system
