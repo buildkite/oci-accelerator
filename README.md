@@ -22,8 +22,9 @@ Use it to:
   so you don't rewrite references or configure registry mirrors.
 - **Private images stay private.** The upstream registry must approve each
   client before it receives cached content.
-- **No shared credentials.** Each client authenticates with its own credentials,
-  and the proxy never stores or forwards them to other hosts.
+- **No shared credentials.** Each client uses its own credentials. The proxy can
+  read them and forwards them to the intended upstream registry, but doesn't
+  share them with other clients or cache peers.
 - **Plugs in as an HTTPS proxy.** Docker Engine sends registry traffic through
   it using its standard proxy setting, once you trust the proxy's root CA.
 - **Optional peer sharing.** Instances can share cached content with each other
