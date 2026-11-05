@@ -161,6 +161,7 @@ func (t registryTransport) roundTrip(req *http.Request, mayWait bool) (*http.Res
 				GetConn: func(string) {
 					t.metrics.mu.Lock()
 					t.metrics.upstream++
+					stats.upstreamGetAttempts++
 					t.metrics.mu.Unlock()
 				},
 			}))

@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -120,6 +121,112 @@ func TestInformationalResponseWriteDeadline(t *testing.T) {
 		})
 	}
 }
+
+func TestRegistryRequestLogsIdentifyClientAndUpstreamWork(t *testing.T) {
+	const body = "cached logging fixture"
+	var gets, heads atomic.Int32
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			heads.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		gets.Add(1)
+		if _, password, _ := r.BasicAuth(); password == "denied-secret" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		if r.URL.Path != "/data" {
+			w.Header().Set("Location", "/data?signature=redirect-secret")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+			return
+		}
+
+		blobHeaders(w, body)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer origin.Close()
+
+	p, client := cacheFixture(t, origin, 1<<20, nil)
+	p.authorization = newAuthorizationCache(time.Minute, time.Minute, 10)
+	var logs syncBuffer
+	p.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+
+	for _, tc := range []struct {
+		method, password string
+		status           int
+	}{
+		{http.MethodGet, "first-secret", http.StatusOK},
+		{http.MethodGet, "first-secret", http.StatusOK},
+		{http.MethodGet, "second-secret", http.StatusOK},
+		{http.MethodGet, "denied-secret", http.StatusForbidden},
+		{http.MethodHead, "first-secret", http.StatusNoContent},
+	} {
+		req, err := http.NewRequest(tc.method, origin.URL+blobURL(body), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.SetBasicAuth("reader", tc.password)
+		req.Header.Set("X-Forwarded-For", "198.51.100.42")
+		req.Header.Set("Forwarded", "for=198.51.100.43")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		want := ""
+		if tc.status == http.StatusOK {
+			want = body
+		}
+		if err != nil || resp.StatusCode != tc.status || string(got) != want {
+			t.Fatalf("response = %d %q, %v, want %d %q", resp.StatusCode, got, err, tc.status, want)
+		}
+	}
+
+	shutdown(t, p)
+	if gets.Load() != 5 || heads.Load() != 1 || p.metrics.snapshot().upstream != 5 {
+		t.Fatalf("upstream GETs=%d HEADs=%d metrics=%+v", gets.Load(), heads.Load(), p.metrics.snapshot())
+	}
+
+	want := map[string]int{"GET/miss/2": 1, "GET/hit/0": 1, "GET/hit/2": 1, "GET/bypass/1": 1, "HEAD/bypass/0": 1}
+	decoder := json.NewDecoder(strings.NewReader(logs.String()))
+	for decoder.More() {
+		var record struct {
+			Message  string  `json:"msg"`
+			ClientIP string  `json:"client_ip"`
+			Method   string  `json:"method"`
+			Cache    string  `json:"cache"`
+			Attempts *uint64 `json:"upstream_get_attempts"`
+		}
+		if err := decoder.Decode(&record); err != nil {
+			t.Fatal(err)
+		}
+		if record.Message != "registry request" || record.ClientIP != "127.0.0.1" || record.Attempts == nil {
+			t.Fatalf("unexpected request log: %+v", record)
+		}
+		key := fmt.Sprintf("%s/%s/%d", record.Method, record.Cache, *record.Attempts)
+		if want[key] == 0 {
+			t.Fatalf("unexpected request work %q: %s", key, logs.String())
+		}
+		want[key]--
+	}
+	for key, remaining := range want {
+		if remaining != 0 {
+			t.Errorf("missing request work %q: %s", key, logs.String())
+		}
+	}
+	for _, secret := range []string{"first-secret", "second-secret", "denied-secret", "redirect-secret", "198.51.100.42", "198.51.100.43"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Errorf("logs contain %q", secret)
+		}
+	}
+}
+
 func TestInterceptForwardsRequestAndRelaysSensitiveResponse(t *testing.T) {
 	const path = "/v2/team%2Fimage/manifests/latest"
 	const query = "signature=do-not-log-this&opaque=%zz;keep"
@@ -280,20 +387,23 @@ func TestRejectedRequestURLLogs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			r.RemoteAddr = "[2001:db8::9]:12345"
 			w := httptest.NewRecorder()
 			p.interceptHandler(target).ServeHTTP(w, r)
 			if w.Code != tc.status {
 				t.Fatalf("status = %d, want %d", w.Code, tc.status)
 			}
 			var record struct {
-				Message string `json:"msg"`
-				URL     string `json:"url"`
-				Status  int    `json:"status"`
+				Message  string `json:"msg"`
+				URL      string `json:"url"`
+				Status   int    `json:"status"`
+				ClientIP string `json:"client_ip"`
+				Method   string `json:"method"`
 			}
 			if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
 				t.Fatal(err)
 			}
-			if record.Message != "registry request" || record.URL != tc.wantURL || record.Status != tc.status {
+			if record.Message != "registry request" || record.URL != tc.wantURL || record.Status != tc.status || record.ClientIP != "2001:db8::9" || record.Method != http.MethodTrace {
 				t.Fatalf("unexpected request log: %+v", record)
 			}
 			for _, secret := range []string{"private-", "untrusted.invalid"} {
