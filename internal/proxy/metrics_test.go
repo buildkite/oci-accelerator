@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -225,6 +227,8 @@ func TestMetricsCountsAutomaticTransportRetries(t *testing.T) {
 			}))
 			defer origin.Close()
 			p, _, client := interceptFixture(t, origin, nil, true)
+			var logs syncBuffer
+			p.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 			for i := 0; i < 2; i++ {
 				req, _ := http.NewRequest(method, origin.URL+"/v2/", nil)
 				req.Header.Set("Authorization", "Bearer retry-token")
@@ -250,6 +254,26 @@ func TestMetricsCountsAutomaticTransportRetries(t *testing.T) {
 			}
 			if calls.Load() != 3 || p.metrics.snapshot().upstream != wantAttempts {
 				t.Fatalf("origin calls=%d GET attempts=%d, want 3/%d", calls.Load(), p.metrics.snapshot().upstream, wantAttempts)
+			}
+
+			shutdown(t, p)
+
+			wantLogs := map[uint64]int{1: 1, 2: 1}
+			if method == http.MethodHead {
+				wantLogs = map[uint64]int{0: 2}
+			}
+			decoder := json.NewDecoder(strings.NewReader(logs.String()))
+			for range 2 {
+				var record struct {
+					Attempts *uint64 `json:"upstream_get_attempts"`
+				}
+				if err := decoder.Decode(&record); err != nil {
+					t.Fatal(err)
+				}
+				if record.Attempts == nil || wantLogs[*record.Attempts] == 0 {
+					t.Fatalf("unexpected GET attempt log: %s", logs.String())
+				}
+				wantLogs[*record.Attempts]--
 			}
 		})
 	}

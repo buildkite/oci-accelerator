@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -73,6 +74,7 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 		started := time.Now()
 		completed := false
 		stats := &requestStats{cache: "bypass", fill: "none"}
+		clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 
 		// Count this request as in-flight.
 		p.metrics.mu.Lock()
@@ -133,8 +135,8 @@ func (p *Proxy) interceptHandler(target hostport.HostPort) http.Handler {
 				outcome = "complete"
 			}
 			p.metrics.finish(stats, outcome, mw.status, time.Since(started), mw.bytes)
-			p.logger.Info("registry request", "registry", target.String(), "url", requestLogURL(target, r), "status", mw.status, "duration", time.Since(started), "bytes", mw.bytes, "outcome", outcome,
-				"cache", stats.cache, "fill", stats.fill, "admission", stats.admission, "wait", stats.wait, "fallback", stats.fallback, "reject", stats.reject, "peer", stats.peer, "peer_body_bytes", stats.peerBytes, "upstream_body_bytes", stats.upstreamBytes)
+			p.logger.Info("registry request", "client_ip", clientIP, "method", r.Method, "registry", target.String(), "url", requestLogURL(target, r), "status", mw.status, "duration", time.Since(started), "bytes", mw.bytes, "outcome", outcome,
+				"cache", stats.cache, "fill", stats.fill, "admission", stats.admission, "wait", stats.wait, "fallback", stats.fallback, "reject", stats.reject, "peer", stats.peer, "peer_body_bytes", stats.peerBytes, "upstream_body_bytes", stats.upstreamBytes, "upstream_get_attempts", stats.upstreamGetAttempts)
 		}()
 
 		// Forward to the reverse proxy only if the request passes the intercept contract.

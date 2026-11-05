@@ -570,13 +570,20 @@ fields:
 
 | Field | Notes |
 | --- | --- |
+| `client_ip` | Connected client's IP without its port. Forwarding headers are ignored. If another proxy connects to OA, this is that proxy's IP |
+| `method` | Client HTTP method, including rejected requests |
 | `registry`, `url` | The intercepted registry and request URL. See below |
 | `status`, `outcome` | Response status and a bounded outcome value |
 | `duration` | Time to complete the request |
 | `bytes` | Body bytes sent to the client. A stream can fail after the status was sent |
 | `cache`, `fill`, `wait`, `fallback`, `admission`, `reject` | Cache outcomes. A detached range fill logs `fill=background`. `admission=mutable_capacity` means the mutable cache's capture, entry, or memory limit refused a capture. `reject` gives a cache rejection reason |
+| `upstream_get_attempts` | Upstream GET connection-acquisition attempts for this request, including redirects, transport retries, and failures before sending. Not an AWS API count. HEAD and writes report zero even when forwarded |
 | `upstream_body_bytes` | Bytes read from the upstream body, excluding transport read-ahead and detached fills. Not a wire measurement |
 | `peer`, `peer_body_bytes` | Peer source selection (`hit` or `unavailable`) and bytes read from the peer body |
+
+A `cache=hit` can still have upstream GET attempts for authorization. Use
+`upstream_get_attempts` to distinguish these deliveries from hits that reuse
+local approval without an upstream GET attempt.
 
 The `url` field also appears on `upstream request failed` warnings. It holds
 the registry's HTTPS authority and the original escaped path, which expose

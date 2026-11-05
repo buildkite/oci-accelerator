@@ -50,13 +50,14 @@ func newMetrics() *metrics {
 }
 
 type requestStats struct {
-	cache, fill    string
-	wait, fallback string
-	admission      string
-	reject         string
-	upstreamBytes  int64
-	peer           string
-	peerBytes      int64
+	cache, fill         string
+	wait, fallback      string
+	admission           string
+	reject              string
+	upstreamBytes       int64
+	upstreamGetAttempts uint64
+	peer                string
+	peerBytes           int64
 	// immutable marks the original request as a full immutable-object GET,
 	// decided before hop-by-hop stripping so a bypassed Range or conditional
 	// request that becomes a plain GET upstream stays out of served-source metrics.
