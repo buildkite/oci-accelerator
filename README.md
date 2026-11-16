@@ -52,6 +52,11 @@ caching Docker Hub, GitHub Container Registry, and Amazon ECR Public.
    and extract it into the directory instead. See
    [download a release](docs/deployment.md#download-a-release) to verify it.
 
+   To run the proxy in a container instead, use the
+   [`buildkite/oci-accelerator`](https://hub.docker.com/r/buildkite/oci-accelerator)
+   image on Docker Hub. See
+   [run in a container](docs/deployment.md#run-in-a-container).
+
 2. Create a starter configuration, cache directory, and root CA:
    ```sh
    ./oci-accelerator init

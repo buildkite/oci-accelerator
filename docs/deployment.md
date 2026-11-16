@@ -85,7 +85,7 @@ opted in.
 | Deployment | Requires |
 | --- | --- |
 | Native | A release binary or Go 1.27.3 to build, and a service manager to supervise the process |
-| Container | Linux Docker daemon with Buildx, and Compose for the supplied service |
+| Container | Linux Docker daemon, Buildx to build the image yourself, and Compose for the supplied service |
 
 For a native starter layout, `oci-accelerator init` creates the private state
 directories and CA before first start. For a custom layout, create the parent
@@ -256,11 +256,25 @@ or SIGTERM (see [shutdown](#shutdown)). For Amp orbs, see the
 
 #### Image
 
-The root `Dockerfile` builds a static Go binary into an Alpine-based image.
+Buildkite publishes the image to Docker Hub as
+[`buildkite/oci-accelerator`](https://hub.docker.com/r/buildkite/oci-accelerator)
+for `linux/amd64` and `linux/arm64`:
+
+| Tag | Image |
+| --- | --- |
+| `vX.Y.Z`, such as `v0.5.0` | A release. Use this tag in deployments |
+| `latest` | The most recent approved `main` build, which may be newer than the latest release |
+
+```sh
+docker pull buildkite/oci-accelerator:v0.5.0
+```
+
+To build it yourself instead, run `docker build -t oci-accelerator:local .`
+from the repository root. The root `Dockerfile` builds a static Go binary into
+an Alpine-based image.
 
 | Property | Value |
 | --- | --- |
-| Local tag | `oci-accelerator:local` |
 | User and group | `10001:10001` |
 | Entrypoint | `/usr/local/bin/oci-accelerator` |
 | Default arguments | None |
@@ -390,26 +404,25 @@ Preserve the CA volume independently of the replaceable cache.
 
 #### docker run
 
-The equivalent without Compose, from the repository root:
+The equivalent without Compose runs the [published image](#image), so you don't
+need the repository. These examples use `v0.5.0`. Replace it with the published
+version you want, or with `oci-accelerator:local` for an image you built.
 
 ```sh
-docker build -t oci-accelerator:local .
-
-cp .env.container-example .env.container
-# Edit .env.container if you need different registries.
+docker pull buildkite/oci-accelerator:v0.5.0
 
 # Optional: provision the CA before first start.
 docker run --rm --read-only \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
-  oci-accelerator:local init-ca --dir /var/lib/oci-accelerator/ca
+  buildkite/oci-accelerator:v0.5.0 init-ca --dir /var/lib/oci-accelerator/ca
 
 docker run -d --name oci-accelerator --restart unless-stopped \
-  --env-file .env.container \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --stop-timeout 40 -p 127.0.0.1:5128:5128 \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
   --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
-  oci-accelerator:local
+  -e OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws \
+  buildkite/oci-accelerator:v0.5.0
 
 docker logs oci-accelerator
 docker inspect --format '{{.State.Health.Status}}' oci-accelerator
@@ -418,20 +431,11 @@ docker inspect --format '{{.State.Health.Status}}' oci-accelerator
 Stop it with `docker stop oci-accelerator`. Removing the container preserves
 both named volumes.
 
-Docker's `--env-file` appears before the image name, so Docker injects the
-values into the container. Add `-e` to override individual values. Docker
-applies `-e` after `--env-file`. Because the image supplies the other container
-defaults, you can instead pass only the registries:
-
-```sh
-docker run -d --name oci-accelerator --restart unless-stopped \
-  --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --stop-timeout 40 -p 127.0.0.1:5128:5128 \
-  --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
-  --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
-  -e OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws \
-  oci-accelerator:local
-```
+The image supplies the other container defaults, so you only need to pass the
+registries. To set more, add `-e` flags, or pass a
+[container environment file](#container-environment-file) with
+`--env-file .env.container` before the image name. Docker applies `-e` after
+`--env-file`.
 
 Docker exposes the proxy only on the host's loopback address. Metrics stay on
 container loopback for the image health check and are not published. The UID
@@ -452,9 +456,6 @@ docker buildx build --platform linux/arm64 --load -t oci-accelerator:arm64 .
   configured emulation.
 - For a multi-platform OCI archive, use a Buildx builder with the
   `docker-container` driver and an OCI output instead of `--load`.
-- Prebuilt images are published as `buildkite/oci-accelerator:latest`,
-  `:build-N` for each approved `main` build, and a version tag for each
-  release. See [releasing](../RELEASING.md).
 
 ### Serve remote Docker hosts
 
