@@ -1,10 +1,10 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"time"
 
+	"github.com/buildkite/go-crew-kit/envconfig"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
@@ -12,7 +12,7 @@ import (
 // so callers can match it with [errors.Is]. Messages name the offending
 // OCI_ACCELERATOR_* variable or file line where one applies, but never include
 // configuration values.
-var ErrInvalid = errors.New("invalid configuration")
+var ErrInvalid = envconfig.ErrInvalid
 
 // Defaults applied when the configuration omits a cache or peer setting.
 const (
@@ -103,20 +103,9 @@ func Load(path string) (Config, error) {
 }
 
 func load(path string, lookup func(string) (string, bool)) (Config, error) {
-	fileValues, err := readEnvFile(path)
-	if err != nil {
-		return Config{}, err
-	}
 	raw := defaults()
-	// A present process variable wins even when its value is empty.
-	if err := applyEnvironment(&raw, func(name string) (string, bool) {
-		if value, ok := lookup(name); ok {
-			return value, true
-		}
-
-		value, ok := fileValues[name]
-		return value, ok
-	}); err != nil {
+	loader := envconfig.Loader{Prefix: environmentPrefix, LookupEnv: lookup}
+	if err := loader.Load(path, environmentSettings(&raw)); err != nil {
 		return Config{}, err
 	}
 

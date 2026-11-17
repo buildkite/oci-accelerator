@@ -11,7 +11,7 @@ func TestLoadRejectsInvalidEnvironmentValuesSafely(t *testing.T) {
 		{"REGISTRIES", "", "at least one authority"}, {"REGISTRIES", "example.com,", "empty list entries"}, {"REGISTRIES", "example.com,EXAMPLE.COM.:443", "element 2: duplicate"},
 		{"REDIRECT_ALLOWLIST", "user:secret-value@cdn.example", "element 1: must be a hostname"}, {"CA_DIR", "", "non-blank"}, {"CACHE_DIR", " \t", "non-blank"}, {"LISTEN", "secret-value", "host:port"},
 		{"METRICS_LISTEN", "0.0.0.0:9090", "loopback"}, {"METRICS_ALLOW_REMOTE", "TRUE", "true or false"},
-		{"CACHE_MAX_BYTES", "9223372036854775808", "int64 range"}, {"CACHE_MAX_FILLS", "01", "leading zeros"}, {"CACHE_MAX_FILLS", "0x10", "decimal integer"}, {"CACHE_MAX_FILLS", "1_000", "decimal integer"}, {"CACHE_MAX_FILLS", "1.5", "decimal integer"},
+		{"CACHE_MAX_BYTES", "9223372036854775808", "integer range"}, {"CACHE_MAX_FILLS", "01", "leading zeros"}, {"CACHE_MAX_FILLS", "0x10", "decimal integer"}, {"CACHE_MAX_FILLS", "1_000", "decimal integer"}, {"CACHE_MAX_FILLS", "1.5", "decimal integer"},
 		{"CACHE_MAX_FILLS", "+5", "without a sign"}, {"CACHE_MAX_FILLS", "-0", "without a sign"}, {"MAX_LEAF_CERTIFICATES", "-1", "without a sign"}, {"CACHE_MAX_FILLS", "00", "without a sign"}, {"CACHE_MAX_FILLS", "", "without a sign"},
 		{"MAX_CONNECTIONS", "0", "must be positive"}, {"DIAL_TIMEOUT", "secret-value", "duration string"}, {"CACHE_FILL_TIMEOUT", "0s", "must be positive"}, {"CACHE_FILL_WAIT_TIMEOUT", "-1s", "non-negative"}, {"CACHE_AUTHORIZATION_TTL", "-1s", "non-negative"}, {"CACHE_ANONYMOUS_AUTHORIZATION_TTL", "-1s", "non-negative"},
 		{"PEER_HINT_REFRESH_TIMEOUT", "secret-value", "duration string"},
