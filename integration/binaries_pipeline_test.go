@@ -39,8 +39,11 @@ func TestBinariesPipeline(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"go.mod", "version.go", "starter.go", "VERSION", ".env.example"} {
+	for _, name := range []string{"go.mod", "go.sum", "version.go", "starter.go", "VERSION", ".env.example"} {
 		data, err := os.ReadFile(filepath.Join("..", name))
+		if name == "go.sum" && os.IsNotExist(err) {
+			continue
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
