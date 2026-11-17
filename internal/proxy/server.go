@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -33,7 +34,7 @@ type Proxy struct {
 	authorization *authorizationCache                                          // bounded, process-local approvals shared across connections
 	mutable       *mutableCache                                                // bounded, process-local mutable responses
 	destinations  map[string]struct{}                                          // registries plus redirect allowlist, exempt from the public-IP dial check
-	lookupIP      func(context.Context, string) ([]net.IPAddr, error)          // DNS resolver hook, overridable in tests
+	lookupNetIP   func(context.Context, string, string) ([]netip.Addr, error)  // DNS resolver hook, overridable in tests
 	dialIP        func(context.Context, string, string) (net.Conn, error)      // upstream dialer hook, overridable in tests
 	metrics       *metrics                                                     // request and cache counters
 	rangeContext  context.Context                                              // shutdown cancellation for range transfers
@@ -91,7 +92,7 @@ func New(cfg config.Config, signer *ca.Authority, logger *slog.Logger, store *ca
 		conns:         make(map[*trackedConn]struct{}),
 		tunnels:       make(map[net.Conn]struct{}),
 		inners:        make(map[*http.Server]struct{}),
-		lookupIP:      net.DefaultResolver.LookupIPAddr,
+		lookupNetIP:   net.DefaultResolver.LookupNetIP,
 		dialIP:        (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext,
 	}
 

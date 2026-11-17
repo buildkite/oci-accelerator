@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -143,12 +144,13 @@ func interceptFixtureWithOriginTrustAndLogs(t *testing.T, origin *httptest.Serve
 // Call it before the first request.
 func routeDefaultPort(t *testing.T, p *Proxy, server *httptest.Server) {
 	t.Helper()
-	lookup, dial := p.lookupIP, p.dialIP
-	p.lookupIP = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+	lookup, dial := p.lookupNetIP, p.dialIP
+	p.lookupNetIP = func(ctx context.Context, network, host string) ([]netip.Addr, error) {
 		if host == "example.com" {
-			return []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}}, nil
+			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 		}
-		return lookup(ctx, host)
+
+		return lookup(ctx, network, host)
 	}
 	p.dialIP = func(ctx context.Context, network, address string) (net.Conn, error) {
 		if address == "127.0.0.1:443" {

@@ -2,4 +2,4 @@ module github.com/buildkite/oci-accelerator
 
 go 1.27.3
 
-require github.com/buildkite/go-crew-kit v0.1.0
+require github.com/buildkite/go-crew-kit v0.2.0

@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/buildkite/go-crew-kit/outbound"
 )
 
 func TestUpstreamFailureCategories(t *testing.T) {
@@ -24,13 +26,16 @@ func TestUpstreamFailureCategories(t *testing.T) {
 	}{
 		{context.Canceled, "canceled"},
 		{context.DeadlineExceeded, "timeout"},
-		{errDialAddress, "dial_address"},
-		{errDialResolve, "dial_resolve"},
-		{errDialForbidden, "dial_forbidden"},
-		{errDialConnect, "dial_connect"},
+		{&outbound.Error{Kind: outbound.DestinationDenied}, "dial_address"},
+		{&outbound.Error{Kind: outbound.DNS}, "dial_resolve"},
+		{&outbound.Error{Kind: outbound.AddressDenied}, "dial_forbidden"},
+		{&outbound.Error{Kind: outbound.Connect}, "dial_connect"},
+		{&outbound.Error{Kind: outbound.DNS, Err: context.DeadlineExceeded}, "timeout"},
+		{&outbound.Error{Kind: outbound.Connect, Err: context.Canceled}, "canceled"},
 		{errRedirect, "redirect"},
 		{errUpgrade, "upgrade"},
 		{&tls.CertificateVerificationError{Err: errors.New("private certificate name")}, "tls_certificate"},
+		{tls.RecordHeaderError{Msg: "private TLS detail"}, "tls"},
 		{errors.New("private upstream response"), "transport"},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
