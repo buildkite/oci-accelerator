@@ -102,50 +102,50 @@ contains only the executable `oci-accelerator`. The checksum manifest is
 `oci-accelerator-vX.Y.Z.SHA256SUMS`.
 
 Download and verify the archive for your platform. These examples use
-`v0.5.0`. Replace it with the published version you want.
+`v0.5.1`. Replace it with the published version you want.
 
 Linux amd64:
 
 ```sh
-base=https://github.com/buildkite/oci-accelerator/releases/download/v0.5.0
-archive=oci-accelerator-linux-amd64-v0.5.0.tar.gz
+base=https://github.com/buildkite/oci-accelerator/releases/download/v0.5.1
+archive=oci-accelerator-linux-amd64-v0.5.1.tar.gz
 
-curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.5.0.SHA256SUMS"
+curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.5.1.SHA256SUMS"
 
-grep " $archive\$" oci-accelerator-v0.5.0.SHA256SUMS | sha256sum --check -
+grep " $archive\$" oci-accelerator-v0.5.1.SHA256SUMS | sha256sum --check -
 ```
 
 Linux arm64:
 
 ```sh
-base=https://github.com/buildkite/oci-accelerator/releases/download/v0.5.0
-archive=oci-accelerator-linux-arm64-v0.5.0.tar.gz
+base=https://github.com/buildkite/oci-accelerator/releases/download/v0.5.1
+archive=oci-accelerator-linux-arm64-v0.5.1.tar.gz
 
-curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.5.0.SHA256SUMS"
+curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.5.1.SHA256SUMS"
 
-grep " $archive\$" oci-accelerator-v0.5.0.SHA256SUMS | sha256sum --check -
+grep " $archive\$" oci-accelerator-v0.5.1.SHA256SUMS | sha256sum --check -
 ```
 
 macOS on Apple Silicon:
 
 ```sh
-base=https://github.com/buildkite/oci-accelerator/releases/download/v0.5.0
-archive=oci-accelerator-darwin-arm64-v0.5.0.tar.gz
+base=https://github.com/buildkite/oci-accelerator/releases/download/v0.5.1
+archive=oci-accelerator-darwin-arm64-v0.5.1.tar.gz
 
-curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.5.0.SHA256SUMS"
+curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.5.1.SHA256SUMS"
 
-grep " $archive\$" oci-accelerator-v0.5.0.SHA256SUMS | shasum -a 256 --check -
+grep " $archive\$" oci-accelerator-v0.5.1.SHA256SUMS | shasum -a 256 --check -
 ```
 
 macOS on Intel:
 
 ```sh
-base=https://github.com/buildkite/oci-accelerator/releases/download/v0.5.0
-archive=oci-accelerator-darwin-amd64-v0.5.0.tar.gz
+base=https://github.com/buildkite/oci-accelerator/releases/download/v0.5.1
+archive=oci-accelerator-darwin-amd64-v0.5.1.tar.gz
 
-curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.5.0.SHA256SUMS"
+curl -fL --remote-name-all "$base/$archive" "$base/oci-accelerator-v0.5.1.SHA256SUMS"
 
-grep " $archive\$" oci-accelerator-v0.5.0.SHA256SUMS | shasum -a 256 --check -
+grep " $archive\$" oci-accelerator-v0.5.1.SHA256SUMS | shasum -a 256 --check -
 ```
 
 Continue only if verification succeeds. Extract into a new directory and check
@@ -262,11 +262,11 @@ for `linux/amd64` and `linux/arm64`:
 
 | Tag | Image |
 | --- | --- |
-| `vX.Y.Z`, such as `v0.5.0` | A release. Use this tag in deployments |
+| `vX.Y.Z`, such as `v0.5.1` | A release. Use this tag in deployments |
 | `latest` | The most recent approved `main` build, which may be newer than the latest release |
 
 ```sh
-docker pull buildkite/oci-accelerator:v0.5.0
+docker pull buildkite/oci-accelerator:v0.5.1
 ```
 
 To build it yourself instead, run `docker build -t oci-accelerator:local .`
@@ -405,16 +405,16 @@ Preserve the CA volume independently of the replaceable cache.
 #### docker run
 
 The equivalent without Compose runs the [published image](#image), so you don't
-need the repository. These examples use `v0.5.0`. Replace it with the published
+need the repository. These examples use `v0.5.1`. Replace it with the published
 version you want, or with `oci-accelerator:local` for an image you built.
 
 ```sh
-docker pull buildkite/oci-accelerator:v0.5.0
+docker pull buildkite/oci-accelerator:v0.5.1
 
 # Optional: provision the CA before first start.
 docker run --rm --read-only \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
-  buildkite/oci-accelerator:v0.5.0 init-ca --dir /var/lib/oci-accelerator/ca
+  buildkite/oci-accelerator:v0.5.1 init-ca --dir /var/lib/oci-accelerator/ca
 
 docker run -d --name oci-accelerator --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
@@ -422,7 +422,7 @@ docker run -d --name oci-accelerator --restart unless-stopped \
   --mount type=volume,src=oci-accelerator-ca,dst=/var/lib/oci-accelerator \
   --mount type=volume,src=oci-accelerator-cache,dst=/var/lib/oci-accelerator/cache \
   -e OCI_ACCELERATOR_REGISTRIES=registry-1.docker.io,ghcr.io,public.ecr.aws \
-  buildkite/oci-accelerator:v0.5.0
+  buildkite/oci-accelerator:v0.5.1
 
 docker logs oci-accelerator
 docker inspect --format '{{.State.Health.Status}}' oci-accelerator
