@@ -11,7 +11,7 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -buildvcs=false -o /out/oci-accelerator ./cmd/oci-accelerator
 
-FROM alpine:3.24.3
+FROM alpine:3.24.4
 LABEL org.opencontainers.image.source="https://github.com/buildkite/oci-accelerator"
 RUN apk add --no-cache ca-certificates \
     && addgroup -S -g 10001 accelerator \
