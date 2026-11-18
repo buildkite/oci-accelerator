@@ -157,18 +157,3 @@ func TestOpenBookCleansInterruptedStage(t *testing.T) {
 		t.Fatalf("stage remains: %v", err)
 	}
 }
-
-func TestReplaceBookStateRenameFailureCleansStage(t *testing.T) {
-	dir := bookTestDir(t)
-	if err := os.MkdirAll(filepath.Join(dir, bookStateName), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	published, err := writeBookState(dir, map[string]bookRecord{"peer.test:1": {NodeID: testNodeID(1)}})
-	if err == nil || published {
-		t.Fatalf("rename over directory: published=%t, error=%v", published, err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 || entries[0].Name() != bookStateName || !entries[0].IsDir() {
-		t.Fatalf("failed rename left staging files or replaced destination: %v, %v", entries, err)
-	}
-}

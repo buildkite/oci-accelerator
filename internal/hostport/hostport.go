@@ -5,6 +5,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+
+	"github.com/buildkite/go-crew-kit/hostname"
 )
 
 // ErrInvalid is returned for any text that is not a valid authority.
@@ -62,7 +64,7 @@ func Canonicalize(host string) (string, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.String(), nil
 	}
-	if looksLikeIPv4(host) || !validHostname(host) {
+	if looksLikeIPv4(host) || !hostname.Valid(host) {
 		return "", ErrInvalid
 	}
 
@@ -116,28 +118,6 @@ func looksLikeIPv4(host string) bool {
 func validPort(port string) bool {
 	n, err := strconv.ParseUint(port, 10, 16)
 	return err == nil && n > 0
-}
-
-// validHostname applies DNS label rules to a lowercased host: at most 253
-// characters, with labels of 1–63 characters from a–z, 0–9, and '-' that do
-// not start or end with '-'.
-func validHostname(host string) bool {
-	if len(host) > 253 {
-		return false
-	}
-
-	for _, label := range strings.Split(host, ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, r := range label {
-			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
-				return false
-			}
-		}
-	}
-
-	return true
 }
 
 // Host returns the canonical host, without brackets for IPv6.

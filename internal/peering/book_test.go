@@ -210,13 +210,12 @@ func TestBookDirectorySyncFailureRetainsPublishedPeersAndRetries(t *testing.T) {
 	}
 	syncCalls := 0
 	b.write = func(dir string, peers map[string]bookRecord) (bool, error) {
-		return replaceBookState(dir, peers, func(dir string) error {
-			syncCalls++
-			if syncCalls == 1 {
-				return syscall.EIO
-			}
-			return syncBookDir(dir)
-		})
+		syncCalls++
+		if syncCalls == 1 {
+			return writePublishedBookError(dir, peers, syscall.EIO)
+		}
+
+		return writeBookState(dir, peers)
 	}
 	message := Message{Address: "new.test:1", NodeID: testNodeID(2)}
 	if result, err := b.merge(message, message.Address, nil); err == nil {

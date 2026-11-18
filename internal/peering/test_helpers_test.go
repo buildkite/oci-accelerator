@@ -128,6 +128,18 @@ func loadBookState(dir string) (map[string]string, error) {
 	return peers, nil
 }
 
+// writePublishedBookError models a durability failure at the Book.write boundary.
+// The real write keeps disk and memory assertions meaningful. filewrite tests
+// cover failures in the underlying directory sync itself.
+func writePublishedBookError(dir string, records map[string]bookRecord, failure error) (bool, error) {
+	published, err := writeBookState(dir, records)
+	if err != nil {
+		return published, err
+	}
+
+	return true, failure
+}
+
 func cooldownDiscovery(t *testing.T, transport roundTripFunc) *Discovery {
 	t.Helper()
 	book, err := OpenBook(context.Background(), bookTestDir(t), "b.test:2", nil, nil)

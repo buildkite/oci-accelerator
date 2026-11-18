@@ -50,6 +50,22 @@ func TestBinariesPipeline(t *testing.T) {
 		writeFile(t, filepath.Join(repo, name), string(data), 0o600)
 	}
 
+	// Keep the copied sources on the same crew-kit version as this test run,
+	// including unpublished changes selected by a local workspace. The fixture
+	// workspace lives outside repo so packaging must still leave it clean.
+	dependency := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/buildkite/go-crew-kit")
+	dependencyDir, err := dependency.CombinedOutput()
+	if err != nil {
+		t.Fatalf("locate crew-kit: %v: %s", err, dependencyDir)
+	}
+	workspaceDir := t.TempDir()
+	workspace := exec.Command("go", "work", "init", repo, strings.TrimSpace(string(dependencyDir)))
+	workspace.Dir = workspaceDir
+	workspace.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := workspace.CombinedOutput(); err != nil {
+		t.Fatalf("initialize fixture workspace: %v: %s", err, out)
+	}
+
 	git := func(args ...string) string {
 		t.Helper()
 		cmd := exec.Command("git", args...)
@@ -96,7 +112,8 @@ exit 42
 			cmd := exec.Command("bash", script)
 			cmd.Dir = repo
 			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "CGO_ENABLED=1",
-				"BINARY_TEST_OUTPUT="+output, "BINARY_TEST_FAILURE="+failure, "GOTOOLCHAIN=local")
+				"BINARY_TEST_OUTPUT="+output, "BINARY_TEST_FAILURE="+failure, "GOTOOLCHAIN=local",
+				"GOWORK="+filepath.Join(workspaceDir, "go.work"))
 			out, err := cmd.CombinedOutput()
 			if (err != nil) != (failure != "") {
 				t.Fatalf("packaging error = %v, failure = %q: %s", err, failure, out)

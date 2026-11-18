@@ -5,9 +5,12 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/buildkite/go-crew-kit/filewrite"
 )
 
 const (
@@ -103,7 +106,7 @@ func OpenBook(ctx context.Context, dir, self string, seeds []string, client *htt
 	}
 
 	if fresh {
-		if _, err := replaceState(dir, nodeIDName, []byte(nodeID), syncBookDir); err != nil {
+		if _, err := filewrite.Replace(context.Background(), filepath.Join(dir, nodeIDName), []byte(nodeID), ".peers-"); err != nil {
 			_ = lock.close()
 			return nil, errBook
 		}

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/buildkite/go-crew-kit/filewrite"
 )
 
 const crashChildMode = "CACHE_CRASH_CHILD_MODE"
@@ -73,7 +75,7 @@ func TestCacheCrashChild(t *testing.T) {
 			t.Fatal(err)
 		}
 		writeSyncedRecoveryFile(t, filepath.Join(tmp, "meta"), raw)
-		if err := syncDirectory(tmp); err != nil {
+		if err := filewrite.SyncDir(tmp); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Rename(tmp, filepath.Join(dir, meta.Key)); err != nil {

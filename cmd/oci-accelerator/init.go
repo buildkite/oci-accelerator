@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/buildkite/go-crew-kit/filewrite"
 	"github.com/buildkite/oci-accelerator"
 	"github.com/buildkite/oci-accelerator/internal/ca"
 )
@@ -102,11 +103,7 @@ func ensureStarterDirectory(path string) error {
 	// Publish new ancestors durably before the CA can be created beneath them.
 	if created {
 		for _, dir := range []string{path, filepath.Dir(path)} {
-			f, err := os.Open(dir)
-			if err != nil {
-				return fmt.Errorf("cannot open directory to sync %s", path)
-			}
-			if err := errors.Join(f.Sync(), f.Close()); err != nil {
+			if err := filewrite.SyncDir(dir); err != nil {
 				return fmt.Errorf("cannot sync %s and its parent", path)
 			}
 		}
@@ -116,20 +113,8 @@ func ensureStarterDirectory(path string) error {
 }
 
 func writeStarterEnvironment(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return errors.New("cannot create environment file: destination must not exist and its parent must be writable")
-	}
-
-	writeErr := f.Chmod(0o600)
-	if writeErr == nil {
-		_, writeErr = io.WriteString(f, ociaccelerator.StarterEnvironment())
-	}
-	if err := errors.Join(writeErr, f.Close()); err != nil {
-		if removeErr := os.Remove(path); removeErr != nil {
-			return errors.New("cannot write environment file or remove the incomplete file, inspect the destination before retrying")
-		}
-		return errors.New("cannot write environment file, incomplete file removed")
+	if err := filewrite.CreateExclusive(path, []byte(ociaccelerator.StarterEnvironment()), 0o600); err != nil {
+		return errors.New("cannot create or write environment file: destination must not exist and its parent must be writable. An incomplete file may remain, inspect the destination before retrying")
 	}
 
 	return nil

@@ -2,6 +2,7 @@ package peering
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/buildkite/go-crew-kit/filewrite"
 )
 
 const (
@@ -54,7 +57,7 @@ func openBookState(dir string) (bookLock, error) {
 
 	// A previous process may have exited after rename but before directory
 	// sync. Confirm the visible state before startup can acknowledge it.
-	if err := syncBookDir(dir); err != nil {
+	if err := filewrite.SyncDir(dir); err != nil {
 		_ = lock.close()
 		return bookLock{}, err
 	}
@@ -93,7 +96,7 @@ func ensureBookDir(dir string) error {
 
 	// Sync even an existing directory's parent, so a prior failed startup
 	// cannot leave an unsynced directory entry that later writes rely on.
-	return syncBookDir(filepath.Dir(dir))
+	return filewrite.SyncDir(filepath.Dir(dir))
 }
 
 func safeBookDir(info os.FileInfo) bool {
@@ -209,48 +212,10 @@ func loadBookRecords(dir string) (map[string]bookRecord, error) {
 // writeBookState reports whether rename published a replacement, separately
 // from its durability. Callers must retain published state even on sync failure.
 func writeBookState(dir string, peers map[string]bookRecord) (bool, error) {
-	return replaceBookState(dir, peers, syncBookDir)
-}
-
-func replaceBookState(dir string, peers map[string]bookRecord, syncDir func(string) error) (bool, error) {
 	raw, err := json.Marshal(bookState{Version: 3, Peers: peers})
 	if err != nil || len(raw) > bookStateMax {
 		return false, errBook
 	}
-	return replaceState(dir, bookStateName, raw, syncDir)
-}
 
-func replaceState(dir, name string, raw []byte, syncDir func(string) error) (bool, error) {
-	f, err := os.CreateTemp(dir, ".peers-")
-	if err != nil {
-		return false, err
-	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-
-	if err = f.Chmod(0o600); err == nil {
-		_, err = f.Write(raw)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-
-	if err == nil {
-		err = os.Rename(tmp, filepath.Join(dir, name))
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, syncDir(dir)
-}
-
-func syncBookDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	return errors.Join(d.Sync(), d.Close())
+	return filewrite.Replace(context.Background(), filepath.Join(dir, bookStateName), raw, ".peers-")
 }
