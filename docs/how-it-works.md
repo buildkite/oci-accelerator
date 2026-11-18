@@ -186,6 +186,20 @@ intercepted registry, including redirects. Public hosts need no configuration,
 but a private or internal address is refused unless its host and port belong to
 a configured registry or are listed in `OCI_ACCELERATOR_REDIRECT_ALLOWLIST`.
 
+The public-address policy deliberately excludes special-use space beyond
+private networks, including documentation, benchmarking, transition, reserved,
+and selected special-purpose anycast ranges. This conservative policy also
+blocks ranges such as `192.31.196.0/24` and `3fff::/20`. If you need a destination
+in excluded space, configure its exact host and port as a registry or redirect
+exception. Invalid addresses and IPv6 zone identifiers are always refused,
+including for these exceptions.
+
+Every DNS answer must pass the policy before any connection attempt. A mixed
+public and private answer is refused unless the destination has an exception.
+The accelerator connects directly to validated IPs without resolving the name
+again, while keeping the original hostname for TLS verification. DNS and all
+connection attempts share one dial timeout budget.
+
 ## Trusting the accelerator's certificate
 
 To intercept a registry connection, the accelerator presents its own

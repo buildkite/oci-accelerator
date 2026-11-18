@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -299,8 +300,8 @@ func TestRedirectAmbiguousIPv6Refused(t *testing.T) {
 	// the private-address dial check so only the origin check can stop the leak.
 	loopback := map[string]string{registryIP: "127.0.0.1", otherIP: "127.0.0.2"}
 	servers := map[string]string{"127.0.0.1:443": registry.Listener.Addr().String(), "127.0.0.2:443": other.Listener.Addr().String()}
-	p.lookupIP = func(_ context.Context, host string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP(loopback[host])}}, nil
+	p.lookupNetIP = func(_ context.Context, _, host string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr(loopback[host])}, nil
 	}
 	dial := p.dialIP
 	p.dialIP = func(ctx context.Context, network, address string) (net.Conn, error) {

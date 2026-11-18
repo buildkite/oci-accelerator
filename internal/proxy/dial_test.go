@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,253 +16,119 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/buildkite/go-crew-kit/outbound"
 	"github.com/buildkite/oci-accelerator/internal/config"
 	"github.com/buildkite/oci-accelerator/internal/hostport"
 )
 
-func TestDialUpstreamSharesRemainingTimeout(t *testing.T) {
-	for _, first := range []string{"timeout", "refused", "canceled"} {
-		t.Run(first, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				server, fallback := net.Pipe()
-				defer server.Close()
-				defer fallback.Close()
-				go func() {
-					defer server.Close()
-					_, _ = io.WriteString(server, "healthy address")
-				}()
+func TestDialUpstreamDestinationPolicy(t *testing.T) {
+	authority, _ := hostport.Parse("storage.test:5000", "443")
+	otherPort, _ := hostport.Parse("storage.test:5001", "443")
 
-				const port = "5000"
-				authority, _ := hostport.Parse("storage.test:"+port, "443")
-				p := New(config.Config{DialTimeout: time.Minute, IdleTimeout: time.Second, RedirectAllowlist: []hostport.HostPort{authority}}, nil, nil, nil)
-
-				// The caller's shorter deadline, not DialTimeout, must govern all
-				// attempts. DNS and each preceding attempt consume this same budget.
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				defer cancel()
-				deadline, _ := ctx.Deadline()
-
-				lookups := 0
-				p.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {
-					lookups++
-					return []net.IPAddr{{IP: net.ParseIP("127.0.0.2")}, {IP: net.ParseIP("127.0.0.1")}}, nil
+	for _, tc := range []struct {
+		name       string
+		address    string
+		registries []hostport.HostPort
+		redirects  []hostport.HostPort
+		allowed    bool
+	}{
+		{name: "unconfigured public", address: "8.8.8.8", allowed: true},
+		{name: "unconfigured private", address: "127.0.0.1"},
+		{name: "configured registry", address: "127.0.0.1", registries: []hostport.HostPort{authority}, allowed: true},
+		{name: "redirect exception", address: "127.0.0.1", redirects: []hostport.HostPort{authority}, allowed: true},
+		{name: "exception for another port", address: "127.0.0.1", redirects: []hostport.HostPort{otherPort}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{DialTimeout: time.Second, Registries: tc.registries, RedirectAllowlist: tc.redirects}
+			p := New(cfg, nil, nil, nil)
+			p.lookupNetIP = func(ctx context.Context, network, host string) ([]netip.Addr, error) {
+				if network != "ip" || host != "storage.test" {
+					t.Fatalf("lookup = %s %s", network, host)
+				}
+				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > cfg.DialTimeout {
+					t.Fatal("configured dial timeout did not bound DNS")
 				}
 
-				var attempts []context.Context
-				p.dialIP = func(attempt context.Context, network, address string) (net.Conn, error) {
-					attempts = append(attempts, attempt)
-					until, ok := attempt.Deadline()
-					if !ok || until.After(deadline) {
-						t.Fatalf("attempt deadline %v exceeds caller deadline %v", until, deadline)
-					}
-					if len(attempts) == 1 {
-						if address != net.JoinHostPort("127.0.0.2", port) {
-							t.Fatalf("first dial did not use validated IP: %s", address)
-						}
-						if remaining := time.Until(until); remaining <= 0 || remaining > 500*time.Millisecond {
-							t.Fatalf("first attempt did not reserve half the budget: %v", remaining)
-						}
-						switch first {
-						case "timeout":
-							<-attempt.Done()
-							return nil, attempt.Err()
-						case "canceled":
-							cancel()
-							return nil, attempt.Err()
-						default:
-							return nil, errors.New("connection refused")
-						}
-					}
-					if len(attempts) != 2 || address != net.JoinHostPort("127.0.0.1", port) {
-						t.Fatalf("unexpected fallback dial: %s", address)
-					}
-					if ctx.Err() != nil || time.Until(until) <= 0 {
-						t.Fatal("first attempt exhausted the fallback budget")
-					}
-					if deadline.Sub(until) > time.Millisecond {
-						t.Fatal("last attempt did not receive the remaining budget")
-					}
-					return fallback, nil
+				return []netip.Addr{netip.MustParseAddr(tc.address)}, nil
+			}
+			p.dialIP = func(_ context.Context, network, address string) (net.Conn, error) {
+				if !tc.allowed || network != "tcp" || address != net.JoinHostPort(tc.address, "5000") {
+					t.Fatalf("unexpected dial: %s %s", network, address)
 				}
 
-				conn, err := p.dialUpstream(ctx, "tcp", authority.String())
-				if first == "canceled" {
-					if conn != nil {
-						conn.Close()
-						t.Fatal("canceled dial returned a connection")
-					}
-					if !errors.Is(err, errDialConnect) || len(attempts) != 1 {
-						t.Fatalf("canceled dial = %v, attempts = %d", err, len(attempts))
-					}
-				} else {
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer conn.Close()
-					if body, err := io.ReadAll(conn); err != nil || string(body) != "healthy address" {
-						t.Fatalf("fallback body = %q, %v", body, err)
-					}
-					if len(attempts) != 2 {
-						t.Fatalf("dial attempts = %d, want 2", len(attempts))
-					}
+				client, server := net.Pipe()
+				t.Cleanup(func() { server.Close() })
+				return client, nil
+			}
+
+			conn, err := p.dialUpstream(context.Background(), "tcp", "STORAGE.TEST.:5000")
+			if tc.allowed {
+				if err != nil {
+					t.Fatal(err)
 				}
-				if lookups != 1 {
-					t.Fatalf("DNS lookups = %d, want 1", lookups)
-				}
-				for _, attempt := range attempts {
-					if attempt.Err() == nil {
-						t.Fatal("attempt context was not released")
-					}
-				}
-			})
+				conn.Close()
+			} else if conn != nil || outbound.Classify(err) != outbound.AddressDenied {
+				t.Fatalf("forbidden answer: conn=%v err=%v", conn, err)
+			}
 		})
 	}
 }
 
-func TestDialUpstreamValidatesWholeAnswerBeforeAnyAttempt(t *testing.T) {
-	p := New(config.Config{DialTimeout: time.Second}, nil, nil, nil)
-	p.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}, {IP: net.ParseIP("127.0.0.1")}}, nil
-	}
-	p.dialIP = func(context.Context, string, string) (net.Conn, error) {
-		t.Fatal("dial attempted before the entire DNS answer was validated")
-		return nil, nil
-	}
-	conn, err := p.dialUpstream(context.Background(), "tcp", "storage.test:443")
-	if conn != nil || !errors.Is(err, errDialForbidden) {
-		t.Fatalf("mixed DNS answer: conn = %v, err = %v", conn, err)
-	}
-}
-
-func TestAddressPolicyAndRebinding(t *testing.T) {
-	for _, ip := range []string{"127.0.0.1", "10.0.0.1", "169.254.169.254", "100.64.0.1", "::1", "fc00::1", "fe80::1", "fec0::1", "::ffff:127.0.0.1", "64:ff9b::7f00:1", "224.0.0.1"} {
-		if publicIP(net.ParseIP(ip)) {
-			t.Errorf("allowed %s", ip)
-		}
-	}
-	for _, ip := range []string{"8.8.8.8", "2606:4700:4700::1111"} {
-		if !publicIP(net.ParseIP(ip)) {
-			t.Errorf("blocked %s", ip)
-		}
-	}
-	p := New(config.Config{DialTimeout: time.Second}, nil, nil, nil)
-	l := listen(t)
-	defer l.Close()
-	_, port, _ := net.SplitHostPort(l.Addr().String())
-	calls := 0
-	p.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {
-		calls++
-		return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}, {IP: net.ParseIP("127.0.0.1")}}, nil
-	}
-	if c, err := p.dialUpstream(context.Background(), "tcp", "storage.test:"+port); err == nil {
-		c.Close()
-		t.Fatal("mixed answer accepted")
-	}
-	a, _ := hostport.Parse("storage.test:"+port, "443")
-	p.destinations[a.String()] = struct{}{}
-	calls = 0
-	p.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {
-		calls++
-		if calls > 1 {
-			t.Error("DNS re-resolved after validation")
-		}
-		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
-	}
-	c, err := p.dialUpstream(context.Background(), "tcp", "storage.test:"+port)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.Close()
-	delete(p.destinations, a.String())
-	calls = 0
-	if c, err := p.dialUpstream(context.Background(), "tcp", "storage.test:"+port); err == nil {
-		c.Close()
-		t.Fatal("private DNS answer accepted")
-	}
-}
-
-func TestDialUpstreamRefusalReasonsAreDistinctAndLoggedWhileRefusingClosed(t *testing.T) {
+func TestDialUpstreamRefusalLogsAreSafe(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		address    string
-		lookupIP   func(context.Context, string) ([]net.IPAddr, error)
-		allowlist  bool
-		reason     error
+		lookupIP   func(context.Context, string, string) ([]netip.Addr, error)
+		secret     string
 		logMessage string
 	}{
 		{
 			name:       "unparseable address",
-			address:    "not a valid authority",
-			reason:     errDialAddress,
-			logMessage: "unparseable upstream address",
+			address:    "private invalid authority",
+			secret:     "private invalid authority",
+			logMessage: "reason=dial_address",
 		},
 		{
-			name:       "resolution failure",
-			address:    "resolve-fail.test:443",
-			lookupIP:   func(context.Context, string) ([]net.IPAddr, error) { return nil, errors.New("no such host") },
-			reason:     errDialResolve,
-			logMessage: "upstream DNS resolution failed",
-		},
-		{
-			name:       "empty answer",
-			address:    "empty-answer.test:443",
-			lookupIP:   func(context.Context, string) ([]net.IPAddr, error) { return nil, nil },
-			reason:     errDialResolve,
-			logMessage: "upstream DNS resolution failed",
-		},
-		{
-			name:    "forbidden private address",
-			address: "private.test:443",
-			lookupIP: func(context.Context, string) ([]net.IPAddr, error) {
-				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+			name:    "resolution failure",
+			address: "resolve-fail.test:443",
+			lookupIP: func(context.Context, string, string) ([]netip.Addr, error) {
+				return nil, errors.New("private-dns-detail")
 			},
-			reason:     errDialForbidden,
-			logMessage: "upstream address not permitted",
-		},
-		{
-			name: "connection refused",
-			lookupIP: func(context.Context, string) ([]net.IPAddr, error) {
-				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
-			},
-			allowlist:  true,
-			reason:     errDialConnect,
-			logMessage: "upstream connection failed",
+			secret:     "private-dns-detail",
+			logMessage: "reason=dial_resolve",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &syncBuffer{}
 			logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 			p := New(config.Config{DialTimeout: 500 * time.Millisecond}, nil, logger, nil)
-			address := tc.address
-			if tc.name == "connection refused" {
-				// A closed listener guarantees a connection failure at a real
-				// loopback authority. Allowlisting it lets the dial reach the
-				// connect branch instead of being refused as a private address.
-				l := listen(t)
-				_, port, _ := net.SplitHostPort(l.Addr().String())
-				l.Close()
-				address = "127.0.0.1:" + port
-			}
 			if tc.lookupIP != nil {
-				p.lookupIP = tc.lookupIP
+				p.lookupNetIP = tc.lookupIP
+			} else {
+				p.lookupNetIP = func(context.Context, string, string) ([]netip.Addr, error) {
+					t.Fatal("invalid authority reached DNS")
+					return nil, nil
+				}
 			}
-			if tc.allowlist {
-				a, _ := hostport.Parse(address, "443")
-				p.destinations[a.String()] = struct{}{}
+			p.dialIP = func(context.Context, string, string) (net.Conn, error) {
+				t.Fatal("refused destination reached dialing")
+				return nil, nil
 			}
-			conn, err := p.dialUpstream(context.Background(), "tcp", address)
+
+			conn, err := p.dialUpstream(context.Background(), "tcp", tc.address)
 			if conn != nil {
 				conn.Close()
 				t.Fatal("dial unexpectedly succeeded")
 			}
-			if errors.Is(err, errRedirect) {
-				t.Fatalf("dial failure classified as a redirect: %v", err)
+			if err == nil {
+				t.Fatal("refused dial returned no error")
 			}
-			if !errors.Is(err, tc.reason) {
-				t.Fatalf("err = %v, want reason %v", err, tc.reason)
-			}
+
 			if !strings.Contains(logs.String(), tc.logMessage) {
 				t.Errorf("logs %q missing reason %q", logs.String(), tc.logMessage)
+			}
+			if strings.Contains(logs.String(), tc.secret) {
+				t.Errorf("logs contain private failure detail: %s", logs.String())
 			}
 		})
 	}
@@ -295,8 +162,8 @@ func TestUpstreamKeepAliveReadDeadlineRefreshesForNextRequest(t *testing.T) {
 		authority, _ := hostport.Parse("example.com:80", "443")
 		p := New(config.Config{Registries: []hostport.HostPort{authority}, DialTimeout: time.Minute, IdleTimeout: 800 * time.Millisecond}, nil, nil, nil)
 		defer p.transport.CloseIdleConnections()
-		p.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {
-			return []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}}, nil
+		p.lookupNetIP = func(context.Context, string, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 		}
 		p.dialIP = originTransport.DialContext
 		client := &http.Client{Transport: p.transport}

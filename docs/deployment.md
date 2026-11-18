@@ -601,6 +601,14 @@ repository names, tags, and digests, so
 - There are no request-start or per-redirect records. Tunnels don't expose
   request URLs to the proxy, so they aren't logged.
 
+Upstream failure records use fixed `reason` categories, never raw error text.
+Dial failures use `dial_address`, `dial_resolve`, `dial_forbidden`, or
+`dial_connect`. Cancellation and timeouts take precedence as `canceled` and
+`timeout`, including during DNS or connection attempts. Certificate verification
+failures use `tls_certificate`, and other typed TLS failures use `tls`. Redirect
+and upgrade refusals use `redirect` and `upgrade`. Other failures use `transport`.
+Debug-level `upstream dial refused` records use the same categories.
+
 ### Metrics
 
 Set `OCI_ACCELERATOR_METRICS_LISTEN=127.0.0.1:9090` to enable a separate

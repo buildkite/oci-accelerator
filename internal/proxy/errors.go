@@ -1,41 +1,36 @@
 package proxy
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
-	"net"
+
+	"github.com/buildkite/go-crew-kit/outbound"
 )
 
 var errUpgrade = errors.New("upstream upgrade denied")
 
 var errRedirect = errors.New("upstream redirect refused")
 
-// Internal dial-refusal reasons make logs actionable for users. None of these
-// is ever surfaced to the client.
-var (
-	errDialAddress   = errors.New("unparseable upstream address")
-	errDialResolve   = errors.New("upstream DNS resolution failed")
-	errDialForbidden = errors.New("upstream address not permitted")
-	errDialConnect   = errors.New("upstream connection failed")
-)
-
 // upstreamFailure returns only fixed labels. Never log the original error: it
 // can contain an upstream URL, signed query, certificate name or response data.
 func upstreamFailure(err error) string {
-	switch {
-	case errors.Is(err, context.Canceled):
+	kind := outbound.Classify(err)
+	switch kind {
+	case outbound.Canceled:
 		return "canceled"
-	case errors.Is(err, context.DeadlineExceeded):
+	case outbound.Timeout:
 		return "timeout"
-	case errors.Is(err, errDialAddress):
+	case outbound.DestinationDenied:
 		return "dial_address"
-	case errors.Is(err, errDialResolve):
+	case outbound.DNS:
 		return "dial_resolve"
-	case errors.Is(err, errDialForbidden):
+	case outbound.AddressDenied:
 		return "dial_forbidden"
-	case errors.Is(err, errDialConnect):
+	case outbound.Connect:
 		return "dial_connect"
+	}
+
+	switch {
 	case errors.Is(err, errRedirect):
 		return "redirect"
 	case errors.Is(err, errUpgrade):
@@ -47,11 +42,9 @@ func upstreamFailure(err error) string {
 		return "tls_certificate"
 	}
 
-	var network net.Error
-	if errors.As(err, &network) && network.Timeout() {
-		// Includes TLS handshake and response-header timeouts. Do not inspect
-		// implementation-specific error text to distinguish these phases.
-		return "timeout"
+	if kind == outbound.TLS {
+		return "tls"
 	}
+
 	return "transport"
 }
