@@ -322,7 +322,7 @@ func TestDiscoveryReportsNewPeers(t *testing.T) {
 
 	// The book publishes the new ID before its directory sync fails.
 	d.book.write = func(dir string, peers map[string]bookRecord) (bool, error) {
-		return replaceBookState(dir, peers, func(string) error { return syscall.EIO })
+		return writePublishedBookError(dir, peers, syscall.EIO)
 	}
 	_, view := d.book.observe()
 	d.mu.Lock()

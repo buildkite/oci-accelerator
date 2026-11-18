@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/buildkite/go-crew-kit/filewrite"
 )
 
 var errFillExpired = errors.New("cache fill expired")
@@ -94,7 +96,7 @@ func (f *Fill) Commit() error {
 	if err := f.writeMetaFile(); err != nil {
 		return f.finish(err)
 	}
-	if err := syncDirectory(f.dir); err != nil {
+	if err := filewrite.SyncDir(f.dir); err != nil {
 		return f.finish(err)
 	}
 	if !time.Now().Before(f.deadline) {
@@ -114,7 +116,7 @@ func (f *Fill) Commit() error {
 	}
 
 	f.dir = dest
-	if err := syncDirectory(f.store.dir); err != nil {
+	if err := filewrite.SyncDir(f.store.dir); err != nil {
 		return f.finish(err)
 	}
 	if !time.Now().Before(f.deadline) {
@@ -141,31 +143,15 @@ func (f *Fill) Abort() error {
 	return f.finish(nil)
 }
 
-// writeMetaFile writes the encoded metadata to an exclusive meta file in the
-// staging directory, propagating the first error across chmod/write/sync/close.
+// writeMetaFile writes and syncs the encoded metadata to an exclusive meta file
+// in the staging directory.
 func (f *Fill) writeMetaFile() error {
 	b, err := encodeMeta(f.meta)
 	if err != nil {
 		return err
 	}
 
-	mf, err := os.OpenFile(filepath.Join(f.dir, "meta"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err == nil {
-		err = mf.Chmod(0o600)
-	}
-	if err == nil {
-		_, err = mf.Write(b)
-	}
-	if err == nil {
-		err = mf.Sync()
-	}
-	if mf != nil {
-		if e := mf.Close(); err == nil {
-			err = e
-		}
-	}
-
-	return err
+	return filewrite.CreateExclusive(filepath.Join(f.dir, "meta"), b, 0o600)
 }
 
 // supersedeTombstone claims an invalid entry or failed publication under s.mu,
@@ -309,14 +295,4 @@ func (f *Fill) stopTimer() {
 	}
 
 	<-f.timerDone
-}
-
-func syncDirectory(p string) error {
-	d, e := os.Open(p)
-	if e != nil {
-		return e
-	}
-	defer d.Close()
-
-	return d.Sync()
 }

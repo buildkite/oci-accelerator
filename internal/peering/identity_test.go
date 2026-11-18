@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -79,23 +78,28 @@ func TestNodeIDRejectsCorruptOrUnsafeStateWithoutReplacement(t *testing.T) {
 	}
 }
 
-func TestNodeIDRetainsPublishedIdentityAfterSyncFailure(t *testing.T) {
+func TestNodeIDRetainsPublishedIdentityAfterInterruptedStartup(t *testing.T) {
 	dir := bookTestDir(t)
 	lock, err := openBookState(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	published, err := replaceState(dir, nodeIDName, []byte("aB3_dE6-gH9j"), func(string) error { return syscall.EIO })
-	if !published || err == nil {
-		t.Fatalf("published = %t, error = %v", published, err)
+
+	// Model visible identity state left before startup wrote peers.json or
+	// confirmed directory durability. filewrite tests cover post-rename errors.
+	if err := os.WriteFile(filepath.Join(dir, nodeIDName), []byte("aB3_dE6-gH9j"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	lock.close()
+	if err := lock.close(); err != nil {
+		t.Fatal(err)
+	}
+
 	b, err := OpenBook(context.Background(), dir, "self.test:1", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
 	if b.nodeID != "aB3_dE6-gH9j" {
-		t.Fatal("regenerated published identity after sync failure")
+		t.Fatal("regenerated published identity after interrupted startup")
 	}
 }

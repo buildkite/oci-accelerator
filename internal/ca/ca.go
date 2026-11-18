@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/buildkite/go-crew-kit/filewrite"
 )
 
 const (
@@ -115,13 +117,13 @@ func initialize(dir string) error {
 		return err
 	}
 
-	if err := writeExclusive(filepath.Join(stage, keyName), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+	if err := filewrite.CreateExclusive(filepath.Join(stage, keyName), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return err
 	}
-	if err := writeExclusive(filepath.Join(stage, certName), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0o644); err != nil {
+	if err := filewrite.CreateExclusive(filepath.Join(stage, certName), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0o644); err != nil {
 		return err
 	}
-	if err := syncDir(stage); err != nil {
+	if err := filewrite.SyncDir(stage); err != nil {
 		return err
 	}
 
@@ -133,13 +135,13 @@ func initialize(dir string) error {
 		// Adopt the winner only if dir now looks like a complete installation.
 		// Otherwise the rename failed for another reason. load validates contents.
 		if publishedCA(dir) {
-			return syncDir(parent)
+			return filewrite.SyncDir(parent)
 		}
 
 		return err
 	}
 
-	return syncDir(parent)
+	return filewrite.SyncDir(parent)
 }
 
 // publishedCA reports whether dir already holds both CA files with the on-disk
@@ -191,35 +193,6 @@ func checkParent(parent string) error {
 func ownedByCurrentUser(info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && int(stat.Uid) == os.Geteuid()
-}
-
-func syncDir(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return f.Sync()
-}
-
-func writeExclusive(path string, data []byte, mode os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if err != nil {
-		return err
-	}
-
-	if err = f.Chmod(mode); err == nil {
-		_, err = f.Write(data)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	return err
 }
 
 func newCA(now time.Time) ([]byte, *ecdsa.PrivateKey, error) {

@@ -242,7 +242,7 @@ func TestDiscoveryExpiryPersistenceLogsFailureEpisodes(t *testing.T) {
 					writes.Add(1)
 					if failing.Load() {
 						if published {
-							return replaceBookState(dir, records, func(string) error { return syscall.EIO })
+							return writePublishedBookError(dir, records, syscall.EIO)
 						}
 						return false, syscall.ENOSPC
 					}

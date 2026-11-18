@@ -158,7 +158,7 @@ func TestBookExpiryPersistenceFailures(t *testing.T) {
 				time.Sleep(30 * time.Minute)
 				b.write = func(dir string, records map[string]bookRecord) (bool, error) {
 					if published {
-						return replaceBookState(dir, records, func(string) error { return syscall.EIO })
+						return writePublishedBookError(dir, records, syscall.EIO)
 					}
 					return false, syscall.ENOSPC
 				}
@@ -269,7 +269,7 @@ func TestBookRenewalCheckpointRetriesPersistenceFailures(t *testing.T) {
 					writes++
 					if writes == 1 {
 						if published {
-							return replaceBookState(dir, records, func(string) error { return syscall.EIO })
+							return writePublishedBookError(dir, records, syscall.EIO)
 						}
 						return false, syscall.ENOSPC
 					}
