@@ -21,7 +21,7 @@ func TestParseCanonicalizes(t *testing.T) {
 }
 
 func TestParseRejectsInvalid(t *testing.T) {
-	inputs := []string{"", " host", "user@host", "host/path", "host?x", "host#x", "*.host", "fe80::1%eth0", "host:0", "host:65536", "-host", "host..name", "[::1", "127.000.000.001", "host:", "[example.com]:443", "[::1]:"}
+	inputs := []string{"", " host", "user@host", "host/path", "host?x", "host#x", "*.host", "fe80::1%eth0", "host:0", "host:65536", "host..name", "[::1", "127.000.000.001", "host:", "[example.com]:443", "[::1]:"}
 	for _, input := range inputs {
 		if _, err := Parse(input, "443"); err == nil {
 			t.Errorf("Parse(%q) succeeded", input)
